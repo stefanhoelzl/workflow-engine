@@ -11,11 +11,16 @@ Receive external stimuli and convert them into typed events in the queue. Trigge
 An `HttpTriggerDefinition` SHALL be a plain object with the following properties:
 - `path`: string — the trigger path relative to `/webhooks/` (e.g., `"order"`)
 - `method`: string — the HTTP method to match (e.g., `"POST"`)
+- `event`: string — the event type the trigger produces (e.g., `"order.received"`)
 - `response`: object with `status` (number) and `body` (JSON-serializable value) — the static response returned when the trigger fires
 
 #### Scenario: Define an HTTP trigger
-- **WHEN** creating an `HttpTriggerDefinition` with path `"order"`, method `"POST"`, and response `{ status: 202, body: { accepted: true } }`
+- **WHEN** creating an `HttpTriggerDefinition` with path `"order"`, method `"POST"`, event `"order.received"`, and response `{ status: 202, body: { accepted: true } }`
 - **THEN** the definition is a plain object with no behavior or framework dependencies
+
+#### Scenario: Trigger definition declares its event type
+- **GIVEN** an `HttpTriggerDefinition` with path `"order"`, method `"POST"`, and event `"order.received"`
+- **THEN** the definition's `event` field is `"order.received"`
 
 ### Requirement: HttpTriggerRegistry supports registration and lookup
 
