@@ -3,7 +3,8 @@
 	"compilerOptions": {
 		"composite": true,
 		"declaration": true,
-		"outDir": "dist"
+		"outDir": "dist",
+		"types": ["node"]
 	},
 	"include": ["src"]
 }

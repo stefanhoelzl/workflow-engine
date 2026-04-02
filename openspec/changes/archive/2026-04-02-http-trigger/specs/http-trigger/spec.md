@@ -1,10 +1,4 @@
-# Triggers Specification
-
-## Purpose
-
-Receive external stimuli and convert them into typed events in the queue. Triggers are built into the platform runtime and are not user-extensible in v1.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: HttpTriggerDefinition is a pure data type
 
@@ -39,7 +33,7 @@ The registry SHALL expose:
 
 ### Requirement: httpTriggerMiddleware matches requests under /webhooks/
 
-The `httpTriggerMiddleware` SHALL be a Hono middleware that intercepts requests under the `/webhooks/` path prefix, strips the prefix, looks up the remaining path and method in the registry, and either handles the request or returns 404.
+The `httpTriggerMiddleware` SHALL be a Hono middleware that intercepts requests under the `/webhooks/` path prefix, strips the prefix, looks up the remaining path and method in the registry, and either handles the request or passes through.
 
 The middleware factory SHALL accept a registry and a callback function.
 
@@ -53,20 +47,13 @@ The middleware factory SHALL accept a registry and a callback function.
 #### Scenario: No matching trigger
 - **WHEN** a `POST /webhooks/unknown` request is received
 - **AND** no trigger is registered for path `"unknown"` and method `"POST"`
-- **THEN** the middleware SHALL return a `404` response
+- **THEN** the middleware SHALL call `next()` to pass through to subsequent handlers
+
+#### Scenario: Request outside /webhooks/ prefix
+- **WHEN** a request to `/api/health` is received
+- **THEN** the middleware SHALL call `next()` without consulting the registry
 
 #### Scenario: Non-JSON request body
 - **WHEN** a `POST /webhooks/order` request is received with a non-JSON body
 - **AND** a trigger with path `"order"` and method `"POST"` is registered
 - **THEN** the middleware SHALL return a `400` response
-
-### Requirement: Native implementation
-
-Triggers SHALL be implemented as part of the platform runtime, not as user-provided sandboxed code.
-
-#### Scenario: Trigger binds server port
-
-- GIVEN the runtime starts with an HTTP trigger configured
-- WHEN the runtime initializes
-- THEN it binds the configured HTTP server port
-- AND registers routes for all configured HTTP triggers

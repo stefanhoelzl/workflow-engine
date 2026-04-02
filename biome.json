@@ -7,7 +7,9 @@
 		"rules": {
 			"a11y": "error",
 			"complexity": "error",
-			"correctness": "error",
+			"correctness": {
+				"noNodejsModules": "off"
+			},
 			"performance": "error",
 			"security": "error",
 			"style": "error",
