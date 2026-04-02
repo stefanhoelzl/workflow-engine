@@ -1,20 +1,23 @@
 schema: spec-driven
-
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
-
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+context: |
+  Tech stack: Node.js, TypeScript (strict), Vite + Rolldown, isolated-vm, Zod, pnpm monorepo
+  Architecture: Event-driven, 4 primitives (Trigger → Event → Action → Event), fan-out dispatch
+  Security: Untrusted code runs in V8 Isolates, 8MB/30s limits, minimal host API (ctx.data + ctx.emit only)
+  Queue: Filesystem-backed, append-only, abstracted behind QueueStore interface
+  Build: Vite plugin discovers actions from workflow DSL, bundles each action standalone, emits manifest.json
+  Testing: Unit + integration, sandbox boundary tests critical
+rules:
+  proposal:
+    - Consider security implications for any feature touching the sandbox boundary
+    - Identify whether the change affects the QueueStore interface
+    - Note if the change requires manifest format changes
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Include both success and failure scenarios
+    - Specify behavior at the isolate boundary explicitly
+  design:
+    - Justify any new API surface exposed to sandboxed actions
+    - Include sequence diagrams for cross-component flows
+  tasks:
+    - Sandbox-related tasks must include security test cases
+    - Queue changes must include crash recovery test cases
