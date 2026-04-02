@@ -13,6 +13,7 @@ describe("HttpTriggerRegistry", () => {
 		const definition = {
 			path: "order",
 			method: "POST",
+			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		};
 		registry.register(definition);
@@ -31,6 +32,7 @@ describe("HttpTriggerRegistry", () => {
 		registry.register({
 			path: "order",
 			method: "POST",
+			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 
@@ -54,6 +56,7 @@ describe("httpTriggerMiddleware — matching", () => {
 		registry.register({
 			path: "order",
 			method: "POST",
+			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const onTrigger = vi.fn();
@@ -95,6 +98,7 @@ describe("httpTriggerMiddleware — pass-through", () => {
 		registry.register({
 			path: "order",
 			method: "POST",
+			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const onTrigger = vi.fn();
@@ -113,6 +117,7 @@ describe("httpTriggerMiddleware — error handling", () => {
 		registry.register({
 			path: "order",
 			method: "POST",
+			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const onTrigger = vi.fn();

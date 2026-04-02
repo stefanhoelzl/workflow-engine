@@ -5,6 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 interface HttpTriggerDefinition {
 	path: string;
 	method: string;
+	event: string;
 	response: {
 		status: ContentfulStatusCode;
 		body: unknown;
