@@ -29,6 +29,19 @@
 					}
 				}
 			}
+		},
+		{
+			"includes": ["**/*.test.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"style": {
+						"noMagicNumbers": "off"
+					}
+				}
+			}
 		}
 	]
 }
