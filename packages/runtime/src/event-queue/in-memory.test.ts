@@ -7,6 +7,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
 		payload: {},
+		correlationId: "corr_test",
 		createdAt: new Date(),
 		...overrides,
 	};

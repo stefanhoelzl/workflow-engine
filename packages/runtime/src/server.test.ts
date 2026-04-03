@@ -1,6 +1,6 @@
 import { constants } from "node:http2";
-import { describe, expect, it } from "vitest";
 import type { MiddlewareHandler } from "hono";
+import { describe, expect, it } from "vitest";
 import { createServer } from "./server.js";
 
 describe("createServer", () => {

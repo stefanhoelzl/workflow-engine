@@ -1,6 +1,7 @@
 import { constants } from "node:http2";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { HttpTriggerContext } from "../context/index.js";
 
 interface HttpTriggerDefinition {
 	path: string;
@@ -21,17 +22,15 @@ class HttpTriggerRegistry {
 
 	lookup(path: string, method: string): HttpTriggerDefinition | null {
 		return (
-			this.#triggers.find(
-				(t) => t.path === path && t.method === method,
-			) ?? null
+			this.#triggers.find((t) => t.path === path && t.method === method) ?? null
 		);
 	}
 }
 
-type OnTriggerCallback = (
-	definition: HttpTriggerDefinition,
+type TriggerContextFactory = (
 	body: unknown,
-) => void | Promise<void>;
+	definition: HttpTriggerDefinition,
+) => HttpTriggerContext;
 
 interface Middleware {
 	match: string;
@@ -42,7 +41,7 @@ const WEBHOOKS_PREFIX = "/webhooks/";
 
 function httpTriggerMiddleware(
 	registry: HttpTriggerRegistry,
-	onTrigger: OnTriggerCallback,
+	createContext: TriggerContextFactory,
 ): Middleware {
 	return {
 		match: `${WEBHOOKS_PREFIX}*`,
@@ -64,7 +63,8 @@ function httpTriggerMiddleware(
 				);
 			}
 
-			await onTrigger(definition, body);
+			const ctx = createContext(body, definition);
+			await ctx.emit(definition.event, body);
 
 			return c.json(definition.response.body, definition.response.status);
 		},
@@ -74,7 +74,7 @@ function httpTriggerMiddleware(
 export {
 	type HttpTriggerDefinition,
 	HttpTriggerRegistry,
-	type Middleware,
-	type OnTriggerCallback,
 	httpTriggerMiddleware,
+	type Middleware,
+	type TriggerContextFactory,
 };

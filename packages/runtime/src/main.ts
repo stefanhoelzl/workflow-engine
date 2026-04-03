@@ -1,8 +1,8 @@
 import { serve } from "@hono/node-server";
 import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
+import { ContextFactory } from "./context/index.js";
 import { InMemoryEventQueue } from "./event-queue/in-memory.js";
-import type { Event } from "./event-queue/index.js";
 import { Scheduler } from "./scheduler/index.js";
 import { createServer } from "./server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
@@ -18,36 +18,58 @@ registry.register({
 });
 
 const queue = new InMemoryEventQueue();
+const factory = new ContextFactory(queue);
 
 // Hardcoded sample actions — replaced when SDK/manifest lands
 const actions: Action[] = [
 	{
-		name: "logOrder",
-		match: (e) => e.type === "order.received" && e.targetAction === "logOrder",
-		handler: (e) => {
+		name: "validateOrder",
+		match: (e) =>
+			e.type === "order.received" && e.targetAction === "validateOrder",
+		handler: async (ctx) => {
 			// biome-ignore lint/suspicious/noConsole: sample action
-			console.log(`[logOrder] received event ${e.id}`, e.payload);
+			console.log(
+				`[validateOrder] validating event ${ctx.event.id}`,
+				ctx.event.payload,
+			);
+			await ctx.emit("order.validated", ctx.event.payload);
+		},
+	},
+	{
+		name: "fulfillOrder",
+		match: (e) =>
+			e.type === "order.validated" && e.targetAction === "fulfillOrder",
+		// biome-ignore lint/suspicious/useAwait: handler interface requires async
+		handler: async (ctx) => {
+			// biome-ignore lint/suspicious/noConsole: sample action
+			console.log(
+				`[fulfillOrder] fulfilling event ${ctx.event.id}`,
+				ctx.event.payload,
+			);
+		},
+	},
+	{
+		name: "notifyCustomer",
+		match: (e) =>
+			e.type === "order.validated" && e.targetAction === "notifyCustomer",
+		// biome-ignore lint/suspicious/useAwait: handler interface requires async
+		handler: async (ctx) => {
+			// biome-ignore lint/suspicious/noConsole: sample action
+			console.log(
+				`[notifyCustomer] notifying for event ${ctx.event.id}`,
+				ctx.event.payload,
+			);
 		},
 	},
 ];
 
-const dispatch = createDispatchAction(actions, queue);
+const dispatch = createDispatchAction(actions);
 actions.push(dispatch);
 
-const scheduler = new Scheduler(queue, actions);
+const scheduler = new Scheduler(queue, actions, factory.action);
 scheduler.start();
 
-const app = createServer(
-	httpTriggerMiddleware(registry, (definition, body) => {
-		const event: Event = {
-			id: `evt_${crypto.randomUUID()}`,
-			type: definition.event,
-			payload: body,
-			createdAt: new Date(),
-		};
-		queue.enqueue(event);
-	}),
-);
+const app = createServer(httpTriggerMiddleware(registry, factory.httpTrigger));
 
 const port = 3000;
 // biome-ignore lint/suspicious/noConsole: entry point logging

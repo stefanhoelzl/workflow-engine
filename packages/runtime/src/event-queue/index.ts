@@ -3,6 +3,8 @@ interface Event {
 	type: string;
 	payload: unknown;
 	targetAction?: string;
+	correlationId: string;
+	parentEventId?: string;
 	createdAt: Date;
 }
 

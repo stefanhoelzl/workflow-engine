@@ -1,21 +1,19 @@
-import type { EventQueue } from "../event-queue/index.js";
 import type { Action } from "./index.js";
 
-function createDispatchAction(actions: Action[], queue: EventQueue): Action {
+function createDispatchAction(actions: Action[]): Action {
 	return {
 		name: "dispatch",
 		match: (event) => event.targetAction === undefined,
-		handler: (event) => {
+		handler: async (ctx) => {
 			for (const action of actions) {
 				if (action.name === "dispatch") {
 					continue;
 				}
 
-				const synthetic = { ...event, targetAction: action.name };
+				const synthetic = { ...ctx.event, targetAction: action.name };
 				if (action.match(synthetic)) {
-					queue.enqueue({
-						...event,
-						id: `evt_${crypto.randomUUID()}`,
+					// biome-ignore lint/performance/noAwaitInLoops: sequential fan-out by design
+					await ctx.emit(ctx.event.type, ctx.event.payload, {
 						targetAction: action.name,
 					});
 				}

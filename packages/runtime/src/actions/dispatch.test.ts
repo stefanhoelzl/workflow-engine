@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ContextFactory } from "../context/index.js";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
 import type { Event } from "../event-queue/index.js";
 import { createDispatchAction } from "./dispatch.js";
@@ -9,6 +10,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 		id: "evt_original",
 		type: "order.received",
 		payload: { orderId: "123" },
+		correlationId: "corr_test",
 		createdAt: new Date(),
 		...overrides,
 	};
@@ -17,6 +19,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 describe("dispatch action", () => {
 	it("fans out to multiple subscribers", async () => {
 		const queue = new InMemoryEventQueue();
+		const factory = new ContextFactory(queue);
 		const parseOrder: Action = {
 			name: "parseOrder",
 			match: (e) =>
@@ -30,11 +33,12 @@ describe("dispatch action", () => {
 			handler: vi.fn(),
 		};
 		const actions = [parseOrder, sendEmail];
-		const dispatch = createDispatchAction(actions, queue);
+		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
 		const event = makeEvent();
-		dispatch.handler(event);
+		const ctx = factory.action(event);
+		await dispatch.handler(ctx);
 
 		const first = await queue.dequeue();
 		const second = await queue.dequeue();
@@ -43,15 +47,20 @@ describe("dispatch action", () => {
 		expect(first.targetAction).toBe("parseOrder");
 		expect(first.payload).toEqual({ orderId: "123" });
 		expect(first.id).not.toBe("evt_original");
+		expect(first.correlationId).toBe("corr_test");
+		expect(first.parentEventId).toBe("evt_original");
 
 		expect(second.type).toBe("order.received");
 		expect(second.targetAction).toBe("sendEmail");
 		expect(second.payload).toEqual({ orderId: "123" });
 		expect(second.id).not.toBe("evt_original");
+		expect(second.correlationId).toBe("corr_test");
+		expect(second.parentEventId).toBe("evt_original");
 	});
 
 	it("enqueues nothing when there are zero subscribers", async () => {
 		const queue = new InMemoryEventQueue();
+		const factory = new ContextFactory(queue);
 		const unrelated: Action = {
 			name: "updateInventory",
 			match: (e) =>
@@ -59,11 +68,12 @@ describe("dispatch action", () => {
 			handler: vi.fn(),
 		};
 		const actions = [unrelated];
-		const dispatch = createDispatchAction(actions, queue);
+		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
 		const event = makeEvent({ type: "audit.log" });
-		dispatch.handler(event);
+		const ctx = factory.action(event);
+		await dispatch.handler(ctx);
 
 		// Enqueue a marker event to verify nothing else is in the queue
 		const marker = makeEvent({ id: "evt_marker" });
@@ -73,12 +83,14 @@ describe("dispatch action", () => {
 
 	it("does not dispatch to itself", async () => {
 		const queue = new InMemoryEventQueue();
+		const factory = new ContextFactory(queue);
 		const actions: Action[] = [];
-		const dispatch = createDispatchAction(actions, queue);
+		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
 		const event = makeEvent();
-		dispatch.handler(event);
+		const ctx = factory.action(event);
+		await dispatch.handler(ctx);
 
 		// Enqueue a marker to verify queue is empty
 		const marker = makeEvent({ id: "evt_marker" });
@@ -87,8 +99,7 @@ describe("dispatch action", () => {
 	});
 
 	it("matches only events with targetAction undefined", () => {
-		const queue = new InMemoryEventQueue();
-		const dispatch = createDispatchAction([], queue);
+		const dispatch = createDispatchAction([]);
 
 		expect(dispatch.match(makeEvent())).toBe(true);
 		expect(dispatch.match(makeEvent({ targetAction: "parseOrder" }))).toBe(

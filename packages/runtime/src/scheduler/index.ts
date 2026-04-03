@@ -1,15 +1,24 @@
 import type { Action } from "../actions/index.js";
-import type { EventQueue } from "../event-queue/index.js";
+import type { ActionContext } from "../context/index.js";
+import type { Event, EventQueue } from "../event-queue/index.js";
+
+type ActionContextFactory = (event: Event) => ActionContext;
 
 class Scheduler {
 	readonly #queue: EventQueue;
 	readonly #actions: Action[];
+	readonly #createContext: ActionContextFactory;
 	#running = false;
 	#loopPromise: Promise<void> | null = null;
 
-	constructor(queue: EventQueue, actions: Action[]) {
+	constructor(
+		queue: EventQueue,
+		actions: Action[],
+		createContext: ActionContextFactory,
+	) {
 		this.#queue = queue;
 		this.#actions = actions;
+		this.#createContext = createContext;
 	}
 
 	start(): void {
@@ -45,7 +54,8 @@ class Scheduler {
 				const action = matches.find(() => true);
 				if (action) {
 					try {
-						action.handler(event);
+						const ctx = this.#createContext(event);
+						await action.handler(ctx);
 						await this.#queue.ack(event.id);
 					} catch {
 						await this.#queue.fail(event.id);

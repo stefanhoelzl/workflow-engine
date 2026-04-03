@@ -1,10 +1,11 @@
 import { constants } from "node:http2";
-import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { describe, expect, it, vi } from "vitest";
+import { HttpTriggerContext } from "../context/index.js";
 import {
 	HttpTriggerRegistry,
 	httpTriggerMiddleware,
-	type OnTriggerCallback,
+	type TriggerContextFactory,
 } from "./http.js";
 
 describe("HttpTriggerRegistry", () => {
@@ -42,16 +43,26 @@ describe("HttpTriggerRegistry", () => {
 
 function createApp(
 	registry: HttpTriggerRegistry,
-	onTrigger: OnTriggerCallback,
+	createContext: TriggerContextFactory,
 ) {
 	const app = new Hono();
-	const { match, handler } = httpTriggerMiddleware(registry, onTrigger);
+	const { match, handler } = httpTriggerMiddleware(registry, createContext);
 	app.use(match, handler);
 	return app;
 }
 
+function stubTriggerContextFactory(): {
+	factory: TriggerContextFactory;
+	emitSpy: ReturnType<typeof vi.fn>;
+} {
+	const emitSpy = vi.fn().mockResolvedValue(undefined);
+	const factory: TriggerContextFactory = (body, definition) =>
+		new HttpTriggerContext(body, definition, emitSpy);
+	return { factory, emitSpy };
+}
+
 describe("httpTriggerMiddleware — matching", () => {
-	it("invokes callback and returns configured response for matching request", async () => {
+	it("creates context and calls emit for matching request", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
 			path: "order",
@@ -59,8 +70,8 @@ describe("httpTriggerMiddleware — matching", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const onTrigger = vi.fn();
-		const app = createApp(registry, onTrigger);
+		const { factory, emitSpy } = stubTriggerContextFactory();
+		const app = createApp(registry, factory);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",
@@ -70,9 +81,10 @@ describe("httpTriggerMiddleware — matching", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_ACCEPTED);
 		expect(await res.json()).toEqual({ accepted: true });
-		expect(onTrigger).toHaveBeenCalledWith(
-			expect.objectContaining({ path: "order", method: "POST" }),
+		expect(emitSpy).toHaveBeenCalledWith(
+			"order.received",
 			{ item: "widget" },
+			undefined,
 		);
 	});
 });
@@ -80,8 +92,8 @@ describe("httpTriggerMiddleware — matching", () => {
 describe("httpTriggerMiddleware — pass-through", () => {
 	it("passes through when no trigger matches", async () => {
 		const registry = new HttpTriggerRegistry();
-		const onTrigger = vi.fn();
-		const app = createApp(registry, onTrigger);
+		const { factory, emitSpy } = stubTriggerContextFactory();
+		const app = createApp(registry, factory);
 
 		const res = await app.request("/webhooks/unknown", {
 			method: "POST",
@@ -90,7 +102,7 @@ describe("httpTriggerMiddleware — pass-through", () => {
 		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
-		expect(onTrigger).not.toHaveBeenCalled();
+		expect(emitSpy).not.toHaveBeenCalled();
 	});
 
 	it("does not handle requests outside /webhooks/", async () => {
@@ -101,13 +113,13 @@ describe("httpTriggerMiddleware — pass-through", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const onTrigger = vi.fn();
-		const app = createApp(registry, onTrigger);
+		const { factory, emitSpy } = stubTriggerContextFactory();
+		const app = createApp(registry, factory);
 
 		const res = await app.request("/api/health", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
-		expect(onTrigger).not.toHaveBeenCalled();
+		expect(emitSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -120,8 +132,8 @@ describe("httpTriggerMiddleware — error handling", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const onTrigger = vi.fn();
-		const app = createApp(registry, onTrigger);
+		const { factory, emitSpy } = stubTriggerContextFactory();
+		const app = createApp(registry, factory);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",
@@ -130,6 +142,6 @@ describe("httpTriggerMiddleware — error handling", () => {
 		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_BAD_REQUEST);
-		expect(onTrigger).not.toHaveBeenCalled();
+		expect(emitSpy).not.toHaveBeenCalled();
 	});
 });
