@@ -1,53 +1,109 @@
 import type { Action } from "./actions/index.js";
 import type { HttpTriggerDefinition } from "./triggers/index.js";
 
+function requireEnv(name: string): string {
+	// biome-ignore lint/style/noProcessEnv: entry-point config
+	const value = process.env[name];
+	if (!value) {
+		throw new Error(`Missing required environment variable: ${name}`);
+	}
+	return value;
+}
+
+const nextcloudUrl = requireEnv("NEXTCLOUD_URL");
+const nextcloudBotSecret = requireEnv("NEXTCLOUD_TALK_BOT_SECRET");
+const nextcloudTalkToken = requireEnv("NEXTCLOUD_TALK_TOKEN");
+
+interface CronitorPayload {
+	id: string;
+	monitor: string;
+	description: string;
+	type: "ALERT" | "RECOVERY";
+	rule: string;
+	environment: string;
+	group: string | null;
+	// biome-ignore lint/style/useNamingConvention: Cronitor API field
+	issue_url: string;
+	// biome-ignore lint/style/useNamingConvention: Cronitor API field
+	monitor_url: string;
+}
+
+function formatMessage(payload: CronitorPayload): string {
+	const emoji = payload.type === "ALERT" ? "\u26a0\ufe0f" : "\u2705";
+	const label = payload.type === "ALERT" ? "Alert" : "Recovery";
+	const lines = [
+		`**${emoji} ${label}: ${payload.monitor}**`,
+		`Rule: ${payload.rule}`,
+		`Environment: ${payload.environment}`,
+		payload.issue_url,
+	];
+	return lines.join("\n");
+}
+
+async function signRequest(
+	secret: string,
+	random: string,
+	body: string,
+): Promise<string> {
+	const encoder = new TextEncoder();
+	const key = await crypto.subtle.importKey(
+		"raw",
+		encoder.encode(secret),
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["sign"],
+	);
+	const signature = await crypto.subtle.sign(
+		"HMAC",
+		key,
+		encoder.encode(random + body),
+	);
+	const hexRadix = 16;
+	return Array.from(new Uint8Array(signature))
+		.map((b) => b.toString(hexRadix).padStart(2, "0"))
+		.join("");
+}
+
 export const sampleTriggers: HttpTriggerDefinition[] = [
 	{
-		path: "order",
+		path: "cronitor",
 		method: "POST",
-		event: "order.received",
+		event: "cronitor.webhook",
 		response: { status: 202, body: { accepted: true } },
 	},
 ];
 
 export const sampleActions: Action[] = [
 	{
-		name: "validateOrder",
+		name: "notifyCronitor",
 		match: (e) =>
-			e.type === "order.received" && e.targetAction === "validateOrder",
+			e.type === "cronitor.webhook" && e.targetAction === "notifyCronitor",
 		handler: async (ctx) => {
-			// biome-ignore lint/suspicious/noConsole: sample action
-			console.log(
-				`[validateOrder] validating event ${ctx.event.id}`,
-				ctx.event.payload,
-			);
-			await ctx.emit("order.validated", ctx.event.payload);
-		},
-	},
-	{
-		name: "fulfillOrder",
-		match: (e) =>
-			e.type === "order.validated" && e.targetAction === "fulfillOrder",
-		// biome-ignore lint/suspicious/useAwait: handler interface requires async
-		handler: async (ctx) => {
-			// biome-ignore lint/suspicious/noConsole: sample action
-			console.log(
-				`[fulfillOrder] fulfilling event ${ctx.event.id}`,
-				ctx.event.payload,
-			);
-		},
-	},
-	{
-		name: "notifyCustomer",
-		match: (e) =>
-			e.type === "order.validated" && e.targetAction === "notifyCustomer",
-		// biome-ignore lint/suspicious/useAwait: handler interface requires async
-		handler: async (ctx) => {
-			// biome-ignore lint/suspicious/noConsole: sample action
-			console.log(
-				`[notifyCustomer] notifying for event ${ctx.event.id}`,
-				ctx.event.payload,
-			);
+			const payload = ctx.event.payload as CronitorPayload;
+			const message = formatMessage(payload);
+			const body = JSON.stringify({ message });
+			const random = crypto.randomUUID();
+			const signature = await signRequest(nextcloudBotSecret, random, body);
+
+			const url = `${nextcloudUrl}/ocs/v2.php/apps/spreed/api/v1/bot/${nextcloudTalkToken}/message`;
+			const response = await ctx.fetch(url, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					// biome-ignore lint/style/useNamingConvention: HTTP header
+				Accept: "application/json",
+					"OCS-APIRequest": "true",
+					"X-Nextcloud-Talk-Bot-Random": random,
+					"X-Nextcloud-Talk-Bot-Signature": signature,
+				},
+				body,
+			});
+
+			if (!response.ok) {
+				throw new Error(
+					`Nextcloud Talk responded with ${response.status}: ${await response.text()}`,
+				);
+			}
 		},
 	},
 ];
