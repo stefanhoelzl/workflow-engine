@@ -17,7 +17,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 }
 
 function stubContextFactory(event: Event): ActionContext {
-	return new ActionContext(event, vi.fn());
+	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch);
 }
 
 describe("Scheduler", () => {

@@ -20,7 +20,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		});
 
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue);
+		const factory = new ContextFactory(queue, globalThis.fetch);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();

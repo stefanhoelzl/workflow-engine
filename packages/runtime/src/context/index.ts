@@ -44,6 +44,7 @@ class ActionContext implements Context {
 		payload: unknown,
 		options?: EmitOptions,
 	) => Promise<void>;
+	readonly #fetch: typeof globalThis.fetch;
 
 	constructor(
 		event: Event,
@@ -52,21 +53,32 @@ class ActionContext implements Context {
 			payload: unknown,
 			options?: EmitOptions,
 		) => Promise<void>,
+		fetch: typeof globalThis.fetch,
 	) {
 		this.event = event;
 		this.#emit = emit;
+		this.#fetch = fetch;
 	}
 
 	emit(type: string, payload: unknown, options?: EmitOptions): Promise<void> {
 		return this.#emit(type, payload, options);
 	}
+
+	fetch(
+		url: string | URL,
+		init?: RequestInit,
+	): Promise<Response> {
+		return this.#fetch(url, init);
+	}
 }
 
 class ContextFactory {
 	readonly #queue: EventQueue;
+	readonly #fetch: typeof globalThis.fetch;
 
-	constructor(queue: EventQueue) {
+	constructor(queue: EventQueue, fetch: typeof globalThis.fetch) {
 		this.#queue = queue;
+		this.#fetch = fetch;
 	}
 
 	httpTrigger = (
@@ -93,7 +105,7 @@ class ContextFactory {
 				parentEventId: event.id,
 				...(targetAction !== undefined && { targetAction }),
 			});
-		});
+		}, this.#fetch);
 
 	#createAndEnqueue(
 		type: string,

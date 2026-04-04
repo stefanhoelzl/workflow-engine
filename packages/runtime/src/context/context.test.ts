@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
 import type { Event } from "../event-queue/index.js";
 import { ActionContext, ContextFactory, HttpTriggerContext } from "./index.js";
 
 const EVT_PREFIX = /^evt_/;
 const CORR_PREFIX = /^corr_/;
+const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
 	return {
@@ -21,7 +22,7 @@ describe("ContextFactory", () => {
 	describe("httpTrigger", () => {
 		it("returns an HttpTriggerContext with request and definition", () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -38,7 +39,7 @@ describe("ContextFactory", () => {
 
 		it("emit creates root event with new correlationId and no parentEventId", async () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -63,7 +64,7 @@ describe("ContextFactory", () => {
 	describe("action", () => {
 		it("returns an ActionContext with the source event", () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const event = makeEvent();
 
 			const ctx = factory.action(event);
@@ -74,7 +75,7 @@ describe("ContextFactory", () => {
 
 		it("emit creates child event inheriting correlationId and setting parentEventId", async () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -94,7 +95,7 @@ describe("ContextFactory", () => {
 
 		it("multiple emits all inherit from the same parent", async () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -115,10 +116,50 @@ describe("ContextFactory", () => {
 		});
 	});
 
+	describe("action fetch", () => {
+		it("delegates GET request to injected fetch", async () => {
+			const queue = new InMemoryEventQueue();
+			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
+			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch);
+			const ctx = factory.action(makeEvent());
+
+			const res = await ctx.fetch("https://api.example.com/orders/123");
+
+			expect(fetchSpy).toHaveBeenCalledWith("https://api.example.com/orders/123", undefined);
+			expect(await res.text()).toBe("ok");
+		});
+
+		it("delegates POST request with options to injected fetch", async () => {
+			const queue = new InMemoryEventQueue();
+			const fetchSpy = vi.fn().mockResolvedValue(Response.json({ id: "123" }));
+			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch);
+			const ctx = factory.action(makeEvent());
+
+			const init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ id: "123" }),
+			};
+			const res = await ctx.fetch("https://api.example.com/orders", init);
+
+			expect(fetchSpy).toHaveBeenCalledWith("https://api.example.com/orders", init);
+			expect(res).toBeInstanceOf(Response);
+		});
+
+		it("propagates fetch errors to the caller", async () => {
+			const queue = new InMemoryEventQueue();
+			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch);
+			const ctx = factory.action(makeEvent());
+
+			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("fetch failed");
+		});
+	});
+
 	describe("arrow property binding", () => {
 		it("factory.httpTrigger works when passed as a standalone reference", async () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -136,7 +177,7 @@ describe("ContextFactory", () => {
 
 		it("factory.action works when passed as a standalone reference", async () => {
 			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue);
+			const factory = new ContextFactory(queue, mockFetch);
 			const event = makeEvent();
 
 			const createCtx = factory.action;

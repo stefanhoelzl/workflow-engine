@@ -18,7 +18,7 @@ registry.register({
 });
 
 const queue = new InMemoryEventQueue();
-const factory = new ContextFactory(queue);
+const factory = new ContextFactory(queue, globalThis.fetch);
 
 // Hardcoded sample actions — replaced when SDK/manifest lands
 const actions: Action[] = [
