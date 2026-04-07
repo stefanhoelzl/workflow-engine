@@ -11,8 +11,9 @@ function requireEnv(name: string): string {
 }
 
 const nextcloudUrl = requireEnv("NEXTCLOUD_URL");
-const nextcloudBotSecret = requireEnv("NEXTCLOUD_TALK_BOT_SECRET");
-const nextcloudTalkToken = requireEnv("NEXTCLOUD_TALK_TOKEN");
+const nextcloudUsername = requireEnv("NEXTCLOUD_USERNAME");
+const nextcloudAppPassword = requireEnv("NEXTCLOUD_APP_PASSWORD");
+const nextcloudTalkRoom = requireEnv("NEXTCLOUD_TALK_ROOM");
 
 interface CronitorPayload {
 	id: string;
@@ -40,30 +41,6 @@ function formatMessage(payload: CronitorPayload): string {
 	return lines.join("\n");
 }
 
-async function signRequest(
-	secret: string,
-	random: string,
-	body: string,
-): Promise<string> {
-	const encoder = new TextEncoder();
-	const key = await crypto.subtle.importKey(
-		"raw",
-		encoder.encode(secret),
-		{ name: "HMAC", hash: "SHA-256" },
-		false,
-		["sign"],
-	);
-	const signature = await crypto.subtle.sign(
-		"HMAC",
-		key,
-		encoder.encode(random + body),
-	);
-	const hexRadix = 16;
-	return Array.from(new Uint8Array(signature))
-		.map((b) => b.toString(hexRadix).padStart(2, "0"))
-		.join("");
-}
-
 export const sampleTriggers: HttpTriggerDefinition[] = [
 	{
 		path: "cronitor",
@@ -81,29 +58,20 @@ export const sampleActions: Action[] = [
 		handler: async (ctx) => {
 			const payload = ctx.event.payload as CronitorPayload;
 			const message = formatMessage(payload);
-			const body = JSON.stringify({ message });
-			const random = crypto.randomUUID();
-			const signature = await signRequest(nextcloudBotSecret, random, body);
 
-			const url = `${nextcloudUrl}/ocs/v2.php/apps/spreed/api/v1/bot/${nextcloudTalkToken}/message`;
-			const response = await ctx.fetch(url, {
+			const url = `${nextcloudUrl}/ocs/v2.php/apps/spreed/api/v4/chat/${nextcloudTalkRoom}`;
+			await ctx.fetch(url, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 					// biome-ignore lint/style/useNamingConvention: HTTP header
-				Accept: "application/json",
+					Accept: "application/json",
 					"OCS-APIRequest": "true",
-					"X-Nextcloud-Talk-Bot-Random": random,
-					"X-Nextcloud-Talk-Bot-Signature": signature,
+					// biome-ignore lint/style/useNamingConvention: HTTP header
+					Authorization: `Basic ${btoa(`${nextcloudUsername}:${nextcloudAppPassword}`)}`,
 				},
-				body,
+				body: JSON.stringify({ message }),
 			});
-
-			if (!response.ok) {
-				throw new Error(
-					`Nextcloud Talk responded with ${response.status}: ${await response.text()}`,
-				);
-			}
 		},
 	},
 ];
