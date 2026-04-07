@@ -13,7 +13,8 @@ for (const trigger of sampleTriggers) {
 }
 
 const queue = new InMemoryEventQueue();
-const factory = new ContextFactory(queue, globalThis.fetch);
+// biome-ignore lint/style/noProcessEnv: entry-point config
+const factory = new ContextFactory(queue, globalThis.fetch, process.env);
 
 const actions = [...sampleActions];
 const dispatch = createDispatchAction(actions);

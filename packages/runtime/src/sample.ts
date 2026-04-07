@@ -1,20 +1,6 @@
 import type { Action } from "./actions/index.js";
 import type { HttpTriggerDefinition } from "./triggers/index.js";
 
-function requireEnv(name: string): string {
-	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const value = process.env[name];
-	if (!value) {
-		throw new Error(`Missing required environment variable: ${name}`);
-	}
-	return value;
-}
-
-const nextcloudUrl = requireEnv("NEXTCLOUD_URL");
-const nextcloudUsername = requireEnv("NEXTCLOUD_USERNAME");
-const nextcloudAppPassword = requireEnv("NEXTCLOUD_APP_PASSWORD");
-const nextcloudTalkRoom = requireEnv("NEXTCLOUD_TALK_ROOM");
-
 interface CronitorPayload {
 	id: string;
 	monitor: string;
@@ -59,7 +45,7 @@ export const sampleActions: Action[] = [
 			const payload = ctx.event.payload as CronitorPayload;
 			const message = formatMessage(payload);
 
-			const url = `${nextcloudUrl}/ocs/v2.php/apps/spreed/api/v4/chat/${nextcloudTalkRoom}`;
+			const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v4/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
 			await ctx.fetch(url, {
 				method: "POST",
 				headers: {
@@ -68,7 +54,7 @@ export const sampleActions: Action[] = [
 					Accept: "application/json",
 					"OCS-APIRequest": "true",
 					// biome-ignore lint/style/useNamingConvention: HTTP header
-					Authorization: `Basic ${btoa(`${nextcloudUsername}:${nextcloudAppPassword}`)}`,
+					Authorization: `Basic ${btoa(`${ctx.env.NEXTCLOUD_USERNAME}:${ctx.env.NEXTCLOUD_APP_PASSWORD}`)}`,
 				},
 				body: JSON.stringify({ message }),
 			});

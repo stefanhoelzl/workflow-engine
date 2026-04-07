@@ -39,6 +39,7 @@ class HttpTriggerContext implements Context {
 
 class ActionContext implements Context {
 	readonly event: Event;
+	readonly env: Record<string, string | undefined>;
 	readonly #emit: (
 		type: string,
 		payload: unknown,
@@ -54,10 +55,12 @@ class ActionContext implements Context {
 			options?: EmitOptions,
 		) => Promise<void>,
 		fetch: typeof globalThis.fetch,
+		env: Record<string, string | undefined>,
 	) {
 		this.event = event;
 		this.#emit = emit;
 		this.#fetch = fetch;
+		this.env = env;
 	}
 
 	emit(type: string, payload: unknown, options?: EmitOptions): Promise<void> {
@@ -75,10 +78,12 @@ class ActionContext implements Context {
 class ContextFactory {
 	readonly #queue: EventQueue;
 	readonly #fetch: typeof globalThis.fetch;
+	readonly #env: Record<string, string | undefined>;
 
-	constructor(queue: EventQueue, fetch: typeof globalThis.fetch) {
+	constructor(queue: EventQueue, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>) {
 		this.#queue = queue;
 		this.#fetch = fetch;
+		this.#env = env;
 	}
 
 	httpTrigger = (
@@ -105,7 +110,7 @@ class ContextFactory {
 				parentEventId: event.id,
 				...(targetAction !== undefined && { targetAction }),
 			});
-		}, this.#fetch);
+		}, this.#fetch, this.#env);
 
 	#createAndEnqueue(
 		type: string,

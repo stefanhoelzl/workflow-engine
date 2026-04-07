@@ -19,7 +19,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 describe("dispatch action", () => {
 	it("fans out to multiple subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch);
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
 		const parseOrder: Action = {
 			name: "parseOrder",
 			match: (e) =>
@@ -60,7 +60,7 @@ describe("dispatch action", () => {
 
 	it("enqueues nothing when there are zero subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch);
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
 		const unrelated: Action = {
 			name: "updateInventory",
 			match: (e) =>
@@ -83,7 +83,7 @@ describe("dispatch action", () => {
 
 	it("does not dispatch to itself", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch);
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
 		const actions: Action[] = [];
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
