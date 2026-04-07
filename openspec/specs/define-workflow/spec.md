@@ -137,3 +137,13 @@ Triggers with `type: 'http'` SHALL include `path` (string) and `event` (event ke
 - **GIVEN** a workflow with one event, one trigger, and one action
 - **WHEN** `defineWorkflow(...)` returns
 - **THEN** the result contains `events` (map of type string → Zod schema), `triggers` (array of trigger definitions passed through as-is), and `actions` (array of action definitions with name, resolved event `on: { name, schema }`, handler, env, and emits)
+
+### Requirement: SDK re-exports Zod
+
+The SDK SHALL re-export `z` from Zod so workflow authors can import everything from a single package.
+
+#### Scenario: Import z from SDK
+
+- **GIVEN** a workflow file importing from `@workflow-engine/sdk`
+- **WHEN** the author writes `import { defineWorkflow, z } from "@workflow-engine/sdk"`
+- **THEN** `z` is the same Zod namespace as `import { z } from "zod"`
