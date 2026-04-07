@@ -12,6 +12,13 @@ import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 const silentLogger = createLogger("test", { level: "silent" });
 const silentHttpLogger = createHttpLogger("test", { level: "silent" });
 
+const passthroughSchema = { parse: (d: unknown) => d };
+const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
+	"order.received": passthroughSchema,
+	"order.validated": passthroughSchema,
+	stop: passthroughSchema,
+};
+
 function createTestLoggers(): {
 	contextLogger: Logger;
 	schedulerLogger: Logger;
@@ -52,7 +59,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		});
 
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, globalThis.fetch, {}, silentLogger);
+		const factory = new ContextFactory(queue, defaultSchemas, globalThis.fetch, {}, silentLogger);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();
@@ -144,7 +151,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 
 		const queue = new InMemoryEventQueue();
 		const { contextLogger, schedulerLogger, httpLogger, lines } = createTestLoggers();
-		const factory = new ContextFactory(queue, globalThis.fetch, {}, contextLogger);
+		const factory = new ContextFactory(queue, defaultSchemas, globalThis.fetch, {}, contextLogger);
 
 		const actions: Action[] = [
 			{

@@ -37,16 +37,16 @@ function loadWorkflow(config: WorkflowConfig) {
 			}),
 	}));
 
-	return { registry, actions };
+	return { registry, actions, events: config.events };
 }
 
-const { registry, actions } = loadWorkflow(sampleWorkflow);
+const { registry, actions, events } = loadWorkflow(sampleWorkflow);
 const dispatch = createDispatchAction(actions);
 actions.push(dispatch);
 
 const queue = new InMemoryEventQueue();
 // biome-ignore lint/style/noProcessEnv: entry-point config
-const factory = new ContextFactory(queue, globalThis.fetch, process.env, contextLogger);
+const factory = new ContextFactory(queue, events, globalThis.fetch, process.env, contextLogger);
 
 const scheduler = new Scheduler(queue, actions, factory.action, schedulerLogger);
 scheduler.start();

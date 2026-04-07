@@ -2,6 +2,7 @@ import { constants } from "node:http2";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpTriggerContext } from "../context/index.js";
+import { PayloadValidationError } from "../context/errors.js";
 
 interface HttpTriggerDefinition {
 	path: string;
@@ -87,7 +88,21 @@ function httpTriggerMiddleware(
 			}
 
 			const ctx = createContext(body, definition);
-			await ctx.emit(definition.event, body);
+			try {
+				await ctx.emit(definition.event, body);
+			} catch (error) {
+				if (error instanceof PayloadValidationError) {
+					return c.json(
+						{
+							error: "payload_validation_failed",
+							event: error.eventType,
+							issues: error.issues,
+						},
+						constants.HTTP_STATUS_UNPROCESSABLE_ENTITY as ContentfulStatusCode,
+					);
+				}
+				throw error;
+			}
 
 			return c.json(definition.response.body, definition.response.status);
 		},

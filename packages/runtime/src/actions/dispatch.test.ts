@@ -8,6 +8,13 @@ import type { Action } from "./index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 
+const passthroughSchema = { parse: (d: unknown) => d };
+const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
+	"order.received": passthroughSchema,
+	"order.shipped": passthroughSchema,
+	"audit.log": passthroughSchema,
+};
+
 function makeEvent(overrides: Partial<Event> = {}): Event {
 	return {
 		id: "evt_original",
@@ -22,7 +29,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 describe("dispatch action", () => {
 	it("fans out to multiple subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
+		const factory = new ContextFactory(queue, defaultSchemas, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const parseOrder: Action = {
 			name: "parseOrder",
 			match: (e) =>
@@ -63,7 +70,7 @@ describe("dispatch action", () => {
 
 	it("enqueues nothing when there are zero subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
+		const factory = new ContextFactory(queue, defaultSchemas, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const unrelated: Action = {
 			name: "updateInventory",
 			match: (e) =>
@@ -86,7 +93,7 @@ describe("dispatch action", () => {
 
 	it("does not dispatch to itself", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
+		const factory = new ContextFactory(queue, defaultSchemas, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const actions: Action[] = [];
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);

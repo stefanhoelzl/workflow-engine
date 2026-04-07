@@ -1,6 +1,7 @@
 import type { Event, EventQueue } from "../event-queue/index.js";
 import type { Logger } from "../logger.js";
 import type { HttpTriggerResolved } from "../triggers/http.js";
+import { PayloadValidationError } from "./errors.js";
 
 interface EmitOptions {
 	targetAction?: string;
@@ -114,14 +115,21 @@ class ActionContext implements Context {
 	}
 }
 
+interface Schema {
+	parse(data: unknown): unknown;
+}
+
 class ContextFactory {
 	readonly #queue: EventQueue;
+	readonly #schemas: Record<string, Schema>;
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #env: Record<string, string | undefined>;
 	readonly #logger: Logger;
 
-	constructor(queue: EventQueue, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger) {
+	// biome-ignore lint/complexity/useMaxParams: internal constructor, all params are required dependencies
+	constructor(queue: EventQueue, schemas: Record<string, Schema>, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger) {
 		this.#queue = queue;
+		this.#schemas = schemas;
 		this.#fetch = fetch;
 		this.#env = env;
 		this.#logger = logger;
@@ -153,16 +161,38 @@ class ContextFactory {
 			});
 		}, this.#fetch, this.#env, this.#logger);
 
-	#createAndEnqueue(
+	#validate(type: string, payload: unknown): unknown {
+		const schema = this.#schemas[type];
+		if (!schema) {
+			throw new PayloadValidationError(type, []);
+		}
+		try {
+			return schema.parse(payload);
+		} catch (error) {
+			const issues =
+				error instanceof Error && "issues" in error && Array.isArray((error as { issues: unknown[] }).issues)
+					? (error as { issues: { path: (string | number)[]; message: string }[] }).issues.map(
+							(issue) => ({
+								path: issue.path.join("."),
+								message: issue.message,
+							}),
+						)
+					: [];
+			throw new PayloadValidationError(type, issues, error instanceof Error ? error : undefined);
+		}
+	}
+
+	async #createAndEnqueue(
 		type: string,
 		payload: unknown,
 		correlationId: string,
 		lineage: { targetAction?: string; parentEventId?: string },
 	): Promise<void> {
+		const parsed = this.#validate(type, payload);
 		const event: Event = {
 			id: `evt_${crypto.randomUUID()}`,
 			type,
-			payload,
+			payload: parsed,
 			correlationId,
 			createdAt: new Date(),
 		};
@@ -185,7 +215,7 @@ class ContextFactory {
 		}
 		this.#logger.info("event.emitted", logData);
 		this.#logger.trace("event.emitted.payload", { correlationId, payload });
-		return this.#queue.enqueue(event);
+		return await this.#queue.enqueue(event);
 	}
 }
 

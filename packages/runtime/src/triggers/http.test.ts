@@ -2,6 +2,7 @@ import { constants } from "node:http2";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { HttpTriggerContext } from "../context/index.js";
+import { PayloadValidationError } from "../context/errors.js";
 import {
 	HttpTriggerRegistry,
 	httpTriggerMiddleware,
@@ -147,5 +148,57 @@ describe("httpTriggerMiddleware — error handling", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_BAD_REQUEST);
 		expect(emitSpy).not.toHaveBeenCalled();
+	});
+
+	it("returns 422 with structured body when payload validation fails", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			path: "order",
+			method: "POST",
+			event: "order.received",
+			response: { status: 202 as const, body: { accepted: true } },
+		});
+		const emitSpy = vi.fn().mockRejectedValue(
+			new PayloadValidationError("order.received", [
+				{ path: "orderId", message: "Expected string, received number" },
+			]),
+		);
+		const factory: TriggerContextFactory = (body, definition) =>
+			new HttpTriggerContext(body, definition, emitSpy);
+		const app = createApp(registry, factory);
+
+		const res = await app.request("/webhooks/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ orderId: 123 }),
+		});
+
+		expect(res.status).toBe(constants.HTTP_STATUS_UNPROCESSABLE_ENTITY);
+		expect(await res.json()).toEqual({
+			error: "payload_validation_failed",
+			event: "order.received",
+			issues: [{ path: "orderId", message: "Expected string, received number" }],
+		});
+	});
+
+	it("returns configured response when payload is valid", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			path: "order",
+			method: "POST",
+			event: "order.received",
+			response: { status: 202 as const, body: { accepted: true } },
+		});
+		const { factory } = stubTriggerContextFactory();
+		const app = createApp(registry, factory);
+
+		const res = await app.request("/webhooks/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ orderId: "abc" }),
+		});
+
+		expect(res.status).toBe(constants.HTTP_STATUS_ACCEPTED);
+		expect(await res.json()).toEqual({ accepted: true });
 	});
 });
