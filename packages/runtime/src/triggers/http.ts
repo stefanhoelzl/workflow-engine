@@ -5,6 +5,16 @@ import type { HttpTriggerContext } from "../context/index.js";
 
 interface HttpTriggerDefinition {
 	path: string;
+	method?: string;
+	event: string;
+	response?: {
+		status?: number;
+		body?: unknown;
+	};
+}
+
+interface HttpTriggerResolved {
+	path: string;
 	method: string;
 	event: string;
 	response: {
@@ -13,14 +23,27 @@ interface HttpTriggerDefinition {
 	};
 }
 
+const DEFAULT_METHOD = "POST";
+const DEFAULT_RESPONSE_STATUS =
+	200 as ContentfulStatusCode;
+const DEFAULT_RESPONSE_BODY = "";
+
 class HttpTriggerRegistry {
-	readonly #triggers: HttpTriggerDefinition[] = [];
+	readonly #triggers: HttpTriggerResolved[] = [];
 
 	register(definition: HttpTriggerDefinition): void {
-		this.#triggers.push(definition);
+		this.#triggers.push({
+			path: definition.path,
+			method: definition.method ?? DEFAULT_METHOD,
+			event: definition.event,
+			response: {
+				status: (definition.response?.status ?? DEFAULT_RESPONSE_STATUS) as ContentfulStatusCode,
+				body: definition.response?.body ?? DEFAULT_RESPONSE_BODY,
+			},
+		});
 	}
 
-	lookup(path: string, method: string): HttpTriggerDefinition | null {
+	lookup(path: string, method: string): HttpTriggerResolved | null {
 		return (
 			this.#triggers.find((t) => t.path === path && t.method === method) ?? null
 		);
@@ -29,7 +52,7 @@ class HttpTriggerRegistry {
 
 type TriggerContextFactory = (
 	body: unknown,
-	definition: HttpTriggerDefinition,
+	definition: HttpTriggerResolved,
 ) => HttpTriggerContext;
 
 interface Middleware {
@@ -73,6 +96,7 @@ function httpTriggerMiddleware(
 
 export {
 	type HttpTriggerDefinition,
+	type HttpTriggerResolved,
 	HttpTriggerRegistry,
 	httpTriggerMiddleware,
 	type Middleware,

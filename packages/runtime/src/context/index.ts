@@ -1,6 +1,6 @@
 import type { Event, EventQueue } from "../event-queue/index.js";
 import type { Logger } from "../logger.js";
-import type { HttpTriggerDefinition } from "../triggers/http.js";
+import type { HttpTriggerResolved } from "../triggers/http.js";
 
 interface EmitOptions {
 	targetAction?: string;
@@ -12,7 +12,7 @@ interface Context {
 
 class HttpTriggerContext implements Context {
 	readonly request: { body: unknown };
-	readonly definition: HttpTriggerDefinition;
+	readonly definition: HttpTriggerResolved;
 	readonly #emit: (
 		type: string,
 		payload: unknown,
@@ -21,7 +21,7 @@ class HttpTriggerContext implements Context {
 
 	constructor(
 		body: unknown,
-		definition: HttpTriggerDefinition,
+		definition: HttpTriggerResolved,
 		emit: (
 			type: string,
 			payload: unknown,
@@ -129,7 +129,7 @@ class ContextFactory {
 
 	httpTrigger = (
 		body: unknown,
-		definition: HttpTriggerDefinition,
+		definition: HttpTriggerResolved,
 	): HttpTriggerContext => {
 		const correlationId = `corr_${crypto.randomUUID()}`;
 		return new HttpTriggerContext(

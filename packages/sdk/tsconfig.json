@@ -3,11 +3,8 @@
 	"compilerOptions": {
 		"composite": true,
 		"declaration": true,
-		"outDir": "dist",
-		"types": ["node"]
+		"noEmit": false,
+		"outDir": "dist"
 	},
-	"include": ["src/**/*"],
-	"references": [
-		{ "path": "../sdk" }
-	]
+	"include": ["src/**/*"]
 }
