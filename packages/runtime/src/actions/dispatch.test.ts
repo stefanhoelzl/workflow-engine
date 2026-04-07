@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ContextFactory } from "../context/index.js";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
 import type { Event } from "../event-queue/index.js";
+import { createLogger } from "../logger.js";
 import { createDispatchAction } from "./dispatch.js";
 import type { Action } from "./index.js";
+
+const silentLogger = createLogger("test", { level: "silent" });
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
 	return {
@@ -19,7 +22,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 describe("dispatch action", () => {
 	it("fans out to multiple subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const parseOrder: Action = {
 			name: "parseOrder",
 			match: (e) =>
@@ -60,7 +63,7 @@ describe("dispatch action", () => {
 
 	it("enqueues nothing when there are zero subscribers", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const unrelated: Action = {
 			name: "updateInventory",
 			match: (e) =>
@@ -83,7 +86,7 @@ describe("dispatch action", () => {
 
 	it("does not dispatch to itself", async () => {
 		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {});
+		const factory = new ContextFactory(queue, vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 		const actions: Action[] = [];
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);

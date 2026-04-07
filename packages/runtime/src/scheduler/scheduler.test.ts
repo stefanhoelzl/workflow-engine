@@ -1,9 +1,36 @@
+import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
 import type { Event } from "../event-queue/index.js";
+import { type Logger, createLogger } from "../logger.js";
 import { Scheduler } from "./index.js";
+
+function createTestLogger(): {
+	logger: Logger;
+	lines: () => Record<string, unknown>[];
+} {
+	const chunks: Buffer[] = [];
+	const stream = new Writable({
+		write(chunk, _encoding, callback) {
+			chunks.push(chunk);
+			callback();
+		},
+	});
+	return {
+		logger: createLogger("scheduler", { level: "trace", destination: stream }),
+		lines: () =>
+			chunks
+				.map((c) => c.toString())
+				.join("")
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line)),
+	};
+}
+
+const silentLogger = createLogger("scheduler", { level: "silent" });
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
 	return {
@@ -17,7 +44,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 }
 
 function stubContextFactory(event: Event): ActionContext {
-	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {});
+	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 }
 
 describe("Scheduler", () => {
@@ -30,7 +57,7 @@ describe("Scheduler", () => {
 				e.type === "order.received" && e.targetAction === "parseOrder",
 			handler,
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory);
+		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent({ targetAction: "parseOrder" });
 		await queue.enqueue(event);
@@ -60,7 +87,7 @@ describe("Scheduler", () => {
 				throw new Error("boom");
 			},
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory);
+		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent({ targetAction: "parseOrder" });
 		await queue.enqueue(event);
@@ -85,7 +112,7 @@ describe("Scheduler", () => {
 			match: () => false,
 			handler: vi.fn(),
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory);
+		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent();
 		await queue.enqueue(event);
@@ -117,6 +144,7 @@ describe("Scheduler", () => {
 			queue,
 			[action1, action2],
 			stubContextFactory,
+			silentLogger,
 		);
 
 		const event = makeEvent();
@@ -140,7 +168,7 @@ describe("Scheduler", () => {
 			match: (e) => e.targetAction === "parseOrder",
 			handler,
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory);
+		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
 
 		scheduler.start();
 		scheduler.stop();
@@ -153,5 +181,122 @@ describe("Scheduler", () => {
 		await new Promise((r) => setTimeout(r, 10));
 
 		expect(handler).not.toHaveBeenCalled();
+	});
+
+	describe("logging", () => {
+		it("logs action.started and action.completed on success", async () => {
+			const queue = new InMemoryEventQueue();
+			const { logger, lines } = createTestLogger();
+			const action: Action = {
+				name: "parseOrder",
+				match: (e) => e.targetAction === "parseOrder",
+				handler: vi.fn(),
+			};
+			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+
+			const event = makeEvent({ targetAction: "parseOrder" });
+			await queue.enqueue(event);
+
+			scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			scheduler.stop();
+			await queue.enqueue(makeEvent());
+			await scheduler.stopped;
+
+			const output = lines();
+			const started = output.find((l) => l.msg === "action.started");
+			const completed = output.find((l) => l.msg === "action.completed");
+
+			expect(started).toBeDefined();
+			expect(started?.action).toBe("parseOrder");
+			expect(started?.correlationId).toBe("corr_test");
+			expect(started?.eventId).toBe(event.id);
+
+			expect(completed).toBeDefined();
+			expect(completed?.action).toBe("parseOrder");
+			expect(completed?.durationMs).toBeTypeOf("number");
+		});
+
+		it("logs action.failed when action throws", async () => {
+			const queue = new InMemoryEventQueue();
+			const { logger, lines } = createTestLogger();
+			const action: Action = {
+				name: "parseOrder",
+				match: (e) => e.targetAction === "parseOrder",
+				// biome-ignore lint/suspicious/useAwait: handler interface requires async
+				handler: async () => {
+					throw new Error("boom");
+				},
+			};
+			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+
+			await queue.enqueue(makeEvent({ targetAction: "parseOrder" }));
+
+			scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			scheduler.stop();
+			await queue.enqueue(makeEvent());
+			await scheduler.stopped;
+
+			const output = lines();
+			const failed = output.find((l) => l.msg === "action.failed");
+			expect(failed).toBeDefined();
+			expect(failed?.action).toBe("parseOrder");
+			expect(failed?.error).toBe("boom");
+			expect(failed?.durationMs).toBeTypeOf("number");
+			// pino error level = 50
+			expect(failed?.level).toBe(50);
+		});
+
+		it("logs event.no-match when no action matches", async () => {
+			const queue = new InMemoryEventQueue();
+			const { logger, lines } = createTestLogger();
+			const action: Action = {
+				name: "parseOrder",
+				match: () => false,
+				handler: vi.fn(),
+			};
+			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+
+			const event = makeEvent({ type: "unknown.event" });
+			await queue.enqueue(event);
+
+			scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			scheduler.stop();
+			await queue.enqueue(makeEvent());
+			await scheduler.stopped;
+
+			const output = lines();
+			const noMatch = output.find((l) => l.msg === "event.no-match");
+			expect(noMatch).toBeDefined();
+			expect(noMatch?.type).toBe("unknown.event");
+			expect(noMatch?.correlationId).toBe("corr_test");
+			// pino warn level = 40
+			expect(noMatch?.level).toBe(40);
+		});
+
+		it("logs event.ambiguous-match when multiple actions match", async () => {
+			const queue = new InMemoryEventQueue();
+			const { logger, lines } = createTestLogger();
+			const action1: Action = { name: "a", match: () => true, handler: vi.fn() };
+			const action2: Action = { name: "b", match: () => true, handler: vi.fn() };
+			const scheduler = new Scheduler(queue, [action1, action2], stubContextFactory, logger);
+
+			await queue.enqueue(makeEvent());
+
+			scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			scheduler.stop();
+			await queue.enqueue(makeEvent());
+			await scheduler.stopped;
+
+			const output = lines();
+			const ambiguous = output.find((l) => l.msg === "event.ambiguous-match");
+			expect(ambiguous).toBeDefined();
+			expect(ambiguous?.actions).toEqual(["a", "b"]);
+			// pino error level = 50
+			expect(ambiguous?.level).toBe(50);
+		});
 	});
 });
