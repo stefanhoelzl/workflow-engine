@@ -1,4 +1,5 @@
-import type { z } from "zod";
+// biome-ignore lint/style/noExportedImports: z is re-exported for workflow authors alongside locally defined exports
+import { z } from "zod";
 
 // --- Event types ---
 
@@ -104,5 +105,5 @@ function defineWorkflow<E extends EventDefs>(config: {
 	};
 }
 
-export { defineWorkflow };
+export { z, defineWorkflow };
 export type { WorkflowConfig };

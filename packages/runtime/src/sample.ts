@@ -1,5 +1,4 @@
-import { defineWorkflow } from "@workflow-engine/sdk";
-import { z } from "zod";
+import { defineWorkflow, z } from "@workflow-engine/sdk";
 
 const sampleWorkflow = defineWorkflow({
 	events: {
