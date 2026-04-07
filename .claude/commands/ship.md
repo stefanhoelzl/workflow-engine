@@ -63,6 +63,24 @@ git branch --show-current
 
 If on main: ABORT with "Cannot ship from main branch"
 
+**1.3. Check for un-archived openspec changes:**
+
+```bash
+pnpm exec openspec list --json
+```
+
+If the command fails: ABORT with "openspec list failed. Ensure openspec is installed and working."
+
+If the JSON array is non-empty: ABORT with:
+
+```
+Cannot ship with un-archived openspec changes:
+  - <change-name>
+  - <change-name>
+
+Archive them before shipping.
+```
+
 ### 2. Rebase onto main
 
 ```bash
