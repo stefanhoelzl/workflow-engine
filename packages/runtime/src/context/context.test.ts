@@ -1,9 +1,10 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
-import type { Event } from "../event-queue/index.js";
+import type { Event, EventQueue } from "../event-queue/index.js";
 import { type Logger, createLogger } from "../logger.js";
 import { ActionContext, ContextFactory, HttpTriggerContext } from "./index.js";
+import { PayloadValidationError } from "./errors.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 
@@ -36,6 +37,32 @@ const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
 // biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 const mockEnv: Record<string, string | undefined> = { API_KEY: "secret", EMPTY: undefined };
 
+const passthroughSchema = { parse: (d: unknown) => d };
+const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
+	"order.received": passthroughSchema,
+	"order.validated": passthroughSchema,
+	"order.logged": passthroughSchema,
+	"test.event": passthroughSchema,
+};
+
+function createTestFactory(overrides?: {
+	queue?: EventQueue;
+	schemas?: Record<string, { parse(data: unknown): unknown }>;
+	fetch?: typeof globalThis.fetch;
+	env?: Record<string, string | undefined>;
+	logger?: Logger;
+}): { factory: ContextFactory; queue: EventQueue } {
+	const queue = overrides?.queue ?? new InMemoryEventQueue();
+	const factory = new ContextFactory(
+		queue,
+		overrides?.schemas ?? defaultSchemas,
+		overrides?.fetch ?? mockFetch,
+		overrides?.env ?? mockEnv,
+		overrides?.logger ?? silentLogger,
+	);
+	return { factory, queue };
+}
+
 function makeEvent(overrides: Partial<Event> = {}): Event {
 	return {
 		id: "evt_001",
@@ -50,8 +77,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
 describe("ContextFactory", () => {
 	describe("httpTrigger", () => {
 		it("returns an HttpTriggerContext with request and definition", () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory } = createTestFactory();
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -67,8 +93,7 @@ describe("ContextFactory", () => {
 		});
 
 		it("emit creates root event with new correlationId and no parentEventId", async () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory, queue } = createTestFactory();
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -92,8 +117,7 @@ describe("ContextFactory", () => {
 
 	describe("action", () => {
 		it("returns an ActionContext with the source event", () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory } = createTestFactory();
 			const event = makeEvent();
 
 			const ctx = factory.action(event);
@@ -103,8 +127,7 @@ describe("ContextFactory", () => {
 		});
 
 		it("emit creates child event inheriting correlationId and setting parentEventId", async () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory, queue } = createTestFactory();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -123,8 +146,7 @@ describe("ContextFactory", () => {
 		});
 
 		it("multiple emits all inherit from the same parent", async () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory, queue } = createTestFactory();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -147,9 +169,8 @@ describe("ContextFactory", () => {
 
 	describe("action fetch", () => {
 		it("delegates GET request to injected fetch", async () => {
-			const queue = new InMemoryEventQueue();
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, silentLogger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
 			const ctx = factory.action(makeEvent());
 
 			const res = await ctx.fetch("https://api.example.com/orders/123");
@@ -159,9 +180,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("delegates POST request with options to injected fetch", async () => {
-			const queue = new InMemoryEventQueue();
 			const fetchSpy = vi.fn().mockResolvedValue(Response.json({ id: "123" }));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, silentLogger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
 			const ctx = factory.action(makeEvent());
 
 			const init = {
@@ -176,9 +196,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("propagates fetch errors to the caller", async () => {
-			const queue = new InMemoryEventQueue();
 			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, silentLogger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
 			const ctx = factory.action(makeEvent());
 
 			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("fetch failed");
@@ -187,9 +206,8 @@ describe("ContextFactory", () => {
 
 	describe("action env", () => {
 		it("exposes injected env record on ctx.env", () => {
-			const queue = new InMemoryEventQueue();
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-			const factory = new ContextFactory(queue, mockFetch, { FOO: "bar", BAZ: "qux" }, silentLogger);
+			const { factory } = createTestFactory({ env: { FOO: "bar", BAZ: "qux" } });
 			const ctx = factory.action(makeEvent());
 
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
@@ -197,9 +215,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("returns undefined for missing env keys", () => {
-			const queue = new InMemoryEventQueue();
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-			const factory = new ContextFactory(queue, mockFetch, { FOO: "bar" }, silentLogger);
+			const { factory } = createTestFactory({ env: { FOO: "bar" } });
 			const ctx = factory.action(makeEvent());
 
 			expect(ctx.env.MISSING).toBeUndefined();
@@ -208,8 +225,7 @@ describe("ContextFactory", () => {
 
 	describe("arrow property binding", () => {
 		it("factory.httpTrigger works when passed as a standalone reference", async () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory, queue } = createTestFactory();
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -226,8 +242,7 @@ describe("ContextFactory", () => {
 		});
 
 		it("factory.action works when passed as a standalone reference", async () => {
-			const queue = new InMemoryEventQueue();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, silentLogger);
+			const { factory, queue } = createTestFactory();
 			const event = makeEvent();
 
 			const createCtx = factory.action;
@@ -241,9 +256,8 @@ describe("ContextFactory", () => {
 
 	describe("emit logging", () => {
 		it("logs event.emitted at info level for root events from trigger", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, logger);
+			const { factory } = createTestFactory({ logger });
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -264,9 +278,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("logs event.emitted at info level for child events from action", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, logger);
+			const { factory } = createTestFactory({ logger });
 			const parentEvent = makeEvent({ id: "evt_parent", correlationId: "corr_xyz" });
 
 			const ctx = factory.action(parentEvent);
@@ -281,9 +294,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("logs event.emitted.payload at trace level", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger("trace");
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, logger);
+			const { factory } = createTestFactory({ logger });
 			const ctx = factory.action(makeEvent());
 			await ctx.emit("order.validated", { orderId: "123" });
 
@@ -294,9 +306,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("includes targetAction in log when set", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger();
-			const factory = new ContextFactory(queue, mockFetch, mockEnv, logger);
+			const { factory } = createTestFactory({ logger });
 			const ctx = factory.action(makeEvent());
 			await ctx.emit("order.received", {}, { targetAction: "notify" });
 
@@ -308,10 +319,9 @@ describe("ContextFactory", () => {
 
 	describe("fetch logging", () => {
 		it("logs fetch.start and fetch.completed on success", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger();
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, logger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
 			const ctx = factory.action(makeEvent({ correlationId: "corr_fetch" }));
 
 			await ctx.fetch("https://api.example.com/orders/123");
@@ -331,10 +341,9 @@ describe("ContextFactory", () => {
 		});
 
 		it("logs fetch.request.body at trace level", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger("trace");
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, logger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
 			const ctx = factory.action(makeEvent());
 
 			await ctx.fetch("https://api.example.com/orders", {
@@ -349,10 +358,9 @@ describe("ContextFactory", () => {
 		});
 
 		it("logs fetch.failed on error", async () => {
-			const queue = new InMemoryEventQueue();
 			const { logger, lines } = createTestLogger();
 			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("network error"));
-			const factory = new ContextFactory(queue, fetchSpy as typeof globalThis.fetch, mockEnv, logger);
+			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
 			const ctx = factory.action(makeEvent());
 
 			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("network error");
@@ -364,6 +372,79 @@ describe("ContextFactory", () => {
 			expect(failed?.durationMs).toBeTypeOf("number");
 			// pino error level = 50
 			expect(failed?.level).toBe(50);
+		});
+	});
+
+	describe("payload validation", () => {
+		it("enqueues event with parsed output from schema", async () => {
+			const schema = {
+				parse: (d: unknown) => {
+					const data = d as Record<string, unknown>;
+					return { orderId: String(data.orderId) };
+				},
+			};
+			const { factory, queue } = createTestFactory({
+				schemas: { "order.received": schema },
+			});
+			const ctx = factory.action(makeEvent());
+			await ctx.emit("order.received", { orderId: "abc", extra: true });
+
+			const event = await queue.dequeue();
+			expect(event.payload).toEqual({ orderId: "abc" });
+		});
+
+		it("throws PayloadValidationError for invalid payload", async () => {
+			const schema = {
+				parse: () => {
+					const error = new Error("validation failed");
+					Object.assign(error, {
+						issues: [{ path: ["orderId"], message: "Expected string, received number" }],
+					});
+					throw error;
+				},
+			};
+			const { factory } = createTestFactory({
+				schemas: { "order.received": schema },
+			});
+			const ctx = factory.action(makeEvent());
+
+			const error = await ctx.emit("order.received", { orderId: 123 }).catch((e: unknown) => e);
+			expect(error).toBeInstanceOf(PayloadValidationError);
+			const pve = error as PayloadValidationError;
+			expect(pve.eventType).toBe("order.received");
+			expect(pve.issues).toEqual([{ path: "orderId", message: "Expected string, received number" }]);
+		});
+
+		it("throws PayloadValidationError for unknown event type", async () => {
+			const { factory } = createTestFactory({ schemas: {} });
+			const ctx = factory.action(makeEvent());
+
+			const error = await ctx.emit("order.unknown", {}).catch((e: unknown) => e);
+			expect(error).toBeInstanceOf(PayloadValidationError);
+			const pve = error as PayloadValidationError;
+			expect(pve.eventType).toBe("order.unknown");
+			expect(pve.issues).toEqual([]);
+		});
+
+		it("does not enqueue event when validation fails", async () => {
+			const schema = {
+				parse: () => { throw new Error("invalid"); },
+			};
+			const enqueueSpy = vi.fn();
+			const fakeQueue = {
+				enqueue: enqueueSpy,
+				dequeue: vi.fn(),
+				ack: vi.fn(),
+				fail: vi.fn(),
+			} as unknown as EventQueue;
+			const { factory } = createTestFactory({
+				queue: fakeQueue,
+				schemas: { "order.received": schema },
+			});
+			const ctx = factory.action(makeEvent());
+
+			await expect(ctx.emit("order.received", {})).rejects.toThrow();
+			expect(enqueueSpy).not.toHaveBeenCalled();
 		});
 	});
 });
