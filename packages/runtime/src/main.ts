@@ -25,7 +25,9 @@ scheduler.start();
 
 const app = createServer(httpTriggerMiddleware(registry, factory.httpTrigger));
 
-const port = 3000;
+const defaultPort = 8080;
+// biome-ignore lint/style/noProcessEnv: entry-point config
+const port = Number(process.env.PORT) || defaultPort;
 // biome-ignore lint/suspicious/noConsole: entry point logging
 console.log(`Runtime listening on port ${port}`);
 serve({ fetch: app.fetch, port });

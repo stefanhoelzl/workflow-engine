@@ -45,7 +45,7 @@ export const sampleActions: Action[] = [
 			const payload = ctx.event.payload as CronitorPayload;
 			const message = formatMessage(payload);
 
-			const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v4/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
+			const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v1/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
 			await ctx.fetch(url, {
 				method: "POST",
 				headers: {

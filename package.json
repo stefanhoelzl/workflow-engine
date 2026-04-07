@@ -8,6 +8,7 @@
 		}
 	},
 	"scripts": {
+		"build": "vite build",
 		"check": "tsc --build",
 		"lint": "biome lint .",
 		"format": "biome format --write .",
