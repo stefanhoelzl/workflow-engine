@@ -42,6 +42,19 @@
 					}
 				}
 			}
+		},
+		{
+			"includes": [".claude/commands/**/*.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off"
+					}
+				}
+			}
 		}
 	]
 }
