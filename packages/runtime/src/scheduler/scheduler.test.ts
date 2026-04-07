@@ -82,7 +82,6 @@ describe("Scheduler", () => {
 			name: "parseOrder",
 			match: (e) =>
 				e.type === "order.received" && e.targetAction === "parseOrder",
-			// biome-ignore lint/suspicious/useAwait: handler interface requires async
 			handler: async () => {
 				throw new Error("boom");
 			},
@@ -223,7 +222,6 @@ describe("Scheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				match: (e) => e.targetAction === "parseOrder",
-				// biome-ignore lint/suspicious/useAwait: handler interface requires async
 				handler: async () => {
 					throw new Error("boom");
 				},

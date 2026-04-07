@@ -6,17 +6,6 @@ Define the contract for user-provided action handlers: plain TypeScript function
 
 ## Requirements
 
-### Requirement: Plain function contract
-
-Actions SHALL be default-exported functions. No metadata, no decorators, no `defineAction()` wrapper. All wiring is declared in `workflow.ts`.
-
-#### Scenario: Minimal action
-
-- GIVEN a file `actions/parseOrder.ts` with `export default function handler(ctx) { ... }`
-- WHEN it is referenced in `workflow.ts` via `.on(OrderReceived, parseOrder)`
-- THEN the build system bundles it as a standalone `.js` file
-- AND the runtime loads and executes it in an isolate when `order.received` events arrive
-
 ### Requirement: Typed context
 
 Actions SHALL receive an `ActionContext<TConsumes, TEmits>` providing typed `ctx.data` and typed `ctx.emit()`.
@@ -27,18 +16,6 @@ Actions SHALL receive an `ActionContext<TConsumes, TEmits>` providing typed `ctx
 - WHEN the action calls `ctx.emit(OrderParsed, { orderId: '123', total: 42 })`
 - THEN TypeScript verifies the payload matches `OrderParsed`'s Zod schema type
 - AND calling `ctx.emit()` with an undeclared event type is a compile-time error
-
-### Requirement: Standalone bundle
-
-Each action SHALL be bundled into a single self-contained `.js` file with no external dependencies or SDK imports at runtime.
-
-#### Scenario: Bundle output
-
-- GIVEN an action that imports types from `../events` and `@your-platform/sdk`
-- WHEN Vite bundles the action
-- THEN the output `.js` file contains only the handler logic
-- AND all type imports are erased
-- AND no SDK runtime code is included
 
 ### Requirement: No side effects at module scope
 
@@ -54,19 +31,19 @@ Actions SHOULD NOT perform side effects at module scope. The runtime loads the m
 ### Requirement: Action type
 
 An `Action` SHALL be a plain object with the following properties:
-- `name`: string — unique identifier for the action
-- `match`: `(event: Event) => boolean` — predicate that determines whether this action handles a given event
+- `name`: string — unique identifier for the action, derived from the `defineWorkflow` actions object key
+- `match`: `(event: Event) => boolean` — predicate generated from the action's `on` field and the action name (`e.type === on && e.targetAction === name`)
 - `handler`: `(ctx: ActionContext) => Promise<void>` — async function that processes the event via the context object
 
 #### Scenario: Define an action
 
-- **GIVEN** an action `{ name: "parseOrder", match: (e) => e.type === "order.received" && e.targetAction === "parseOrder", handler: async (ctx) => { ... } }`
-- **WHEN** the action is registered
-- **THEN** the scheduler can match events to it using the `match` predicate
+- **GIVEN** a `WorkflowConfig` produced by `defineWorkflow` with `actions: { parseOrder: { on: 'order.received', handler: async (ctx) => { ... } } }`
+- **WHEN** the runtime extracts actions from the config
+- **THEN** the action has `name: "parseOrder"` and a `match` predicate that returns `true` for events with `type: "order.received"` and `targetAction: "parseOrder"`
 
 #### Scenario: Match predicate receives full event
 
-- **GIVEN** an action with `match: (e) => e.type === "order.received" && e.targetAction === "parseOrder"`
+- **GIVEN** an action with name `"parseOrder"` derived from a `WorkflowConfig` with `on: "order.received"`
 - **WHEN** an event `{ type: "order.received", targetAction: "parseOrder" }` is evaluated
 - **THEN** `match` returns `true`
 - **AND** for an event `{ type: "order.received", targetAction: "sendEmail" }`, `match` returns `false`

@@ -11,15 +11,19 @@ import {
 describe("HttpTriggerRegistry", () => {
 	it("returns a registered trigger on matching path and method", () => {
 		const registry = new HttpTriggerRegistry();
-		const definition = {
+		registry.register({
 			path: "order",
 			method: "POST",
 			event: "order.received",
-			response: { status: 202 as const, body: { accepted: true } },
-		};
-		registry.register(definition);
+			response: { status: 202, body: { accepted: true } },
+		});
 
-		expect(registry.lookup("order", "POST")).toBe(definition);
+		expect(registry.lookup("order", "POST")).toEqual({
+			path: "order",
+			method: "POST",
+			event: "order.received",
+			response: { status: 202, body: { accepted: true } },
+		});
 	});
 
 	it("returns null when no trigger matches", () => {

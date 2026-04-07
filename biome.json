@@ -39,6 +39,9 @@
 					},
 					"style": {
 						"noMagicNumbers": "off"
+					},
+					"suspicious": {
+						"useAwait": "off"
 					}
 				}
 			}
