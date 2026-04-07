@@ -38,14 +38,28 @@ The system SHALL provide an `HttpTriggerContext` implementing `Context` that car
 
 ### Requirement: ActionContext
 
-The system SHALL provide an `ActionContext` implementing `Context` that carries the source event being processed and an injected fetch function for outbound HTTP requests.
+The system SHALL provide an `ActionContext` implementing `Context` that carries the source event being processed, an injected fetch function for outbound HTTP requests, and an injected env record exposing environment variables.
 
 #### Scenario: ActionContext properties
 
 - **GIVEN** an action processing event `evt_001` with `type: "order.received"` and `payload: { orderId: "abc" }`
+- **AND** an env record `{ "API_KEY": "secret" }`
 - **WHEN** an `ActionContext` is created
 - **THEN** `ctx.event` is the full source event object
 - **AND** `ctx.fetch` is a callable function
+- **AND** `ctx.env` is `{ "API_KEY": "secret" }`
+
+#### Scenario: ActionContext env exposes injected record
+
+- **GIVEN** an `ActionContext` created with env record `{ "FOO": "bar", "BAZ": "qux" }`
+- **WHEN** the action reads `ctx.env.FOO`
+- **THEN** the value is `"bar"`
+
+#### Scenario: ActionContext env returns undefined for missing keys
+
+- **GIVEN** an `ActionContext` created with env record `{ "FOO": "bar" }`
+- **WHEN** the action reads `ctx.env.MISSING`
+- **THEN** the value is `undefined`
 
 #### Scenario: ActionContext emit creates child event
 
@@ -89,24 +103,25 @@ The system SHALL provide a `fetch(url: string | URL, init?: RequestInit): Promis
 
 ### Requirement: ContextFactory
 
-The system SHALL provide a `ContextFactory` class that holds a queue reference, an injected fetch function, and a Logger instance. It SHALL expose `httpTrigger` and `action` as arrow properties for creating context objects. The Logger SHALL be passed via the constructor.
-
-#### Scenario: Create HttpTriggerContext via factory
-
-- **GIVEN** a `ContextFactory` initialized with an event queue, a fetch function, and a Logger
-- **WHEN** `factory.httpTrigger(body, definition)` is called
-- **THEN** an `HttpTriggerContext` is returned with the request body, definition, and a working `emit()` method
+The system SHALL provide a `ContextFactory` class that holds a queue reference, an injected fetch function, an injected env record, and a Logger instance. It SHALL expose `httpTrigger` and `action` as arrow properties for creating context objects. The Logger SHALL be passed via the constructor.
 
 #### Scenario: Create ActionContext via factory
 
-- **GIVEN** a `ContextFactory` initialized with an event queue, a fetch function, and a Logger
+- **GIVEN** a `ContextFactory` initialized with an event queue, a fetch function, an env record `{ "API_KEY": "secret" }`, and a Logger
 - **WHEN** `factory.action(event)` is called
-- **THEN** an `ActionContext` is returned with the source event, a working `emit()` method, and the injected fetch function
+- **THEN** an `ActionContext` is returned with the source event, a working `emit()` method, the injected fetch function, and `env` containing `{ "API_KEY": "secret" }`
+
+#### Scenario: Create HttpTriggerContext via factory
+
+- **GIVEN** a `ContextFactory` initialized with an event queue, a fetch function, an env record, and a Logger
+- **WHEN** `factory.httpTrigger(body, definition)` is called
+- **THEN** an `HttpTriggerContext` is returned with the request body, definition, and a working `emit()` method
+- **AND** `HttpTriggerContext` does NOT have an `env` property
 
 #### Scenario: Factory properties can be passed as standalone references
 
 - **GIVEN** a `ContextFactory` instance
-- **WHEN** `factory.httpTrigger` is assigned to a variable and called
+- **WHEN** `factory.action` is assigned to a variable and called
 - **THEN** it works correctly without explicit binding (arrow property captures `this`)
 
 ### Requirement: ContextFactory emit logging
