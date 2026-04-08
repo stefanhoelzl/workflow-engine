@@ -1,10 +1,4 @@
-# Define Workflow Specification
-
-## Purpose
-
-Provide a builder API for defining workflows with typed events, triggers, and actions using a `workflow()` function that progresses through typed phases and returns a `WorkflowConfig` via `.build()`.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: defineWorkflow function
 
@@ -208,3 +202,17 @@ The SDK SHALL re-export `z` from Zod so workflow authors can import everything f
 - **GIVEN** a workflow file importing from `@workflow-engine/sdk`
 - **WHEN** the author writes `import { workflow, z } from "@workflow-engine/sdk"`
 - **THEN** `z` is the same Zod namespace as `import { z } from "zod"`
+
+## REMOVED Requirements
+
+### Requirement: defineWorkflow function
+**Reason**: Replaced by `workflow()` builder API to enable compile-time narrowing of `ctx.emit()` and `ctx.env`.
+**Migration**: Replace `defineWorkflow({ events, triggers, actions })` with `workflow().event(...).trigger(...).action(...).build()`.
+
+### Requirement: Events defined as Zod schemas keyed by type string
+**Reason**: Events are now defined via `.event(name, schema)` builder method instead of as a config object.
+**Migration**: Move each event from the `events: { ... }` object to a `.event(name, schema)` call.
+
+### Requirement: Action names derived from object keys
+**Reason**: Actions are now defined via `.action(name, config)` where the name is the first argument.
+**Migration**: The action name moves from the object key to the first argument of `.action()`.
