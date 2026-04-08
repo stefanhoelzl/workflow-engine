@@ -56,7 +56,7 @@ The `Event` type SHALL be derived via `z.infer<typeof EventSchema>`. Both the sc
 
 ### Requirement: EventQueue interface
 
-The system SHALL abstract all queue operations behind a promise-based `EventQueue` interface with methods: `enqueue(event): Promise<void>`, `dequeue(): Promise<Event>`, `ack(eventId): Promise<void>`, `fail(eventId): Promise<void>`.
+The system SHALL abstract all queue operations behind a promise-based `EventQueue` interface with methods: `enqueue(event): Promise<void>`, `dequeue(signal?: AbortSignal): Promise<Event>`, `ack(eventId): Promise<void>`, `fail(eventId): Promise<void>`.
 
 #### Scenario: Enqueue an event
 
@@ -78,6 +78,28 @@ The system SHALL abstract all queue operations behind a promise-based `EventQueu
 - **THEN** the returned promise does not resolve
 - **AND** when an event is subsequently enqueued
 - **THEN** the promise resolves with that event
+
+#### Scenario: Dequeue is cancelled via AbortSignal
+
+- **GIVEN** an `EventQueue` with no pending events
+- **WHEN** `dequeue(signal)` is called with an `AbortSignal`
+- **AND** the signal is aborted before an event arrives
+- **THEN** the returned promise rejects with an error where `error.name` is `'AbortError'`
+
+#### Scenario: Dequeue with AbortSignal resolves normally when event arrives first
+
+- **GIVEN** an `EventQueue` with no pending events
+- **WHEN** `dequeue(signal)` is called with an `AbortSignal`
+- **AND** an event is enqueued before the signal is aborted
+- **THEN** the returned promise resolves with the event
+- **AND** the abort listener is cleaned up
+
+#### Scenario: Aborted dequeue cleans up waiter
+
+- **GIVEN** an `EventQueue` with no pending events and a pending `dequeue(signal)` call
+- **WHEN** the signal is aborted
+- **THEN** the waiter is removed from the internal waiter list
+- **AND** a subsequently enqueued event does not resolve the aborted promise
 
 #### Scenario: Acknowledge a processed event
 

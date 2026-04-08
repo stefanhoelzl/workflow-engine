@@ -14,7 +14,7 @@ type Event = z.infer<typeof EventSchema>;
 
 interface EventQueue {
 	enqueue(event: Event): Promise<void>;
-	dequeue(): Promise<Event>;
+	dequeue(signal?: AbortSignal): Promise<Event>;
 	ack(eventId: string): Promise<Event>;
 	fail(eventId: string): Promise<Event>;
 }

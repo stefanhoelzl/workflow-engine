@@ -55,4 +55,51 @@ describe("InMemoryEventQueue", () => {
 		await queue.enqueue(event);
 		expect(await dequeuePromise).toBe(event);
 	});
+
+	describe("AbortSignal", () => {
+		it("rejects with AbortError when signal is aborted", async () => {
+			const queue = new InMemoryEventQueue();
+			const ac = new AbortController();
+
+			const dequeuePromise = queue.dequeue(ac.signal);
+			ac.abort();
+
+			await expect(dequeuePromise).rejects.toThrow();
+			await expect(dequeuePromise).rejects.toSatisfy(
+				(e: Error) => e.name === "AbortError",
+			);
+		});
+
+		it("removes waiter from queue on abort", async () => {
+			const queue = new InMemoryEventQueue();
+			const ac = new AbortController();
+
+			const abortedDequeue = queue.dequeue(ac.signal);
+			ac.abort();
+			await abortedDequeue.catch(() => { /* expected */ });
+
+			// Enqueue an event — it should not resolve the aborted waiter
+			const event = makeEvent();
+			await queue.enqueue(event);
+
+			// A new dequeue should get the event
+			const result = await queue.dequeue();
+			expect(result).toBe(event);
+		});
+
+		it("resolves normally when event arrives before abort", async () => {
+			const queue = new InMemoryEventQueue();
+			const ac = new AbortController();
+			const event = makeEvent();
+
+			const dequeuePromise = queue.dequeue(ac.signal);
+			await queue.enqueue(event);
+
+			const result = await dequeuePromise;
+			expect(result).toBe(event);
+
+			// Aborting after resolve should not cause issues
+			ac.abort();
+		});
+	});
 });

@@ -5,7 +5,7 @@ import { ActionContext } from "../context/index.js";
 import { InMemoryEventQueue } from "../event-queue/in-memory.js";
 import type { Event } from "../event-queue/index.js";
 import { type Logger, createLogger } from "../logger.js";
-import { Scheduler } from "./index.js";
+import { createScheduler } from "./scheduler.js";
 
 function createTestLogger(): {
 	logger: Logger;
@@ -47,7 +47,7 @@ function stubContextFactory(event: Event): ActionContext {
 	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 }
 
-describe("Scheduler", () => {
+describe("createScheduler", () => {
 	it("executes matching action and acks event", async () => {
 		const queue = new InMemoryEventQueue();
 		const handler = vi.fn();
@@ -57,19 +57,17 @@ describe("Scheduler", () => {
 				e.type === "order.received" && e.targetAction === "parseOrder",
 			handler,
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
+		const scheduler = createScheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent({ targetAction: "parseOrder" });
 		await queue.enqueue(event);
 
-		scheduler.start();
+		const started = scheduler.start();
 
 		// Give the loop a tick to process
 		await new Promise((r) => setTimeout(r, 10));
-		scheduler.stop();
-		// Enqueue a dummy event to unblock dequeue so the loop exits
-		await queue.enqueue(makeEvent());
-		await scheduler.stopped;
+		await scheduler.stop();
+		await started;
 
 		expect(handler).toHaveBeenCalledTimes(1);
 		expect(handler.mock.calls.at(0)?.at(0)).toBeInstanceOf(ActionContext);
@@ -86,16 +84,15 @@ describe("Scheduler", () => {
 				throw new Error("boom");
 			},
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
+		const scheduler = createScheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent({ targetAction: "parseOrder" });
 		await queue.enqueue(event);
 
-		scheduler.start();
+		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 10));
-		scheduler.stop();
-		await queue.enqueue(makeEvent());
-		await scheduler.stopped;
+		await scheduler.stop();
+		await started;
 
 		// Event should not be available for dequeue (it's failed, not pending)
 		const marker = makeEvent({ id: "evt_marker" });
@@ -111,16 +108,15 @@ describe("Scheduler", () => {
 			match: () => false,
 			handler: vi.fn(),
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
+		const scheduler = createScheduler(queue, [action], stubContextFactory, silentLogger);
 
 		const event = makeEvent();
 		await queue.enqueue(event);
 
-		scheduler.start();
+		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 10));
-		scheduler.stop();
-		await queue.enqueue(makeEvent());
-		await scheduler.stopped;
+		await scheduler.stop();
+		await started;
 
 		expect(action.handler).not.toHaveBeenCalled();
 	});
@@ -139,7 +135,7 @@ describe("Scheduler", () => {
 			match: () => true,
 			handler: handler2,
 		};
-		const scheduler = new Scheduler(
+		const scheduler = createScheduler(
 			queue,
 			[action1, action2],
 			stubContextFactory,
@@ -149,11 +145,10 @@ describe("Scheduler", () => {
 		const event = makeEvent();
 		await queue.enqueue(event);
 
-		scheduler.start();
+		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 10));
-		scheduler.stop();
-		await queue.enqueue(makeEvent());
-		await scheduler.stopped;
+		await scheduler.stop();
+		await started;
 
 		expect(handler1).not.toHaveBeenCalled();
 		expect(handler2).not.toHaveBeenCalled();
@@ -167,13 +162,11 @@ describe("Scheduler", () => {
 			match: (e) => e.targetAction === "parseOrder",
 			handler,
 		};
-		const scheduler = new Scheduler(queue, [action], stubContextFactory, silentLogger);
+		const scheduler = createScheduler(queue, [action], stubContextFactory, silentLogger);
 
-		scheduler.start();
-		scheduler.stop();
-		// Enqueue a dummy to unblock dequeue
-		await queue.enqueue(makeEvent());
-		await scheduler.stopped;
+		const started = scheduler.start();
+		await scheduler.stop();
+		await started;
 
 		// Enqueue after stop — should not be processed
 		await queue.enqueue(makeEvent({ targetAction: "parseOrder" }));
@@ -191,25 +184,24 @@ describe("Scheduler", () => {
 				match: (e) => e.targetAction === "parseOrder",
 				handler: vi.fn(),
 			};
-			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+			const scheduler = createScheduler(queue, [action], stubContextFactory, logger);
 
 			const event = makeEvent({ targetAction: "parseOrder" });
 			await queue.enqueue(event);
 
-			scheduler.start();
+			const started = scheduler.start();
 			await new Promise((r) => setTimeout(r, 10));
-			scheduler.stop();
-			await queue.enqueue(makeEvent());
-			await scheduler.stopped;
+			await scheduler.stop();
+			await started;
 
 			const output = lines();
-			const started = output.find((l) => l.msg === "action.started");
+			const startedLog = output.find((l) => l.msg === "action.started");
 			const completed = output.find((l) => l.msg === "action.completed");
 
-			expect(started).toBeDefined();
-			expect(started?.action).toBe("parseOrder");
-			expect(started?.correlationId).toBe("corr_test");
-			expect(started?.eventId).toBe(event.id);
+			expect(startedLog).toBeDefined();
+			expect(startedLog?.action).toBe("parseOrder");
+			expect(startedLog?.correlationId).toBe("corr_test");
+			expect(startedLog?.eventId).toBe(event.id);
 
 			expect(completed).toBeDefined();
 			expect(completed?.action).toBe("parseOrder");
@@ -226,15 +218,14 @@ describe("Scheduler", () => {
 					throw new Error("boom");
 				},
 			};
-			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+			const scheduler = createScheduler(queue, [action], stubContextFactory, logger);
 
 			await queue.enqueue(makeEvent({ targetAction: "parseOrder" }));
 
-			scheduler.start();
+			const started = scheduler.start();
 			await new Promise((r) => setTimeout(r, 10));
-			scheduler.stop();
-			await queue.enqueue(makeEvent());
-			await scheduler.stopped;
+			await scheduler.stop();
+			await started;
 
 			const output = lines();
 			const failed = output.find((l) => l.msg === "action.failed");
@@ -254,16 +245,15 @@ describe("Scheduler", () => {
 				match: () => false,
 				handler: vi.fn(),
 			};
-			const scheduler = new Scheduler(queue, [action], stubContextFactory, logger);
+			const scheduler = createScheduler(queue, [action], stubContextFactory, logger);
 
 			const event = makeEvent({ type: "unknown.event" });
 			await queue.enqueue(event);
 
-			scheduler.start();
+			const started = scheduler.start();
 			await new Promise((r) => setTimeout(r, 10));
-			scheduler.stop();
-			await queue.enqueue(makeEvent());
-			await scheduler.stopped;
+			await scheduler.stop();
+			await started;
 
 			const output = lines();
 			const noMatch = output.find((l) => l.msg === "event.no-match");
@@ -279,15 +269,14 @@ describe("Scheduler", () => {
 			const { logger, lines } = createTestLogger();
 			const action1: Action = { name: "a", match: () => true, handler: vi.fn() };
 			const action2: Action = { name: "b", match: () => true, handler: vi.fn() };
-			const scheduler = new Scheduler(queue, [action1, action2], stubContextFactory, logger);
+			const scheduler = createScheduler(queue, [action1, action2], stubContextFactory, logger);
 
 			await queue.enqueue(makeEvent());
 
-			scheduler.start();
+			const started = scheduler.start();
 			await new Promise((r) => setTimeout(r, 10));
-			scheduler.stop();
-			await queue.enqueue(makeEvent());
-			await scheduler.stopped;
+			await scheduler.stop();
+			await started;
 
 			const output = lines();
 			const ambiguous = output.find((l) => l.msg === "event.ambiguous-match");
