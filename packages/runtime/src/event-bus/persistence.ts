@@ -1,8 +1,7 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import pLimit from "p-limit";
 import type { BusConsumer, RuntimeEvent } from "./index.js";
 import { RuntimeEventSchema } from "./index.js";
+import type { StorageBackend } from "../storage/index.js";
 
 const FILE_PATTERN = /^(\d+)_evt_(.+)\.json$/;
 const EVT_PREFIX_PATTERN = /^evt_/;
@@ -27,34 +26,38 @@ function formatFilename(counter: number, eventId: string): string {
 	return `${String(counter).padStart(COUNTER_PAD_LENGTH, "0")}_evt_${id}.json`;
 }
 
-async function atomicWrite(filepath: string, content: string): Promise<void> {
-	const tmp = `${filepath}.tmp`;
-	await writeFile(tmp, content, "utf-8");
-	await rename(tmp, filepath);
+function extractFilename(path: string): string {
+	const slashIndex = path.lastIndexOf("/");
+	return slashIndex === -1 ? path : path.slice(slashIndex + 1);
 }
 
-async function listEventFiles(dir: string): Promise<string[]> {
-	const entries = await readdir(dir);
-	return entries.filter((f) => FILE_PATTERN.test(f)).sort();
+async function collectList(backend: StorageBackend, prefix: string): Promise<string[]> {
+	const results: string[] = [];
+	for await (const path of backend.list(prefix)) {
+		results.push(path);
+	}
+	return results;
+}
+
+async function listEventFiles(backend: StorageBackend, prefix: string): Promise<string[]> {
+	const entries = await collectList(backend, prefix);
+	return entries.filter((f) => FILE_PATTERN.test(extractFilename(f))).sort();
 }
 
 interface FileGroup {
+	path: string;
 	filename: string;
 	counter: number;
 }
 
 async function archiveFiles(
-	pendingDir: string,
-	archiveDir: string,
+	backend: StorageBackend,
 	files: FileGroup[],
 ): Promise<void> {
 	files.sort((a, b) => a.counter - b.counter);
 	for (const f of files) {
-		// biome-ignore lint/performance/noAwaitInLoops: sequential renames for crash safety
-		await rename(
-			join(pendingDir, f.filename),
-			join(archiveDir, f.filename),
-		);
+		// biome-ignore lint/performance/noAwaitInLoops: sequential moves for crash safety
+		await backend.move(f.path, `archive/${f.filename}`);
 	}
 }
 
@@ -75,11 +78,9 @@ interface PersistenceOptions {
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled persistence logic
 function createPersistence(
-	dir: string,
+	backend: StorageBackend,
 	options?: PersistenceOptions,
 ): PersistenceConsumer {
-	const pendingDir = join(dir, "pending");
-	const archiveDir = join(dir, "archive");
 	const logger = options?.logger;
 	const concurrency = options?.concurrency ?? 10;
 	// NOTE: This counter is single-threaded. If parallel scheduling is introduced,
@@ -93,9 +94,9 @@ function createPersistence(
 			const isTerminal = event.state === "done";
 
 			// Terminal states go directly to archive/; others go to pending/
-			const targetDir = isTerminal ? archiveDir : pendingDir;
-			await atomicWrite(
-				join(targetDir, filename),
+			const prefix = isTerminal ? "archive/" : "pending/";
+			await backend.write(
+				`${prefix}${filename}`,
 				JSON.stringify(event, null, 2),
 			);
 
@@ -116,18 +117,17 @@ function createPersistence(
 		},
 
 		async *recover(): AsyncIterable<RecoveryBatch> {
-			await mkdir(pendingDir, { recursive: true });
-			await mkdir(archiveDir, { recursive: true });
+			await backend.init();
 
 			// Step 1: Internal cleanup — ensure at most 1 file per eventId in pending/
 			await cleanupPending();
 
 			// Step 2: Recover counter from max across both directories
-			const pendingFiles = await listEventFiles(pendingDir);
-			const archivedFiles = await listEventFiles(archiveDir);
+			const pendingFiles = await listEventFiles(backend, "pending/");
+			const archivedFiles = await listEventFiles(backend, "archive/");
 			let maxCounter = 0;
 			for (const f of [...pendingFiles, ...archivedFiles]) {
-				const parsed = parseFilename(f);
+				const parsed = parseFilename(extractFilename(f));
 				if (parsed && parsed.counter > maxCounter) {
 					maxCounter = parsed.counter;
 				}
@@ -137,13 +137,13 @@ function createPersistence(
 			// Step 3: Yield pending events
 			const limit = pLimit(concurrency);
 			if (pendingFiles.length > 0) {
-				const events = await readEvents(pendingDir, pendingFiles, limit);
+				const events = await readEvents(pendingFiles, limit);
 				yield { events, pending: true, finished: archivedFiles.length === 0 };
 			}
 
 			// Step 4: Yield archive events
 			if (archivedFiles.length > 0) {
-				const events = await readEvents(archiveDir, archivedFiles, limit);
+				const events = await readEvents(archivedFiles, limit);
 				yield { events, pending: false, finished: true };
 			}
 
@@ -155,15 +155,16 @@ function createPersistence(
 	};
 
 	async function cleanupPending(): Promise<void> {
-		const files = await listEventFiles(pendingDir);
+		const files = await listEventFiles(backend, "pending/");
 		const byEvent = new Map<string, FileGroup[]>();
-		for (const filename of files) {
+		for (const path of files) {
+			const filename = extractFilename(path);
 			const parsed = parseFilename(filename);
 			if (!parsed) {
 				continue;
 			}
 			const group = byEvent.get(parsed.eventId) ?? [];
-			group.push({ filename, counter: parsed.counter });
+			group.push({ path, filename, counter: parsed.counter });
 			byEvent.set(parsed.eventId, group);
 		}
 		for (const group of byEvent.values()) {
@@ -173,20 +174,19 @@ function createPersistence(
 			group.sort((a, b) => a.counter - b.counter);
 			const older = group.slice(0, -1);
 			// biome-ignore lint/performance/noAwaitInLoops: sequential archive for crash safety
-			await archiveFiles(pendingDir, archiveDir, older);
+			await archiveFiles(backend, older);
 		}
 	}
 
 	async function readEvents(
-		dir: string,
 		files: string[],
 		limit: ReturnType<typeof pLimit>,
 	): Promise<RuntimeEvent[]> {
 		const events: RuntimeEvent[] = [];
 		await Promise.all(
-			files.map((filename) =>
+			files.map((path) =>
 				limit(async () => {
-					const content = await readFile(join(dir, filename), "utf-8");
+					const content = await backend.read(path);
 					events.push(RuntimeEventSchema.parse(JSON.parse(content, stripNulls)));
 				}),
 			),
@@ -195,19 +195,20 @@ function createPersistence(
 	}
 
 	async function archiveOlderFiles(eventId: string, currentFilename: string): Promise<void> {
-		const allFiles = await listEventFiles(pendingDir);
+		const allFiles = await listEventFiles(backend, "pending/");
 		const olderFiles: FileGroup[] = [];
-		for (const f of allFiles) {
-			if (f === currentFilename) {
+		for (const path of allFiles) {
+			const filename = extractFilename(path);
+			if (filename === currentFilename) {
 				continue;
 			}
-			const parsed = parseFilename(f);
+			const parsed = parseFilename(filename);
 			if (parsed?.eventId === eventId) {
-				olderFiles.push({ filename: f, counter: parsed.counter });
+				olderFiles.push({ path, filename, counter: parsed.counter });
 			}
 		}
 		if (olderFiles.length > 0) {
-			await archiveFiles(pendingDir, archiveDir, olderFiles);
+			await archiveFiles(backend, olderFiles);
 		}
 	}
 }

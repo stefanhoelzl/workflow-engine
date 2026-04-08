@@ -13,16 +13,20 @@ import { createEventBus } from "./index.js";
 import type { RecoveryBatch } from "./persistence.js";
 import { createPersistence } from "./persistence.js";
 import { createWorkQueue } from "./work-queue.js";
+import { createFsStorage } from "../storage/fs.js";
+import type { StorageBackend } from "../storage/index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
 const defaultEventFactory = createEventFactory({ "order.received": passthroughSchema, "test.event": passthroughSchema });
 
 let testDir: string;
+let backend: StorageBackend;
 
 beforeEach(async () => {
 	testDir = join(tmpdir(), `recovery-test-${crypto.randomUUID()}`);
 	await mkdir(testDir, { recursive: true });
+	backend = createFsStorage(testDir);
 });
 
 afterEach(async () => {
@@ -55,7 +59,7 @@ describe("recovery", () => {
 			const event = makeStoredEvent({ id: "evt_single", state: "pending" });
 			await writeFile(join(pendingDir, "000001_evt_single.json"), JSON.stringify(event));
 
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			const batches: RecoveryBatch[] = [];
 			for await (const batch of persistence.recover()) {
 				batches.push(batch);
@@ -78,7 +82,7 @@ describe("recovery", () => {
 			await writeFile(join(pendingDir, "000001_evt_multi.json"), JSON.stringify(pending));
 			await writeFile(join(pendingDir, "000002_evt_multi.json"), JSON.stringify(processing));
 
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			const batches: RecoveryBatch[] = [];
 			for await (const batch of persistence.recover()) {
 				batches.push(batch);
@@ -111,7 +115,7 @@ describe("recovery", () => {
 			await writeFile(join(archiveDir, "000001_evt_done.json"), JSON.stringify(done1));
 			await writeFile(join(archiveDir, "000002_evt_done.json"), JSON.stringify(done2));
 
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			const batches: RecoveryBatch[] = [];
 			for await (const batch of persistence.recover()) {
 				batches.push(batch);
@@ -140,7 +144,7 @@ describe("recovery", () => {
 			await writeFile(join(pendingDir, "000001_evt_interrupted.json"), JSON.stringify(pending));
 			await writeFile(join(pendingDir, "000005_evt_interrupted.json"), JSON.stringify(done));
 
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			const pendingEvents: RuntimeEvent[] = [];
 			for await (const batch of persistence.recover()) {
 				if (batch.pending) {
@@ -164,7 +168,7 @@ describe("recovery", () => {
 			await writeFile(join(archiveDir, "000042_evt_old.json"), JSON.stringify(old));
 			await writeFile(join(pendingDir, "000043_evt_new.json"), JSON.stringify(active));
 
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			for await (const _batch of persistence.recover()) {
 				// consume
 			}
@@ -180,7 +184,7 @@ describe("recovery", () => {
 		});
 
 		it("yields finished for empty directories", async () => {
-			const persistence = createPersistence(testDir);
+			const persistence = createPersistence(backend);
 			const batches: RecoveryBatch[] = [];
 			for await (const batch of persistence.recover()) {
 				batches.push(batch);
@@ -204,7 +208,7 @@ describe("full startup/recovery integration", () => {
 		await writeFile(join(pendingDir, "000001_evt_recover1.json"), JSON.stringify(event1));
 		await writeFile(join(pendingDir, "000002_evt_recover2.json"), JSON.stringify(event2));
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
@@ -232,7 +236,7 @@ describe("full startup/recovery integration", () => {
 		});
 		await writeFile(join(pendingDir, "000001_evt_sched.json"), JSON.stringify(event));
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
@@ -278,7 +282,7 @@ describe("full startup/recovery integration", () => {
 		await writeFile(join(archiveDir, "000004_evt_done.json"), JSON.stringify(done2));
 		await writeFile(join(archiveDir, "000005_evt_done.json"), JSON.stringify(done3));
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const workQueue = createWorkQueue();
 		const eventStore = await createEventStore();
 		const bus = createEventBus([persistence, workQueue, eventStore]);
@@ -301,5 +305,32 @@ describe("full startup/recovery integration", () => {
 		// WorkQueue should only have the active event (latest state = processing)
 		const dequeued = await workQueue.dequeue();
 		expect(dequeued.id).toBe("evt_active");
+	});
+});
+
+describe("non-atomic move crash recovery", () => {
+	it("recovers when file exists in both pending and archive (simulated S3 crash)", async () => {
+		const pendingDir = join(testDir, "pending");
+		const archiveDir = join(testDir, "archive");
+		await mkdir(pendingDir, { recursive: true });
+		await mkdir(archiveDir, { recursive: true });
+
+		// Simulate S3 crash mid-move: copy succeeded but delete didn't
+		// File exists in BOTH pending/ and archive/
+		const event = makeStoredEvent({ id: "evt_crash", state: "done" });
+		const content = JSON.stringify(event);
+		await writeFile(join(pendingDir, "000001_evt_crash.json"), content);
+		await writeFile(join(archiveDir, "000001_evt_crash.json"), content);
+
+		const persistence = createPersistence(backend);
+		const allEvents: RuntimeEvent[] = [];
+		for await (const { events } of persistence.recover()) {
+			allEvents.push(...events);
+		}
+
+		// Recovery should handle the duplicate — event appears in both batches
+		// but the system should not crash
+		expect(allEvents.length).toBeGreaterThanOrEqual(1);
+		expect(allEvents.some((e) => e.id === "evt_crash")).toBe(true);
 	});
 });
