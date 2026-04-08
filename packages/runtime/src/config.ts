@@ -11,11 +11,14 @@ const schema = z
 		PORT: z.coerce.number().default(8080),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		FILE_IO_CONCURRENCY: z.coerce.number().default(10),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		WORKFLOW_DIR: z.string(),
 	})
 	.transform((env) => ({
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
 		fileIoConcurrency: env.FILE_IO_CONCURRENCY,
+		workflowDir: env.WORKFLOW_DIR,
 	}));
 
 export function createConfig(env: Record<string, string | undefined>) {
