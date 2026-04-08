@@ -7,10 +7,13 @@
 		"start": "tsx src/main.ts"
 	},
 	"dependencies": {
+		"@duckdb/node-api": "1.5.1-r.1",
 		"@hono/node-server": "^1.19.12",
+		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/sdk": "workspace:*",
 		"hono": "^4.12.10",
 		"hono-pino": "^0.10.3",
+		"kysely": "^0.28.15",
 		"p-limit": "^7.3.0",
 		"pino": "^10.3.1"
 	}

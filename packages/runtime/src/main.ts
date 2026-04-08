@@ -4,6 +4,7 @@ import { createConfig } from "./config.js";
 import { ContextFactory } from "./context/index.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
+import { createEventStore } from "./event-bus/event-store.js";
 import { type PersistenceConsumer, createPersistence } from "./event-bus/persistence.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventFactory } from "./event-factory.js";
@@ -69,7 +70,8 @@ async function init() {
 	}
 
 	const workQueue = createWorkQueue();
-	const consumers: BusConsumer[] = [workQueue];
+	const eventStore = await createEventStore({ logger: runtimeLogger });
+	const consumers: BusConsumer[] = [];
 	const persistence = config.persistencePath
 		? createPersistence(config.persistencePath, {
 				concurrency: config.fileIoConcurrency,
@@ -79,6 +81,7 @@ async function init() {
 	if (persistence) {
 		consumers.push(persistence);
 	}
+	consumers.push(workQueue, eventStore);
 	const eventBus = createEventBus(consumers);
 
 	const eventFactory = createEventFactory(allEvents);
@@ -97,11 +100,10 @@ async function init() {
 
 async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<number> {
 	let count = 0;
-	for await (const batch of persistence.recover()) {
-		await eventBus.bootstrap(batch);
-		count += batch.length;
+	for await (const { events, pending, finished } of persistence.recover()) {
+		await eventBus.bootstrap(events, { pending, finished });
+		count += events.length;
 	}
-	await eventBus.bootstrap([], { finished: true });
 	return count;
 }
 
