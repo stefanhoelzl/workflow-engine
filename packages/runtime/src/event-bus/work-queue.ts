@@ -27,7 +27,7 @@ function createWorkQueue(): WorkQueue {
 
 		bootstrap(
 			events: RuntimeEvent[],
-			options?: { finished?: boolean; pending?: boolean },
+			options?: { pending?: boolean },
 		): Promise<void> {
 			if (options?.pending === false) {
 				return Promise.resolve();

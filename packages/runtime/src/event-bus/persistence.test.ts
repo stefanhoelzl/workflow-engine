@@ -176,7 +176,7 @@ describe("persistence handle", () => {
 		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
-		await persistence.bootstrap([makeEvent()], { finished: true });
+		await persistence.bootstrap([makeEvent()], { pending: true });
 
 		const pending: string[] = [];
 		for await (const p of backend.list("pending/")) { pending.push(p); }

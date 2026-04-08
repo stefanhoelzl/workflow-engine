@@ -18,6 +18,35 @@ import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
+function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
+	if (config.persistenceS3Bucket) {
+		return createS3Storage({
+			bucket: config.persistenceS3Bucket,
+			accessKeyId: config.persistenceS3AccessKeyId ?? "",
+			secretAccessKey: config.persistenceS3SecretAccessKey ?? "",
+			...(config.persistenceS3Endpoint ? { endpoint: config.persistenceS3Endpoint } : {}),
+			...(config.persistenceS3Region ? { region: config.persistenceS3Region } : {}),
+		});
+	}
+	if (config.persistencePath) {
+		return createFsStorage(config.persistencePath);
+	}
+}
+
+function initPersistence(
+	config: ReturnType<typeof createConfig>,
+	logger: ReturnType<typeof createLogger>,
+): PersistenceConsumer | undefined {
+	const backend = createStorageBackend(config);
+	if (!backend) {
+		return;
+	}
+	return createPersistence(backend, {
+		concurrency: config.fileIoConcurrency,
+		logger,
+	});
+}
+
 function loadWorkflow(wf: WorkflowConfig) {
 	const actions: Action[] = wf.actions.map((action) => ({
 		name: action.name,
@@ -34,20 +63,7 @@ function loadWorkflow(wf: WorkflowConfig) {
 	return { actions, triggers: wf.triggers, events: wf.events };
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: entrypoint orchestration
-async function init() {
-	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const config = createConfig(process.env);
-
-	const runtimeLogger = createLogger("runtime", { level: config.logLevel });
-	const httpLogger = createHttpLogger("http", { level: config.logLevel });
-	const contextLogger = createLogger("context", { level: config.logLevel });
-	const schedulerLogger = createLogger("scheduler", { level: config.logLevel });
-
-	runtimeLogger.info("initialize", { config });
-
-	const workflows = await loadWorkflows(config.workflowDir, runtimeLogger);
-
+function registerWorkflows(workflows: WorkflowConfig[]) {
 	const registry = new HttpTriggerRegistry();
 	const allActions: Action[] = [];
 	const allEvents: Record<string, { parse(data: unknown): unknown }> = {};
@@ -72,29 +88,27 @@ async function init() {
 		Object.assign(allEvents, loaded.events);
 	}
 
+	return { registry, allActions, allEvents };
+}
+
+async function init() {
+	// biome-ignore lint/style/noProcessEnv: entry-point config
+	const config = createConfig(process.env);
+
+	const runtimeLogger = createLogger("runtime", { level: config.logLevel });
+	const httpLogger = createHttpLogger("http", { level: config.logLevel });
+	const contextLogger = createLogger("context", { level: config.logLevel });
+	const schedulerLogger = createLogger("scheduler", { level: config.logLevel });
+
+	runtimeLogger.info("initialize", { config });
+
+	const workflows = await loadWorkflows(config.workflowDir, runtimeLogger);
+	const { registry, allActions, allEvents } = registerWorkflows(workflows);
+
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
+	const persistence = initPersistence(config, runtimeLogger);
 	const consumers: BusConsumer[] = [];
-
-	let storageBackend: StorageBackend | undefined;
-	if (config.persistenceS3Bucket) {
-		storageBackend = createS3Storage({
-			bucket: config.persistenceS3Bucket,
-			accessKeyId: config.persistenceS3AccessKeyId ?? "",
-			secretAccessKey: config.persistenceS3SecretAccessKey ?? "",
-			...(config.persistenceS3Endpoint ? { endpoint: config.persistenceS3Endpoint } : {}),
-			...(config.persistenceS3Region ? { region: config.persistenceS3Region } : {}),
-		});
-	} else if (config.persistencePath) {
-		storageBackend = createFsStorage(config.persistencePath);
-	}
-
-	const persistence = storageBackend
-		? createPersistence(storageBackend, {
-				concurrency: config.fileIoConcurrency,
-				logger: runtimeLogger,
-			})
-		: undefined;
 	if (persistence) {
 		consumers.push(persistence);
 	}
@@ -117,8 +131,8 @@ async function init() {
 
 async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<number> {
 	let count = 0;
-	for await (const { events, pending, finished } of persistence.recover()) {
-		await eventBus.bootstrap(events, { pending, finished });
+	for await (const { events, pending } of persistence.recover()) {
+		await eventBus.bootstrap(events, { pending });
 		count += events.length;
 	}
 	return count;
