@@ -1,0 +1,12 @@
+{
+	"name": "workflows",
+	"type": "module",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"build": "vite build"
+	},
+	"dependencies": {
+		"@workflow-engine/sdk": "workspace:*"
+	}
+}

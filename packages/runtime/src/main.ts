@@ -5,19 +5,14 @@ import { createConfig } from "./config.js";
 import { ContextFactory } from "./context/index.js";
 import { FileSystemEventQueue } from "./event-queue/fs-queue.js";
 import { InMemoryEventQueue } from "./event-queue/in-memory.js";
+import { loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
-import { sampleWorkflow } from "./sample.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
-function loadWorkflow(config: WorkflowConfig) {
-	const registry = new HttpTriggerRegistry();
-	for (const trigger of config.triggers) {
-		registry.register(trigger);
-	}
-
-	const actions: Action[] = config.actions.map((action) => ({
+function loadWorkflow(wf: WorkflowConfig) {
+	const actions: Action[] = wf.actions.map((action) => ({
 		name: action.name,
 		match: (event) =>
 			event.type === action.on.name && event.targetAction === action.name,
@@ -30,7 +25,7 @@ function loadWorkflow(config: WorkflowConfig) {
 			}),
 	}));
 
-	return { registry, actions, events: config.events };
+	return { actions, triggers: wf.triggers, events: wf.events };
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: entrypoint orchestration
@@ -45,9 +40,34 @@ async function main() {
 
 	runtimeLogger.info("initialize", { config });
 
-	const { registry, actions, events } = loadWorkflow(sampleWorkflow);
-	const dispatch = createDispatchAction(actions);
-	actions.push(dispatch);
+	const workflows = await loadWorkflows(config.workflowDir, runtimeLogger);
+
+	const registry = new HttpTriggerRegistry();
+	const allActions: Action[] = [];
+	const allEvents: Record<string, { parse(data: unknown): unknown }> = {};
+
+	for (const wf of workflows) {
+		const loaded = loadWorkflow(wf);
+
+		for (const trigger of loaded.triggers) {
+			const existing = registry.lookup(
+				trigger.path,
+				trigger.method ?? "POST",
+			);
+			if (existing) {
+				throw new Error(
+					`Duplicate trigger path: ${trigger.path} (method: ${trigger.method ?? "POST"})`,
+				);
+			}
+			registry.register(trigger);
+		}
+
+		allActions.push(...loaded.actions);
+		Object.assign(allEvents, loaded.events);
+	}
+
+	const dispatch = createDispatchAction(allActions);
+	allActions.push(dispatch);
 
 	// biome-ignore lint/style/noProcessEnv: entry-point config
 	const eventQueuePath = process.env.EVENT_QUEUE_PATH;
@@ -55,9 +75,9 @@ async function main() {
 		? await FileSystemEventQueue.create(eventQueuePath, { concurrency: config.fileIoConcurrency })
 		: new InMemoryEventQueue();
 	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const factory = new ContextFactory(queue, events, globalThis.fetch, process.env, contextLogger);
+	const factory = new ContextFactory(queue, allEvents, globalThis.fetch, process.env, contextLogger);
 
-	const scheduler = createScheduler(queue, actions, factory.action, schedulerLogger);
+	const scheduler = createScheduler(queue, allActions, factory.action, schedulerLogger);
 	const server = createServer(
 		config.port,
 		httpLogger,

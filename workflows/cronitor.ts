@@ -1,8 +1,9 @@
 import { defineWorkflow, z } from "@workflow-engine/sdk";
 
-const sampleWorkflow = defineWorkflow({
+// biome-ignore lint/style/noDefaultExport: workflow convention
+export default defineWorkflow({
 	events: {
-		"cronitor.webhook": z.object({
+		"webhook.cronitor": z.object({
 			id: z.string(),
 			monitor: z.string(),
 			description: z.string(),
@@ -15,25 +16,23 @@ const sampleWorkflow = defineWorkflow({
 			// biome-ignore lint/style/useNamingConvention: Cronitor API field
 			monitor_url: z.string(),
 		}),
+		"notify.message": z.object({
+			message: z.string(),
+		})
 	},
 	triggers: {
 		cronitor: {
 			type: "http",
 			path: "cronitor",
-			event: "cronitor.webhook",
+			event: "webhook.cronitor",
 			response: { status: 202 },
 		},
 	},
 	actions: {
-		notifyCronitor: {
-			on: "cronitor.webhook",
-			env: [
-				"NEXTCLOUD_URL",
-				"NEXTCLOUD_TALK_ROOM",
-				"NEXTCLOUD_USERNAME",
-				"NEXTCLOUD_APP_PASSWORD",
-			],
-			handler: async (ctx) => {
+		handleCronitorEvent: {
+			on: "webhook.cronitor",
+			emits: ["notify.message"],
+			handler: (ctx) => {
 				const payload = ctx.event.payload;
 				const emoji = payload.type === "ALERT" ? "\u26a0\ufe0f" : "\u2705";
 				const label = payload.type === "ALERT" ? "Alert" : "Recovery";
@@ -43,7 +42,20 @@ const sampleWorkflow = defineWorkflow({
 					`Environment: ${payload.environment}`,
 					payload.issue_url,
 				].join("\n");
-
+				// ctx.emit("notify.message", {message});
+				JSON.stringify({message});
+				return new Promise((r) => r());
+			}
+		},
+		sendMessage: {
+			on: "notify.message",
+			env: [
+				"NEXTCLOUD_URL",
+				"NEXTCLOUD_TALK_ROOM",
+				"NEXTCLOUD_USERNAME",
+				"NEXTCLOUD_APP_PASSWORD",
+			],
+			handler: async (ctx) => {
 				const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v1/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
 				await ctx.fetch(url, {
 					method: "POST",
@@ -55,11 +67,9 @@ const sampleWorkflow = defineWorkflow({
 						// biome-ignore lint/style/useNamingConvention: HTTP header
 						Authorization: `Basic ${btoa(`${ctx.env.NEXTCLOUD_USERNAME}:${ctx.env.NEXTCLOUD_APP_PASSWORD}`)}`,
 					},
-					body: JSON.stringify({ message }),
+					body: JSON.stringify({ message: ctx.event.payload.message }),
 				});
 			},
 		},
 	},
 });
-
-export { sampleWorkflow };

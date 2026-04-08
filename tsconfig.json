@@ -1,4 +1,4 @@
 {
 	"files": [],
-	"references": [{ "path": "packages/runtime" }]
+	"references": [{ "path": "packages/runtime" }, { "path": "workflows" }]
 }

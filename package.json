@@ -8,12 +8,12 @@
 		}
 	},
 	"scripts": {
-		"build": "vite build",
+		"build": "vite build && pnpm --filter workflows build",
 		"check": "tsc --build",
 		"lint": "biome lint .",
 		"format": "biome format --write .",
 		"test": "vitest run",
-		"start": "pnpm --filter @workflow-engine/runtime start"
+		"start": "pnpm --filter workflows build && WORKFLOW_DIR=$PWD/workflows/dist pnpm --filter @workflow-engine/runtime start"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.0.0",
