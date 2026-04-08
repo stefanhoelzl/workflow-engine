@@ -67,7 +67,6 @@ describe("recovery", () => {
 
 			expect(batches).toHaveLength(1);
 			expect(batches[0]?.pending).toBe(true);
-			expect(batches[0]?.finished).toBe(true);
 			expect(batches[0]?.events).toHaveLength(1);
 			expect(batches[0]?.events[0]?.id).toBe("evt_single");
 		});
@@ -124,12 +123,10 @@ describe("recovery", () => {
 			// Two batches: pending (latest) first, then archive (not latest)
 			expect(batches).toHaveLength(2);
 			expect(batches[0]?.pending).toBe(true);
-			expect(batches[0]?.finished).toBe(false);
 			expect(batches[0]?.events).toHaveLength(1);
 			expect(batches[0]?.events[0]?.id).toBe("evt_active");
 
 			expect(batches[1]?.pending).toBe(false);
-			expect(batches[1]?.finished).toBe(true);
 			expect(batches[1]?.events).toHaveLength(2);
 		});
 
@@ -183,15 +180,13 @@ describe("recovery", () => {
 			expect(newFile).toContain("000044_");
 		});
 
-		it("yields finished for empty directories", async () => {
+		it("yields nothing for empty directories", async () => {
 			const persistence = createPersistence(backend);
 			const batches: RecoveryBatch[] = [];
 			for await (const batch of persistence.recover()) {
 				batches.push(batch);
 			}
-			expect(batches).toHaveLength(1);
-			expect(batches[0]?.finished).toBe(true);
-			expect(batches[0]?.events).toHaveLength(0);
+			expect(batches).toHaveLength(0);
 		});
 	});
 });
@@ -212,8 +207,8 @@ describe("full startup/recovery integration", () => {
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
-		for await (const { events, pending, finished } of persistence.recover()) {
-			await bus.bootstrap(events, { pending, finished });
+		for await (const { events, pending } of persistence.recover()) {
+			await bus.bootstrap(events, { pending });
 		}
 
 		const d1 = await workQueue.dequeue();
@@ -240,8 +235,8 @@ describe("full startup/recovery integration", () => {
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
-		for await (const { events, pending, finished } of persistence.recover()) {
-			await bus.bootstrap(events, { pending, finished });
+		for await (const { events, pending } of persistence.recover()) {
+			await bus.bootstrap(events, { pending });
 		}
 
 		const handler = vi.fn();
@@ -287,8 +282,8 @@ describe("full startup/recovery integration", () => {
 		const eventStore = await createEventStore();
 		const bus = createEventBus([persistence, workQueue, eventStore]);
 
-		for await (const { events, pending, finished } of persistence.recover()) {
-			await bus.bootstrap(events, { pending, finished });
+		for await (const { events, pending } of persistence.recover()) {
+			await bus.bootstrap(events, { pending });
 		}
 
 		// EventStore: 1 from pending (processing) + 4 from archive (1 moved during cleanup + 3 original)
@@ -317,7 +312,7 @@ describe("non-atomic move crash recovery", () => {
 
 		// Simulate S3 crash mid-move: copy succeeded but delete didn't
 		// File exists in BOTH pending/ and archive/
-		const event = makeStoredEvent({ id: "evt_crash", state: "done" });
+		const event = makeStoredEvent({ id: "evt_crash", state: "done", result: "succeeded" });
 		const content = JSON.stringify(event);
 		await writeFile(join(pendingDir, "000001_evt_crash.json"), content);
 		await writeFile(join(archiveDir, "000001_evt_crash.json"), content);

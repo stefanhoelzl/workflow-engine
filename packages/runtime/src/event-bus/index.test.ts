@@ -100,18 +100,18 @@ describe("createEventBus", () => {
 			const bus = createEventBus([consumer]);
 
 			const events = [makeEvent()];
-			await bus.bootstrap(events, { finished: true });
+			await bus.bootstrap(events, { pending: true });
 
-			expect(consumer.bootstrap).toHaveBeenCalledWith(events, { finished: true });
+			expect(consumer.bootstrap).toHaveBeenCalledWith(events, { pending: true });
 		});
 
-		it("passes finished signal through", async () => {
+		it("passes pending flag through", async () => {
 			const consumer = mockConsumer();
 			const bus = createEventBus([consumer]);
 
-			await bus.bootstrap([], { finished: true });
+			await bus.bootstrap([], { pending: false });
 
-			expect(consumer.bootstrap).toHaveBeenCalledWith([], { finished: true });
+			expect(consumer.bootstrap).toHaveBeenCalledWith([], { pending: false });
 		});
 
 		it("propagates consumer error and stops fan-out", async () => {

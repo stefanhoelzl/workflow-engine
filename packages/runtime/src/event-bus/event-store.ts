@@ -81,7 +81,7 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 
 		async bootstrap(
 			events: RuntimeEvent[],
-			_options?: { finished?: boolean; pending?: boolean },
+			_options?: { pending?: boolean },
 		): Promise<void> {
 			if (events.length === 0) {
 				return;

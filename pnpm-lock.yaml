@@ -60,9 +60,6 @@ importers:
       kysely:
         specifier: ^0.28.15
         version: 0.28.15
-      p-limit:
-        specifier: ^7.3.0
-        version: 7.3.0
       pino:
         specifier: ^10.3.1
         version: 10.3.1
@@ -1744,10 +1741,6 @@ packages:
     resolution: {integrity: sha512-weP+BZ8MVNnlCm8c0Qdc1WSWq4Qn7I+9CJGm7Qali6g44e/PUzbjNqJX5NJ9ljlNMosfJvg1fKEGILklK9cwnw==}
     engines: {node: '>=18'}
 
-  p-limit@7.3.0:
-    resolution: {integrity: sha512-7cIXg/Z0M5WZRblrsOla88S4wAK+zOQQWeBYfV3qJuJXMr+LnbYjaadrFaS0JILfEDPVqHyKnZ1Z/1d6J9VVUw==}
-    engines: {node: '>=20'}
-
   parseurl@1.3.3:
     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
     engines: {node: '>= 0.8'}
@@ -2109,10 +2102,6 @@ packages:
   ylru@1.4.0:
     resolution: {integrity: sha512-2OQsPNEmBCvXuFlIni/a+Rn+R2pHW9INm0BxXJ4hVDA8TirqMj+J/Rp9ItLatT/5pZqWwefVrTQcHpixsxnVlA==}
     engines: {node: '>= 4.0.0'}
-
-  yocto-queue@1.2.2:
-    resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
-    engines: {node: '>=12.20'}
 
   yoctocolors-cjs@2.1.3:
     resolution: {integrity: sha512-U/PBtDf35ff0D8X8D0jfdzHYEPFxAI7jJlxZXwCSez5M3190m+QobIfh+sWDWSHMCWWJN2AWamkegn6vr6YBTw==}
@@ -3925,10 +3914,6 @@ snapshots:
       string-width: 7.2.0
       strip-ansi: 7.2.0
 
-  p-limit@7.3.0:
-    dependencies:
-      yocto-queue: 1.2.2
-
   parseurl@1.3.3: {}
 
   passthrough-counter@1.0.0: {}
@@ -4247,8 +4232,6 @@ snapshots:
   yaml@2.8.3: {}
 
   ylru@1.4.0: {}
-
-  yocto-queue@1.2.2: {}
 
   yoctocolors-cjs@2.1.3: {}
 
