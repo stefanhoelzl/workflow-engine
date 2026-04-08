@@ -51,7 +51,7 @@ actions.push(dispatch);
 // biome-ignore lint/style/noProcessEnv: entry-point config
 const eventQueuePath = process.env.EVENT_QUEUE_PATH;
 const queue = eventQueuePath
-	? await FileSystemEventQueue.create(eventQueuePath)
+	? await FileSystemEventQueue.create(eventQueuePath, { concurrency: config.fileIoConcurrency })
 	: new InMemoryEventQueue();
 // biome-ignore lint/style/noProcessEnv: entry-point config
 const factory = new ContextFactory(queue, events, globalThis.fetch, process.env, contextLogger);

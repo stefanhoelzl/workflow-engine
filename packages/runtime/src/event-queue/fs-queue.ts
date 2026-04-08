@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "@workflow-engine/sdk";
+import pLimit from "p-limit";
 import { InMemoryEventQueue } from "./in-memory.js";
 import { EventSchema } from "./index.js";
 import type { Event } from "./index.js";
@@ -67,6 +68,7 @@ interface FileGroup {
 async function recoverPendingDir(
 	pendingDir: string,
 	archiveDir: string,
+	concurrency: number,
 ): Promise<{ events: Event[]; maxCounter: number }> {
 	const pendingFiles = await listEventFiles(pendingDir);
 
@@ -81,28 +83,33 @@ async function recoverPendingDir(
 		byEvent.set(parsed.eventId, group);
 	}
 
-	const eventsToRequeue: { event: Event; counter: number }[] = [];
+	const limit = pLimit(concurrency);
 
-	for (const [, files] of byEvent) {
-		files.sort((a, b) => a.counter - b.counter);
-		const latest = files.at(-1);
-		if (!latest) {
-			continue;
-		}
-		// biome-ignore lint/performance/noAwaitInLoops: sequential reads needed for recovery grouping
-		const content = await readFile(join(pendingDir, latest.filename), "utf-8");
-		const stored = StoredEventSchema.parse(JSON.parse(content, stripNulls));
+	const results = await Promise.all(
+		[...byEvent.values()].map((files) =>
+			limit(async () => {
+				files.sort((a, b) => a.counter - b.counter);
+				const latest = files.at(-1);
+				if (!latest) {
+					return;
+				}
+				const content = await readFile(join(pendingDir, latest.filename), "utf-8");
+				const stored = StoredEventSchema.parse(JSON.parse(content, stripNulls));
 
-		if (stored.state === "done" || stored.state === "failed") {
-			await archiveFiles(pendingDir, archiveDir, files);
-		} else {
-			eventsToRequeue.push({ event: stored, counter: latest.counter });
-		}
-	}
+				if (stored.state === "done" || stored.state === "failed") {
+					await archiveFiles(pendingDir, archiveDir, files);
+					return;
+				}
+				return { event: stored satisfies Event, counter: latest.counter };
+			}),
+		),
+	);
 
+	const eventsToRequeue = results.filter((r) => r != null);
 	eventsToRequeue.sort((a, b) => a.counter - b.counter);
+
 	return {
-		events: eventsToRequeue.map((e) => e.event),
+		events: eventsToRequeue.map((e) => e.event as Event),
 		maxCounter: Math.max(...pendingFiles.map((f) => parseFilename(f)?.counter ?? -1), -1),
 	};
 }
@@ -127,14 +134,14 @@ class FileSystemEventQueue extends InMemoryEventQueue {
 		this.#counter = counter;
 	}
 
-	static async create(dir: string): Promise<FileSystemEventQueue> {
+	static async create(dir: string, options: { concurrency: number }): Promise<FileSystemEventQueue> {
 		const pendingDir = join(dir, "pending");
 		const archiveDir = join(dir, "archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 
 		const archiveMax = await maxCounter(archiveDir);
-		const recovery = await recoverPendingDir(pendingDir, archiveDir);
+		const recovery = await recoverPendingDir(pendingDir, archiveDir, options.concurrency);
 		const counter = Math.max(recovery.maxCounter, archiveMax);
 
 		return new FileSystemEventQueue(dir, counter, recovery.events);
