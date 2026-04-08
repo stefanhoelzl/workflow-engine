@@ -31,9 +31,15 @@ afterEach(async () => {
 	dirs.length = 0;
 });
 
+const TEST_CONCURRENCY = 10;
+
+async function createQueue(dir: string) {
+	return FileSystemEventQueue.create(dir, { concurrency: TEST_CONCURRENCY });
+}
+
 eventQueueContractTests(
 	"FileSystemEventQueue",
-	async () => FileSystemEventQueue.create(await makeTempDir()),
+	async () => createQueue(await makeTempDir()),
 );
 
 describe("FileSystemEventQueue", () => {
@@ -41,11 +47,11 @@ describe("FileSystemEventQueue", () => {
 		it("recovers pending events on startup", async () => {
 			const dir = await makeTempDir();
 
-			const queue1 = await FileSystemEventQueue.create(dir);
+			const queue1 = await createQueue(dir);
 			const event = makeEvent({ id: "evt_recover" });
 			await queue1.enqueue(event);
 
-			const queue2 = await FileSystemEventQueue.create(dir);
+			const queue2 = await createQueue(dir);
 			const dequeued = await queue2.dequeue();
 
 			expect(dequeued.id).toBe("evt_recover");
@@ -57,7 +63,7 @@ describe("FileSystemEventQueue", () => {
 			const pendingDir = join(dir, "pending");
 			const archiveDir = join(dir, "archive");
 
-			const queue1 = await FileSystemEventQueue.create(dir);
+			const queue1 = await createQueue(dir);
 			const event = makeEvent({ id: "evt_interrupted" });
 			await queue1.enqueue(event);
 
@@ -73,7 +79,7 @@ describe("FileSystemEventQueue", () => {
 			});
 			await writeFile(join(pendingDir, "000001_evt_interrupted.json"), terminalContent);
 
-			const queue2 = await FileSystemEventQueue.create(dir);
+			const queue2 = await createQueue(dir);
 
 			const newEvent = makeEvent({ id: "evt_new" });
 			await queue2.enqueue(newEvent);
@@ -90,10 +96,10 @@ describe("FileSystemEventQueue", () => {
 			const dir = await makeTempDir();
 			const pendingDir = join(dir, "pending");
 
-			await FileSystemEventQueue.create(dir);
+			await createQueue(dir);
 			await writeFile(join(pendingDir, "000001_evt_stale.json.tmp"), "partial data");
 
-			const queue2 = await FileSystemEventQueue.create(dir);
+			const queue2 = await createQueue(dir);
 
 			const newEvent = makeEvent({ id: "evt_fresh" });
 			await queue2.enqueue(newEvent);
@@ -105,7 +111,7 @@ describe("FileSystemEventQueue", () => {
 	describe("file operations", () => {
 		it("writes event files to pending/ on enqueue", async () => {
 			const dir = await makeTempDir();
-			const queue = await FileSystemEventQueue.create(dir);
+			const queue = await createQueue(dir);
 			const event = makeEvent({ id: "evt_abc" });
 
 			await queue.enqueue(event);
@@ -123,7 +129,7 @@ describe("FileSystemEventQueue", () => {
 
 		it("archives event files on ack", async () => {
 			const dir = await makeTempDir();
-			const queue = await FileSystemEventQueue.create(dir);
+			const queue = await createQueue(dir);
 			const event = makeEvent({ id: "evt_acked" });
 
 			await queue.enqueue(event);
@@ -145,7 +151,7 @@ describe("FileSystemEventQueue", () => {
 
 		it("archives event files on fail", async () => {
 			const dir = await makeTempDir();
-			const queue = await FileSystemEventQueue.create(dir);
+			const queue = await createQueue(dir);
 			const event = makeEvent({ id: "evt_failed" });
 
 			await queue.enqueue(event);
@@ -167,7 +173,7 @@ describe("FileSystemEventQueue", () => {
 
 		it("uses atomic writes (no partial files on success)", async () => {
 			const dir = await makeTempDir();
-			const queue = await FileSystemEventQueue.create(dir);
+			const queue = await createQueue(dir);
 			const event = makeEvent();
 
 			await queue.enqueue(event);
@@ -178,7 +184,7 @@ describe("FileSystemEventQueue", () => {
 
 		it("global counter increments across operations", async () => {
 			const dir = await makeTempDir();
-			const queue = await FileSystemEventQueue.create(dir);
+			const queue = await createQueue(dir);
 
 			await queue.enqueue(makeEvent({ id: "evt_one" }));
 			await queue.enqueue(makeEvent({ id: "evt_two" }));
@@ -193,10 +199,10 @@ describe("FileSystemEventQueue", () => {
 		it("counter recovers across restarts", async () => {
 			const dir = await makeTempDir();
 
-			const queue1 = await FileSystemEventQueue.create(dir);
+			const queue1 = await createQueue(dir);
 			await queue1.enqueue(makeEvent({ id: "evt_first" }));
 
-			const queue2 = await FileSystemEventQueue.create(dir);
+			const queue2 = await createQueue(dir);
 			await queue2.enqueue(makeEvent({ id: "evt_second" }));
 
 			const files = (await readdir(join(dir, "pending"))).sort();
