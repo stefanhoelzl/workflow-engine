@@ -1,10 +1,10 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
 import { ContextFactory } from "./context/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
+import { createEventFactory } from "./event-factory.js";
 import { type Logger, createHttpLogger, createLogger } from "./logger.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
@@ -48,7 +48,7 @@ function createTestLoggers(): {
 
 const CORR_PREFIX = /^corr_/;
 
-describe("integration: HTTP → trigger → dispatch → action → emit → fan-out", () => {
+describe("integration: HTTP → trigger → fan-out → action → emit → fan-out", () => {
 	it("processes a full chaining pipeline with fan-out after emit", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
@@ -60,7 +60,8 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
-		const factory = new ContextFactory(bus, defaultSchemas, globalThis.fetch, {}, silentLogger);
+		const eventFactory = createEventFactory(defaultSchemas);
+		const factory = new ContextFactory(bus, eventFactory, globalThis.fetch, {}, silentLogger);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();
@@ -68,30 +69,24 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const actions: Action[] = [
 			{
 				name: "validateOrder",
-				match: (e) =>
-					e.type === "order.received" && e.targetAction === "validateOrder",
+				on: "order.received",
 				handler: async (ctx) => {
 					await ctx.emit("order.validated", ctx.event.payload);
 				},
 			},
 			{
 				name: "fulfillOrder",
-				match: (e) =>
-					e.type === "order.validated" && e.targetAction === "fulfillOrder",
+				on: "order.validated",
 				handler: fulfillHandler,
 			},
 			{
 				name: "notifyCustomer",
-				match: (e) =>
-					e.type === "order.validated" && e.targetAction === "notifyCustomer",
+				on: "order.validated",
 				handler: notifyHandler,
 			},
 		];
 
-		const dispatch = createDispatchAction(actions);
-		actions.push(dispatch);
-
-		const scheduler = createScheduler(workQueue, bus, actions, factory.action, silentLogger);
+		const scheduler = createScheduler(workQueue, bus, actions, eventFactory, factory.action, silentLogger);
 		scheduler.start();
 
 		const app = createApp(
@@ -138,21 +133,18 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const { contextLogger, schedulerLogger, httpLogger, lines } = createTestLoggers();
-		const factory = new ContextFactory(bus, defaultSchemas, globalThis.fetch, {}, contextLogger);
+		const eventFactory = createEventFactory(defaultSchemas);
+		const factory = new ContextFactory(bus, eventFactory, globalThis.fetch, {}, contextLogger);
 
 		const actions: Action[] = [
 			{
 				name: "handleOrder",
-				match: (e) =>
-					e.type === "order.received" && e.targetAction === "handleOrder",
+				on: "order.received",
 				handler: vi.fn(),
 			},
 		];
 
-		const dispatch = createDispatchAction(actions);
-		actions.push(dispatch);
-
-		const scheduler = createScheduler(workQueue, bus, actions, factory.action, schedulerLogger);
+		const scheduler = createScheduler(workQueue, bus, actions, eventFactory, factory.action, schedulerLogger);
 		scheduler.start();
 
 		const app = createApp(

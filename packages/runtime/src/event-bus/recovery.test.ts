@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
+import { createEventFactory } from "../event-factory.js";
 import { createLogger } from "../logger.js";
 import { createScheduler } from "../services/scheduler.js";
 import type { RuntimeEvent } from "./index.js";
@@ -12,6 +13,8 @@ import { createPersistence } from "./persistence.js";
 import { createWorkQueue } from "./work-queue.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
+const passthroughSchema = { parse: (d: unknown) => d };
+const defaultEventFactory = createEventFactory({ "order.received": passthroughSchema, "test.event": passthroughSchema });
 
 let testDir: string;
 
@@ -93,11 +96,11 @@ describe("full startup/recovery integration", () => {
 		const handler = vi.fn();
 		const action: Action = {
 			name: "processOrder",
-			match: (e) => e.type === "order.received" && e.targetAction === "processOrder",
+			on: "order.received",
 			handler,
 		};
 
-		const scheduler = createScheduler(workQueue, bus, [action], stubContextFactory, silentLogger);
+		const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
 
 		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 50));

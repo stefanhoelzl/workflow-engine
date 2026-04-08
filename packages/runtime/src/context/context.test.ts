@@ -1,6 +1,7 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { type BusConsumer, type EventBus, type RuntimeEvent, createEventBus } from "../event-bus/index.js";
+import { createEventFactory, type EventFactory } from "../event-factory.js";
 import { type Logger, createLogger } from "../logger.js";
 import { ActionContext, ContextFactory, HttpTriggerContext } from "./index.js";
 import { PayloadValidationError } from "./errors.js";
@@ -58,15 +59,17 @@ function createCollectorBus(): { bus: EventBus; emitted: RuntimeEvent[] } {
 function createTestFactory(overrides?: {
 	bus?: EventBus;
 	schemas?: Record<string, { parse(data: unknown): unknown }>;
+	eventFactory?: EventFactory;
 	fetch?: typeof globalThis.fetch;
 	env?: Record<string, string | undefined>;
 	logger?: Logger;
 }): { factory: ContextFactory; bus: EventBus; emitted: RuntimeEvent[] } {
 	const { bus: defaultBus, emitted } = createCollectorBus();
 	const bus = overrides?.bus ?? defaultBus;
+	const eventFactory = overrides?.eventFactory ?? createEventFactory(overrides?.schemas ?? defaultSchemas);
 	const factory = new ContextFactory(
 		bus,
-		overrides?.schemas ?? defaultSchemas,
+		eventFactory,
 		overrides?.fetch ?? mockFetch,
 		overrides?.env ?? mockEnv,
 		overrides?.logger ?? silentLogger,
