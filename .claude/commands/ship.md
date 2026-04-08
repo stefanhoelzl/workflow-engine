@@ -39,7 +39,7 @@ Use this as `<repo>` in all subsequent `gh` commands.
 Detect the default branch:
 
 ```bash
-gh repo view --repo <repo> --json defaultBranchRef --jq '.defaultBranchRef.name'
+gh repo view <repo> --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
 Use this as `<default-branch>` in all subsequent commands.

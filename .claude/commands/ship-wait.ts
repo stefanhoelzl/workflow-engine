@@ -23,6 +23,8 @@ const TIMEOUT_MS = 900_000; // 15 minutes
 const MERGE_WAIT_TIMEOUT_MS = 120_000; // 2 minutes
 const MERGE_POLL_INTERVAL_MS = 5000;
 const COMMAND_TIMEOUT_MS = 60_000;
+const CHECKS_APPEAR_POLL_MS = 5000;
+const CHECKS_APPEAR_MAX_ATTEMPTS = 12;
 const EXPECTED_ARGS = 3;
 
 interface PullRequest {
@@ -164,8 +166,30 @@ async function rebaseAndPush(defaultBranch: string): Promise<boolean> {
   return true;
 }
 
-function waitForCi(repo: string, prNumber: number): Promise<boolean> {
-  log("Waiting for CI checks...");
+async function waitForChecksToAppear(repo: string, prNumber: number): Promise<boolean> {
+  log("Waiting for CI checks to be registered...");
+
+  for (let i = 0; i < CHECKS_APPEAR_MAX_ATTEMPTS; i++) {
+    const result = await execNoThrow(
+      `gh pr checks --repo ${repo} ${prNumber} --json name`,
+    );
+    if (result.success) {
+      const checks: unknown[] = JSON.parse(result.stdout);
+      if (checks.length > 0) {
+        log(`Found ${checks.length} check(s)`);
+        return true;
+      }
+    }
+    log("No checks yet, polling...");
+    await sleep(CHECKS_APPEAR_POLL_MS);
+  }
+
+  log("No checks appeared after polling");
+  return false;
+}
+
+function watchChecks(repo: string, prNumber: number): Promise<boolean> {
+  log("Watching CI checks...");
 
   return new Promise((resolve) => {
     const proc = spawn(
@@ -191,6 +215,14 @@ function waitForCi(repo: string, prNumber: number): Promise<boolean> {
       resolve(false);
     });
   });
+}
+
+async function waitForCi(repo: string, prNumber: number): Promise<boolean> {
+  const hasChecks = await waitForChecksToAppear(repo, prNumber);
+  if (!hasChecks) {
+    return true;
+  }
+  return watchChecks(repo, prNumber);
 }
 
 async function waitForMerge(
