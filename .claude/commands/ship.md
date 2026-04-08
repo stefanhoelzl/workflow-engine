@@ -25,7 +25,7 @@ $ARGUMENTS
 You are a BUILD AUTOMATION agent. Execute the workflow below. On FAILED or TIMEOUT,
 return immediately with a report - do NOT attempt to diagnose or fix issues.
 
-### 0. Derive repo
+### 0. Derive repo and default branch
 
 Parse the GitHub repo from the git remote:
 
@@ -35,6 +35,14 @@ git remote get-url origin
 
 Extract `<owner>/<repo>` from the URL (handles both HTTPS and SSH formats).
 Use this as `<repo>` in all subsequent `gh` commands.
+
+Detect the default branch:
+
+```bash
+gh repo view --repo <repo> --json defaultBranchRef --jq '.defaultBranchRef.name'
+```
+
+Use this as `<default-branch>` in all subsequent commands.
 
 ### 1. Validate preconditions
 
@@ -55,13 +63,13 @@ Cannot ship with uncommitted changes.
 Commit your changes first, then run `/ship` again.
 ```
 
-**1.2. Check we're not on main:**
+**1.2. Check we're not on default branch:**
 
 ```bash
 git branch --show-current
 ```
 
-If on main: ABORT with "Cannot ship from main branch"
+If on `<default-branch>`: ABORT with "Cannot ship from <default-branch> branch"
 
 **1.3. Check for un-archived openspec changes:**
 
@@ -81,17 +89,17 @@ Cannot ship with un-archived openspec changes:
 Archive them before shipping.
 ```
 
-### 2. Rebase onto main
+### 2. Rebase onto default branch
 
 ```bash
-git fetch origin main
-git rebase origin/main
+git fetch origin <default-branch>
+git rebase origin/<default-branch>
 ```
 
 If rebase fails: ABORT with:
 
 ```
-Rebase onto main failed (conflicts?).
+Rebase onto <default-branch> failed (conflicts?).
 
 Resolve conflicts manually, then run `/ship` again.
 ```
@@ -171,13 +179,13 @@ git push --force-with-lease origin HEAD
 Generate title and summary from commits:
 
 ```bash
-git log origin/main..HEAD --pretty=format:"%s%n%b"
+git log origin/<default-branch>..HEAD --pretty=format:"%s%n%b"
 ```
 
 Also get the diff for changelog analysis:
 
 ```bash
-git diff origin/main..HEAD
+git diff origin/<default-branch>..HEAD
 ```
 
 #### 7.1. Determine changelog category
@@ -273,16 +281,16 @@ This:
 ### 9. Run ship-wait script
 
 ```bash
-pnpx tsx .claude/commands/ship-wait.ts <repo> <number>
+pnpx tsx .claude/commands/ship-wait.ts <repo> <number> <default-branch>
 ```
 
 The script handles:
 
 - Waiting for PRs ahead in queue (created before ours with auto-merge enabled)
-- Rebasing onto main when it's our turn
+- Rebasing onto default branch when it's our turn
 - Waiting for CI via `gh pr checks --watch`
 - Waiting for auto-merge to complete
-- Updating local main branch
+- Fetching latest default branch from origin
 
 **Exit codes:**
 
@@ -307,7 +315,7 @@ If `--keep-workspace` was passed, report: "Workspace kept."
 PR merged successfully!
 
 **PR**: <url>
-**Commit**: <sha> merged to main
+**Commit**: <sha> merged to <default-branch>
 **Workspace**: deleted (or "kept" if --keep-workspace)
 ```
 
