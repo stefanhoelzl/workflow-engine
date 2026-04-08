@@ -2,6 +2,7 @@ import type { Action } from "../actions/index.js";
 import type { ActionContext } from "../context/index.js";
 import type { EventBus, RuntimeEvent } from "../event-bus/index.js";
 import type { WorkQueue } from "../event-bus/work-queue.js";
+import type { EventFactory } from "../event-factory.js";
 import type { Logger } from "../logger.js";
 import type { Service } from "./index.js";
 
@@ -13,6 +14,7 @@ function createScheduler(
 	workQueue: WorkQueue,
 	bus: EventBus,
 	actions: Action[],
+	eventFactory: EventFactory,
 	createContext: ActionContextFactory,
 	logger: Logger,
 ): Service {
@@ -39,19 +41,15 @@ function createScheduler(
 	async function processEvent(event: RuntimeEvent): Promise<void> {
 		await bus.emit({ ...event, state: "processing" });
 
-		const matches = actions.filter((a) => a.match(event));
-
-		if (matches.length > 1) {
-			logger.error("event.ambiguous-match", {
-				correlationId: event.correlationId,
-				eventId: event.id,
-				actions: matches.map((a) => a.name),
-			});
-			await bus.emit({ ...event, state: "failed", error: "ambiguous match" });
+		if (event.targetAction === undefined) {
+			await fanOut(event);
 			return;
 		}
 
-		const action = matches.find(() => true);
+		const action = actions.find(
+			(a) => a.name === event.targetAction && a.on === event.type,
+		);
+
 		if (!action) {
 			logger.warn("event.no-match", {
 				correlationId: event.correlationId,
@@ -63,6 +61,35 @@ function createScheduler(
 		}
 
 		await executeAction(event, action);
+	}
+
+	async function fanOut(event: RuntimeEvent): Promise<void> {
+		const matching = actions.filter((a) => a.on === event.type);
+
+		if (matching.length === 0) {
+			logger.warn("event.fanout.skipped", {
+				correlationId: event.correlationId,
+				eventId: event.id,
+				type: event.type,
+			});
+			await bus.emit({ ...event, state: "skipped" });
+			return;
+		}
+
+		logger.info("event.fanout", {
+			correlationId: event.correlationId,
+			eventId: event.id,
+			type: event.type,
+			targets: matching.length,
+		});
+
+		for (const action of matching) {
+			const forked = eventFactory.fork(event, { targetAction: action.name });
+			// biome-ignore lint/performance/noAwaitInLoops: sequential fan-out by design
+			await bus.emit(forked);
+		}
+
+		await bus.emit({ ...event, state: "done" });
 	}
 
 	async function executeAction(event: RuntimeEvent, action: Action): Promise<void> {

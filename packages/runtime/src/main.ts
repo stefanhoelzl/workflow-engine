@@ -1,5 +1,4 @@
 import type { WorkflowConfig } from "@workflow-engine/sdk";
-import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
 import { ContextFactory } from "./context/index.js";
@@ -7,6 +6,7 @@ import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { type PersistenceConsumer, createPersistence } from "./event-bus/persistence.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
+import { createEventFactory } from "./event-factory.js";
 import { loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import type { Service } from "./services/index.js";
@@ -17,8 +17,7 @@ import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 function loadWorkflow(wf: WorkflowConfig) {
 	const actions: Action[] = wf.actions.map((action) => ({
 		name: action.name,
-		match: (event) =>
-			event.type === action.on.name && event.targetAction === action.name,
+		on: action.on.name,
 		handler: (ctx) =>
 			action.handler({
 				event: { name: ctx.event.type, payload: ctx.event.payload },
@@ -69,9 +68,6 @@ async function init() {
 		Object.assign(allEvents, loaded.events);
 	}
 
-	const dispatch = createDispatchAction(allActions);
-	allActions.push(dispatch);
-
 	const workQueue = createWorkQueue();
 	const consumers: BusConsumer[] = [workQueue];
 	const persistence = config.persistencePath
@@ -85,10 +81,11 @@ async function init() {
 	}
 	const eventBus = createEventBus(consumers);
 
+	const eventFactory = createEventFactory(allEvents);
 	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const contextFactory = new ContextFactory(eventBus, allEvents, globalThis.fetch, process.env, contextLogger);
+	const contextFactory = new ContextFactory(eventBus, eventFactory, globalThis.fetch, process.env, contextLogger);
 
-	const scheduler = createScheduler(workQueue, eventBus, allActions, contextFactory.action, schedulerLogger);
+	const scheduler = createScheduler(workQueue, eventBus, allActions, eventFactory, contextFactory.action, schedulerLogger);
 	const server = createServer(
 		config.port,
 		httpLogger,

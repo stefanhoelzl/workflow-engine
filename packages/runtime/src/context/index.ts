@@ -1,7 +1,7 @@
 import type { EventBus, RuntimeEvent } from "../event-bus/index.js";
+import type { EventFactory } from "../event-factory.js";
 import type { Logger } from "../logger.js";
 import type { HttpTriggerResolved } from "../triggers/http.js";
-import { PayloadValidationError } from "./errors.js";
 
 interface EmitOptions {
 	targetAction?: string;
@@ -115,21 +115,17 @@ class ActionContext implements Context {
 	}
 }
 
-interface Schema {
-	parse(data: unknown): unknown;
-}
-
 class ContextFactory {
 	readonly #bus: EventBus;
-	readonly #schemas: Record<string, Schema>;
+	readonly #eventFactory: EventFactory;
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #env: Record<string, string | undefined>;
 	readonly #logger: Logger;
 
 	// biome-ignore lint/complexity/useMaxParams: internal constructor, all params are required dependencies
-	constructor(bus: EventBus, schemas: Record<string, Schema>, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger) {
+	constructor(bus: EventBus, eventFactory: EventFactory, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger) {
 		this.#bus = bus;
-		this.#schemas = schemas;
+		this.#eventFactory = eventFactory;
 		this.#fetch = fetch;
 		this.#env = env;
 		this.#logger = logger;
@@ -143,70 +139,32 @@ class ContextFactory {
 		return new HttpTriggerContext(
 			body,
 			definition,
-			(type, payload, options) => {
-				const targetAction = options?.targetAction;
-				return this.#createAndEmit(type, payload, correlationId, {
-					...(targetAction !== undefined && { targetAction }),
-				});
+			async (type, payload, options) => {
+				const event = this.#eventFactory.create(type, payload, correlationId);
+				if (options?.targetAction !== undefined) {
+					event.targetAction = options.targetAction;
+				}
+				this.#logEmit(event, payload);
+				await this.#bus.emit(event);
 			},
 		);
 	};
 
 	action = (event: RuntimeEvent): ActionContext =>
-		new ActionContext(event, (type, payload, options) => {
-			const targetAction = options?.targetAction;
-			return this.#createAndEmit(type, payload, event.correlationId, {
-				parentEventId: event.id,
-				...(targetAction !== undefined && { targetAction }),
-			});
+		new ActionContext(event, async (type, payload, options) => {
+			const derived = this.#eventFactory.derive(event, type, payload);
+			if (options?.targetAction !== undefined) {
+				derived.targetAction = options.targetAction;
+			}
+			this.#logEmit(derived, payload);
+			await this.#bus.emit(derived);
 		}, this.#fetch, this.#env, this.#logger);
 
-	#validate(type: string, payload: unknown): unknown {
-		const schema = this.#schemas[type];
-		if (!schema) {
-			throw new PayloadValidationError(type, []);
-		}
-		try {
-			return schema.parse(payload);
-		} catch (error) {
-			const issues =
-				error instanceof Error && "issues" in error && Array.isArray((error as { issues: unknown[] }).issues)
-					? (error as { issues: { path: (string | number)[]; message: string }[] }).issues.map(
-							(issue) => ({
-								path: issue.path.join("."),
-								message: issue.message,
-							}),
-						)
-					: [];
-			throw new PayloadValidationError(type, issues, error instanceof Error ? error : undefined);
-		}
-	}
-
-	async #createAndEmit(
-		type: string,
-		payload: unknown,
-		correlationId: string,
-		lineage: { targetAction?: string; parentEventId?: string },
-	): Promise<void> {
-		const parsed = this.#validate(type, payload);
-		const event: RuntimeEvent = {
-			id: `evt_${crypto.randomUUID()}`,
-			type,
-			payload: parsed,
-			correlationId,
-			createdAt: new Date(),
-			state: "pending",
-		};
-		if (lineage.parentEventId !== undefined) {
-			event.parentEventId = lineage.parentEventId;
-		}
-		if (lineage.targetAction !== undefined) {
-			event.targetAction = lineage.targetAction;
-		}
+	#logEmit(event: RuntimeEvent, payload: unknown): void {
 		const logData: Record<string, unknown> = {
-			correlationId,
+			correlationId: event.correlationId,
 			eventId: event.id,
-			type,
+			type: event.type,
 		};
 		if (event.parentEventId !== undefined) {
 			logData.parentEventId = event.parentEventId;
@@ -215,8 +173,7 @@ class ContextFactory {
 			logData.targetAction = event.targetAction;
 		}
 		this.#logger.info("event.emitted", logData);
-		this.#logger.trace("event.emitted.payload", { correlationId, payload });
-		return await this.#bus.emit(event);
+		this.#logger.trace("event.emitted.payload", { correlationId: event.correlationId, payload });
 	}
 }
 
