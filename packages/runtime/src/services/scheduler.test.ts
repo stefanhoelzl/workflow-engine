@@ -38,7 +38,7 @@ const defaultEventFactory = createEventFactory({
 	"order.validated": passthroughSchema,
 });
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "order.received",
@@ -47,7 +47,7 @@ function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 function stubContextFactory(event: RuntimeEvent): ActionContext {
@@ -113,9 +113,9 @@ describe("createScheduler", () => {
 			await scheduler.stop();
 			await started;
 
-			const failed = emitted.find((e) => e.state === "failed");
+			const failed = emitted.find((e) => e.state === "done" && e.result === "failed");
 			expect(failed).toBeDefined();
-			expect(failed?.error).toBe("boom");
+			expect(failed?.state === "done" && failed.result === "failed" ? failed.error : undefined).toBe("boom");
 		});
 
 		it("emits skipped when no action matches directed event", async () => {
@@ -135,7 +135,7 @@ describe("createScheduler", () => {
 			await started;
 
 			expect(action.handler).not.toHaveBeenCalled();
-			const skipped = emitted.find((e) => e.state === "skipped");
+			const skipped = emitted.find((e) => e.state === "done" && e.result === "skipped");
 			expect(skipped).toBeDefined();
 		});
 
@@ -220,7 +220,7 @@ describe("createScheduler", () => {
 			await started;
 
 			expect(action.handler).not.toHaveBeenCalled();
-			const skipped = emitted.find((e) => e.id === event.id && e.state === "skipped");
+			const skipped = emitted.find((e) => e.id === event.id && e.state === "done" && e.result === "skipped");
 			expect(skipped).toBeDefined();
 		});
 

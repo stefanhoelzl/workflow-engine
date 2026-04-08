@@ -1,6 +1,6 @@
 import { z } from "@workflow-engine/sdk";
 
-const RuntimeEventSchema = z.object({
+const baseFields = {
 	id: z.string(),
 	type: z.string(),
 	payload: z.unknown(),
@@ -8,9 +8,38 @@ const RuntimeEventSchema = z.object({
 	correlationId: z.string(),
 	parentEventId: z.exactOptional(z.string()),
 	createdAt: z.coerce.date(),
-	state: z.enum(["pending", "processing", "done", "failed", "skipped"]),
-	error: z.exactOptional(z.unknown()),
+};
+
+const ActiveEventSchema = z.object({
+	...baseFields,
+	state: z.enum(["pending", "processing"]),
 });
+
+const SucceededEventSchema = z.object({
+	...baseFields,
+	state: z.literal("done"),
+	result: z.literal("succeeded"),
+});
+
+const SkippedEventSchema = z.object({
+	...baseFields,
+	state: z.literal("done"),
+	result: z.literal("skipped"),
+});
+
+const FailedEventSchema = z.object({
+	...baseFields,
+	state: z.literal("done"),
+	result: z.literal("failed"),
+	error: z.unknown(),
+});
+
+const RuntimeEventSchema = z.union([
+	ActiveEventSchema,
+	SucceededEventSchema,
+	SkippedEventSchema,
+	FailedEventSchema,
+]);
 
 type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 

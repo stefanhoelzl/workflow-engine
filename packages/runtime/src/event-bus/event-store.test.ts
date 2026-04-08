@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "./index.js";
 import { type EventStore, createEventStore } from "./event-store.js";
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
@@ -36,7 +36,7 @@ describe("EventStore", () => {
 			const event = makeEvent({ id: "evt_multi" });
 			await store.handle({ ...event, state: "pending" });
 			await store.handle({ ...event, state: "processing" });
-			await store.handle({ ...event, state: "done" });
+			await store.handle({ ...event, state: "done", result: "succeeded" });
 
 			const rows = await store.query.where("id", "=", "evt_multi").selectAll().execute();
 			expect(rows).toHaveLength(3);
@@ -44,16 +44,18 @@ describe("EventStore", () => {
 		});
 
 		it("stores all RuntimeEvent fields", async () => {
-			const event = makeEvent({
+			const event: RuntimeEvent = {
 				id: "evt_full",
 				type: "order.received",
 				payload: { orderId: "123" },
 				correlationId: "corr_xyz",
 				parentEventId: "evt_parent",
 				targetAction: "processOrder",
-				state: "failed",
+				createdAt: new Date("2025-01-01T12:00:00Z"),
+				state: "done",
+				result: "failed",
 				error: "timeout",
-			});
+			};
 			await store.handle(event);
 
 			const rows = await store.query.where("id", "=", "evt_full").selectAll().execute();
@@ -64,7 +66,8 @@ describe("EventStore", () => {
 			expect(row.correlationId).toBe("corr_xyz");
 			expect(row.parentEventId).toBe("evt_parent");
 			expect(row.targetAction).toBe("processOrder");
-			expect(row.state).toBe("failed");
+			expect(row.state).toBe("done");
+			expect(row.result).toBe("failed");
 			expect(row.payload).toEqual({ orderId: "123" });
 			expect(row.error).toBe("timeout");
 		});
@@ -95,10 +98,10 @@ describe("EventStore", () => {
 		});
 
 		it("inserts all events regardless of pending flag", async () => {
-			const events = [
+			const events: RuntimeEvent[] = [
 				makeEvent({ id: "evt_1", state: "pending" }),
 				makeEvent({ id: "evt_1", state: "processing" }),
-				makeEvent({ id: "evt_1", state: "done" }),
+				{ ...makeEvent({ id: "evt_1" }), state: "done", result: "succeeded" },
 			];
 			await store.bootstrap(events, { pending: false });
 
@@ -107,8 +110,8 @@ describe("EventStore", () => {
 		});
 
 		it("inserts all events with pending: true", async () => {
-			const events = [
-				makeEvent({ id: "evt_a", state: "done" }),
+			const events: RuntimeEvent[] = [
+				{ ...makeEvent({ id: "evt_a" }), state: "done", result: "succeeded" },
 				makeEvent({ id: "evt_b", state: "pending" }),
 			];
 			await store.bootstrap(events, { pending: true });

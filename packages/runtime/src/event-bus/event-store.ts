@@ -11,6 +11,7 @@ interface EventsTable {
 	parentEventId: string | null;
 	targetAction: string | null;
 	state: string;
+	result: string | null;
 	payload: unknown;
 	error: unknown;
 	createdAt: string;
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS events (
 	parentEventId TEXT,
 	targetAction TEXT,
 	state TEXT NOT NULL,
+	result TEXT,
 	payload JSON,
 	error JSON,
 	createdAt TIMESTAMPTZ NOT NULL
@@ -58,8 +60,9 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 			parentEventId: event.parentEventId ?? null,
 			targetAction: event.targetAction ?? null,
 			state: event.state,
+			result: event.state === "done" ? event.result : null,
 			payload: event.payload === undefined ? null : JSON.stringify(event.payload),
-			error: event.error === undefined ? null : JSON.stringify(event.error),
+			error: event.state === "done" && event.result === "failed" ? JSON.stringify(event.error) : null,
 			createdAt: event.createdAt.toISOString(),
 		};
 	}

@@ -56,7 +56,7 @@ function createScheduler(
 				eventId: event.id,
 				type: event.type,
 			});
-			await bus.emit({ ...event, state: "skipped" });
+			await bus.emit({ ...event, state: "done", result: "skipped" });
 			return;
 		}
 
@@ -72,7 +72,7 @@ function createScheduler(
 				eventId: event.id,
 				type: event.type,
 			});
-			await bus.emit({ ...event, state: "skipped" });
+			await bus.emit({ ...event, state: "done", result: "skipped" });
 			return;
 		}
 
@@ -89,7 +89,7 @@ function createScheduler(
 			await bus.emit(forked);
 		}
 
-		await bus.emit({ ...event, state: "done" });
+		await bus.emit({ ...event, state: "done", result: "succeeded" });
 	}
 
 	async function executeAction(event: RuntimeEvent, action: Action): Promise<void> {
@@ -109,7 +109,7 @@ function createScheduler(
 				action: action.name,
 				durationMs,
 			});
-			await bus.emit({ ...event, state: "done" });
+			await bus.emit({ ...event, state: "done", result: "succeeded" });
 		} catch (error) {
 			const durationMs = Math.round(performance.now() - start);
 			logger.error("action.failed", {
@@ -121,7 +121,8 @@ function createScheduler(
 			});
 			await bus.emit({
 				...event,
-				state: "failed",
+				state: "done",
+				result: "failed",
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}

@@ -7,7 +7,7 @@ const EVT_PREFIX = /^evt_/;
 
 const passthroughSchema = { parse: (d: unknown) => d };
 
-function makeParent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeParent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: "evt_parent",
 		type: "order.received",
@@ -16,7 +16,7 @@ function makeParent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 describe("createEventFactory", () => {

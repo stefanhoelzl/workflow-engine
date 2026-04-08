@@ -8,7 +8,7 @@ import { mkdir, rm } from "node:fs/promises";
 
 let testDir: string;
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
@@ -17,7 +17,7 @@ function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 beforeEach(async () => {
@@ -38,7 +38,7 @@ describe("persistence handle", () => {
 		const event = makeEvent({ id: "evt_abc" });
 		await persistence.handle({ ...event, state: "pending" });
 		await persistence.handle({ ...event, state: "processing" });
-		await persistence.handle({ ...event, state: "done" });
+		await persistence.handle({ ...event, state: "done", result: "succeeded" });
 
 		// Wait a tick for fire-and-forget archive
 		await new Promise((r) => setTimeout(r, 50));
@@ -90,7 +90,7 @@ describe("persistence handle", () => {
 
 		const event = makeEvent({ id: "evt_term" });
 		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "done" });
+		await persistence.handle({ ...event, state: "done", result: "succeeded" });
 
 		// Wait for fire-and-forget archive to complete
 		await new Promise((r) => setTimeout(r, 50));
@@ -109,7 +109,7 @@ describe("persistence handle", () => {
 
 		const event = makeEvent({ id: "evt_fail" });
 		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "failed", error: "boom" });
+		await persistence.handle({ ...event, state: "done", result: "failed", error: "boom" });
 
 		await new Promise((r) => setTimeout(r, 50));
 
@@ -125,7 +125,7 @@ describe("persistence handle", () => {
 
 		const event = makeEvent({ id: "evt_skip" });
 		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "skipped" });
+		await persistence.handle({ ...event, state: "done", result: "skipped" });
 
 		await new Promise((r) => setTimeout(r, 50));
 
@@ -179,7 +179,7 @@ describe("persistence handle", () => {
 		await mkdir(join(testDir, "pending"), { recursive: true });
 
 		// This should not throw even though archive will fail
-		await persistence.handle({ ...event, state: "done" });
+		await persistence.handle({ ...event, state: "done", result: "succeeded" });
 
 		// Wait for fire-and-forget
 		await new Promise((r) => setTimeout(r, 50));
@@ -293,7 +293,7 @@ describe("persistence recover", () => {
 		const event = makeEvent({ id: "evt_cnt" });
 		await writeFile(
 			join(archiveDir, "000042_evt_old.json"),
-			JSON.stringify({ ...event, id: "evt_old", state: "done" }),
+			JSON.stringify({ ...event, id: "evt_old", state: "done", result: "succeeded" }),
 		);
 		await writeFile(
 			join(pendingDir, "000043_evt_cnt.json"),
