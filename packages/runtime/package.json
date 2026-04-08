@@ -12,8 +12,10 @@
 		"@hono/node-server": "^1.19.12",
 		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/sdk": "workspace:*",
+		"alpinejs": "^3.14.9",
 		"hono": "^4.12.10",
 		"hono-pino": "^0.10.3",
+		"htmx.org": "^2.0.4",
 		"kysely": "^0.28.15",
 		"pino": "^10.3.1"
 	},

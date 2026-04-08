@@ -79,16 +79,14 @@ The system SHALL define an `EventBus` interface with two methods:
 
 ### Requirement: createEventBus factory
 
-The system SHALL provide a `createEventBus(consumers: BusConsumer[]): EventBus` factory function. Consumers SHALL be fixed at construction time. There SHALL be no `register()` or `unregister()` methods. Consumer order is determined by array position.
+The system SHALL provide a `createEventBus(consumers: BusConsumer[]): EventBus` factory function. Consumers SHALL be fixed at construction time. There SHALL be no `register()` or `unregister()` methods. Consumer order is determined by array position. The recommended consumer order is: Persistence, WorkQueue, EventStore.
 
 #### Scenario: Create bus with consumers
-
-- **GIVEN** an array of BusConsumer instances `[persistence, workQueue]`
-- **WHEN** `createEventBus([persistence, workQueue])` is called
-- **THEN** the returned EventBus fans out events to persistence first, then workQueue
+- **GIVEN** an array of BusConsumer instances `[persistence, workQueue, eventStore]`
+- **WHEN** `createEventBus([persistence, workQueue, eventStore])` is called
+- **THEN** the returned EventBus fans out events to all three consumers in order
 
 #### Scenario: Empty consumer list
-
 - **GIVEN** an empty array
 - **WHEN** `createEventBus([])` is called
 - **THEN** the returned EventBus emits and bootstraps without error (no-op fan-out)

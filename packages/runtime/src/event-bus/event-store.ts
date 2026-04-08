@@ -25,8 +25,18 @@ interface EventStoreOptions {
 	logger?: { error(msg: string, data: Record<string, unknown>): void };
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: Kysely CTE builder types are deeply generic — constraining them further adds complexity without safety
+type QueryBuilder = SelectQueryBuilder<any, any, any>;
+type CteCallback = (prev: QueryBuilder) => QueryBuilder;
+
+interface CteChain {
+	with(name: string, fn: CteCallback): CteChain;
+	// biome-ignore lint/suspicious/noExplicitAny: Kysely where() has complex overloads — accepting any mirrors the underlying API
+	where(...args: any[]): QueryBuilder;
+}
+
 interface EventStore extends BusConsumer {
-	query: SelectQueryBuilder<Database, "events", object>;
+	with(name: string, fn: CteCallback): CteChain;
 }
 
 const CREATE_TABLE_DDL = `
@@ -42,6 +52,25 @@ CREATE TABLE IF NOT EXISTS events (
 	error JSON,
 	createdAt TIMESTAMPTZ NOT NULL
 )`;
+
+function createCteChain(
+	// biome-ignore lint/suspicious/noExplicitAny: Kysely's with() return type is deeply generic
+	builder: any,
+	lastCte: string,
+): CteChain {
+	return {
+		with(name: string, fn: CteCallback): CteChain {
+			const prev = lastCte;
+			// biome-ignore lint/suspicious/noExplicitAny: Kysely QueryCreator type in CTE callback
+			const next = builder.with(name, (qb: any) => fn(qb.selectFrom(prev)));
+			return createCteChain(next, name);
+		},
+		// biome-ignore lint/suspicious/noExplicitAny: Kysely where() has complex overloads
+		where(...args: any[]) {
+			return builder.selectFrom(lastCte).where(...args);
+		},
+	};
+}
 
 async function createEventStore(options?: EventStoreOptions): Promise<EventStore> {
 	const instance = await DuckDBInstance.create();
@@ -96,8 +125,10 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 			}
 		},
 
-		get query() {
-			return db.selectFrom("events");
+		with(name: string, fn: CteCallback): CteChain {
+			// biome-ignore lint/suspicious/noExplicitAny: Kysely QueryCreator type in CTE callback
+			const builder = db.with(name, (qb: any) => fn(qb.selectFrom("events")));
+			return createCteChain(builder, name);
 		},
 	};
 }
@@ -105,4 +136,4 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 export { createEventStore };
 // biome-ignore lint/performance/noBarrelFile: intentional re-export — consumers must not import kysely directly
 export { sql } from "kysely";
-export type { EventStore, Database, EventsTable };
+export type { EventStore, CteChain, CteCallback, Database, EventsTable };

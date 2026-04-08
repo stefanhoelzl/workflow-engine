@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "./index.js";
-import { type EventStore, createEventStore } from "./event-store.js";
+import { type EventStore, createEventStore, sql } from "./event-store.js";
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
@@ -12,6 +12,11 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		state: "pending",
 		...overrides,
 	};
+}
+
+// Helper: simple query via a pass-through CTE — where(1, "=", 1) is a no-op filter
+function queryAll(store: EventStore) {
+	return store.with("q", (e) => e.selectAll()).where(sql`1`, "=", 1);
 }
 
 let store: EventStore;
@@ -26,7 +31,7 @@ describe("EventStore", () => {
 			const event = makeEvent({ id: "evt_abc" });
 			await store.handle(event);
 
-			const rows = await store.query.where("id", "=", "evt_abc").selectAll().execute();
+			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_abc").selectAll().execute();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.id).toBe("evt_abc");
 			expect(rows[0]?.state).toBe("pending");
@@ -38,9 +43,10 @@ describe("EventStore", () => {
 			await store.handle({ ...event, state: "processing" });
 			await store.handle({ ...event, state: "done", result: "succeeded" });
 
-			const rows = await store.query.where("id", "=", "evt_multi").selectAll().execute();
+			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_multi").selectAll().execute();
 			expect(rows).toHaveLength(3);
-			expect(rows.map((r) => r.state)).toEqual(["pending", "processing", "done"]);
+			expect(// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
+rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
 		});
 
 		it("stores all RuntimeEvent fields", async () => {
@@ -58,10 +64,11 @@ describe("EventStore", () => {
 			};
 			await store.handle(event);
 
-			const rows = await store.query.where("id", "=", "evt_full").selectAll().execute();
+			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_full").selectAll().execute();
 			expect(rows).toHaveLength(1);
 			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-			const row = rows[0]!
+			// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
+const row = rows[0]! as any;
 			expect(row.type).toBe("order.received");
 			expect(row.correlationId).toBe("corr_xyz");
 			expect(row.parentEventId).toBe("evt_parent");
@@ -76,10 +83,7 @@ describe("EventStore", () => {
 			const errorSpy = vi.fn();
 			const errorStore = await createEventStore({ logger: { error: errorSpy } });
 
-			// Insert a valid event first
 			await errorStore.handle(makeEvent());
-
-			// This should not throw — errors are logged
 			expect(errorSpy).not.toHaveBeenCalled();
 		});
 	});
@@ -93,7 +97,7 @@ describe("EventStore", () => {
 			];
 			await store.bootstrap(events);
 
-			const rows = await store.query.selectAll().execute();
+			const rows = await queryAll(store).selectAll().execute();
 			expect(rows).toHaveLength(3);
 		});
 
@@ -105,7 +109,7 @@ describe("EventStore", () => {
 			];
 			await store.bootstrap(events, { pending: false });
 
-			const rows = await store.query.selectAll().execute();
+			const rows = await queryAll(store).selectAll().execute();
 			expect(rows).toHaveLength(3);
 		});
 
@@ -116,66 +120,57 @@ describe("EventStore", () => {
 			];
 			await store.bootstrap(events, { pending: true });
 
-			const rows = await store.query.selectAll().execute();
+			const rows = await queryAll(store).selectAll().execute();
 			expect(rows).toHaveLength(2);
 		});
 
 		it("handles empty array", async () => {
 			await store.bootstrap([], { pending: true });
-			const rows = await store.query.selectAll().execute();
+			const rows = await queryAll(store).selectAll().execute();
 			expect(rows).toHaveLength(0);
 		});
 	});
 
-	describe("query", () => {
-		it("filters by correlationId", async () => {
-			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A" }));
-			await store.handle(makeEvent({ id: "evt_2", correlationId: "corr_A" }));
-			await store.handle(makeEvent({ id: "evt_3", correlationId: "corr_B" }));
+	describe("with (CTE queries)", () => {
+		it("supports CTE with ROW_NUMBER for latest state", async () => {
+			await store.handle(makeEvent({ id: "evt_1", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
+			await store.handle(makeEvent({ id: "evt_1", state: "processing", createdAt: new Date("2025-01-01T10:01:00Z") }));
+			await store.handle(makeEvent({ id: "evt_1", state: "done", createdAt: new Date("2025-01-01T10:02:00Z") }));
 
-			const rows = await store.query.where("correlationId", "=", "corr_A").selectAll().execute();
-			expect(rows).toHaveLength(2);
-			expect(rows.every((r) => r.correlationId === "corr_A")).toBe(true);
-		});
-
-		it("supports GROUP BY with aggregation via expression builder", async () => {
-			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A" }));
-			await store.handle(makeEvent({ id: "evt_2", correlationId: "corr_A" }));
-			await store.handle(makeEvent({ id: "evt_3", correlationId: "corr_A" }));
-			await store.handle(makeEvent({ id: "evt_4", correlationId: "corr_B" }));
-			await store.handle(makeEvent({ id: "evt_5", correlationId: "corr_B" }));
-
-			const rows = await store.query
-				.groupBy("correlationId")
-				.select((eb) => [
-					"correlationId",
-					eb.fn.count("id").as("eventCount"),
-				])
-				.execute();
-
-			expect(rows).toHaveLength(2);
-			const corrA = rows.find((r) => r.correlationId === "corr_A");
-			const corrB = rows.find((r) => r.correlationId === "corr_B");
-			expect(Number(corrA?.eventCount)).toBe(3);
-			expect(Number(corrB?.eventCount)).toBe(2);
-		});
-
-		it("supports min/max aggregation", async () => {
-			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", createdAt: new Date("2025-01-01T10:00:00Z") }));
-			await store.handle(makeEvent({ id: "evt_2", correlationId: "corr_A", createdAt: new Date("2025-01-01T12:00:00Z") }));
-
-			const rows = await store.query
-				.groupBy("correlationId")
-				.select((eb) => [
-					"correlationId",
-					eb.fn.min("createdAt").as("firstTimestamp"),
-					eb.fn.max("createdAt").as("lastTimestamp"),
-				])
+			const rows = await store
+				.with("latest", (events) =>
+					events.selectAll().select(
+						sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as("rn"),
+					),
+				)
+				.where("rn", "=", 1)
+				.selectAll()
 				.execute();
 
 			expect(rows).toHaveLength(1);
-			expect(rows[0]?.firstTimestamp).toBeTruthy();
-			expect(rows[0]?.lastTimestamp).toBeTruthy();
+			// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
+			expect((rows[0] as any)?.state).toBe("done");
+		});
+
+		it("supports chained CTEs", async () => {
+			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
+			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "done", createdAt: new Date("2025-01-01T10:01:00Z") }));
+			await store.handle(makeEvent({ id: "evt_2", correlationId: "corr_B", state: "failed", createdAt: new Date("2025-01-01T10:02:00Z") }));
+
+			const rows = await store
+				.with("latest", (events) =>
+					events.selectAll().select(
+						sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as("rn"),
+					),
+				)
+				.with("current_events", (latest) =>
+					latest.selectAll().where("rn", "=", 1),
+				)
+				.where(sql`1`, "=", 1)
+				.select(["correlationId", "state"])
+				.execute();
+
+			expect(rows).toHaveLength(2);
 		});
 	});
 });
