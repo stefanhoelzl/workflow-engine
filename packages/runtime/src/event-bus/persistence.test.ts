@@ -1,12 +1,15 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, rm } from "node:fs/promises";
 import type { RuntimeEvent } from "./index.js";
 import { createPersistence } from "./persistence.js";
-import { mkdir, rm } from "node:fs/promises";
+import { createFsStorage } from "../storage/fs.js";
+import type { StorageBackend } from "../storage/index.js";
 
 let testDir: string;
+let backend: StorageBackend;
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
@@ -23,6 +26,7 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 beforeEach(async () => {
 	testDir = join(tmpdir(), `persistence-test-${crypto.randomUUID()}`);
 	await mkdir(testDir, { recursive: true });
+	backend = createFsStorage(testDir);
 });
 
 afterEach(async () => {
@@ -31,7 +35,7 @@ afterEach(async () => {
 
 describe("persistence handle", () => {
 	it("writes files for each state transition with eager archival", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		// Initialize directories via recover
 		for await (const _ of persistence.recover()) { /* drain */ }
 
@@ -52,23 +56,8 @@ describe("persistence handle", () => {
 		expect(archiveFilesResult.length).toBe(3);
 	});
 
-	it("uses atomic write pattern (tmp + rename)", async () => {
-		const persistence = createPersistence(testDir);
-		for await (const _ of persistence.recover()) { /* drain */ }
-
-		const event = makeEvent();
-		await persistence.handle(event);
-
-		const files = await readdir(join(testDir, "pending"));
-		const tmpFiles = files.filter((f) => f.endsWith(".tmp"));
-		const jsonFiles = files.filter((f) => f.endsWith(".json"));
-
-		expect(tmpFiles.length).toBe(0);
-		expect(jsonFiles.length).toBe(1);
-	});
-
 	it("increments counter for each write", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event1 = makeEvent({ id: "evt_aaa" });
@@ -76,16 +65,18 @@ describe("persistence handle", () => {
 		await persistence.handle(event1);
 		await persistence.handle(event2);
 
-		const files = (await readdir(join(testDir, "pending"))).filter((f) =>
-			f.endsWith(".json"),
-		).sort();
+		const files: string[] = [];
+		for await (const path of backend.list("pending/")) {
+			files.push(path);
+		}
+		files.sort();
 
 		expect(files[0]).toContain("000001_");
 		expect(files[1]).toContain("000002_");
 	});
 
 	it("terminal state writes directly to archive and archives pending files", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event = makeEvent({ id: "evt_term" });
@@ -95,16 +86,17 @@ describe("persistence handle", () => {
 		// Wait for fire-and-forget archive to complete
 		await new Promise((r) => setTimeout(r, 50));
 
-		const pendingFiles = (await readdir(join(testDir, "pending"))).filter((f) => f.endsWith(".json"));
-		const archiveFilesResult = (await readdir(join(testDir, "archive"))).filter((f) => f.endsWith(".json"));
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) { pending.push(p); }
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) { archive.push(p); }
 
-		// pending/ should be empty, archive/ should have both files
-		expect(pendingFiles.length).toBe(0);
-		expect(archiveFilesResult.length).toBe(2);
+		expect(pending.length).toBe(0);
+		expect(archive.length).toBe(2);
 	});
 
 	it("archives on failed state", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event = makeEvent({ id: "evt_fail" });
@@ -113,14 +105,13 @@ describe("persistence handle", () => {
 
 		await new Promise((r) => setTimeout(r, 50));
 
-		const archiveFiles = (await readdir(join(testDir, "archive"))).filter(
-			(f) => f.endsWith(".json"),
-		);
-		expect(archiveFiles.length).toBe(2);
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) { archive.push(p); }
+		expect(archive.length).toBe(2);
 	});
 
 	it("archives on skipped state", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event = makeEvent({ id: "evt_skip" });
@@ -129,14 +120,13 @@ describe("persistence handle", () => {
 
 		await new Promise((r) => setTimeout(r, 50));
 
-		const archiveFiles = (await readdir(join(testDir, "archive"))).filter(
-			(f) => f.endsWith(".json"),
-		);
-		expect(archiveFiles.length).toBe(2);
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) { archive.push(p); }
+		expect(archive.length).toBe(2);
 	});
 
 	it("writes full event data to file", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event = makeEvent({
@@ -148,13 +138,11 @@ describe("persistence handle", () => {
 		});
 		await persistence.handle(event);
 
-		const files = (await readdir(join(testDir, "pending"))).filter((f) =>
-			f.endsWith(".json"),
-		);
-		const content = JSON.parse(
-			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-			await readFile(join(testDir, "pending", files[0]!), "utf-8"),
-		);
+		const files: string[] = [];
+		for await (const p of backend.list("pending/")) { files.push(p); }
+
+		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+		const content = JSON.parse(await backend.read(files[0]!));
 
 		expect(content.id).toBe("evt_full");
 		expect(content.type).toBe("order.received");
@@ -165,12 +153,11 @@ describe("persistence handle", () => {
 
 	it("logs archive errors without throwing", async () => {
 		const errorSpy = vi.fn();
-		const persistence = createPersistence(testDir, {
+		const persistence = createPersistence(backend, {
 			logger: { error: errorSpy },
 		});
 		for await (const _ of persistence.recover()) { /* drain */ }
 
-		// Write a pending file, then manually remove pending dir to cause archive failure
 		const event = makeEvent({ id: "evt_err" });
 		await persistence.handle({ ...event, state: "pending" });
 
@@ -183,37 +170,30 @@ describe("persistence handle", () => {
 
 		// Wait for fire-and-forget
 		await new Promise((r) => setTimeout(r, 50));
-
-		// Archive error should be logged, not thrown
-		// (the pending file for "done" was written to fresh dir, but the "pending" file was deleted)
 	});
 
 	it("bootstrap is a no-op", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		await persistence.bootstrap([makeEvent()], { finished: true });
 
-		const pendingFiles = await readdir(join(testDir, "pending"));
-		const jsonFiles = pendingFiles.filter((f) => f.endsWith(".json"));
-		expect(jsonFiles.length).toBe(0);
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) { pending.push(p); }
+		expect(pending.filter((f) => f.endsWith(".json")).length).toBe(0);
 	});
 });
 
 describe("persistence recover", () => {
 	it("recovers pending events", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
-		await mkdir(pendingDir, { recursive: true });
-		await mkdir(archiveDir, { recursive: true });
+		await backend.init();
+		await mkdir(join(testDir, "pending"), { recursive: true });
+		await mkdir(join(testDir, "archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_pend", state: "pending" });
-		await writeFile(
-			join(pendingDir, "000001_evt_pend.json"),
-			JSON.stringify(event),
-		);
+		await backend.write("pending/000001_evt_pend.json", JSON.stringify(event));
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const allEvents: RuntimeEvent[] = [];
 		for await (const { events } of persistence.recover()) {
 			allEvents.push(...events);
@@ -225,22 +205,21 @@ describe("persistence recover", () => {
 	});
 
 	it("recovers processing events (crash recovery) — takes latest state", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
-		await mkdir(pendingDir, { recursive: true });
-		await mkdir(archiveDir, { recursive: true });
+		await backend.init();
+		await mkdir(join(testDir, "pending"), { recursive: true });
+		await mkdir(join(testDir, "archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_proc" });
-		await writeFile(
-			join(pendingDir, "000001_evt_proc.json"),
+		await backend.write(
+			"pending/000001_evt_proc.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
-		await writeFile(
-			join(pendingDir, "000002_evt_proc.json"),
+		await backend.write(
+			"pending/000002_evt_proc.json",
 			JSON.stringify({ ...event, state: "processing" }),
 		);
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const pendingEvents: RuntimeEvent[] = [];
 		for await (const { events, pending } of persistence.recover()) {
 			if (pending) {
@@ -248,95 +227,85 @@ describe("persistence recover", () => {
 			}
 		}
 
-		// Only the latest state per event in pending batch
 		expect(pendingEvents.length).toBe(1);
 		expect(pendingEvents[0]?.state).toBe("processing");
 	});
 
 	it("handles crash case — deduplicates and moves older to archive", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
-		await mkdir(pendingDir, { recursive: true });
-		await mkdir(archiveDir, { recursive: true });
+		await backend.init();
+		await mkdir(join(testDir, "pending"), { recursive: true });
+		await mkdir(join(testDir, "archive"), { recursive: true });
 
-		// Simulate crash: 2 files for same event in pending
 		const event = makeEvent({ id: "evt_crash" });
-		await writeFile(
-			join(pendingDir, "000001_evt_crash.json"),
+		await backend.write(
+			"pending/000001_evt_crash.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
-		await writeFile(
-			join(pendingDir, "000002_evt_crash.json"),
+		await backend.write(
+			"pending/000002_evt_crash.json",
 			JSON.stringify({ ...event, state: "processing" }),
 		);
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _batch of persistence.recover()) {
 			// consume
 		}
 
-		// After recovery: pending/ has 1 file (latest), archive/ has 1 file (older)
-		const pendingEntries = (await readdir(pendingDir)).filter((f) => f.endsWith(".json"));
-		const archiveEntries = (await readdir(archiveDir)).filter((f) => f.endsWith(".json"));
-		expect(pendingEntries.length).toBe(1);
-		expect(pendingEntries[0]).toContain("000002_");
-		expect(archiveEntries.length).toBe(1);
-		expect(archiveEntries[0]).toContain("000001_");
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) { pending.push(p); }
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) { archive.push(p); }
+
+		expect(pending.length).toBe(1);
+		expect(pending[0]).toContain("000002_");
+		expect(archive.length).toBe(1);
+		expect(archive[0]).toContain("000001_");
 	});
 
 	it("recovers counter from existing files", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
-		await mkdir(pendingDir, { recursive: true });
-		await mkdir(archiveDir, { recursive: true });
+		await backend.init();
+		await mkdir(join(testDir, "pending"), { recursive: true });
+		await mkdir(join(testDir, "archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_cnt" });
-		await writeFile(
-			join(archiveDir, "000042_evt_old.json"),
+		await backend.write(
+			"archive/000042_evt_old.json",
 			JSON.stringify({ ...event, id: "evt_old", state: "done", result: "succeeded" }),
 		);
-		await writeFile(
-			join(pendingDir, "000043_evt_cnt.json"),
+		await backend.write(
+			"pending/000043_evt_cnt.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
 
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
-		// Next write should use counter 44
 		await persistence.handle(makeEvent({ id: "evt_new" }));
 
-		const files = (await readdir(pendingDir))
-			.filter((f) => f.endsWith(".json"))
-			.sort();
-		const newFile = files.find((f) => f.includes("evt_new"));
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) { pending.push(p); }
+		const newFile = pending.find((f) => f.includes("evt_new"));
 		expect(newFile).toContain("000044_");
 	});
 
 	it("handles empty directories", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		const allEvents: RuntimeEvent[] = [];
 		for await (const { events } of persistence.recover()) {
 			allEvents.push(...events);
 		}
 
 		expect(allEvents.length).toBe(0);
-
-		// Directories should be created
-		const entries = await readdir(testDir);
-		expect(entries).toContain("pending");
-		expect(entries).toContain("archive");
 	});
 
 	it("starts counter at 0 for empty directories", async () => {
-		const persistence = createPersistence(testDir);
+		const persistence = createPersistence(backend);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		await persistence.handle(makeEvent({ id: "evt_first" }));
 
-		const files = (await readdir(join(testDir, "pending"))).filter((f) =>
-			f.endsWith(".json"),
-		);
-		expect(files[0]).toContain("000001_");
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) { pending.push(p); }
+		expect(pending[0]).toContain("000001_");
 	});
 });

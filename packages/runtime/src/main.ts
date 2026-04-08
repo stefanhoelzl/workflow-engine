@@ -6,6 +6,9 @@ import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createEventStore } from "./event-bus/event-store.js";
 import { type PersistenceConsumer, createPersistence } from "./event-bus/persistence.js";
+import { createFsStorage } from "./storage/fs.js";
+import type { StorageBackend } from "./storage/index.js";
+import { createS3Storage } from "./storage/s3.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventFactory } from "./event-factory.js";
 import { loadWorkflows } from "./loader.js";
@@ -72,8 +75,22 @@ async function init() {
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
 	const consumers: BusConsumer[] = [];
-	const persistence = config.persistencePath
-		? createPersistence(config.persistencePath, {
+
+	let storageBackend: StorageBackend | undefined;
+	if (config.persistenceS3Bucket) {
+		storageBackend = createS3Storage({
+			bucket: config.persistenceS3Bucket,
+			accessKeyId: config.persistenceS3AccessKeyId ?? "",
+			secretAccessKey: config.persistenceS3SecretAccessKey ?? "",
+			...(config.persistenceS3Endpoint ? { endpoint: config.persistenceS3Endpoint } : {}),
+			...(config.persistenceS3Region ? { region: config.persistenceS3Region } : {}),
+		});
+	} else if (config.persistencePath) {
+		storageBackend = createFsStorage(config.persistencePath);
+	}
+
+	const persistence = storageBackend
+		? createPersistence(storageBackend, {
 				concurrency: config.fileIoConcurrency,
 				logger: runtimeLogger,
 			})

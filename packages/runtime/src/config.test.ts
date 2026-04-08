@@ -13,18 +13,22 @@ describe("createConfig", () => {
 			// biome-ignore lint/style/useNamingConvention: env var name
 			PORT: "3000",
 		});
-		expect(config).toEqual({ logLevel: "debug", port: 3000, fileIoConcurrency: 10, workflowDir: "/tmp/workflows" });
+		expect(config.logLevel).toBe("debug");
+		expect(config.port).toBe(3000);
 	});
 
 	it("uses defaults for optional values", () => {
 		const config = createConfig(REQUIRED);
-		expect(config).toEqual({ logLevel: "info", port: 8080, fileIoConcurrency: 10, workflowDir: "/tmp/workflows" });
+		expect(config.logLevel).toBe("info");
+		expect(config.port).toBe(8080);
+		expect(config.fileIoConcurrency).toBe(10);
 	});
 
 	it("fills missing optional values with defaults", () => {
 		// biome-ignore lint/style/useNamingConvention: env var name
 		const config = createConfig({ ...REQUIRED, PORT: "9090" });
-		expect(config).toEqual({ logLevel: "info", port: 9090, fileIoConcurrency: 10, workflowDir: "/tmp/workflows" });
+		expect(config.port).toBe(9090);
+		expect(config.logLevel).toBe("info");
 	});
 
 	it("rejects invalid log level", () => {
@@ -39,5 +43,54 @@ describe("createConfig", () => {
 
 	it("requires WORKFLOW_DIR", () => {
 		expect(() => createConfig({})).toThrow();
+	});
+
+	it("parses S3 config fields", () => {
+		const config = createConfig({
+			...REQUIRED,
+			// biome-ignore lint/style/useNamingConvention: env var name
+			PERSISTENCE_S3_BUCKET: "my-bucket",
+			// biome-ignore lint/style/useNamingConvention: env var name
+			PERSISTENCE_S3_ACCESS_KEY_ID: "key",
+			// biome-ignore lint/style/useNamingConvention: env var name
+			PERSISTENCE_S3_SECRET_ACCESS_KEY: "secret",
+			// biome-ignore lint/style/useNamingConvention: env var name
+			PERSISTENCE_S3_ENDPOINT: "http://minio:9000",
+			// biome-ignore lint/style/useNamingConvention: env var name
+			PERSISTENCE_S3_REGION: "eu-central-1",
+		});
+		expect(config.persistenceS3Bucket).toBe("my-bucket");
+		expect(config.persistenceS3AccessKeyId).toBe("key");
+		expect(config.persistenceS3SecretAccessKey).toBe("secret");
+		expect(config.persistenceS3Endpoint).toBe("http://minio:9000");
+		expect(config.persistenceS3Region).toBe("eu-central-1");
+	});
+
+	it("S3 fields are undefined when not provided", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.persistenceS3Bucket).toBeUndefined();
+		expect(config.persistenceS3AccessKeyId).toBeUndefined();
+	});
+
+	it("rejects S3 bucket without credentials", () => {
+		expect(() =>
+			createConfig({
+				...REQUIRED,
+				// biome-ignore lint/style/useNamingConvention: env var name
+				PERSISTENCE_S3_BUCKET: "my-bucket",
+			}),
+		).toThrow("requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY");
+	});
+
+	it("rejects both PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET", () => {
+		expect(() =>
+			createConfig({
+				...REQUIRED,
+				// biome-ignore lint/style/useNamingConvention: env var name
+				PERSISTENCE_PATH: "/data/events",
+				// biome-ignore lint/style/useNamingConvention: env var name
+				PERSISTENCE_S3_BUCKET: "my-bucket",
+			}),
+		).toThrow("mutually exclusive");
 	});
 });

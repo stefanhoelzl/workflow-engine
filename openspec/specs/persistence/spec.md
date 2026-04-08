@@ -8,12 +8,12 @@ Provide crash-resilient event persistence using an append-only filesystem queue,
 
 ### Requirement: Persistence consumer implements BusConsumer
 
-The persistence consumer SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function that accepts the queue directory path and returns an object with `handle()`, `bootstrap()`, and `recover()`.
+The persistence consumer SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function that accepts a `StorageBackend` instance and returns an object with `handle()`, `bootstrap()`, and `recover()`.
 
 #### Scenario: Factory creates persistence consumer
 
-- **GIVEN** a directory path `"./data/queue"`
-- **WHEN** the persistence factory is called
+- **GIVEN** a `StorageBackend` instance
+- **WHEN** the persistence factory is called with the backend
 - **THEN** the returned object implements `BusConsumer` (handle + bootstrap)
 - **AND** exposes a `recover()` method for startup
 
@@ -74,26 +74,26 @@ Files SHALL use the naming pattern `<counter>_evt_<uuid>.json` where counter is 
 
 ### Requirement: Atomic file writes
 
-All file writes SHALL use a write-then-rename pattern: write content to a `<filepath>.tmp` temporary file, then atomically rename to the final path.
+All file writes SHALL be delegated to `StorageBackend.write()`. The backend is responsible for atomicity guarantees (FS uses tmp+rename, S3 uses PutObject).
 
-#### Scenario: Crash during file write
+#### Scenario: Write delegates to StorageBackend
 
-- **GIVEN** the process crashes while writing an event file
-- **WHEN** the system restarts
-- **THEN** no partial or corrupted JSON files exist in `pending/`
-- **AND** only `.tmp` files (ignored on recovery) may remain
+- **GIVEN** a persistence consumer created with a `StorageBackend`
+- **WHEN** `handle(event)` is called
+- **THEN** it SHALL call `backend.write(path, data)` to persist the event
+- **AND** it SHALL NOT import or use `node:fs/promises` directly
 
 ### Requirement: Fire-and-forget archive on terminal states
 
-When `handle()` receives a RuntimeEvent with `state === "done"`, it SHALL write the terminal state file (awaited), then initiate archiving of all files for that event ID without awaiting. Archive moves files from `pending/` to `archive/` in ascending counter order.
+When `handle()` receives a RuntimeEvent with `state === "done"`, it SHALL write the terminal state file (awaited), then initiate archiving of all files for that event ID without awaiting. Archive moves files from `pending/` to `archive/` in ascending counter order using `StorageBackend.move()`.
 
-#### Scenario: Archive does not block the bus
+#### Scenario: Archive uses StorageBackend.move
 
 - **GIVEN** an event with `state: "done"` and `result: "succeeded"` is emitted to the bus
 - **WHEN** persistence's `handle()` is called
 - **THEN** the terminal state file write is awaited
 - **AND** `handle()` returns before archiving completes
-- **AND** archiving proceeds in the background
+- **AND** archiving proceeds in the background via `backend.move()`
 
 #### Scenario: Archive failure is logged but does not throw
 
@@ -114,50 +114,14 @@ The persistence consumer's `bootstrap()` SHALL be an empty implementation. The p
 
 ### Requirement: recover() scans filesystem and yields batches
 
-The persistence consumer SHALL expose a `recover()` method that returns an `AsyncIterable<RecoveryBatch>` where `RecoveryBatch` is `{ events: RuntimeEvent[], pending: boolean, finished: boolean }`. It SHALL:
+The persistence consumer SHALL expose a `recover()` method that returns an `AsyncIterable<RecoveryBatch>`. It SHALL use `StorageBackend.list()` to discover event files instead of `readdir` directly.
 
-1. Create `pending/` and `archive/` directories if they do not exist
-2. Recover the global counter from the maximum counter across both `pending/` and `archive/`
-3. Read `pending/` files, group by event ID, take the latest (highest counter) per event, and move older files to `archive/`
-4. Yield pending events with `{ pending: true }`
-5. Read all `archive/` files
-6. Yield archive events with `{ pending: false, finished: true }`
-7. If no events exist in either directory, yield an empty batch with `{ pending: true, finished: true }`
+#### Scenario: Recovery uses StorageBackend.list
 
-#### Scenario: Recover single pending event
-
-- **GIVEN** `pending/` contains `000001_evt_abc.json` with `state: "pending"`
-- **AND** `archive/` is empty
-- **WHEN** `recover()` is iterated
-- **THEN** one batch is yielded with `pending: true`, `finished: true`, containing the event
-
-#### Scenario: Recover handles crash case (2 files per event)
-
-- **GIVEN** `pending/` contains `000001_evt_abc.json` (pending) and `000002_evt_abc.json` (processing)
-- **WHEN** `recover()` is iterated
-- **THEN** `000001_evt_abc.json` is moved to `archive/`
-- **AND** a batch with `pending: true` is yielded containing only the processing event
-
-#### Scenario: Recover yields pending then archive
-
-- **GIVEN** `pending/` contains `000003_evt_active.json` (pending)
-- **AND** `archive/` contains `000001_evt_done.json` (pending) and `000002_evt_done.json` (done)
-- **WHEN** `recover()` is iterated
-- **THEN** the first batch has `pending: true`, `finished: false` with the active event
-- **AND** the second batch has `pending: false`, `finished: true` with both archived events
-
-#### Scenario: Counter recovered from max across both directories
-
-- **GIVEN** `archive/` contains `000042_evt_old.json` and `pending/` contains `000043_evt_abc.json`
-- **WHEN** `recover()` completes
-- **THEN** the next `handle()` call uses counter value 44
-
-#### Scenario: Empty directories
-
-- **GIVEN** both `pending/` and `archive/` are empty
-- **WHEN** `recover()` is iterated
-- **THEN** one batch is yielded with `events: []`, `pending: true`, `finished: true`
-- **AND** the counter starts at 0
+- **GIVEN** a persistence consumer with a `StorageBackend`
+- **WHEN** `recover()` is called
+- **THEN** it SHALL use `backend.list("pending/")` and `backend.list("archive/")` to discover files
+- **AND** it SHALL use `backend.read(path)` to load event content
 
 ### Requirement: Single-threaded counter
 
