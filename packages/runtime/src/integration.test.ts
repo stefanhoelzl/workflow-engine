@@ -5,12 +5,11 @@ import type { Action } from "./actions/index.js";
 import { ContextFactory } from "./context/index.js";
 import { InMemoryEventQueue } from "./event-queue/in-memory.js";
 import { type Logger, createHttpLogger, createLogger } from "./logger.js";
-import { Scheduler } from "./scheduler/index.js";
-import { createServer } from "./server.js";
+import { createScheduler } from "./services/scheduler.js";
+import { createApp } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
-const silentHttpLogger = createHttpLogger("test", { level: "silent" });
 
 const passthroughSchema = { parse: (d: unknown) => d };
 const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
@@ -90,11 +89,10 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
-		const scheduler = new Scheduler(queue, actions, factory.action, silentLogger);
+		const scheduler = createScheduler(queue, actions, factory.action, silentLogger);
 		scheduler.start();
 
-		const app = createServer(
-			silentHttpLogger,
+		const app = createApp(
 			httpTriggerMiddleware(registry, factory.httpTrigger),
 		);
 
@@ -112,15 +110,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		// 2. validateOrder emits → dispatch → fulfillOrder + notifyCustomer
 		await new Promise((r) => setTimeout(r, 100));
 
-		scheduler.stop();
-		await queue.enqueue({
-			id: "evt_stop",
-			type: "stop",
-			payload: null,
-			correlationId: "corr_stop",
-			createdAt: new Date(),
-		});
-		await scheduler.stopped;
+		await scheduler.stop();
 
 		expect(fulfillHandler).toHaveBeenCalledTimes(1);
 		expect(notifyHandler).toHaveBeenCalledTimes(1);
@@ -165,10 +155,10 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
-		const scheduler = new Scheduler(queue, actions, factory.action, schedulerLogger);
+		const scheduler = createScheduler(queue, actions, factory.action, schedulerLogger);
 		scheduler.start();
 
-		const app = createServer(
+		const app = createApp(
 			httpLogger,
 			httpTriggerMiddleware(registry, factory.httpTrigger),
 		);
@@ -181,15 +171,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 
 		await new Promise((r) => setTimeout(r, 100));
 
-		scheduler.stop();
-		await queue.enqueue({
-			id: "evt_stop",
-			type: "stop",
-			payload: null,
-			correlationId: "corr_stop",
-			createdAt: new Date(),
-		});
-		await scheduler.stopped;
+		await scheduler.stop();
 
 		const output = lines();
 

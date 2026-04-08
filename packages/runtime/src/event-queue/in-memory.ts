@@ -32,15 +32,29 @@ class InMemoryEventQueue implements EventQueue {
 		return Promise.resolve();
 	}
 
-	dequeue(): Promise<Event> {
+	dequeue(signal?: AbortSignal): Promise<Event> {
 		const entry = this.#entries.find((e) => e.state === "pending");
 		if (entry) {
 			entry.state = "processing";
 			return Promise.resolve(entry.event);
 		}
 
-		return new Promise<Event>((resolve) => {
-			this.#waiters.push(resolve);
+		return new Promise<Event>((resolve, reject) => {
+			const waiter = (event: Event) => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve(event);
+			};
+
+			const onAbort = () => {
+				const idx = this.#waiters.indexOf(waiter);
+				if (idx !== -1) {
+					this.#waiters.splice(idx, 1);
+				}
+				reject(signal?.reason);
+			};
+
+			this.#waiters.push(waiter);
+			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 

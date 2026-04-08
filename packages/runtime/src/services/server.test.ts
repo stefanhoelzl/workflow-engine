@@ -1,9 +1,9 @@
 import { constants } from "node:http2";
 import type { MiddlewareHandler } from "hono";
 import { describe, expect, it } from "vitest";
-import { createServer } from "./server.js";
+import { createApp } from "./server.js";
 
-describe("createServer", () => {
+describe("createApp", () => {
 	it("mounts middleware in order", async () => {
 		const order: string[] = [];
 		const mwA: MiddlewareHandler = async (_c, next) => {
@@ -15,7 +15,7 @@ describe("createServer", () => {
 			await next();
 		};
 
-		const app = createServer(
+		const app = createApp(
 			{ match: "/test/*", handler: mwA },
 			{ match: "/test/*", handler: mwB },
 		);
@@ -25,7 +25,7 @@ describe("createServer", () => {
 	});
 
 	it("returns 404 for unmatched routes", async () => {
-		const app = createServer();
+		const app = createApp();
 
 		const res = await app.request("/nonexistent", { method: "GET" });
 
