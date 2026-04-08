@@ -1,21 +1,4 @@
-# Scheduler Specification
-
-## Purpose
-
-Process events from the queue by loading action code into sandboxed isolates, managing concurrency, and handling success/failure outcomes.
-
-## Requirements
-
-### Requirement: Concurrent processing
-
-The system SHALL process up to N events in parallel, where N is a configurable global concurrency limit.
-
-#### Scenario: Concurrency limit reached
-
-- GIVEN a concurrency limit of 10
-- AND 10 actions are currently executing
-- WHEN a new event is available in the pending list
-- THEN the scheduler waits until a slot frees up before starting the next execution
+## MODIFIED Requirements
 
 ### Requirement: Processing lifecycle
 
@@ -55,6 +38,17 @@ The scheduler SHALL run a loop that dequeues events from the WorkQueue, emits st
 - **THEN** the scheduler emits `{...event, state: "processing"}` to the bus
 - **AND** the scheduler emits `{...event, state: "failed", error: "ambiguous match"}` to the bus
 
+### Requirement: Scheduler is a closure-based factory
+
+The scheduler SHALL be created via `createScheduler(workQueue, bus, actions, createContext, logger)` which returns a `Service` object. The factory accepts a `WorkQueue` for dequeuing events and an `EventBus` for emitting state transitions. There SHALL be no exported `Scheduler` class.
+
+#### Scenario: Factory returns Service
+
+- **GIVEN** a valid WorkQueue, EventBus, actions array, context factory, and logger
+- **WHEN** `createScheduler(workQueue, bus, actions, createContext, logger)` is called
+- **THEN** the returned object has `start` and `stop` methods
+- **AND** no class instance is exposed
+
 ### Requirement: Scheduler start and stop
 
 The scheduler SHALL be created via a `createScheduler()` factory function that returns a `Service` (with `start(): Promise<void>` and `stop(): Promise<void>`). The `start()` promise resolves when the scheduler is stopped cleanly and rejects if the loop encounters an unrecoverable error. `stop()` signals the scheduler to stop, aborts any pending `dequeue()` call via `AbortSignal`, and resolves when the loop has fully exited.
@@ -88,28 +82,6 @@ The scheduler SHALL be created via a `createScheduler()` factory function that r
 - **GIVEN** a running scheduler
 - **WHEN** a bus emit throws an unexpected error
 - **THEN** the `start()` promise rejects with that error
-
-### Requirement: Scheduler is a closure-based factory
-
-The scheduler SHALL be created via `createScheduler(workQueue, bus, actions, createContext, logger)` which returns a `Service` object. The factory accepts a `WorkQueue` for dequeuing events and an `EventBus` for emitting state transitions. There SHALL be no exported `Scheduler` class.
-
-#### Scenario: Factory returns Service
-
-- **GIVEN** a valid WorkQueue, EventBus, actions array, context factory, and logger
-- **WHEN** `createScheduler(workQueue, bus, actions, createContext, logger)` is called
-- **THEN** the returned object has `start` and `stop` methods
-- **AND** no class instance is exposed
-
-### Requirement: Isolate disposal
-
-The system SHALL dispose the V8 Isolate after every action execution, regardless of success or failure.
-
-#### Scenario: Memory reclamation
-
-- GIVEN an action that allocates 7 MB of data
-- WHEN the action completes
-- THEN the isolate is disposed
-- AND the 7 MB is reclaimed by the host process
 
 ### Requirement: Actions receive Event not RuntimeEvent
 

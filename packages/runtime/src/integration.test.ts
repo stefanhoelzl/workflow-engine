@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
 import { ContextFactory } from "./context/index.js";
-import { InMemoryEventQueue } from "./event-queue/in-memory.js";
+import { createEventBus } from "./event-bus/index.js";
+import { createWorkQueue } from "./event-bus/work-queue.js";
 import { type Logger, createHttpLogger, createLogger } from "./logger.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
@@ -57,8 +58,9 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 
-		const queue = new InMemoryEventQueue();
-		const factory = new ContextFactory(queue, defaultSchemas, globalThis.fetch, {}, silentLogger);
+		const workQueue = createWorkQueue();
+		const bus = createEventBus([workQueue]);
+		const factory = new ContextFactory(bus, defaultSchemas, globalThis.fetch, {}, silentLogger);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();
@@ -89,7 +91,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
-		const scheduler = createScheduler(queue, actions, factory.action, silentLogger);
+		const scheduler = createScheduler(workQueue, bus, actions, factory.action, silentLogger);
 		scheduler.start();
 
 		const app = createApp(
@@ -105,9 +107,6 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		expect(res.status).toBe(202);
 		expect(await res.json()).toEqual({ accepted: true });
 
-		// Give the scheduler time to process the full chain:
-		// 1. trigger event → dispatch → validateOrder
-		// 2. validateOrder emits → dispatch → fulfillOrder + notifyCustomer
 		await new Promise((r) => setTimeout(r, 100));
 
 		await scheduler.stop();
@@ -115,17 +114,14 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		expect(fulfillHandler).toHaveBeenCalledTimes(1);
 		expect(notifyHandler).toHaveBeenCalledTimes(1);
 
-		// Verify correlationId propagates through the chain
 		const fulfillCtx = fulfillHandler.mock.calls.at(0)?.at(0);
 		const notifyCtx = notifyHandler.mock.calls.at(0)?.at(0);
 		expect(fulfillCtx.event.correlationId).toBe(notifyCtx.event.correlationId);
 		expect(fulfillCtx.event.correlationId).toMatch(CORR_PREFIX);
 
-		// Verify payload propagates
 		expect(fulfillCtx.event.payload).toEqual({ orderId: "abc" });
 		expect(notifyCtx.event.payload).toEqual({ orderId: "abc" });
 
-		// Verify parentEventId is set (events came through dispatch)
 		expect(fulfillCtx.event.parentEventId).toBeDefined();
 		expect(notifyCtx.event.parentEventId).toBeDefined();
 	});
@@ -139,9 +135,10 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 
-		const queue = new InMemoryEventQueue();
+		const workQueue = createWorkQueue();
+		const bus = createEventBus([workQueue]);
 		const { contextLogger, schedulerLogger, httpLogger, lines } = createTestLoggers();
-		const factory = new ContextFactory(queue, defaultSchemas, globalThis.fetch, {}, contextLogger);
+		const factory = new ContextFactory(bus, defaultSchemas, globalThis.fetch, {}, contextLogger);
 
 		const actions: Action[] = [
 			{
@@ -155,7 +152,7 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 		const dispatch = createDispatchAction(actions);
 		actions.push(dispatch);
 
-		const scheduler = createScheduler(queue, actions, factory.action, schedulerLogger);
+		const scheduler = createScheduler(workQueue, bus, actions, factory.action, schedulerLogger);
 		scheduler.start();
 
 		const app = createApp(
@@ -175,29 +172,23 @@ describe("integration: HTTP → trigger → dispatch → action → emit → fan
 
 		const output = lines();
 
-		// HTTP access log (hono-pino format)
 		const httpLogs = output.filter((l) => l.name === "http");
 		expect(httpLogs.length).toBeGreaterThanOrEqual(1);
 		const responseLog = httpLogs.find((l) => l.msg === "Request completed");
 		expect(responseLog).toBeDefined();
 		expect(responseLog?.responseTime).toBeTypeOf("number");
 
-		// Context emit logs
 		const contextLogs = output.filter((l) => l.name === "context" && l.msg === "event.emitted");
 		expect(contextLogs.length).toBeGreaterThanOrEqual(1);
-		// All emitted events should share the same correlationId
 		const correlationIds = new Set(contextLogs.map((l) => l.correlationId));
-		// corr_stop is from the stop event, filter it out
 		correlationIds.delete("corr_stop");
 		expect(correlationIds.size).toBe(1);
 
-		// Scheduler logs
 		const schedulerLogs = output.filter((l) => l.name === "scheduler");
 		const started = schedulerLogs.filter((l) => l.msg === "action.started");
 		const completed = schedulerLogs.filter((l) => l.msg === "action.completed");
 		expect(started.length).toBeGreaterThanOrEqual(1);
 		expect(completed.length).toBeGreaterThanOrEqual(1);
-		// Verify duration tracking
 		for (const log of completed) {
 			expect(log.durationMs).toBeTypeOf("number");
 		}
