@@ -1,20 +1,19 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "@workflow-engine/sdk";
 import { InMemoryEventQueue } from "./in-memory.js";
+import { EventSchema } from "./index.js";
 import type { Event } from "./index.js";
 
-type StoredEventState = "pending" | "done" | "failed";
+const StoredEventSchema = EventSchema.extend({
+	state: z.enum(["pending", "done", "failed"]),
+});
 
-interface StoredEvent {
-	id: string;
-	type: string;
-	payload: unknown;
-	targetAction: string | null;
-	correlationId: string;
-	parentEventId: string | null;
-	createdAt: string;
-	state: StoredEventState;
+function stripNulls(_key: string, value: unknown): unknown {
+	return value === null ? undefined : value;
 }
+
+type StoredEventState = z.infer<typeof StoredEventSchema>["state"];
 
 const FILE_PATTERN = /^(\d+)_evt_(.+)\.json$/;
 const EVT_PREFIX_PATTERN = /^evt_/;
@@ -34,37 +33,7 @@ function formatFilename(counter: number, eventId: string): string {
 }
 
 function serializeEvent(event: Event, state: StoredEventState): string {
-	return JSON.stringify(
-		{
-			id: event.id,
-			type: event.type,
-			payload: event.payload,
-			targetAction: event.targetAction ?? null,
-			correlationId: event.correlationId,
-			parentEventId: event.parentEventId ?? null,
-			createdAt: event.createdAt.toISOString(),
-			state,
-		} satisfies StoredEvent,
-		null,
-		2,
-	);
-}
-
-function deserializeEvent(stored: StoredEvent): Event {
-	const event: Event = {
-		id: stored.id,
-		type: stored.type,
-		payload: stored.payload,
-		correlationId: stored.correlationId,
-		createdAt: new Date(stored.createdAt),
-	};
-	if (stored.targetAction !== null) {
-		event.targetAction = stored.targetAction;
-	}
-	if (stored.parentEventId !== null) {
-		event.parentEventId = stored.parentEventId;
-	}
-	return event;
+	return JSON.stringify({ ...event, state }, null, 2);
 }
 
 async function atomicWrite(filepath: string, content: string): Promise<void> {
@@ -122,12 +91,12 @@ async function recoverPendingDir(
 		}
 		// biome-ignore lint/performance/noAwaitInLoops: sequential reads needed for recovery grouping
 		const content = await readFile(join(pendingDir, latest.filename), "utf-8");
-		const stored: StoredEvent = JSON.parse(content);
+		const stored = StoredEventSchema.parse(JSON.parse(content, stripNulls));
 
 		if (stored.state === "done" || stored.state === "failed") {
 			await archiveFiles(pendingDir, archiveDir, files);
 		} else {
-			eventsToRequeue.push({ event: deserializeEvent(stored), counter: latest.counter });
+			eventsToRequeue.push({ event: stored, counter: latest.counter });
 		}
 	}
 
