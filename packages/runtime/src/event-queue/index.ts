@@ -11,8 +11,8 @@ interface Event {
 interface EventQueue {
 	enqueue(event: Event): Promise<void>;
 	dequeue(): Promise<Event>;
-	ack(eventId: string): Promise<void>;
-	fail(eventId: string): Promise<void>;
+	ack(eventId: string): Promise<Event>;
+	fail(eventId: string): Promise<Event>;
 }
 
 export type { Event, EventQueue };

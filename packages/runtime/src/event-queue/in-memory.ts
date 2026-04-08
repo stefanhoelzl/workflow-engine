@@ -11,6 +11,12 @@ class InMemoryEventQueue implements EventQueue {
 	readonly #entries: StoredEvent[] = [];
 	readonly #waiters: Array<(event: Event) => void> = [];
 
+	constructor(initialEvents: Event[] = []) {
+		for (const event of initialEvents) {
+			this.#entries.push({ event, state: "pending" });
+		}
+	}
+
 	enqueue(event: Event): Promise<void> {
 		this.#entries.push({ event, state: "pending" });
 
@@ -38,24 +44,26 @@ class InMemoryEventQueue implements EventQueue {
 		});
 	}
 
-	ack(eventId: string): Promise<void> {
+	ack(eventId: string): Promise<Event> {
 		const entry = this.#entries.find(
 			(e) => e.event.id === eventId && e.state === "processing",
 		);
-		if (entry) {
-			entry.state = "done";
+		if (!entry) {
+			throw new Error(`No processing event found for id: ${eventId}`);
 		}
-		return Promise.resolve();
+		entry.state = "done";
+		return Promise.resolve(entry.event);
 	}
 
-	fail(eventId: string): Promise<void> {
+	fail(eventId: string): Promise<Event> {
 		const entry = this.#entries.find(
 			(e) => e.event.id === eventId && e.state === "processing",
 		);
-		if (entry) {
-			entry.state = "failed";
+		if (!entry) {
+			throw new Error(`No processing event found for id: ${eventId}`);
 		}
-		return Promise.resolve();
+		entry.state = "failed";
+		return Promise.resolve(entry.event);
 	}
 }
 

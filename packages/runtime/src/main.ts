@@ -4,6 +4,7 @@ import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
 import { ContextFactory } from "./context/index.js";
+import { FileSystemEventQueue } from "./event-queue/fs-queue.js";
 import { InMemoryEventQueue } from "./event-queue/in-memory.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { sampleWorkflow } from "./sample.js";
@@ -47,7 +48,11 @@ const { registry, actions, events } = loadWorkflow(sampleWorkflow);
 const dispatch = createDispatchAction(actions);
 actions.push(dispatch);
 
-const queue = new InMemoryEventQueue();
+// biome-ignore lint/style/noProcessEnv: entry-point config
+const eventQueuePath = process.env.EVENT_QUEUE_PATH;
+const queue = eventQueuePath
+	? await FileSystemEventQueue.create(eventQueuePath)
+	: new InMemoryEventQueue();
 // biome-ignore lint/style/noProcessEnv: entry-point config
 const factory = new ContextFactory(queue, events, globalThis.fetch, process.env, contextLogger);
 
