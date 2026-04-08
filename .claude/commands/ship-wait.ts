@@ -5,7 +5,7 @@
  * Waits for PRs ahead in queue, rebases when it's our turn,
  * waits for CI, and confirms merge completion.
  *
- * Usage: pnpx tsx .claude/commands/ship-wait.ts <repo> <pr-number>
+ * Usage: pnpx tsx .claude/commands/ship-wait.ts <repo> <pr-number> <default-branch>
  *
  * Exit codes:
  *   0 - MERGED: PR successfully merged
@@ -23,6 +23,7 @@ const TIMEOUT_MS = 900_000; // 15 minutes
 const MERGE_WAIT_TIMEOUT_MS = 120_000; // 2 minutes
 const MERGE_POLL_INTERVAL_MS = 5000;
 const COMMAND_TIMEOUT_MS = 60_000;
+const EXPECTED_ARGS = 3;
 
 interface PullRequest {
   number: number;
@@ -137,16 +138,16 @@ async function waitForPrsAhead(repo: string, ours: PullRequest, startTime: numbe
   }
 }
 
-async function rebaseAndPush(): Promise<boolean> {
-  log("Fetching latest main...");
-  const fetchResult = await execNoThrow("git fetch origin main");
+async function rebaseAndPush(defaultBranch: string): Promise<boolean> {
+  log(`Fetching latest ${defaultBranch}...`);
+  const fetchResult = await execNoThrow(`git fetch origin ${defaultBranch}`);
   if (!fetchResult.success) {
     log(`Failed to fetch: ${fetchResult.stderr}`);
     return false;
   }
 
-  log("Rebasing onto origin/main...");
-  const rebaseResult = await execNoThrow("git rebase origin/main");
+  log(`Rebasing onto origin/${defaultBranch}...`);
+  const rebaseResult = await execNoThrow(`git rebase origin/${defaultBranch}`);
   if (!rebaseResult.success) {
     log(`Rebase failed (conflicts?): ${rebaseResult.stderr}`);
     await execNoThrow("git rebase --abort");
@@ -233,58 +234,17 @@ async function waitForMerge(
   }
 }
 
-async function findMainWorktree(): Promise<string | null> {
-  const output = await exec("git worktree list --porcelain");
-  const worktrees = output.split("\n\n").filter(Boolean);
-
-  for (const worktree of worktrees) {
-    const lines = worktree.split("\n");
-    const pathLine = lines.find((l) => l.startsWith("worktree "));
-    const branchLine = lines.find((l) => l.startsWith("branch "));
-
-    if (pathLine && branchLine) {
-      const path = pathLine.replace("worktree ", "");
-      const branch = branchLine.replace("branch refs/heads/", "");
-
-      if (branch === "main") {
-        return path;
-      }
-    }
-  }
-
-  return null;
+async function fetchDefaultBranch(defaultBranch: string): Promise<void> {
+  log(`Fetching origin/${defaultBranch}...`);
+  await exec(`git fetch origin ${defaultBranch}`);
+  log(`Fetched origin/${defaultBranch}`);
 }
 
-async function updateLocalMain(): Promise<void> {
-  const mainWorktree = await findMainWorktree();
-
-  if (!mainWorktree) {
-    log("Warning: Could not find main worktree to update");
-    return;
-  }
-
-  log(`Updating local main branch at ${mainWorktree}...`);
-
-  const fetchResult = await execNoThrow(`git -C "${mainWorktree}" fetch origin main`);
-  if (!fetchResult.success) {
-    log(`Warning: Failed to fetch in main worktree: ${fetchResult.stderr}`);
-    return;
-  }
-
-  const pullResult = await execNoThrow(`git -C "${mainWorktree}" pull --ff-only origin main`);
-  if (!pullResult.success) {
-    log(`Warning: Failed to pull in main worktree (local changes?): ${pullResult.stderr}`);
-    return;
-  }
-
-  log(`Local main updated at ${mainWorktree}`);
-}
-
-function parseArgs(): { repo: string; prNumber: number } {
+function parseArgs(): { repo: string; prNumber: number; defaultBranch: string } {
   const args = process.argv.slice(2);
 
-  if (args.length !== 2) {
-    console.error("Usage: pnpx tsx ship-wait.ts <repo> <pr-number>");
+  if (args.length !== EXPECTED_ARGS) {
+    console.error("Usage: pnpx tsx ship-wait.ts <repo> <pr-number> <default-branch>");
     process.exit(1);
   }
 
@@ -294,7 +254,7 @@ function parseArgs(): { repo: string; prNumber: number } {
     process.exit(1);
   }
 
-  return { repo: args[0], prNumber };
+  return { repo: args[0], prNumber, defaultBranch: args[2] };
 }
 
 async function waitForQueueTurn(repo: string, prNumber: number, startTime: number): Promise<void> {
@@ -322,16 +282,16 @@ async function waitForQueueTurn(repo: string, prNumber: number, startTime: numbe
 }
 
 async function main(): Promise<void> {
-  const { repo, prNumber } = parseArgs();
+  const { repo, prNumber, defaultBranch } = parseArgs();
   const startTime = Date.now();
 
-  log(`Starting ship-wait for ${repo} PR #${prNumber}`);
+  log(`Starting ship-wait for ${repo} PR #${prNumber} (default branch: ${defaultBranch})`);
 
   const state = await getPrState(repo, prNumber);
 
   if (state.state === "MERGED") {
     log("PR is already merged!");
-    await updateLocalMain();
+    await fetchDefaultBranch(defaultBranch);
     process.exit(0);
   }
 
@@ -342,7 +302,7 @@ async function main(): Promise<void> {
 
   await waitForQueueTurn(repo, prNumber, startTime);
 
-  if (!(await rebaseAndPush())) {
+  if (!(await rebaseAndPush(defaultBranch))) {
     log("Failed to rebase and push");
     process.exit(1);
   }
@@ -355,7 +315,7 @@ async function main(): Promise<void> {
   const mergeResult = await waitForMerge(repo, prNumber, startTime);
 
   if (mergeResult === "merged") {
-    await updateLocalMain();
+    await fetchDefaultBranch(defaultBranch);
     process.exit(0);
   } else if (mergeResult === "failed") {
     process.exit(1);
