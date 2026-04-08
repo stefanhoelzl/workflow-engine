@@ -1,9 +1,9 @@
 import type { ActionContext } from "../context/index.js";
-import type { Event } from "../event-queue/index.js";
+import type { RuntimeEvent } from "../event-bus/index.js";
 
 interface Action {
 	name: string;
-	match: (event: Event) => boolean;
+	match: (event: RuntimeEvent) => boolean;
 	handler: (ctx: ActionContext) => Promise<void>;
 }
 

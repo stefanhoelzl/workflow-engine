@@ -1,7 +1,6 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { InMemoryEventQueue } from "../event-queue/in-memory.js";
-import type { Event, EventQueue } from "../event-queue/index.js";
+import { type BusConsumer, type EventBus, type RuntimeEvent, createEventBus } from "../event-bus/index.js";
 import { type Logger, createLogger } from "../logger.js";
 import { ActionContext, ContextFactory, HttpTriggerContext } from "./index.js";
 import { PayloadValidationError } from "./errors.js";
@@ -45,31 +44,44 @@ const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
 	"test.event": passthroughSchema,
 };
 
+function createCollectorBus(): { bus: EventBus; emitted: RuntimeEvent[] } {
+	const emitted: RuntimeEvent[] = [];
+	const collector: BusConsumer = {
+		async handle(event) {
+			emitted.push(event);
+		},
+		async bootstrap() { /* no-op */ },
+	};
+	return { bus: createEventBus([collector]), emitted };
+}
+
 function createTestFactory(overrides?: {
-	queue?: EventQueue;
+	bus?: EventBus;
 	schemas?: Record<string, { parse(data: unknown): unknown }>;
 	fetch?: typeof globalThis.fetch;
 	env?: Record<string, string | undefined>;
 	logger?: Logger;
-}): { factory: ContextFactory; queue: EventQueue } {
-	const queue = overrides?.queue ?? new InMemoryEventQueue();
+}): { factory: ContextFactory; bus: EventBus; emitted: RuntimeEvent[] } {
+	const { bus: defaultBus, emitted } = createCollectorBus();
+	const bus = overrides?.bus ?? defaultBus;
 	const factory = new ContextFactory(
-		queue,
+		bus,
 		overrides?.schemas ?? defaultSchemas,
 		overrides?.fetch ?? mockFetch,
 		overrides?.env ?? mockEnv,
 		overrides?.logger ?? silentLogger,
 	);
-	return { factory, queue };
+	return { factory, bus, emitted };
 }
 
-function makeEvent(overrides: Partial<Event> = {}): Event {
+function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 	return {
 		id: "evt_001",
 		type: "order.received",
 		payload: { orderId: "123" },
 		correlationId: "corr_abc",
 		createdAt: new Date(),
+		state: "pending",
 		...overrides,
 	};
 }
@@ -92,8 +104,8 @@ describe("ContextFactory", () => {
 			expect(ctx.definition).toBe(definition);
 		});
 
-		it("emit creates root event with new correlationId and no parentEventId", async () => {
-			const { factory, queue } = createTestFactory();
+		it("emit creates RuntimeEvent with pending state and emits to bus", async () => {
+			const { factory, emitted } = createTestFactory();
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -104,7 +116,9 @@ describe("ContextFactory", () => {
 			const ctx = factory.httpTrigger({ orderId: "abc" }, definition);
 			await ctx.emit("order.received", { orderId: "abc" });
 
-			const event = await queue.dequeue();
+			expect(emitted.length).toBe(1);
+			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+			const event = emitted[0]!;
 			expect(event.type).toBe("order.received");
 			expect(event.payload).toEqual({ orderId: "abc" });
 			expect(event.id).toMatch(EVT_PREFIX);
@@ -112,6 +126,7 @@ describe("ContextFactory", () => {
 			expect(event.parentEventId).toBeUndefined();
 			expect(event.targetAction).toBeUndefined();
 			expect(event.createdAt).toBeInstanceOf(Date);
+			expect(event.state).toBe("pending");
 		});
 	});
 
@@ -126,8 +141,8 @@ describe("ContextFactory", () => {
 			expect(ctx.event).toBe(event);
 		});
 
-		it("emit creates child event inheriting correlationId and setting parentEventId", async () => {
-			const { factory, queue } = createTestFactory();
+		it("emit creates child RuntimeEvent inheriting correlationId and setting parentEventId", async () => {
+			const { factory, emitted } = createTestFactory();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -136,17 +151,20 @@ describe("ContextFactory", () => {
 			const ctx = factory.action(parentEvent);
 			await ctx.emit("order.validated", { valid: true });
 
-			const child = await queue.dequeue();
+			expect(emitted.length).toBe(1);
+			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+			const child = emitted[0]!;
 			expect(child.type).toBe("order.validated");
 			expect(child.payload).toEqual({ valid: true });
 			expect(child.correlationId).toBe("corr_xyz");
 			expect(child.parentEventId).toBe("evt_parent");
 			expect(child.id).toMatch(EVT_PREFIX);
 			expect(child.targetAction).toBeUndefined();
+			expect(child.state).toBe("pending");
 		});
 
 		it("multiple emits all inherit from the same parent", async () => {
-			const { factory, queue } = createTestFactory();
+			const { factory, emitted } = createTestFactory();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
@@ -156,8 +174,11 @@ describe("ContextFactory", () => {
 			await ctx.emit("order.validated", { valid: true });
 			await ctx.emit("order.logged", { logged: true });
 
-			const first = await queue.dequeue();
-			const second = await queue.dequeue();
+			expect(emitted.length).toBe(2);
+			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+			const first = emitted[0]!;
+			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+			const second = emitted[1]!;
 
 			expect(first.correlationId).toBe("corr_xyz");
 			expect(first.parentEventId).toBe("evt_parent");
@@ -225,7 +246,7 @@ describe("ContextFactory", () => {
 
 	describe("arrow property binding", () => {
 		it("factory.httpTrigger works when passed as a standalone reference", async () => {
-			const { factory, queue } = createTestFactory();
+			const { factory, emitted } = createTestFactory();
 			const definition = {
 				path: "order",
 				method: "POST",
@@ -237,20 +258,18 @@ describe("ContextFactory", () => {
 			const ctx = createCtx({ orderId: "abc" }, definition);
 
 			await ctx.emit("order.received", { orderId: "abc" });
-			const event = await queue.dequeue();
-			expect(event.correlationId).toMatch(CORR_PREFIX);
+			expect(emitted[0]?.correlationId).toMatch(CORR_PREFIX);
 		});
 
 		it("factory.action works when passed as a standalone reference", async () => {
-			const { factory, queue } = createTestFactory();
+			const { factory, emitted } = createTestFactory();
 			const event = makeEvent();
 
 			const createCtx = factory.action;
 			const ctx = createCtx(event);
 
 			await ctx.emit("test.event", {});
-			const child = await queue.dequeue();
-			expect(child.correlationId).toBe("corr_abc");
+			expect(emitted[0]?.correlationId).toBe("corr_abc");
 		});
 	});
 
@@ -370,27 +389,25 @@ describe("ContextFactory", () => {
 			expect(failed).toBeDefined();
 			expect(failed?.error).toBe("network error");
 			expect(failed?.durationMs).toBeTypeOf("number");
-			// pino error level = 50
 			expect(failed?.level).toBe(50);
 		});
 	});
 
 	describe("payload validation", () => {
-		it("enqueues event with parsed output from schema", async () => {
+		it("emits event with parsed output from schema", async () => {
 			const schema = {
 				parse: (d: unknown) => {
 					const data = d as Record<string, unknown>;
 					return { orderId: String(data.orderId) };
 				},
 			};
-			const { factory, queue } = createTestFactory({
+			const { factory, emitted } = createTestFactory({
 				schemas: { "order.received": schema },
 			});
 			const ctx = factory.action(makeEvent());
 			await ctx.emit("order.received", { orderId: "abc", extra: true });
 
-			const event = await queue.dequeue();
-			expect(event.payload).toEqual({ orderId: "abc" });
+			expect(emitted[0]?.payload).toEqual({ orderId: "abc" });
 		});
 
 		it("throws PayloadValidationError for invalid payload", async () => {
@@ -426,25 +443,23 @@ describe("ContextFactory", () => {
 			expect(pve.issues).toEqual([]);
 		});
 
-		it("does not enqueue event when validation fails", async () => {
+		it("does not emit to bus when validation fails", async () => {
 			const schema = {
 				parse: () => { throw new Error("invalid"); },
 			};
-			const enqueueSpy = vi.fn();
-			const fakeQueue = {
-				enqueue: enqueueSpy,
-				dequeue: vi.fn(),
-				ack: vi.fn(),
-				fail: vi.fn(),
-			} as unknown as EventQueue;
+			const emitSpy = vi.fn();
+			const fakeBus = {
+				emit: emitSpy,
+				bootstrap: vi.fn(),
+			} as unknown as EventBus;
 			const { factory } = createTestFactory({
-				queue: fakeQueue,
+				bus: fakeBus,
 				schemas: { "order.received": schema },
 			});
 			const ctx = factory.action(makeEvent());
 
 			await expect(ctx.emit("order.received", {})).rejects.toThrow();
-			expect(enqueueSpy).not.toHaveBeenCalled();
+			expect(emitSpy).not.toHaveBeenCalled();
 		});
 	});
 });

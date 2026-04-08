@@ -5,6 +5,11 @@ import { z } from "zod";
 
 type EventDefs = Record<string, z.ZodType>;
 
+interface Event<Payload = unknown> {
+	name: string;
+	payload: Payload;
+}
+
 // --- Trigger types ---
 
 interface HttpTriggerInput<E extends string> {
@@ -22,11 +27,6 @@ type TriggerInput<E extends string> = HttpTriggerInput<E>;
 
 // --- Action context ---
 
-interface EventDefinition<Payload> {
-	name: string;
-	payload: Payload;
-}
-
 type EventPayloads<E extends EventDefs> = {
 	[K in keyof E & string]: z.infer<E[K]>;
 };
@@ -36,7 +36,7 @@ interface ActionContext<
 	Events extends Record<string, unknown> = Record<string, unknown>,
 	Env extends string = never,
 > {
-	event: EventDefinition<Payload>;
+	event: Event<Payload>;
 	emit: <K extends keyof Events & string>(
 		type: K,
 		payload: Events[K],
@@ -56,7 +56,7 @@ interface ActionConfig {
 	emits: string[];
 	env: string[];
 	handler: (ctx: {
-		event: EventDefinition<unknown>;
+		event: Event;
 		emit: (type: string, payload: unknown) => Promise<void>;
 		env: Record<string, string | undefined>;
 		fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
@@ -165,7 +165,7 @@ class WorkflowBuilder {
 			emits?: readonly string[];
 			env?: readonly string[];
 			handler: (ctx: {
-				event: EventDefinition<unknown>;
+				event: Event;
 				emit: (type: string, payload: unknown) => Promise<void>;
 				env: Record<string, string | undefined>;
 				fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
@@ -200,4 +200,4 @@ function workflow(): StartPhase {
 }
 
 export { z, workflow };
-export type { WorkflowConfig };
+export type { Event, WorkflowConfig };
