@@ -90,10 +90,7 @@ function createPersistence(
 		async handle(event: RuntimeEvent): Promise<void> {
 			counter++;
 			const filename = formatFilename(counter, event.id);
-			const isTerminal =
-				event.state === "done" ||
-				event.state === "failed" ||
-				event.state === "skipped";
+			const isTerminal = event.state === "done";
 
 			// Terminal states go directly to archive/; others go to pending/
 			const targetDir = isTerminal ? archiveDir : pendingDir;
@@ -118,7 +115,6 @@ function createPersistence(
 			// No-op: persistence is the bootstrap source, not a consumer of bootstrap data
 		},
 
-		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: recovery logic is sequential and reads best as one block
 		async *recover(): AsyncIterable<RecoveryBatch> {
 			await mkdir(pendingDir, { recursive: true });
 			await mkdir(archiveDir, { recursive: true });

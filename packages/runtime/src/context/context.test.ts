@@ -77,7 +77,7 @@ function createTestFactory(overrides?: {
 	return { factory, bus, emitted };
 }
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: "evt_001",
 		type: "order.received",
@@ -86,7 +86,7 @@ function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 describe("ContextFactory", () => {

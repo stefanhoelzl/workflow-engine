@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { type BusConsumer, type RuntimeEvent, createEventBus } from "./index.js";
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
@@ -10,7 +10,7 @@ function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 function mockConsumer(overrides?: Partial<BusConsumer>): BusConsumer {

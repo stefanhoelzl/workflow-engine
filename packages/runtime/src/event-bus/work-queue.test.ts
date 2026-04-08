@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeEvent } from "./index.js";
 import { createWorkQueue } from "./work-queue.js";
 
-function makeEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
@@ -28,9 +28,9 @@ describe("WorkQueue", () => {
 		it("ignores non-pending events", async () => {
 			const queue = createWorkQueue();
 			await queue.handle(makeEvent({ state: "processing" }));
-			await queue.handle(makeEvent({ state: "done" }));
-			await queue.handle(makeEvent({ state: "failed" }));
-			await queue.handle(makeEvent({ state: "skipped" }));
+			await queue.handle({ ...makeEvent(), state: "done", result: "succeeded" });
+			await queue.handle({ ...makeEvent(), state: "done", result: "failed", error: "boom" });
+			await queue.handle({ ...makeEvent(), state: "done", result: "skipped" });
 
 			// Buffer should be empty — dequeue should block
 			let resolved = false;
@@ -86,9 +86,9 @@ describe("WorkQueue", () => {
 		it("ignores terminal events", async () => {
 			const queue = createWorkQueue();
 			await queue.bootstrap([
-				makeEvent({ state: "done" }),
-				makeEvent({ state: "failed" }),
-				makeEvent({ state: "skipped" }),
+				{ ...makeEvent(), state: "done", result: "succeeded" },
+				{ ...makeEvent(), state: "done", result: "failed", error: "boom" },
+				{ ...makeEvent(), state: "done", result: "skipped" },
 			]);
 
 			// Buffer should be empty
@@ -130,7 +130,7 @@ describe("WorkQueue", () => {
 				[
 					makeEvent({ id: "evt_a", state: "pending" }),
 					makeEvent({ id: "evt_b", state: "processing" }),
-					makeEvent({ id: "evt_c", state: "done" }),
+					{ ...makeEvent({ id: "evt_c" }), state: "done", result: "succeeded" },
 				],
 				{ pending: true },
 			);

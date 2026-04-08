@@ -29,7 +29,7 @@ afterEach(async () => {
 	await rm(testDir, { recursive: true, force: true });
 });
 
-function makeStoredEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function makeStoredEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
 		id: `evt_${crypto.randomUUID()}`,
 		type: "test.event",
@@ -38,7 +38,7 @@ function makeStoredEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 		createdAt: new Date(),
 		state: "pending",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 function stubContextFactory(event: RuntimeEvent): ActionContext {
@@ -107,7 +107,7 @@ describe("recovery", () => {
 
 			// Completed event in archive (multiple state files)
 			const done1 = makeStoredEvent({ id: "evt_done", state: "pending" });
-			const done2 = makeStoredEvent({ id: "evt_done", state: "done" });
+			const done2 = { ...makeStoredEvent({ id: "evt_done" }), state: "done", result: "succeeded" };
 			await writeFile(join(archiveDir, "000001_evt_done.json"), JSON.stringify(done1));
 			await writeFile(join(archiveDir, "000002_evt_done.json"), JSON.stringify(done2));
 
@@ -136,7 +136,7 @@ describe("recovery", () => {
 			await mkdir(archiveDir, { recursive: true });
 
 			const pending = makeStoredEvent({ id: "evt_interrupted", state: "pending" });
-			const done = makeStoredEvent({ id: "evt_interrupted", state: "done" });
+			const done = { ...makeStoredEvent({ id: "evt_interrupted" }), state: "done", result: "succeeded" };
 			await writeFile(join(pendingDir, "000001_evt_interrupted.json"), JSON.stringify(pending));
 			await writeFile(join(pendingDir, "000005_evt_interrupted.json"), JSON.stringify(done));
 
@@ -159,7 +159,7 @@ describe("recovery", () => {
 			await mkdir(pendingDir, { recursive: true });
 			await mkdir(archiveDir, { recursive: true });
 
-			const old = makeStoredEvent({ id: "evt_old", state: "done" });
+			const old = { ...makeStoredEvent({ id: "evt_old" }), state: "done", result: "succeeded" };
 			const active = makeStoredEvent({ id: "evt_new", state: "pending" });
 			await writeFile(join(archiveDir, "000042_evt_old.json"), JSON.stringify(old));
 			await writeFile(join(pendingDir, "000043_evt_new.json"), JSON.stringify(active));
@@ -273,7 +273,7 @@ describe("full startup/recovery integration", () => {
 		// Completed event in archive (3 state files)
 		const done1 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "pending" });
 		const done2 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "processing" });
-		const done3 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "done" });
+		const done3 = { ...makeStoredEvent({ id: "evt_done", correlationId: "corr_done" }), state: "done", result: "succeeded" };
 		await writeFile(join(archiveDir, "000003_evt_done.json"), JSON.stringify(done1));
 		await writeFile(join(archiveDir, "000004_evt_done.json"), JSON.stringify(done2));
 		await writeFile(join(archiveDir, "000005_evt_done.json"), JSON.stringify(done3));
