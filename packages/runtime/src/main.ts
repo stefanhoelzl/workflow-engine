@@ -2,9 +2,9 @@ import { serve } from "@hono/node-server";
 import type { WorkflowConfig } from "@workflow-engine/sdk";
 import { createDispatchAction } from "./actions/dispatch.js";
 import type { Action } from "./actions/index.js";
+import { createConfig } from "./config.js";
 import { ContextFactory } from "./context/index.js";
 import { InMemoryEventQueue } from "./event-queue/in-memory.js";
-import type { LogLevel } from "./logger.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { sampleWorkflow } from "./sample.js";
 import { Scheduler } from "./scheduler/index.js";
@@ -12,11 +12,12 @@ import { createServer } from "./server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
 // biome-ignore lint/style/noProcessEnv: entry-point config
-const level = (process.env.LOG_LEVEL ?? "info") as LogLevel;
+const config = createConfig(process.env);
 
-const httpLogger = createHttpLogger("http", { level });
-const contextLogger = createLogger("context", { level });
-const schedulerLogger = createLogger("scheduler", { level });
+const runtimeLogger = createLogger("runtime", { level: config.logLevel });
+const httpLogger = createHttpLogger("http", { level: config.logLevel });
+const contextLogger = createLogger("context", { level: config.logLevel });
+const schedulerLogger = createLogger("scheduler", { level: config.logLevel });
 
 function loadWorkflow(config: WorkflowConfig) {
 	const registry = new HttpTriggerRegistry();
@@ -40,6 +41,8 @@ function loadWorkflow(config: WorkflowConfig) {
 	return { registry, actions, events: config.events };
 }
 
+runtimeLogger.info("initialize", { config });
+
 const { registry, actions, events } = loadWorkflow(sampleWorkflow);
 const dispatch = createDispatchAction(actions);
 actions.push(dispatch);
@@ -50,15 +53,12 @@ const factory = new ContextFactory(queue, events, globalThis.fetch, process.env,
 
 const scheduler = new Scheduler(queue, actions, factory.action, schedulerLogger);
 scheduler.start();
+runtimeLogger.info("scheduler started")
 
 const app = createServer(
 	httpLogger,
 	httpTriggerMiddleware(registry, factory.httpTrigger),
 );
 
-const defaultPort = 8080;
-// biome-ignore lint/style/noProcessEnv: entry-point config
-const port = Number(process.env.PORT) || defaultPort;
-const startupLogger = createLogger("runtime", { level });
-startupLogger.info("started", { port });
-serve({ fetch: app.fetch, port });
+runtimeLogger.info("serve", { port: config.port });
+serve({ fetch: app.fetch, port: config.port });
