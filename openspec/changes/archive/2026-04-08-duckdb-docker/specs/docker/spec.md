@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Multi-stage Dockerfile produces a minimal production image
 
 The repository SHALL contain a `Dockerfile` at the root that uses a multi-stage build. The build stage SHALL use `node:24-slim` with corepack-enabled pnpm to install dependencies, run the Vite build, and deploy production dependencies via `pnpm deploy --prod` into the build output directory. The production stage SHALL use `gcr.io/distroless/nodejs24-debian13` and contain the bundled JS output alongside a `node_modules/` directory with native dependencies.
@@ -14,11 +16,3 @@ The repository SHALL contain a `Dockerfile` at the root that uses a multi-stage 
 - **THEN** the container SHALL start the Node.js process with the bundled entry point
 - **AND** native dependencies (DuckDB) SHALL be resolvable from `node_modules/`
 - **AND** the runtime SHALL accept HTTP requests on the configured port
-
-### Requirement: Production image runs as non-root
-
-The production stage SHALL use the distroless `nonroot` user (UID 65532) to run the Node.js process.
-
-#### Scenario: Process runs as non-root
-- **WHEN** the container is running
-- **THEN** the Node.js process SHALL be running as UID 65532
