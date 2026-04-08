@@ -9,5 +9,6 @@ export default defineConfig({
 	ssr: {
 		target: "node",
 		noExternal: true,
+		external: ["@duckdb/node-api", "@duckdb/node-bindings"],
 	},
 });
