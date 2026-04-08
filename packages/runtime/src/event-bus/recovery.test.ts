@@ -7,7 +7,7 @@ import { ActionContext } from "../context/index.js";
 import { createEventFactory } from "../event-factory.js";
 import { createLogger } from "../logger.js";
 import { createScheduler } from "../services/scheduler.js";
-import { createEventStore } from "./event-store.js";
+import { createEventStore, sql } from "./event-store.js";
 import type { RuntimeEvent } from "./index.js";
 import { createEventBus } from "./index.js";
 import type { RecoveryBatch } from "./persistence.js";
@@ -287,14 +287,14 @@ describe("full startup/recovery integration", () => {
 		}
 
 		// EventStore: 1 from pending (processing) + 4 from archive (1 moved during cleanup + 3 original)
-		const allRows = await eventStore.query.selectAll().execute();
+		const allRows = await eventStore.with("q", (e) => e.selectAll()).where(sql`1`, "=", 1).selectAll().execute();
 		expect(allRows).toHaveLength(5);
 
 		// Can query by correlation
-		const activeRows = await eventStore.query.where("correlationId", "=", "corr_active").selectAll().execute();
+		const activeRows = await eventStore.with("q", (e) => e.selectAll()).where("correlationId", "=", "corr_active").selectAll().execute();
 		expect(activeRows).toHaveLength(2); // processing (pending batch) + pending (archived during cleanup)
 
-		const doneRows = await eventStore.query.where("correlationId", "=", "corr_done").selectAll().execute();
+		const doneRows = await eventStore.with("q", (e) => e.selectAll()).where("correlationId", "=", "corr_done").selectAll().execute();
 		expect(doneRows).toHaveLength(3);
 
 		// WorkQueue should only have the active event (latest state = processing)

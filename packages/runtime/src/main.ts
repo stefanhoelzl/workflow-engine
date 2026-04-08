@@ -16,6 +16,7 @@ import { createHttpLogger, createLogger } from "./logger.js";
 import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
+import { dashboardMiddleware } from "./dashboard/middleware.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
 function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
@@ -54,7 +55,7 @@ function loadWorkflow(wf: WorkflowConfig) {
 		handler: (ctx) =>
 			action.handler({
 				event: { name: ctx.event.type, payload: ctx.event.payload },
-				emit: ctx.emit,
+				emit: (type: string, payload: unknown) => ctx.emit(type, payload),
 				env: ctx.env,
 				fetch: (url, init) => ctx.fetch(url, init),
 			}),
@@ -124,6 +125,7 @@ async function init() {
 		config.port,
 		httpLogger,
 		httpTriggerMiddleware(registry, contextFactory.httpTrigger),
+		dashboardMiddleware(eventStore),
 	);
 
 	return { runtimeLogger, eventBus, persistence, scheduler, server };
