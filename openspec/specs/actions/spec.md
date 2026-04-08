@@ -48,21 +48,21 @@ Actions SHOULD NOT perform side effects at module scope. The runtime loads the m
 
 An `Action` SHALL be a plain object with the following properties:
 - `name`: string — unique identifier for the action, derived from the `.action(name, config)` builder call
-- `match`: `(event: Event) => boolean` — predicate generated from the action's `on` field and the action name (`e.type === on && e.targetAction === name`)
+- `on`: string — the event type this action subscribes to, derived from the action's `on` field in the builder
 - `handler`: `(ctx: ActionContext) => Promise<void>` — async function that processes the event via the context object
 
 #### Scenario: Define an action
 
 - **GIVEN** a builder chain with `.action("parseOrder", { on: "order.received", handler: async (ctx) => { ... } })`
 - **WHEN** the runtime extracts actions from the config produced by `.build()`
-- **THEN** the action has `name: "parseOrder"` and a `match` predicate that returns `true` for events with `type: "order.received"` and `targetAction: "parseOrder"`
+- **THEN** the action has `name: "parseOrder"`, `on: "order.received"`, and a `handler` function
 
-#### Scenario: Match predicate receives full event
+#### Scenario: Action does not have a match predicate
 
-- **GIVEN** an action with name `"parseOrder"` derived from a builder with `on: "order.received"`
-- **WHEN** an event `{ type: "order.received", targetAction: "parseOrder" }` is evaluated
-- **THEN** `match` returns `true`
-- **AND** for an event `{ type: "order.received", targetAction: "sendEmail" }`, `match` returns `false`
+- **GIVEN** an action object extracted from a workflow config
+- **WHEN** the action's properties are inspected
+- **THEN** the action has `name`, `on`, and `handler` properties
+- **AND** the action does NOT have a `match` property
 
 ### Requirement: Action handler receives ActionContext
 

@@ -121,57 +121,45 @@ The system SHALL provide a `fetch(url: string | URL, init?: RequestInit): Promis
 
 ### Requirement: ContextFactory
 
-The system SHALL provide a `ContextFactory` class that holds an EventBus reference, a schemas map, an injected fetch function, an injected env record, and a Logger instance. It SHALL expose `httpTrigger` and `action` as arrow properties for creating context objects. The Logger SHALL be passed via the constructor.
+The system SHALL provide a `ContextFactory` class that holds an EventBus reference, an `EventFactory` instance, an injected fetch function, an injected env record, and a Logger instance. It SHALL expose `httpTrigger` and `action` as arrow properties for creating context objects. The Logger SHALL be passed via the constructor.
 
-The schemas map SHALL be typed as `Record<string, { parse(data: unknown): unknown }>` (structural typing, no direct Zod import). The `ContextFactory` SHALL use the schemas map to validate event payloads in `#createAndEmit` before emitting to the bus.
+The `ContextFactory` SHALL delegate event construction to the `EventFactory`:
+- `httpTrigger.emit()` calls `eventFactory.create()` and then `bus.emit()`
+- `action.emit()` calls `eventFactory.derive()` and then `bus.emit()`
 
 #### Scenario: Create HttpTriggerContext via factory
 
-- **GIVEN** a `ContextFactory` initialized with an EventBus, a schemas map, a fetch function, an env record, and a Logger
+- **GIVEN** a `ContextFactory` initialized with an EventBus, an EventFactory, a fetch function, an env record, and a Logger
 - **WHEN** `factory.httpTrigger(body, definition)` is called
-- **THEN** an `HttpTriggerContext` is returned with the request body, definition, and a working `emit()` method that validates payloads
+- **THEN** an `HttpTriggerContext` is returned with the request body, definition, and a working `emit()` method
 - **AND** `HttpTriggerContext` does NOT have an `env` property
 
 #### Scenario: Create ActionContext via factory
 
-- **GIVEN** a `ContextFactory` initialized with an EventBus, a schemas map, a fetch function, an env record `{ "API_KEY": "secret" }`, and a Logger
+- **GIVEN** a `ContextFactory` initialized with an EventBus, an EventFactory, a fetch function, an env record `{ "API_KEY": "secret" }`, and a Logger
 - **WHEN** `factory.action(event)` is called
-- **THEN** an `ActionContext` is returned with the source event, a working `emit()` method that validates payloads, the injected fetch function, and `env` containing `{ "API_KEY": "secret" }`
+- **THEN** an `ActionContext` is returned with the source event, a working `emit()` method, the injected fetch function, and `env` containing `{ "API_KEY": "secret" }`
+
+#### Scenario: HttpTrigger emit uses EventFactory.create
+
+- **GIVEN** a `ContextFactory` with an EventFactory
+- **WHEN** `ctx.emit("order.received", { orderId: "abc" })` is called from an HttpTriggerContext
+- **THEN** `EventFactory.create()` is called with the type, payload, and a new `corr_`-prefixed correlationId
+- **AND** the resulting RuntimeEvent is emitted to the bus
+
+#### Scenario: Action emit uses EventFactory.derive
+
+- **GIVEN** a `ContextFactory` with an EventFactory
+- **AND** an `ActionContext` for event `evt_001` with `correlationId: "corr_xyz"`
+- **WHEN** `ctx.emit("order.validated", { valid: true })` is called
+- **THEN** `EventFactory.derive()` is called with the parent event, type, and payload
+- **AND** the resulting RuntimeEvent is emitted to the bus
 
 #### Scenario: Factory properties can be passed as standalone references
 
 - **GIVEN** a `ContextFactory` instance
 - **WHEN** `factory.action` is assigned to a variable and called
 - **THEN** it works correctly without explicit binding (arrow property captures `this`)
-
-#### Scenario: Emit with valid payload creates RuntimeEvent and emits to bus
-
-- **GIVEN** a `ContextFactory` with schemas `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `ctx.emit("order.received", { orderId: "abc" })` is called from an HttpTriggerContext
-- **THEN** a RuntimeEvent is created with `state: "pending"`, a new `evt_`-prefixed id, a new `corr_`-prefixed correlationId, and the validated payload
-- **AND** `bus.emit(runtimeEvent)` is called
-
-#### Scenario: Emit from ActionContext creates child RuntimeEvent
-
-- **GIVEN** a `ContextFactory` with an EventBus
-- **AND** an `ActionContext` for event `evt_001` with `correlationId: "corr_xyz"`
-- **WHEN** `ctx.emit("order.validated", { valid: true })` is called
-- **THEN** the RuntimeEvent has `correlationId: "corr_xyz"`, `parentEventId: "evt_001"`, and `state: "pending"`
-- **AND** `bus.emit(runtimeEvent)` is called
-
-#### Scenario: Emit with invalid payload throws PayloadValidationError
-
-- **GIVEN** a `ContextFactory` with schemas `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `ctx.emit("order.received", { orderId: 123 })` is called
-- **THEN** a `PayloadValidationError` is thrown
-- **AND** `bus.emit()` is NOT called
-
-#### Scenario: Emit with unknown event type throws PayloadValidationError
-
-- **GIVEN** a `ContextFactory` with schemas that do not include `"order.unknown"`
-- **WHEN** `ctx.emit("order.unknown", {})` is called
-- **THEN** a `PayloadValidationError` is thrown
-- **AND** `bus.emit()` is NOT called
 
 ### Requirement: ContextFactory emit logging
 
