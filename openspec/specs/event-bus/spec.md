@@ -10,7 +10,11 @@ Provide the central event distribution mechanism that fans out runtime events an
 
 The system SHALL define a `BusConsumer` interface with two methods:
 - `handle(event: RuntimeEvent): Promise<void>` — called for each event at runtime
-- `bootstrap(events: RuntimeEvent[], options?: { finished?: boolean }): Promise<void>` — called with batches of events during startup recovery
+- `bootstrap(events: RuntimeEvent[], options?: { finished?: boolean; pending?: boolean }): Promise<void>` — called with batches of events during startup recovery
+
+The `pending` option signals the source of the batch:
+- `pending: true` — the batch contains active events from the `pending/` directory (at most one per event ID, current state)
+- `pending: false` — the batch contains historical events from the `archive/` directory
 
 Both methods SHALL be required (no optional methods). Consumers that do not need bootstrap logic SHALL provide an empty implementation.
 
@@ -31,6 +35,18 @@ Both methods SHALL be required (no optional methods). Consumers that do not need
 - **GIVEN** a registered BusConsumer
 - **WHEN** `bus.bootstrap([], { finished: true })` is called
 - **THEN** the consumer's `bootstrap([], { finished: true })` is called
+
+#### Scenario: Consumer receives pending batch
+
+- **GIVEN** a registered BusConsumer
+- **WHEN** `bus.bootstrap(events, { pending: true })` is called
+- **THEN** the consumer's `bootstrap(events, { pending: true })` is called
+
+#### Scenario: Consumer receives archive batch
+
+- **GIVEN** a registered BusConsumer
+- **WHEN** `bus.bootstrap(events, { pending: false })` is called
+- **THEN** the consumer's `bootstrap(events, { pending: false })` is called
 
 ### Requirement: EventBus interface
 

@@ -7,8 +7,10 @@ import { ActionContext } from "../context/index.js";
 import { createEventFactory } from "../event-factory.js";
 import { createLogger } from "../logger.js";
 import { createScheduler } from "../services/scheduler.js";
+import { createEventStore } from "./event-store.js";
 import type { RuntimeEvent } from "./index.js";
 import { createEventBus } from "./index.js";
+import type { RecoveryBatch } from "./persistence.js";
 import { createPersistence } from "./persistence.js";
 import { createWorkQueue } from "./work-queue.js";
 
@@ -43,6 +45,153 @@ function stubContextFactory(event: RuntimeEvent): ActionContext {
 	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 }
 
+describe("recovery", () => {
+	describe("recover yields RecoveryBatch with pending flag", () => {
+		it("yields latest batch for single pending event", async () => {
+			const pendingDir = join(testDir, "pending");
+			await mkdir(pendingDir, { recursive: true });
+			await mkdir(join(testDir, "archive"), { recursive: true });
+
+			const event = makeStoredEvent({ id: "evt_single", state: "pending" });
+			await writeFile(join(pendingDir, "000001_evt_single.json"), JSON.stringify(event));
+
+			const persistence = createPersistence(testDir);
+			const batches: RecoveryBatch[] = [];
+			for await (const batch of persistence.recover()) {
+				batches.push(batch);
+			}
+
+			expect(batches).toHaveLength(1);
+			expect(batches[0]?.pending).toBe(true);
+			expect(batches[0]?.finished).toBe(true);
+			expect(batches[0]?.events).toHaveLength(1);
+			expect(batches[0]?.events[0]?.id).toBe("evt_single");
+		});
+
+		it("deduplicates pending files — takes latest state per event", async () => {
+			const pendingDir = join(testDir, "pending");
+			await mkdir(pendingDir, { recursive: true });
+			await mkdir(join(testDir, "archive"), { recursive: true });
+
+			const pending = makeStoredEvent({ id: "evt_multi", state: "pending" });
+			const processing = makeStoredEvent({ id: "evt_multi", state: "processing" });
+			await writeFile(join(pendingDir, "000001_evt_multi.json"), JSON.stringify(pending));
+			await writeFile(join(pendingDir, "000002_evt_multi.json"), JSON.stringify(processing));
+
+			const persistence = createPersistence(testDir);
+			const batches: RecoveryBatch[] = [];
+			for await (const batch of persistence.recover()) {
+				batches.push(batch);
+			}
+
+			// Two batches: pending (latest) + archive (older moved during cleanup)
+			expect(batches).toHaveLength(2);
+			expect(batches[0]?.pending).toBe(true);
+			expect(batches[0]?.events).toHaveLength(1);
+			expect(batches[0]?.events[0]?.state).toBe("processing");
+
+			expect(batches[1]?.pending).toBe(false);
+			expect(batches[1]?.events).toHaveLength(1);
+			expect(batches[1]?.events[0]?.state).toBe("pending");
+		});
+
+		it("yields pending then archive batches", async () => {
+			const pendingDir = join(testDir, "pending");
+			const archiveDir = join(testDir, "archive");
+			await mkdir(pendingDir, { recursive: true });
+			await mkdir(archiveDir, { recursive: true });
+
+			// Active event in pending
+			const active = makeStoredEvent({ id: "evt_active", state: "pending" });
+			await writeFile(join(pendingDir, "000003_evt_active.json"), JSON.stringify(active));
+
+			// Completed event in archive (multiple state files)
+			const done1 = makeStoredEvent({ id: "evt_done", state: "pending" });
+			const done2 = makeStoredEvent({ id: "evt_done", state: "done" });
+			await writeFile(join(archiveDir, "000001_evt_done.json"), JSON.stringify(done1));
+			await writeFile(join(archiveDir, "000002_evt_done.json"), JSON.stringify(done2));
+
+			const persistence = createPersistence(testDir);
+			const batches: RecoveryBatch[] = [];
+			for await (const batch of persistence.recover()) {
+				batches.push(batch);
+			}
+
+			// Two batches: pending (latest) first, then archive (not latest)
+			expect(batches).toHaveLength(2);
+			expect(batches[0]?.pending).toBe(true);
+			expect(batches[0]?.finished).toBe(false);
+			expect(batches[0]?.events).toHaveLength(1);
+			expect(batches[0]?.events[0]?.id).toBe("evt_active");
+
+			expect(batches[1]?.pending).toBe(false);
+			expect(batches[1]?.finished).toBe(true);
+			expect(batches[1]?.events).toHaveLength(2);
+		});
+
+		it("completes interrupted archive during recovery", async () => {
+			const pendingDir = join(testDir, "pending");
+			const archiveDir = join(testDir, "archive");
+			await mkdir(pendingDir, { recursive: true });
+			await mkdir(archiveDir, { recursive: true });
+
+			const pending = makeStoredEvent({ id: "evt_interrupted", state: "pending" });
+			const done = makeStoredEvent({ id: "evt_interrupted", state: "done" });
+			await writeFile(join(pendingDir, "000001_evt_interrupted.json"), JSON.stringify(pending));
+			await writeFile(join(pendingDir, "000005_evt_interrupted.json"), JSON.stringify(done));
+
+			const persistence = createPersistence(testDir);
+			const pendingEvents: RuntimeEvent[] = [];
+			for await (const batch of persistence.recover()) {
+				if (batch.pending) {
+					pendingEvents.push(...batch.events);
+				}
+			}
+
+			// Latest state (done) is in the pending batch
+			expect(pendingEvents).toHaveLength(1);
+			expect(pendingEvents[0]?.state).toBe("done");
+		});
+
+		it("recovers counter from max across both directories", async () => {
+			const pendingDir = join(testDir, "pending");
+			const archiveDir = join(testDir, "archive");
+			await mkdir(pendingDir, { recursive: true });
+			await mkdir(archiveDir, { recursive: true });
+
+			const old = makeStoredEvent({ id: "evt_old", state: "done" });
+			const active = makeStoredEvent({ id: "evt_new", state: "pending" });
+			await writeFile(join(archiveDir, "000042_evt_old.json"), JSON.stringify(old));
+			await writeFile(join(pendingDir, "000043_evt_new.json"), JSON.stringify(active));
+
+			const persistence = createPersistence(testDir);
+			for await (const _batch of persistence.recover()) {
+				// consume
+			}
+
+			// Next handle should use counter 44
+			const event = makeStoredEvent({ id: "evt_next" });
+			await persistence.handle(event);
+
+			const { readdir } = await import("node:fs/promises");
+			const files = await readdir(pendingDir);
+			const newFile = files.find((f) => f.includes("evt_next"));
+			expect(newFile).toContain("000044_");
+		});
+
+		it("yields finished for empty directories", async () => {
+			const persistence = createPersistence(testDir);
+			const batches: RecoveryBatch[] = [];
+			for await (const batch of persistence.recover()) {
+				batches.push(batch);
+			}
+			expect(batches).toHaveLength(1);
+			expect(batches[0]?.finished).toBe(true);
+			expect(batches[0]?.events).toHaveLength(0);
+		});
+	});
+});
+
 describe("full startup/recovery integration", () => {
 	it("persists events to FS, recovers on restart, and WorkQueue has them", async () => {
 		const pendingDir = join(testDir, "pending");
@@ -59,10 +208,9 @@ describe("full startup/recovery integration", () => {
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
-		for await (const batch of persistence.recover()) {
-			await bus.bootstrap(batch);
+		for await (const { events, pending, finished } of persistence.recover()) {
+			await bus.bootstrap(events, { pending, finished });
 		}
-		await bus.bootstrap([], { finished: true });
 
 		const d1 = await workQueue.dequeue();
 		const d2 = await workQueue.dequeue();
@@ -88,10 +236,9 @@ describe("full startup/recovery integration", () => {
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([persistence, workQueue]);
 
-		for await (const batch of persistence.recover()) {
-			await bus.bootstrap(batch);
+		for await (const { events, pending, finished } of persistence.recover()) {
+			await bus.bootstrap(events, { pending, finished });
 		}
-		await bus.bootstrap([], { finished: true });
 
 		const handler = vi.fn();
 		const action: Action = {
@@ -109,5 +256,50 @@ describe("full startup/recovery integration", () => {
 
 		expect(handler).toHaveBeenCalledTimes(1);
 		expect(handler.mock.calls.at(0)?.at(0)).toBeInstanceOf(ActionContext);
+	});
+
+	it("recovery populates EventStore with all events from both directories", async () => {
+		const pendingDir = join(testDir, "pending");
+		const archiveDir = join(testDir, "archive");
+		await mkdir(pendingDir, { recursive: true });
+		await mkdir(archiveDir, { recursive: true });
+
+		// Active event in pending (2 state files)
+		const active = makeStoredEvent({ id: "evt_active", correlationId: "corr_active", state: "pending" });
+		const activeProc = makeStoredEvent({ id: "evt_active", correlationId: "corr_active", state: "processing" });
+		await writeFile(join(pendingDir, "000001_evt_active.json"), JSON.stringify(active));
+		await writeFile(join(pendingDir, "000002_evt_active.json"), JSON.stringify(activeProc));
+
+		// Completed event in archive (3 state files)
+		const done1 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "pending" });
+		const done2 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "processing" });
+		const done3 = makeStoredEvent({ id: "evt_done", correlationId: "corr_done", state: "done" });
+		await writeFile(join(archiveDir, "000003_evt_done.json"), JSON.stringify(done1));
+		await writeFile(join(archiveDir, "000004_evt_done.json"), JSON.stringify(done2));
+		await writeFile(join(archiveDir, "000005_evt_done.json"), JSON.stringify(done3));
+
+		const persistence = createPersistence(testDir);
+		const workQueue = createWorkQueue();
+		const eventStore = await createEventStore();
+		const bus = createEventBus([persistence, workQueue, eventStore]);
+
+		for await (const { events, pending, finished } of persistence.recover()) {
+			await bus.bootstrap(events, { pending, finished });
+		}
+
+		// EventStore: 1 from pending (processing) + 4 from archive (1 moved during cleanup + 3 original)
+		const allRows = await eventStore.query.selectAll().execute();
+		expect(allRows).toHaveLength(5);
+
+		// Can query by correlation
+		const activeRows = await eventStore.query.where("correlationId", "=", "corr_active").selectAll().execute();
+		expect(activeRows).toHaveLength(2); // processing (pending batch) + pending (archived during cleanup)
+
+		const doneRows = await eventStore.query.where("correlationId", "=", "corr_done").selectAll().execute();
+		expect(doneRows).toHaveLength(3);
+
+		// WorkQueue should only have the active event (latest state = processing)
+		const dequeued = await workQueue.dequeue();
+		expect(dequeued.id).toBe("evt_active");
 	});
 });

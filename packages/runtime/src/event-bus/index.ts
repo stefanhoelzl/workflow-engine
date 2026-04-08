@@ -18,7 +18,7 @@ interface BusConsumer {
 	handle(event: RuntimeEvent): Promise<void>;
 	bootstrap(
 		events: RuntimeEvent[],
-		options?: { finished?: boolean },
+		options?: { finished?: boolean; pending?: boolean },
 	): Promise<void>;
 }
 
@@ -26,7 +26,7 @@ interface EventBus {
 	emit(event: RuntimeEvent): Promise<void>;
 	bootstrap(
 		events: RuntimeEvent[],
-		options?: { finished?: boolean },
+		options?: { finished?: boolean; pending?: boolean },
 	): Promise<void>;
 }
 

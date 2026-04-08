@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("persistence handle", () => {
-	it("writes append-only files for each state transition", async () => {
+	it("writes files for each state transition with eager archival", async () => {
 		const persistence = createPersistence(testDir);
 		// Initialize directories via recover
 		for await (const _ of persistence.recover()) { /* drain */ }
@@ -43,14 +43,13 @@ describe("persistence handle", () => {
 		// Wait a tick for fire-and-forget archive
 		await new Promise((r) => setTimeout(r, 50));
 
-		const pendingFiles = await readdir(join(testDir, "pending"));
-		const archiveFiles = await readdir(join(testDir, "archive"));
+		const pendingFiles = (await readdir(join(testDir, "pending"))).filter((f) => f.endsWith(".json"));
+		const archiveFilesResult = (await readdir(join(testDir, "archive"))).filter((f) => f.endsWith(".json"));
 
-		// All files should be archived (terminal state triggers archive)
-		const allFiles = [...pendingFiles, ...archiveFiles].filter((f) =>
-			f.endsWith(".json"),
-		);
-		expect(allFiles.length).toBe(3);
+		// pending/ should be empty (processing archived pending, done wrote to archive + archived processing)
+		expect(pendingFiles.length).toBe(0);
+		// All 3 files should be in archive
+		expect(archiveFilesResult.length).toBe(3);
 	});
 
 	it("uses atomic write pattern (tmp + rename)", async () => {
@@ -85,22 +84,23 @@ describe("persistence handle", () => {
 		expect(files[1]).toContain("000002_");
 	});
 
-	it("fires archive without awaiting on terminal states", async () => {
+	it("terminal state writes directly to archive and archives pending files", async () => {
 		const persistence = createPersistence(testDir);
 		for await (const _ of persistence.recover()) { /* drain */ }
 
 		const event = makeEvent({ id: "evt_term" });
 		await persistence.handle({ ...event, state: "pending" });
-		// This should return quickly — archive is fire-and-forget
 		await persistence.handle({ ...event, state: "done" });
 
 		// Wait for fire-and-forget archive to complete
 		await new Promise((r) => setTimeout(r, 50));
 
-		const archiveFiles = (await readdir(join(testDir, "archive"))).filter(
-			(f) => f.endsWith(".json"),
-		);
-		expect(archiveFiles.length).toBe(2);
+		const pendingFiles = (await readdir(join(testDir, "pending"))).filter((f) => f.endsWith(".json"));
+		const archiveFilesResult = (await readdir(join(testDir, "archive"))).filter((f) => f.endsWith(".json"));
+
+		// pending/ should be empty, archive/ should have both files
+		expect(pendingFiles.length).toBe(0);
+		expect(archiveFilesResult.length).toBe(2);
 	});
 
 	it("archives on failed state", async () => {
@@ -214,19 +214,17 @@ describe("persistence recover", () => {
 		);
 
 		const persistence = createPersistence(testDir);
-		const batches: RuntimeEvent[][] = [];
-		for await (const batch of persistence.recover()) {
-			batches.push(batch);
+		const allEvents: RuntimeEvent[] = [];
+		for await (const { events } of persistence.recover()) {
+			allEvents.push(...events);
 		}
 
-		expect(batches.length).toBe(1);
-		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-		expect(batches[0]![0]!.id).toBe("evt_pend");
-		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-		expect(batches[0]![0]!.state).toBe("pending");
+		expect(allEvents.length).toBe(1);
+		expect(allEvents[0]?.id).toBe("evt_pend");
+		expect(allEvents[0]?.state).toBe("pending");
 	});
 
-	it("recovers processing events (crash recovery)", async () => {
+	it("recovers processing events (crash recovery) — takes latest state", async () => {
 		const pendingDir = join(testDir, "pending");
 		const archiveDir = join(testDir, "archive");
 		await mkdir(pendingDir, { recursive: true });
@@ -243,45 +241,47 @@ describe("persistence recover", () => {
 		);
 
 		const persistence = createPersistence(testDir);
-		const batches: RuntimeEvent[][] = [];
-		for await (const batch of persistence.recover()) {
-			batches.push(batch);
+		const pendingEvents: RuntimeEvent[] = [];
+		for await (const { events, pending } of persistence.recover()) {
+			if (pending) {
+				pendingEvents.push(...events);
+			}
 		}
 
-		expect(batches.length).toBe(1);
-		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-		expect(batches[0]![0]!.state).toBe("processing");
+		// Only the latest state per event in pending batch
+		expect(pendingEvents.length).toBe(1);
+		expect(pendingEvents[0]?.state).toBe("processing");
 	});
 
-	it("completes interrupted archives for terminal events", async () => {
+	it("handles crash case — deduplicates and moves older to archive", async () => {
 		const pendingDir = join(testDir, "pending");
 		const archiveDir = join(testDir, "archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 
-		const event = makeEvent({ id: "evt_done" });
+		// Simulate crash: 2 files for same event in pending
+		const event = makeEvent({ id: "evt_crash" });
 		await writeFile(
-			join(pendingDir, "000001_evt_done.json"),
+			join(pendingDir, "000001_evt_crash.json"),
 			JSON.stringify({ ...event, state: "pending" }),
 		);
 		await writeFile(
-			join(pendingDir, "000005_evt_done.json"),
-			JSON.stringify({ ...event, state: "done" }),
+			join(pendingDir, "000002_evt_crash.json"),
+			JSON.stringify({ ...event, state: "processing" }),
 		);
 
 		const persistence = createPersistence(testDir);
-		const batches: RuntimeEvent[][] = [];
-		for await (const batch of persistence.recover()) {
-			batches.push(batch);
+		for await (const _batch of persistence.recover()) {
+			// consume
 		}
 
-		// Terminal event should be archived, not yielded
-		expect(batches.length).toBe(0);
-
-		const archiveEntries = (await readdir(archiveDir)).filter((f) =>
-			f.endsWith(".json"),
-		);
-		expect(archiveEntries.length).toBe(2);
+		// After recovery: pending/ has 1 file (latest), archive/ has 1 file (older)
+		const pendingEntries = (await readdir(pendingDir)).filter((f) => f.endsWith(".json"));
+		const archiveEntries = (await readdir(archiveDir)).filter((f) => f.endsWith(".json"));
+		expect(pendingEntries.length).toBe(1);
+		expect(pendingEntries[0]).toContain("000002_");
+		expect(archiveEntries.length).toBe(1);
+		expect(archiveEntries[0]).toContain("000001_");
 	});
 
 	it("recovers counter from existing files", async () => {
@@ -315,12 +315,12 @@ describe("persistence recover", () => {
 
 	it("handles empty directories", async () => {
 		const persistence = createPersistence(testDir);
-		const batches: RuntimeEvent[][] = [];
-		for await (const batch of persistence.recover()) {
-			batches.push(batch);
+		const allEvents: RuntimeEvent[] = [];
+		for await (const { events } of persistence.recover()) {
+			allEvents.push(...events);
 		}
 
-		expect(batches.length).toBe(0);
+		expect(allEvents.length).toBe(0);
 
 		// Directories should be created
 		const entries = await readdir(testDir);

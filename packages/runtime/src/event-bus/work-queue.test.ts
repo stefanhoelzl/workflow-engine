@@ -103,6 +103,43 @@ describe("WorkQueue", () => {
 			await queue.handle(makeEvent({ state: "pending" }));
 			await p;
 		});
+
+		it("skips archive batches (pending: false)", async () => {
+			const queue = createWorkQueue();
+			await queue.bootstrap(
+				[makeEvent({ id: "evt_1", state: "pending" }), makeEvent({ id: "evt_2", state: "processing" })],
+				{ pending: false },
+			);
+
+			// Buffer should be empty — archive batches are skipped
+			let resolved = false;
+			const p = queue.dequeue().then(() => {
+				resolved = true;
+			});
+			await Promise.resolve();
+			expect(resolved).toBe(false);
+
+			// Clean up
+			await queue.handle(makeEvent({ state: "pending" }));
+			await p;
+		});
+
+		it("buffers pending/processing from pending batches", async () => {
+			const queue = createWorkQueue();
+			await queue.bootstrap(
+				[
+					makeEvent({ id: "evt_a", state: "pending" }),
+					makeEvent({ id: "evt_b", state: "processing" }),
+					makeEvent({ id: "evt_c", state: "done" }),
+				],
+				{ pending: true },
+			);
+
+			const d1 = await queue.dequeue();
+			const d2 = await queue.dequeue();
+			expect(d1.id).toBe("evt_a");
+			expect(d2.id).toBe("evt_b");
+		});
 	});
 
 	describe("dequeue", () => {
