@@ -27,31 +27,23 @@ interface EventDefinition<Payload> {
 	payload: Payload;
 }
 
+type EventPayloads<E extends EventDefs> = {
+	[K in keyof E & string]: z.infer<E[K]>;
+};
+
 interface ActionContext<
 	Payload = unknown,
-	Emits extends string = never,
+	Events extends Record<string, unknown> = Record<string, unknown>,
 	Env extends string = never,
 > {
 	event: EventDefinition<Payload>;
-	emit: [Emits] extends [never]
-		? never
-		: (type: Emits, payload: unknown) => Promise<void>;
-	env: [Env] extends [never] ? never : Record<Env, string | undefined>;
+	emit: <K extends keyof Events & string>(
+		type: K,
+		payload: Events[K],
+	) => Promise<void>;
+	env: Readonly<Record<Env, string>>;
 	fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
 }
-
-// --- Action types ---
-
-type ActionInput<E extends EventDefs, EventKey extends string> = {
-	[K in keyof E & EventKey]: {
-		on: K;
-		emits?: ReadonlyArray<keyof E & EventKey>;
-		env?: readonly string[];
-		handler: (
-			ctx: ActionContext<z.infer<E[K]>, never, string>,
-		) => Promise<void>;
-	};
-}[keyof E & EventKey];
 
 // --- Workflow config (output) ---
 
@@ -77,33 +69,135 @@ interface WorkflowConfig {
 	actions: ActionConfig[];
 }
 
-// --- defineWorkflow ---
+// --- Phase interfaces ---
 
-function defineWorkflow<E extends EventDefs>(config: {
-	events: E;
-	triggers: Record<string, TriggerInput<keyof E & string>>;
-	actions: Record<string, ActionInput<E, keyof E & string>>;
-}): WorkflowConfig {
-	const triggers = Object.values(config.triggers);
-
-	const actions = Object.entries(config.actions).map(([name, action]) => {
-		const eventName = action.on as string;
-		return {
-			name,
-			// biome-ignore lint/style/noNonNullAssertion: type system guarantees action.on is a valid key in config.events
-			on: { name: eventName, schema: config.events[eventName]! },
-			emits: action.emits ? [...action.emits] : [],
-			env: action.env ? [...action.env] : [],
-			handler: action.handler as WorkflowConfig["actions"][number]["handler"],
-		};
-	});
-
-	return {
-		events: config.events,
-		triggers,
-		actions,
-	};
+interface StartPhase {
+	event<Name extends string, S extends z.ZodType>(
+		name: Name,
+		schema: S,
+	): EventPhase<Record<Name, S>>;
 }
 
-export { z, defineWorkflow };
+interface EventPhase<E extends EventDefs> {
+	event<Name extends string, S extends z.ZodType>(
+		name: Name,
+		schema: S,
+	): EventPhase<E & Record<Name, S>>;
+
+	trigger(
+		name: string,
+		config: TriggerInput<keyof E & string>,
+	): TriggerPhase<E>;
+}
+
+interface TriggerPhase<E extends EventDefs> {
+	trigger(
+		name: string,
+		config: TriggerInput<keyof E & string>,
+	): TriggerPhase<E>;
+
+	action<
+		K extends keyof E & string,
+		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
+		const Env extends readonly string[] = readonly [],
+	>(
+		name: string,
+		config: {
+			on: K;
+			emits?: Emits;
+			env?: Env;
+			handler: (
+				ctx: ActionContext<
+					z.infer<E[K]>,
+					Pick<EventPayloads<E>, Emits[number] & string>,
+					Env[number]
+				>,
+			) => Promise<void>;
+		},
+	): ActionPhase<E>;
+}
+
+interface ActionPhase<E extends EventDefs> {
+	action<
+		K extends keyof E & string,
+		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
+		const Env extends readonly string[] = readonly [],
+	>(
+		name: string,
+		config: {
+			on: K;
+			emits?: Emits;
+			env?: Env;
+			handler: (
+				ctx: ActionContext<
+					z.infer<E[K]>,
+					Pick<EventPayloads<E>, Emits[number] & string>,
+					Env[number]
+				>,
+			) => Promise<void>;
+		},
+	): ActionPhase<E>;
+
+	build(): WorkflowConfig;
+}
+
+// --- WorkflowBuilder ---
+
+class WorkflowBuilder {
+	readonly #events: Record<string, z.ZodType> = {};
+	readonly #triggers: TriggerInput<string>[] = [];
+	readonly #actions: ActionConfig[] = [];
+
+	event(name: string, schema: z.ZodType): this {
+		this.#events[name] = schema;
+		return this;
+	}
+
+	trigger(_name: string, config: TriggerInput<string>): this {
+		this.#triggers.push(config);
+		return this;
+	}
+
+	action(
+		name: string,
+		config: {
+			on: string;
+			emits?: readonly string[];
+			env?: readonly string[];
+			handler: (ctx: {
+				event: EventDefinition<unknown>;
+				emit: (type: string, payload: unknown) => Promise<void>;
+				env: Record<string, string | undefined>;
+				fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
+			}) => Promise<void>;
+		},
+	): this {
+		const eventName = config.on;
+		this.#actions.push({
+			name,
+			// biome-ignore lint/style/noNonNullAssertion: type system guarantees config.on is a valid key in events
+			on: { name: eventName, schema: this.#events[eventName]! },
+			emits: config.emits ? [...config.emits] : [],
+			env: config.env ? [...config.env] : [],
+			handler: config.handler as ActionConfig["handler"],
+		});
+		return this;
+	}
+
+	build(): WorkflowConfig {
+		return {
+			events: { ...this.#events },
+			triggers: [...this.#triggers],
+			actions: [...this.#actions],
+		};
+	}
+}
+
+// --- Factory ---
+
+function workflow(): StartPhase {
+	return new WorkflowBuilder() as unknown as StartPhase;
+}
+
+export { z, workflow };
 export type { WorkflowConfig };

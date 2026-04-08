@@ -1,10 +1,4 @@
-# Actions Specification
-
-## Purpose
-
-Define the contract for user-provided action handlers: plain TypeScript functions that receive typed event data and may emit new events, bundled into standalone JavaScript files at build time.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Typed context
 
@@ -33,17 +27,6 @@ Actions SHALL receive an `ActionContext` providing typed `ctx.event.payload`, ty
 - **AND** accessing `ctx.env.SECRET` is a compile-time error
 - **AND** assigning `ctx.env.API_KEY = "x"` is a compile-time error (`Readonly`)
 
-### Requirement: No side effects at module scope
-
-Actions SHOULD NOT perform side effects at module scope. The runtime loads the module to obtain the handler function; module-scope code runs inside the isolate on every invocation.
-
-#### Scenario: Module-scope code
-
-- GIVEN an action with `console.log('loaded')` at module scope
-- WHEN the action is invoked
-- THEN the log statement executes inside the isolate (no effect on host)
-- AND it runs on every invocation (fresh isolate each time)
-
 ### Requirement: Action type
 
 An `Action` SHALL be a plain object with the following properties:
@@ -63,23 +46,3 @@ An `Action` SHALL be a plain object with the following properties:
 - **WHEN** an event `{ type: "order.received", targetAction: "parseOrder" }` is evaluated
 - **THEN** `match` returns `true`
 - **AND** for an event `{ type: "order.received", targetAction: "sendEmail" }`, `match` returns `false`
-
-### Requirement: Action handler receives ActionContext
-
-The action handler SHALL receive an `ActionContext` object providing access to the source event and an `emit()` method for creating downstream events.
-
-#### Scenario: Handler invocation
-
-- **GIVEN** a registered action with handler `parseOrderFn`
-- **WHEN** the scheduler matches an event to this action
-- **THEN** the handler is called with an `ActionContext`
-- **AND** `ctx.event` provides the full source event object
-- **AND** `ctx.emit(type, payload)` enqueues a new event that goes through the dispatch pipeline
-
-#### Scenario: Handler emits downstream event
-
-- **GIVEN** an action handler that calls `ctx.emit("order.validated", { valid: true })`
-- **WHEN** the handler executes
-- **THEN** a new event with `type: "order.validated"` is enqueued
-- **AND** the new event has `targetAction: undefined` (enters dispatch)
-- **AND** the new event inherits `correlationId` from the source event
