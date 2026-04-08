@@ -24,12 +24,12 @@ describe("createEventFactory", () => {
 		it("returns a pending RuntimeEvent with validated payload", () => {
 			const factory = createEventFactory({ "order.received": passthroughSchema });
 
-			const event = factory.create("order.received", { orderId: "abc" }, "corr_123");
+			const event = factory.create("order.received", { orderId: "abc" });
 
 			expect(event.id).toMatch(EVT_PREFIX);
 			expect(event.type).toBe("order.received");
 			expect(event.payload).toEqual({ orderId: "abc" });
-			expect(event.correlationId).toBe("corr_123");
+			expect(event.correlationId).toBeDefined();
 			expect(event.createdAt).toBeInstanceOf(Date);
 			expect(event.state).toBe("pending");
 			expect(event.parentEventId).toBeUndefined();
@@ -42,7 +42,7 @@ describe("createEventFactory", () => {
 			};
 			const factory = createEventFactory({ "order.received": schema });
 
-			const event = factory.create("order.received", { orderId: "abc", extra: true }, "corr_1");
+			const event = factory.create("order.received", { orderId: "abc", extra: true });
 
 			expect(event.payload).toEqual({ orderId: "abc" });
 		});
@@ -59,7 +59,7 @@ describe("createEventFactory", () => {
 			};
 			const factory = createEventFactory({ "order.received": schema });
 
-			expect(() => factory.create("order.received", { orderId: 123 }, "corr_1")).toThrow(
+			expect(() => factory.create("order.received", { orderId: 123 })).toThrow(
 				PayloadValidationError,
 			);
 		});
@@ -68,7 +68,7 @@ describe("createEventFactory", () => {
 			const factory = createEventFactory({});
 
 			try {
-				factory.create("order.unknown", {}, "corr_1");
+				factory.create("order.unknown", {});
 				expect.unreachable("should throw");
 			} catch (e) {
 				expect(e).toBeInstanceOf(PayloadValidationError);

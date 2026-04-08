@@ -6,7 +6,7 @@ interface Schema {
 }
 
 interface EventFactory {
-	create(type: string, payload: unknown, correlationId: string): RuntimeEvent;
+	create(type: string, payload: unknown): RuntimeEvent;
 	derive(parent: RuntimeEvent, type: string, payload: unknown): RuntimeEvent;
 	fork(parent: RuntimeEvent, options: { targetAction: string }): RuntimeEvent;
 }
@@ -36,13 +36,13 @@ function createEventFactory(
 	}
 
 	return {
-		create(type, payload, correlationId) {
+		create(type, payload) {
 			const parsed = validate(type, payload);
 			return {
 				id: `evt_${crypto.randomUUID()}`,
 				type,
 				payload: parsed,
-				correlationId,
+				correlationId: `corr_${crypto.randomUUID()}`,
 				createdAt: new Date(),
 				state: "pending",
 			};

@@ -134,13 +134,11 @@ class ContextFactory {
 	httpTrigger = (
 		body: unknown,
 		definition: HttpTriggerResolved,
-	): HttpTriggerContext => {
-		const correlationId = `corr_${crypto.randomUUID()}`;
-		return new HttpTriggerContext(
+	): HttpTriggerContext => new HttpTriggerContext(
 			body,
 			definition,
 			async (type, payload, options) => {
-				const event = this.#eventFactory.create(type, payload, correlationId);
+				const event = this.#eventFactory.create(type, payload);
 				if (options?.targetAction !== undefined) {
 					event.targetAction = options.targetAction;
 				}
@@ -148,7 +146,6 @@ class ContextFactory {
 				await this.#bus.emit(event);
 			},
 		);
-	};
 
 	action = (event: RuntimeEvent): ActionContext =>
 		new ActionContext(event, async (type, payload, options) => {
