@@ -8,6 +8,9 @@ function createApp(...middlewares: Middleware[]): Hono {
 
 	for (const { match, handler } of middlewares) {
 		app.use(match, handler);
+		if (match.endsWith("/*")) {
+			app.use(match.slice(0, -2), handler);
+		}
 	}
 
 	return app;

@@ -18,17 +18,18 @@ The system SHALL provide a `dashboardMiddleware` factory function that accepts a
 - **THEN** both `/webhooks/*` and `/dashboard/*` routes are served from the same Hono server
 
 ### Requirement: Dashboard page route
-The system SHALL serve a complete HTML page at `GET /dashboard` containing the page shell, CSS, and script tags for Alpine.js and HTMX.
+The system SHALL serve a complete HTML page at `GET /dashboard` using the shared layout function, containing dashboard-specific content, styles, and HTMX attributes.
 
 #### Scenario: Page load
 - **WHEN** a browser requests `GET /dashboard`
-- **THEN** the response is an HTML document with `Content-Type: text/html`
-- **THEN** the HTML includes `<script>` tags referencing `/dashboard/alpine.js` and `/dashboard/htmx.js`
-- **THEN** the HTML includes HTMX attributes to load the list fragment and connect to the SSE stream
+- **THEN** the response is an HTML document produced by `renderLayout("Dashboard", dashboardContent)`
+- **THEN** the HTML includes HTMX attributes to load the list fragment
+- **THEN** the sidebar navigation is present with links to Dashboard and Trigger
 
 #### Scenario: Dark/light mode
 - **WHEN** the page is loaded
-- **THEN** the CSS includes a `@media (prefers-color-scheme: dark)` block that switches all color variables
+- **THEN** theming is provided by the shared layout's CSS variables
+- **THEN** dashboard-specific styles reference these shared CSS variables
 
 ### Requirement: Static JS asset routes
 The system SHALL serve Alpine.js at `GET /dashboard/alpine.js` and HTMX at `GET /dashboard/htmx.js` from npm dependencies via Vite `?raw` imports.

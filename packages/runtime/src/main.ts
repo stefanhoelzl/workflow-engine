@@ -1,4 +1,4 @@
-import type { WorkflowConfig } from "@workflow-engine/sdk";
+import { z, type WorkflowConfig } from "@workflow-engine/sdk";
 import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
 import { createActionContext } from "./context/index.js";
@@ -18,6 +18,7 @@ import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
 import { dashboardMiddleware } from "./dashboard/middleware.js";
+import { triggerMiddleware } from "./trigger/middleware.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
 function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
@@ -69,6 +70,7 @@ function registerWorkflows(workflows: WorkflowConfig[]) {
 	const registry = new HttpTriggerRegistry();
 	const allActions: Action[] = [];
 	const allEvents: Record<string, { parse(data: unknown): unknown }> = {};
+	const allJsonSchemas: Record<string, object> = {};
 
 	for (const wf of workflows) {
 		const loaded = loadWorkflow(wf);
@@ -88,9 +90,13 @@ function registerWorkflows(workflows: WorkflowConfig[]) {
 
 		allActions.push(...loaded.actions);
 		Object.assign(allEvents, loaded.events);
+
+		for (const [name, schema] of Object.entries(loaded.events)) {
+			allJsonSchemas[name] = z.toJSONSchema(schema);
+		}
 	}
 
-	return { registry, allActions, allEvents };
+	return { registry, allActions, allEvents, allJsonSchemas };
 }
 
 async function init() {
@@ -105,7 +111,7 @@ async function init() {
 	runtimeLogger.info("initialize", { config });
 
 	const workflows = await loadWorkflows(config.workflowDir, runtimeLogger);
-	const { registry, allActions, allEvents } = registerWorkflows(workflows);
+	const { registry, allActions, allEvents, allJsonSchemas } = registerWorkflows(workflows);
 
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
@@ -128,6 +134,7 @@ async function init() {
 		httpLogger,
 		httpTriggerMiddleware(registry, source),
 		dashboardMiddleware(eventStore),
+		triggerMiddleware(allJsonSchemas, source),
 	);
 
 	return { runtimeLogger, eventBus, persistence, scheduler, server };
