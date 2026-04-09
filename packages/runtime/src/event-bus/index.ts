@@ -8,6 +8,8 @@ const baseFields = {
 	correlationId: z.string(),
 	parentEventId: z.exactOptional(z.string()),
 	createdAt: z.coerce.date(),
+	sourceType: z.enum(["trigger", "action"]),
+	sourceName: z.string(),
 };
 
 const ActiveEventSchema = z.object({

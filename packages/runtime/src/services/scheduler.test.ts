@@ -46,11 +46,13 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		correlationId: "corr_test",
 		createdAt: new Date(),
 		state: "pending",
+		sourceType: "trigger",
+		sourceName: "test-trigger",
 		...overrides,
 	} as RuntimeEvent;
 }
 
-function stubContextFactory(event: RuntimeEvent): ActionContext {
+function stubContextFactory(event: RuntimeEvent, _actionName: string): ActionContext {
 	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
 }
 

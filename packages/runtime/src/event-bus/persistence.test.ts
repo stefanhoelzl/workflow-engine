@@ -19,6 +19,8 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		correlationId: "corr_test",
 		createdAt: new Date(),
 		state: "pending",
+		sourceType: "trigger",
+		sourceName: "test-trigger",
 		...overrides,
 	} as RuntimeEvent;
 }

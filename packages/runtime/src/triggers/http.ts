@@ -5,6 +5,7 @@ import type { HttpTriggerContext } from "../context/index.js";
 import { PayloadValidationError } from "../context/errors.js";
 
 interface HttpTriggerDefinition {
+	name: string;
 	path: string;
 	method?: string;
 	event: string;
@@ -15,6 +16,7 @@ interface HttpTriggerDefinition {
 }
 
 interface HttpTriggerResolved {
+	name: string;
 	path: string;
 	method: string;
 	event: string;
@@ -34,6 +36,7 @@ class HttpTriggerRegistry {
 
 	register(definition: HttpTriggerDefinition): void {
 		this.#triggers.push({
+			name: definition.name,
 			path: definition.path,
 			method: definition.method ?? DEFAULT_METHOD,
 			event: definition.event,

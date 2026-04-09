@@ -345,6 +345,7 @@ describe("workflow builder runtime behavior", () => {
 			})
 			.build();
 
+		expect(config.triggers[0]?.name).toBe("orders");
 		expect(config.triggers[0]?.event).toBe("order.received");
 		expect(config.triggers[0]?.path).toBe("orders");
 	});

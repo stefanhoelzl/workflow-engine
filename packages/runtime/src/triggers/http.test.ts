@@ -13,6 +13,7 @@ describe("HttpTriggerRegistry", () => {
 	it("returns a registered trigger on matching path and method", () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -20,6 +21,7 @@ describe("HttpTriggerRegistry", () => {
 		});
 
 		expect(registry.lookup("order", "POST")).toEqual({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -36,6 +38,7 @@ describe("HttpTriggerRegistry", () => {
 	it("returns null when method does not match", () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -70,6 +73,7 @@ describe("httpTriggerMiddleware — matching", () => {
 	it("creates context and calls emit for matching request", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -113,6 +117,7 @@ describe("httpTriggerMiddleware — pass-through", () => {
 	it("does not handle requests outside /webhooks/", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -132,6 +137,7 @@ describe("httpTriggerMiddleware — error handling", () => {
 	it("returns 400 for non-JSON request body", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -153,6 +159,7 @@ describe("httpTriggerMiddleware — error handling", () => {
 	it("returns 422 with structured body when payload validation fails", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -184,6 +191,7 @@ describe("httpTriggerMiddleware — error handling", () => {
 	it("returns configured response when payload is valid", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",

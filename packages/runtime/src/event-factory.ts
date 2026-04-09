@@ -6,11 +6,12 @@ interface Schema {
 }
 
 interface EventFactory {
-	create(type: string, payload: unknown): RuntimeEvent;
-	derive(parent: RuntimeEvent, type: string, payload: unknown): RuntimeEvent;
+	create(type: string, payload: unknown, source: string): RuntimeEvent;
+	derive(parent: RuntimeEvent, type: string, payload: unknown, source: string): RuntimeEvent;
 	fork(parent: RuntimeEvent, options: { targetAction: string }): RuntimeEvent;
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled event construction logic
 function createEventFactory(
 	schemas: Record<string, Schema>,
 ): EventFactory {
@@ -36,7 +37,7 @@ function createEventFactory(
 	}
 
 	return {
-		create(type, payload) {
+		create(type, payload, source) {
 			const parsed = validate(type, payload);
 			return {
 				id: `evt_${crypto.randomUUID()}`,
@@ -45,10 +46,12 @@ function createEventFactory(
 				correlationId: `corr_${crypto.randomUUID()}`,
 				createdAt: new Date(),
 				state: "pending",
+				sourceType: "trigger",
+				sourceName: source,
 			};
 		},
 
-		derive(parent, type, payload) {
+		derive(parent, type, payload, source) {
 			const parsed = validate(type, payload);
 			return {
 				id: `evt_${crypto.randomUUID()}`,
@@ -58,6 +61,8 @@ function createEventFactory(
 				parentEventId: parent.id,
 				createdAt: new Date(),
 				state: "pending",
+				sourceType: "action",
+				sourceName: source,
 			};
 		},
 
@@ -71,6 +76,8 @@ function createEventFactory(
 				targetAction,
 				createdAt: new Date(),
 				state: "pending",
+				sourceType: parent.sourceType,
+				sourceName: parent.sourceName,
 			};
 		},
 	};
