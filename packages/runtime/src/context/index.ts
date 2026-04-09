@@ -4,7 +4,7 @@ import type { Logger } from "../logger.js";
 
 class ActionContext {
 	readonly event: RuntimeEvent;
-	readonly env: Record<string, string | undefined>;
+	readonly env: Record<string, string>;
 	readonly #emit: (
 		type: string,
 		payload: unknown,
@@ -20,7 +20,7 @@ class ActionContext {
 			payload: unknown,
 		) => Promise<void>,
 		fetch: typeof globalThis.fetch,
-		env: Record<string, string | undefined>,
+		env: Record<string, string>,
 		logger: Logger,
 	) {
 		this.event = event;
@@ -79,10 +79,9 @@ class ActionContext {
 function createActionContext(
 	source: EventSource,
 	fetch: typeof globalThis.fetch,
-	env: Record<string, string | undefined>,
 	logger: Logger,
-): (event: RuntimeEvent, actionName: string) => ActionContext {
-	return (event, actionName) =>
+): (event: RuntimeEvent, actionName: string, env: Record<string, string>) => ActionContext {
+	return (event, actionName, env) =>
 		new ActionContext(
 			event,
 			async (type, payload) => {

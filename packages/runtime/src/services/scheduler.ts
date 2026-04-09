@@ -5,7 +5,7 @@ import type { WorkQueue } from "../event-bus/work-queue.js";
 import type { EventSource } from "../event-source.js";
 import type { Service } from "./index.js";
 
-type ActionContextFactory = (event: RuntimeEvent, actionName: string) => ActionContext;
+type ActionContextFactory = (event: RuntimeEvent, actionName: string, env: Record<string, string>) => ActionContext;
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled lifecycle logic
 function createScheduler(
@@ -72,7 +72,7 @@ function createScheduler(
 
 	async function executeAction(event: RuntimeEvent, action: Action): Promise<void> {
 		try {
-			const ctx = createContext(event, action.name);
+			const ctx = createContext(event, action.name, action.env);
 			await action.handler(ctx);
 			await source.transition(event, { state: "done", result: "succeeded" });
 		} catch (error) {

@@ -37,8 +37,8 @@ function createTestSetup() {
 		{ "order.received": passthroughSchema, "order.validated": passthroughSchema },
 		bus,
 	);
-	const stubContextFactory = (event: RuntimeEvent, _actionName: string): ActionContext =>
-		new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
+	const stubContextFactory = (event: RuntimeEvent, _actionName: string, env: Record<string, string>): ActionContext =>
+		new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, env, silentLogger);
 
 	return { bus, workQueue, emitted, source, stubContextFactory };
 }
@@ -51,6 +51,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler,
 			};
 			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
@@ -76,6 +77,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler: async () => {
 					throw new Error("boom");
 				},
@@ -99,6 +101,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler: vi.fn(),
 			};
 			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
@@ -121,6 +124,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler: async (ctx) => {
 					receivedEvent = ctx.event;
 				},
@@ -146,8 +150,8 @@ describe("createScheduler", () => {
 			const handler1 = vi.fn();
 			const handler2 = vi.fn();
 			const actions: Action[] = [
-				{ name: "parseOrder", on: "order.received", handler: handler1 },
-				{ name: "sendEmail", on: "order.received", handler: handler2 },
+				{ name: "parseOrder", on: "order.received", env: {}, handler: handler1 },
+				{ name: "sendEmail", on: "order.received", env: {}, handler: handler2 },
 			];
 			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory);
 
@@ -183,6 +187,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.validated",
+				env: {},
 				handler: vi.fn(),
 			};
 			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
@@ -205,6 +210,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler: vi.fn(),
 			};
 			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
@@ -228,8 +234,8 @@ describe("createScheduler", () => {
 			const matchingHandler = vi.fn();
 			const nonMatchingHandler = vi.fn();
 			const actions: Action[] = [
-				{ name: "parseOrder", on: "order.received", handler: matchingHandler },
-				{ name: "updateInventory", on: "order.shipped", handler: nonMatchingHandler },
+				{ name: "parseOrder", on: "order.received", env: {}, handler: matchingHandler },
+				{ name: "updateInventory", on: "order.shipped", env: {}, handler: nonMatchingHandler },
 			];
 			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory);
 
@@ -252,6 +258,7 @@ describe("createScheduler", () => {
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
+				env: {},
 				handler,
 			};
 			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);

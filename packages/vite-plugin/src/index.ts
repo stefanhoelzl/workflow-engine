@@ -21,7 +21,7 @@ interface CompileOutput {
 		name: string | undefined;
 		on: string;
 		emits: string[];
-		env: string[];
+		env: Record<string, string>;
 		handler: (...args: unknown[]) => Promise<void>;
 	}>;
 }
@@ -31,7 +31,7 @@ interface ManifestAction {
 	handler: string;
 	on: string;
 	emits: string[];
-	env: string[];
+	env: Record<string, string>;
 }
 
 interface PluginContext {

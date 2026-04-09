@@ -34,7 +34,7 @@ function createTestLogger(level = "info"): {
 const EVT_PREFIX = /^evt_/;
 const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
 // biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-const mockEnv: Record<string, string | undefined> = { API_KEY: "secret", EMPTY: undefined };
+const mockEnv: Record<string, string> = { API_KEY: "secret" };
 
 const passthroughSchema = { parse: (d: unknown) => d };
 const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
@@ -59,18 +59,20 @@ function createTestSetup(overrides?: {
 	bus?: EventBus;
 	schemas?: Record<string, { parse(data: unknown): unknown }>;
 	fetch?: typeof globalThis.fetch;
-	env?: Record<string, string | undefined>;
+	env?: Record<string, string>;
 	logger?: Logger;
-}): { createContext: (event: RuntimeEvent, actionName: string) => ActionContext; source: EventSource; bus: EventBus; emitted: RuntimeEvent[] } {
+}): { createContext: (event: RuntimeEvent, actionName: string, env?: Record<string, string>) => ActionContext; source: EventSource; bus: EventBus; emitted: RuntimeEvent[] } {
 	const { bus: defaultBus, emitted } = createCollectorBus();
 	const bus = overrides?.bus ?? defaultBus;
 	const source = createEventSource(overrides?.schemas ?? defaultSchemas, bus);
-	const createContext = createActionContext(
+	const defaultEnv = overrides?.env ?? mockEnv;
+	const factory = createActionContext(
 		source,
 		overrides?.fetch ?? mockFetch,
-		overrides?.env ?? mockEnv,
 		overrides?.logger ?? silentLogger,
 	);
+	const createContext = (event: RuntimeEvent, actionName: string, env?: Record<string, string>) =>
+		factory(event, actionName, env ?? defaultEnv);
 	return { createContext, source, bus, emitted };
 }
 
@@ -197,12 +199,12 @@ describe("createActionContext", () => {
 			expect(ctx.env).toEqual({ FOO: "bar", BAZ: "qux" });
 		});
 
-		it("returns undefined for missing env keys", () => {
+		it("env only contains declared keys", () => {
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 			const { createContext } = createTestSetup({ env: { FOO: "bar" } });
 			const ctx = createContext(makeEvent(), "test-action");
 
-			expect(ctx.env.MISSING).toBeUndefined();
+			expect(Object.keys(ctx.env)).toEqual(["FOO"]);
 		});
 	});
 
@@ -323,8 +325,8 @@ describe("createActionContext", () => {
 				bootstrap: vi.fn(),
 			} as unknown as EventBus;
 			const source = createEventSource({ "order.received": schema }, fakeBus);
-			const createContext = createActionContext(source, mockFetch, mockEnv, silentLogger);
-			const ctx = createContext(makeEvent(), "test-action");
+			const factory = createActionContext(source, mockFetch, silentLogger);
+			const ctx = factory(makeEvent(), "test-action", {});
 
 			await expect(ctx.emit("order.received", {})).rejects.toThrow();
 			expect(emitSpy).not.toHaveBeenCalled();

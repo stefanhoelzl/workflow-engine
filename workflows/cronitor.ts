@@ -1,4 +1,4 @@
-import { createWorkflow, z } from "@workflow-engine/sdk";
+import { createWorkflow, env, z } from "@workflow-engine/sdk";
 
 const workflow = createWorkflow()
 	.event("webhook.cronitor", z.object({
@@ -43,12 +43,12 @@ export const handleCronitorEvent = workflow.action({
 
 export const sendMessage = workflow.action({
 	on: "notify.message",
-	env: [
-		"NEXTCLOUD_URL",
-		"NEXTCLOUD_TALK_ROOM",
-		"NEXTCLOUD_USERNAME",
-		"NEXTCLOUD_APP_PASSWORD",
-	],
+	env: {
+		NEXTCLOUD_URL: env({ default: "" }),
+		NEXTCLOUD_TALK_ROOM: env({ default: "" }),
+		NEXTCLOUD_USERNAME: env({ default: "" }),
+		NEXTCLOUD_APP_PASSWORD: env({ default: "" }),
+	},
 	handler: async (ctx) => {
 		const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v1/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
 		await ctx.fetch(url, {
@@ -66,5 +66,4 @@ export const sendMessage = workflow.action({
 	},
 });
 
-// biome-ignore lint/style/noDefaultExport: workflow convention
 export default workflow;

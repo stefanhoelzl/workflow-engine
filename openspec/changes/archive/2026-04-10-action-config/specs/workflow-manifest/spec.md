@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Manifest JSON format
 
 The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: events (with JSON Schema), triggers, and actions. The manifest SHALL NOT contain executable code or function references.
