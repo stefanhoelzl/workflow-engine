@@ -7,12 +7,12 @@ import { PayloadValidationError } from "../context/errors.js";
 interface HttpTriggerDefinition {
 	name: string;
 	path: string;
-	method?: string;
+	method?: string | undefined;
 	event: string;
 	response?: {
-		status?: number;
+		status?: number | undefined;
 		body?: unknown;
-	};
+	} | undefined;
 }
 
 interface HttpTriggerResolved {

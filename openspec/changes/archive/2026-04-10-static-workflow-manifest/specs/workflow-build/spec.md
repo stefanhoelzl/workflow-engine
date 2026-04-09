@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Workflow source files in workflows directory
 Each workflow SHALL be a single TypeScript file in the `workflows/` directory that default-exports a `WorkflowBuilder` created via `createWorkflow()`. Action handlers SHALL be exported as named `const`s via calls to `workflow.action()`.
 
@@ -37,6 +39,8 @@ The root `pnpm build` script SHALL build both the runtime and the workflows.
 - **WHEN** `pnpm build` is run from the repository root
 - **THEN** `dist/main.js` (runtime) SHALL be produced
 - **AND** `workflows/dist/*/manifest.json` and `workflows/dist/*/actions.js` (workflow artifacts) SHALL be produced
+
+## MODIFIED Requirements
 
 ### Requirement: Vite plugin package
 A new `packages/vite-plugin` package SHALL exist as a pnpm workspace member, exporting the workflow compilation Vite plugin.

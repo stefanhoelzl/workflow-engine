@@ -1,5 +1,5 @@
 {
-	"name": "@workflow-engine/sdk",
+	"name": "@workflow-engine/vite-plugin",
 	"type": "module",
 	"version": "0.0.0",
 	"private": true,
@@ -7,9 +7,9 @@
 		".": "./src/index.ts"
 	},
 	"dependencies": {
-		"zod": "^4.0.0"
+		"@workflow-engine/sdk": "workspace:*"
 	},
-	"devDependencies": {
-		"ajv": "^8.18.0"
+	"peerDependencies": {
+		"vite": ">=6.0.0"
 	}
 }

@@ -1,10 +1,4 @@
-# Define Workflow Specification
-
-## Purpose
-
-Provide a builder API for defining workflows with typed events, triggers, and actions using a `createWorkflow()` function that returns a single-phase `WorkflowBuilder<E>`. Actions are exported as named constants, `.compile()` returns serializable metadata, and `.action()` returns the handler function.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: defineWorkflow function
 
@@ -149,3 +143,22 @@ The SDK SHALL re-export `z` from Zod so workflow authors can import everything f
 - **GIVEN** a workflow file importing from `@workflow-engine/sdk`
 - **WHEN** the author writes `import { createWorkflow, z } from "@workflow-engine/sdk"`
 - **THEN** `z` is the same Zod namespace as `import { z } from "zod"`
+
+## REMOVED Requirements
+
+### Requirement: WorkflowConfig output
+**Reason**: Replaced by `.compile()` which returns serializable metadata and handler references separately. The monolithic `WorkflowConfig` type is no longer needed.
+**Migration**: Use `.compile()` instead of `.build()`. Consumers of `WorkflowConfig` should use the `Manifest` type for metadata.
+
+### Requirement: build() requires all phases
+**Reason**: `.build()` is removed. The single-phase builder exposes `.compile()` instead.
+**Migration**: Remove `.build()` calls. Use `.compile()` in the Vite plugin.
+
+### Requirement: Phase ordering enforced at compile-time
+**Reason**: Single-phase builder replaces the 4-phase system. Generic constraints still enforce event key validity.
+**Migration**: No migration needed — the single-phase builder is more permissive but equally safe.
+
+## RENAMED Requirements
+
+- **FROM:** `defineWorkflow function` **TO:** `defineWorkflow function` (name kept, content changed to use `createWorkflow()`)
+- **FROM:** `Action names derived from builder method argument` **TO:** `Action names derived from export or explicit parameter`
