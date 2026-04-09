@@ -14,7 +14,7 @@
 		"format": "biome format --write .",
 		"format:check": "biome format .",
 		"test": "vitest run",
-		"validate": "pnpm lint && pnpm format:check && pnpm check && pnpm test",
+		"validate": "pnpm lint && pnpm format:check && pnpm check && pnpm test && tofu -chdir=infrastructure/dev validate",
 		"start": "pnpm --filter workflows build && PERSISTENCE_PATH=$PWD/.persistence pnpm --filter @workflow-engine/runtime start",
 		"dev": "vite build --watch"
 	},

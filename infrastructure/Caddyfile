@@ -1,0 +1,7 @@
+localhost {
+	route {
+		@allowed path /dashboard /dashboard/* /webhooks/*
+		reverse_proxy @allowed app:8080
+		respond "Not Found" 404
+	}
+}
