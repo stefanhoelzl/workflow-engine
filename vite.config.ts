@@ -63,8 +63,12 @@ function devServer(): Plugin {
 				configFile: resolve(import.meta.dirname, "workflows/vite.config.ts"),
 				root: resolve(import.meta.dirname, "workflows"),
 			});
-			server?.kill();
-			server = spawn("node", [resolve(import.meta.dirname, "packages/runtime/dist/main.js")], {
+			if (server) {
+				server.kill();
+				// biome-ignore lint/style/noNonNullAssertion: narrowed by if-check above
+				await new Promise<void>((r) => server!.on("exit", r));
+			}
+			server = spawn(process.execPath, [resolve(import.meta.dirname, "packages/runtime/dist/main.js")], {
 				stdio: "inherit",
 				env: {
 					...process.env,
