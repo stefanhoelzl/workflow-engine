@@ -77,6 +77,8 @@ function devServer(): Plugin {
 					PORT: String(port),
 				},
 			});
+			// biome-ignore lint/suspicious/noConsole: intentional startup message
+			console.log(`Server listening on http://localhost:${port}`);
 		},
 	};
 }
