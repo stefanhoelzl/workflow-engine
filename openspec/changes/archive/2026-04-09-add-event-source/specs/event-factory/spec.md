@@ -1,49 +1,27 @@
-# Event Factory Specification
-
-## Purpose
-
-Provide centralized RuntimeEvent construction with three distinct creation modes: originating new event chains, deriving child events within a chain, and forking fan-out copies for the scheduler.
-
-## Requirements
-
-### Requirement: EventFactory with three creation modes
-
-The system SHALL provide an `EventFactory` that centralizes `RuntimeEvent` construction. It SHALL expose three methods: `create`, `derive`, and `fork`. Each method SHALL return a `RuntimeEvent` with `state: "pending"`, a unique `evt_`-prefixed `id`, and a `createdAt` timestamp.
-
-#### Scenario: Factory provides three methods
-
-- **GIVEN** an `EventFactory` initialized with a schemas map
-- **WHEN** the factory is inspected
-- **THEN** it exposes `create`, `derive`, and `fork` methods
+## MODIFIED Requirements
 
 ### Requirement: create method for new event chains
 
-The `create` method SHALL accept `(type: string, payload: unknown, source: string)`, validate the payload against the schema for the given type, generate a `corr_`-prefixed correlation ID using `crypto.randomUUID()`, and return a new `RuntimeEvent` with no `parentEventId`, no `targetAction`, `sourceType: "trigger"`, and `sourceName` set to the `source` parameter.
+The `create` method SHALL accept `(type: string, payload: unknown, correlationId: string, source: string)`, validate the payload against the schema for the given type, and return a new `RuntimeEvent` with no `parentEventId`, no `targetAction`, `sourceType: "trigger"`, and `sourceName` set to the `source` parameter.
 
-#### Scenario: Create a root event with auto-generated correlation ID
+#### Scenario: Create a root event
 
 - **GIVEN** an `EventFactory` with schemas `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `create("order.received", { orderId: "abc" }, "orders")` is called
-- **THEN** a `RuntimeEvent` is returned with `type: "order.received"`, `payload: { orderId: "abc" }`, `state: "pending"`, a unique `evt_`-prefixed `id`, a unique `corr_`-prefixed `correlationId`, a `createdAt` timestamp, `sourceType: "trigger"`, and `sourceName: "orders"`
+- **WHEN** `create("order.received", { orderId: "abc" }, "corr_123", "orders")` is called
+- **THEN** a `RuntimeEvent` is returned with `type: "order.received"`, `payload: { orderId: "abc" }`, `correlationId: "corr_123"`, `state: "pending"`, a unique `evt_`-prefixed `id`, a `createdAt` timestamp, `sourceType: "trigger"`, and `sourceName: "orders"`
 - **AND** `parentEventId` is `undefined`
 - **AND** `targetAction` is `undefined`
-
-#### Scenario: Each create call generates a distinct correlation ID
-
-- **GIVEN** an `EventFactory` with schemas `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `create("order.received", { orderId: "a" }, "orders")` is called twice
-- **THEN** the two returned events have different `correlationId` values
 
 #### Scenario: Create rejects invalid payload
 
 - **GIVEN** an `EventFactory` with schemas `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `create("order.received", { orderId: 123 }, "orders")` is called
+- **WHEN** `create("order.received", { orderId: 123 }, "corr_123", "orders")` is called
 - **THEN** a `PayloadValidationError` is thrown
 
 #### Scenario: Create rejects unknown event type
 
 - **GIVEN** an `EventFactory` with schemas that do not include `"order.unknown"`
-- **WHEN** `create("order.unknown", {}, "orders")` is called
+- **WHEN** `create("order.unknown", {}, "corr_123", "orders")` is called
 - **THEN** a `PayloadValidationError` is thrown with an empty issues array
 
 ### Requirement: derive method for child events in a chain
@@ -88,13 +66,3 @@ The `fork` method SHALL accept `(parent: RuntimeEvent, options: { targetAction: 
 - **WHEN** `fork(parent, { targetAction: "sendEmail" })` is called
 - **THEN** the forked event has a different `evt_`-prefixed `id` than `"evt_001"`
 - **AND** the forked event has its own `createdAt` timestamp
-
-### Requirement: EventFactory is a closure-based factory
-
-The `EventFactory` SHALL be created via a `createEventFactory(schemas)` function that accepts a schemas map typed as `Record<string, { parse(data: unknown): unknown }>`. There SHALL be no exported `EventFactory` class.
-
-#### Scenario: Factory creation
-
-- **GIVEN** a schemas map `{ "order.received": z.object({ orderId: z.string() }) }`
-- **WHEN** `createEventFactory(schemas)` is called
-- **THEN** the returned object has `create`, `derive`, and `fork` methods

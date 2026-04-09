@@ -15,6 +15,8 @@ function makeParent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		correlationId: "corr_xyz",
 		createdAt: new Date(),
 		state: "pending",
+		sourceType: "trigger",
+		sourceName: "orders",
 		...overrides,
 	} as RuntimeEvent;
 }
@@ -24,7 +26,7 @@ describe("createEventFactory", () => {
 		it("returns a pending RuntimeEvent with validated payload", () => {
 			const factory = createEventFactory({ "order.received": passthroughSchema });
 
-			const event = factory.create("order.received", { orderId: "abc" });
+			const event = factory.create("order.received", { orderId: "abc" }, "orders");
 
 			expect(event.id).toMatch(EVT_PREFIX);
 			expect(event.type).toBe("order.received");
@@ -34,6 +36,8 @@ describe("createEventFactory", () => {
 			expect(event.state).toBe("pending");
 			expect(event.parentEventId).toBeUndefined();
 			expect(event.targetAction).toBeUndefined();
+			expect(event.sourceType).toBe("trigger");
+			expect(event.sourceName).toBe("orders");
 		});
 
 		it("uses parsed output from schema", () => {
@@ -42,7 +46,7 @@ describe("createEventFactory", () => {
 			};
 			const factory = createEventFactory({ "order.received": schema });
 
-			const event = factory.create("order.received", { orderId: "abc", extra: true });
+			const event = factory.create("order.received", { orderId: "abc", extra: true }, "orders");
 
 			expect(event.payload).toEqual({ orderId: "abc" });
 		});
@@ -59,7 +63,7 @@ describe("createEventFactory", () => {
 			};
 			const factory = createEventFactory({ "order.received": schema });
 
-			expect(() => factory.create("order.received", { orderId: 123 })).toThrow(
+			expect(() => factory.create("order.received", { orderId: 123 }, "orders")).toThrow(
 				PayloadValidationError,
 			);
 		});
@@ -68,7 +72,7 @@ describe("createEventFactory", () => {
 			const factory = createEventFactory({});
 
 			try {
-				factory.create("order.unknown", {});
+				factory.create("order.unknown", {}, "orders");
 				expect.unreachable("should throw");
 			} catch (e) {
 				expect(e).toBeInstanceOf(PayloadValidationError);
@@ -83,7 +87,7 @@ describe("createEventFactory", () => {
 			const factory = createEventFactory({ "order.validated": passthroughSchema });
 			const parent = makeParent();
 
-			const event = factory.derive(parent, "order.validated", { valid: true });
+			const event = factory.derive(parent, "order.validated", { valid: true }, "validate-order");
 
 			expect(event.id).toMatch(EVT_PREFIX);
 			expect(event.id).not.toBe(parent.id);
@@ -93,6 +97,8 @@ describe("createEventFactory", () => {
 			expect(event.parentEventId).toBe("evt_parent");
 			expect(event.state).toBe("pending");
 			expect(event.targetAction).toBeUndefined();
+			expect(event.sourceType).toBe("action");
+			expect(event.sourceName).toBe("validate-order");
 		});
 
 		it("validates the payload", () => {
@@ -107,7 +113,7 @@ describe("createEventFactory", () => {
 			};
 			const factory = createEventFactory({ "order.validated": schema });
 
-			expect(() => factory.derive(makeParent(), "order.validated", { valid: "yes" })).toThrow(
+			expect(() => factory.derive(makeParent(), "order.validated", { valid: "yes" }, "validate-order")).toThrow(
 				PayloadValidationError,
 			);
 		});
@@ -129,6 +135,8 @@ describe("createEventFactory", () => {
 			expect(event.targetAction).toBe("sendEmail");
 			expect(event.state).toBe("pending");
 			expect(event.createdAt).toBeInstanceOf(Date);
+			expect(event.sourceType).toBe("trigger");
+			expect(event.sourceName).toBe("orders");
 		});
 
 		it("does not validate the payload", () => {

@@ -138,7 +138,7 @@ class ContextFactory {
 			body,
 			definition,
 			async (type, payload, options) => {
-				const event = this.#eventFactory.create(type, payload);
+				const event = this.#eventFactory.create(type, payload, definition.name);
 				if (options?.targetAction !== undefined) {
 					event.targetAction = options.targetAction;
 				}
@@ -147,9 +147,9 @@ class ContextFactory {
 			},
 		);
 
-	action = (event: RuntimeEvent): ActionContext =>
+	action = (event: RuntimeEvent, actionName: string): ActionContext =>
 		new ActionContext(event, async (type, payload, options) => {
-			const derived = this.#eventFactory.derive(event, type, payload);
+			const derived = this.#eventFactory.derive(event, type, payload, actionName);
 			if (options?.targetAction !== undefined) {
 				derived.targetAction = options.targetAction;
 			}

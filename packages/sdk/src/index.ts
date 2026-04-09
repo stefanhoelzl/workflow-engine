@@ -25,6 +25,8 @@ interface HttpTriggerInput<E extends string> {
 
 type TriggerInput<E extends string> = HttpTriggerInput<E>;
 
+type TriggerConfig = TriggerInput<string> & { name: string };
+
 // --- Action context ---
 
 type EventPayloads<E extends EventDefs> = {
@@ -65,7 +67,7 @@ interface ActionConfig {
 
 interface WorkflowConfig {
 	events: Record<string, z.ZodType>;
-	triggers: TriggerInput<string>[];
+	triggers: TriggerConfig[];
 	actions: ActionConfig[];
 }
 
@@ -145,7 +147,7 @@ interface ActionPhase<E extends EventDefs> {
 
 class WorkflowBuilder {
 	readonly #events: Record<string, z.ZodType> = {};
-	readonly #triggers: TriggerInput<string>[] = [];
+	readonly #triggers: TriggerConfig[] = [];
 	readonly #actions: ActionConfig[] = [];
 
 	event(name: string, schema: z.ZodType): this {
@@ -153,8 +155,8 @@ class WorkflowBuilder {
 		return this;
 	}
 
-	trigger(_name: string, config: TriggerInput<string>): this {
-		this.#triggers.push(config);
+	trigger(name: string, input: TriggerInput<string>): this {
+		this.#triggers.push({ ...input, name });
 		return this;
 	}
 

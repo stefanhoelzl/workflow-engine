@@ -52,6 +52,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 	it("processes a full chaining pipeline with fan-out after emit", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",
@@ -124,6 +125,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 	it("produces structured log output across the full pipeline", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
+			name: "orders",
 			path: "order",
 			method: "POST",
 			event: "order.received",

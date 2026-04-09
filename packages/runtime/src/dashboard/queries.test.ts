@@ -18,6 +18,8 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		correlationId: "corr_1",
 		createdAt: new Date(`2025-01-01T10:00:${String(seq).padStart(2, "0")}Z`),
 		state: "pending",
+		sourceType: "trigger",
+		sourceName: "test-trigger",
 		...overrides,
 	} as RuntimeEvent;
 }

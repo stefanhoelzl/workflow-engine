@@ -6,7 +6,7 @@ import type { EventFactory } from "../event-factory.js";
 import type { Logger } from "../logger.js";
 import type { Service } from "./index.js";
 
-type ActionContextFactory = (event: RuntimeEvent) => ActionContext;
+type ActionContextFactory = (event: RuntimeEvent, actionName: string) => ActionContext;
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled lifecycle logic
 // biome-ignore lint/complexity/useMaxParams: factory requires all dependencies
@@ -100,7 +100,7 @@ function createScheduler(
 		});
 		const start = performance.now();
 		try {
-			const ctx = createContext(event);
+			const ctx = createContext(event, action.name);
 			await action.handler(ctx);
 			const durationMs = Math.round(performance.now() - start);
 			logger.info("action.completed", {

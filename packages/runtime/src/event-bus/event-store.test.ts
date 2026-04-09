@@ -10,6 +10,8 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		correlationId: "corr_test",
 		createdAt: new Date("2025-01-01T12:00:00Z"),
 		state: "pending",
+		sourceType: "trigger",
+		sourceName: "test-trigger",
 		...overrides,
 	};
 }
@@ -61,6 +63,8 @@ rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
 				state: "done",
 				result: "failed",
 				error: "timeout",
+				sourceType: "trigger",
+				sourceName: "orders",
 			};
 			await store.handle(event);
 
