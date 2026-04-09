@@ -1,73 +1,7 @@
+import { renderLayout } from "../../views/layout.js";
+
 function renderPage(): string {
-	return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Workflow Dashboard</title>
-  <script defer src="/dashboard/alpine.js"></script>
-  <script src="/dashboard/htmx.js"></script>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --bg-surface: #f8f9fa;
-      --bg-elevated: #ffffff;
-      --border: #e1e4e8;
-      --text: #1a1a2e;
-      --text-secondary: #5a6070;
-      --text-muted: #8b8fa3;
-      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
-      --shadow-lg: 0 4px 12px rgba(0,0,0,0.1);
-      --radius: 8px;
-      --radius-sm: 4px;
-      --green: #22c55e;
-      --green-bg: #f0fdf4;
-      --green-border: #bbf7d0;
-      --red: #ef4444;
-      --red-bg: #fef2f2;
-      --red-border: #fecaca;
-      --yellow: #f59e0b;
-      --yellow-bg: #fffbeb;
-      --yellow-border: #fde68a;
-      --grey: #94a3b8;
-      --grey-bg: #f1f5f9;
-      --grey-border: #cbd5e1;
-      --accent: #6366f1;
-      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
-      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f1117;
-        --bg-surface: #161822;
-        --bg-elevated: #1e2030;
-        --border: #2e3148;
-        --text: #e2e4f0;
-        --text-secondary: #a0a4c0;
-        --text-muted: #6b6f8a;
-        --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-        --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
-        --green-bg: #052e16;
-        --green-border: #166534;
-        --red-bg: #350a0a;
-        --red-border: #7f1d1d;
-        --yellow-bg: #3b2506;
-        --yellow-border: #92400e;
-        --grey-bg: #1e293b;
-        --grey-border: #475569;
-      }
-    }
-
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: var(--font);
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
-
+	const head = `  <style>
     .header {
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border);
@@ -87,19 +21,6 @@ function renderPage(): string {
       display: flex;
       align-items: center;
       gap: 8px;
-    }
-
-    .header h1 .icon {
-      width: 20px;
-      height: 20px;
-      background: var(--accent);
-      border-radius: var(--radius-sm);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-size: 11px;
-      font-weight: 700;
     }
 
     .stats {
@@ -208,8 +129,6 @@ function renderPage(): string {
     .event-type-option input[type="checkbox"] {
       accent-color: var(--accent);
     }
-
-    [x-cloak] { display: none !important; }
 
     .list {
       max-width: 960px;
@@ -384,14 +303,11 @@ function renderPage(): string {
       color: var(--text-muted);
       font-size: 14px;
     }
+  </style>`;
 
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  </style>
-</head>
-<body x-data="{ tip: null, tipX: 0, tipY: 0, _tipTimer: null }">
+	const bodyAttrs = `x-data="{ tip: null, tipX: 0, tipY: 0, _tipTimer: null }"`;
 
+	const content = `
   <div class="tooltip"
        x-show="tip"
        x-transition.opacity.duration.150ms
@@ -412,10 +328,7 @@ function renderPage(): string {
   </div>
 
   <div class="header">
-    <h1>
-      <span class="icon">W</span>
-      Workflow Dashboard
-    </h1>
+    <h1>Dashboard</h1>
     <div class="stats" id="header-stats"
          hx-get="/dashboard/list?fragment=stats"
          hx-trigger="load"
@@ -476,11 +389,12 @@ function renderPage(): string {
          hx-trigger="load"
          hx-swap="innerHTML">
     </div>
-  </div>
+  </div>`;
 
-
-</body>
-</html>`;
+	return renderLayout(
+		{ title: "Dashboard", activePath: "/dashboard", head, bodyAttrs },
+		content,
+	);
 }
 
 export { renderPage };
