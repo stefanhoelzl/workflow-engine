@@ -21,11 +21,13 @@
 	},
 	"overrides": [
 		{
-			"includes": ["vitest.config.ts"],
+			"includes": ["vite.config.ts", "vitest.config.ts"],
 			"linter": {
 				"rules": {
 					"style": {
-						"noDefaultExport": "off"
+						"noDefaultExport": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
 					}
 				}
 			}
