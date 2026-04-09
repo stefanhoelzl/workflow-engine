@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Dynamic workflow discovery from directory
 The runtime SHALL scan the directory specified by `WORKFLOW_DIR` for subdirectories containing a `manifest.json` file at startup.
 
@@ -50,3 +52,9 @@ All actions from loaded workflows SHALL be included in the scheduler's fan-out l
 #### Scenario: Event matches actions from different workflows
 - **WHEN** an event type matches actions from two different loaded workflows
 - **THEN** the scheduler SHALL emit targeted events for all matching actions
+
+## REMOVED Requirements
+
+### Requirement: Dynamic import of workflow modules
+**Reason**: Replaced by manifest-based loading. The runtime no longer imports `.js` files and reads their default export as `WorkflowConfig`.
+**Migration**: Workflow files are now compiled by the Vite plugin into `manifest.json` + `actions.js` pairs. The runtime reads the manifest and imports the actions module separately.

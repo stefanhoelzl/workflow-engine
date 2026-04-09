@@ -1,5 +1,6 @@
 // biome-ignore lint/style/noExportedImports: z is re-exported for workflow authors alongside locally defined exports
 import { z } from "zod";
+import Ajv2020 from "ajv/dist/2020.js";
 
 // --- Event types ---
 
@@ -47,108 +48,122 @@ interface ActionContext<
 	fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
 }
 
-// --- Workflow config (output) ---
+// --- Manifest types ---
 
-interface ActionConfig {
-	name: string;
-	on: {
-		name: string;
-		schema: z.ZodType;
-	};
+const ajv = new Ajv2020.default();
+// biome-ignore lint/style/noNonNullAssertion: meta-schema is always available in Ajv2020
+const validateJsonSchema = ajv.getSchema(
+	"https://json-schema.org/draft/2020-12/schema",
+)!;
+
+const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) =>
+	validateJsonSchema(val),
+);
+
+const ManifestSchema = z.object({
+	events: z.array(
+		z.object({
+			name: z.string(),
+			schema: jsonSchemaValidator,
+		}),
+	),
+	triggers: z.array(
+		z.object({
+			name: z.string(),
+			type: z.string(),
+			path: z.string(),
+			method: z.string().optional(),
+			event: z.string(),
+			response: z
+				.object({
+					status: z.number().optional(),
+					body: z.unknown().optional(),
+				})
+				.optional(),
+		}),
+	),
+	actions: z.array(
+		z.object({
+			name: z.string(),
+			handler: z.string(),
+			on: z.string(),
+			emits: z.array(z.string()),
+			env: z.array(z.string()),
+		}),
+	),
+	module: z.string(),
+});
+
+type Manifest = z.infer<typeof ManifestSchema>;
+
+// --- Compile output ---
+
+interface CompiledAction {
+	name: string | undefined;
+	on: string;
 	emits: string[];
 	env: string[];
-	handler: (ctx: {
-		event: Event;
-		emit: (type: string, payload: unknown) => Promise<void>;
-		env: Record<string, string | undefined>;
-		fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
-	}) => Promise<void>;
+	handler: (...args: unknown[]) => Promise<void>;
 }
 
-interface WorkflowConfig {
-	events: Record<string, z.ZodType>;
+interface CompileOutput {
+	events: Array<{ name: string; schema: object }>;
 	triggers: TriggerConfig[];
-	actions: ActionConfig[];
+	actions: CompiledAction[];
 }
 
-// --- Phase interfaces ---
+// --- WorkflowBuilder (single-phase) ---
 
-interface StartPhase {
+interface WorkflowBuilder<E extends EventDefs> {
 	event<Name extends string, S extends z.ZodType>(
 		name: Name,
 		schema: S,
-	): EventPhase<Record<Name, S>>;
-}
-
-interface EventPhase<E extends EventDefs> {
-	event<Name extends string, S extends z.ZodType>(
-		name: Name,
-		schema: S,
-	): EventPhase<E & Record<Name, S>>;
+	): WorkflowBuilder<E & Record<Name, S>>;
 
 	trigger(
 		name: string,
 		config: TriggerInput<keyof E & string>,
-	): TriggerPhase<E>;
-}
-
-interface TriggerPhase<E extends EventDefs> {
-	trigger(
-		name: string,
-		config: TriggerInput<keyof E & string>,
-	): TriggerPhase<E>;
+	): WorkflowBuilder<E>;
 
 	action<
 		K extends keyof E & string,
 		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
 		const Env extends readonly string[] = readonly [],
-	>(
-		name: string,
-		config: {
-			on: K;
-			emits?: Emits;
-			env?: Env;
-			handler: (
-				ctx: ActionContext<
-					z.infer<E[K]>,
-					Pick<EventPayloads<E>, Emits[number] & string>,
-					Env[number]
-				>,
-			) => Promise<void>;
-		},
-	): ActionPhase<E>;
+	>(config: {
+		name?: string;
+		on: K;
+		emits?: Emits;
+		env?: Env;
+		handler: (
+			ctx: ActionContext<
+				z.infer<E[K]>,
+				Pick<EventPayloads<E>, Emits[number] & string>,
+				Env[number]
+			>,
+		) => Promise<void>;
+	}): (
+		ctx: ActionContext<
+			z.infer<E[K]>,
+			Pick<EventPayloads<E>, Emits[number] & string>,
+			Env[number]
+		>,
+	) => Promise<void>;
+
+	compile(): CompileOutput;
 }
 
-interface ActionPhase<E extends EventDefs> {
-	action<
-		K extends keyof E & string,
-		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
-		const Env extends readonly string[] = readonly [],
-	>(
-		name: string,
-		config: {
-			on: K;
-			emits?: Emits;
-			env?: Env;
-			handler: (
-				ctx: ActionContext<
-					z.infer<E[K]>,
-					Pick<EventPayloads<E>, Emits[number] & string>,
-					Env[number]
-				>,
-			) => Promise<void>;
-		},
-	): ActionPhase<E>;
+// --- WorkflowBuilderImpl ---
 
-	build(): WorkflowConfig;
-}
-
-// --- WorkflowBuilder ---
-
-class WorkflowBuilder {
+class WorkflowBuilderImpl {
 	readonly #events: Record<string, z.ZodType> = {};
 	readonly #triggers: TriggerConfig[] = [];
-	readonly #actions: ActionConfig[] = [];
+	readonly #actions: Array<{
+		name: string | undefined;
+		on: string;
+		emits: string[];
+		env: string[];
+		handler: (...args: unknown[]) => Promise<void>;
+	}> = [];
 
 	event(name: string, schema: z.ZodType): this {
 		this.#events[name] = schema;
@@ -160,46 +175,50 @@ class WorkflowBuilder {
 		return this;
 	}
 
-	action(
-		name: string,
-		config: {
-			on: string;
-			emits?: readonly string[];
-			env?: readonly string[];
-			handler: (ctx: {
-				event: Event;
-				emit: (type: string, payload: unknown) => Promise<void>;
-				env: Record<string, string | undefined>;
-				fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
-			}) => Promise<void>;
-		},
-	): this {
-		const eventName = config.on;
+	action(config: {
+		name?: string;
+		on: string;
+		emits?: readonly string[];
+		env?: readonly string[];
+		handler: (...args: unknown[]) => Promise<void>;
+	}): (...args: unknown[]) => Promise<void> {
 		this.#actions.push({
-			name,
-			// biome-ignore lint/style/noNonNullAssertion: type system guarantees config.on is a valid key in events
-			on: { name: eventName, schema: this.#events[eventName]! },
+			name: config.name,
+			on: config.on,
 			emits: config.emits ? [...config.emits] : [],
 			env: config.env ? [...config.env] : [],
-			handler: config.handler as ActionConfig["handler"],
+			handler: config.handler,
 		});
-		return this;
+		return config.handler;
 	}
 
-	build(): WorkflowConfig {
+	compile(): CompileOutput {
+		const events = Object.entries(this.#events).map(([name, schema]) => ({
+			name,
+			schema: z.toJSONSchema(schema, {}) as object,
+		}));
+
 		return {
-			events: { ...this.#events },
+			events,
 			triggers: [...this.#triggers],
-			actions: [...this.#actions],
+			actions: this.#actions.map((a) => ({
+				name: a.name,
+				on: a.on,
+				emits: [...a.emits],
+				env: [...a.env],
+				handler: a.handler,
+			})),
 		};
 	}
 }
 
 // --- Factory ---
 
-function workflow(): StartPhase {
-	return new WorkflowBuilder() as unknown as StartPhase;
+// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
+function createWorkflow(): WorkflowBuilder<{}> {
+	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
+	return new WorkflowBuilderImpl() as unknown as WorkflowBuilder<{}>;
 }
 
-export { z, workflow };
-export type { Event, WorkflowConfig };
+export { z, createWorkflow, ManifestSchema };
+export type { Event, Manifest, CompileOutput, CompiledAction, TriggerConfig, WorkflowBuilder, ActionContext };

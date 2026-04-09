@@ -7,6 +7,7 @@
 		"build": "vite build"
 	},
 	"dependencies": {
-		"@workflow-engine/sdk": "workspace:*"
+		"@workflow-engine/sdk": "workspace:*",
+		"@workflow-engine/vite-plugin": "workspace:*"
 	}
 }

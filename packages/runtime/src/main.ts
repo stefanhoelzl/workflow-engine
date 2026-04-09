@@ -1,4 +1,3 @@
-import { z, type WorkflowConfig } from "@workflow-engine/sdk";
 import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
 import { createActionContext } from "./context/index.js";
@@ -12,7 +11,7 @@ import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
-import { loadWorkflows } from "./loader.js";
+import { type LoadedWorkflow, loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
@@ -50,50 +49,24 @@ function initPersistence(
 	});
 }
 
-function loadWorkflow(wf: WorkflowConfig) {
-	const actions: Action[] = wf.actions.map((action) => ({
-		name: action.name,
-		on: action.on.name,
-		handler: (ctx) =>
-			action.handler({
-				event: { name: ctx.event.type, payload: ctx.event.payload },
-				emit: (type: string, payload: unknown) => ctx.emit(type, payload),
-				env: ctx.env,
-				fetch: (url, init) => ctx.fetch(url, init),
-			}),
-	}));
-
-	return { actions, triggers: wf.triggers, events: wf.events };
-}
-
-function registerWorkflows(workflows: WorkflowConfig[]) {
+function registerWorkflows(workflows: LoadedWorkflow[]) {
 	const registry = new HttpTriggerRegistry();
 	const allActions: Action[] = [];
 	const allEvents: Record<string, { parse(data: unknown): unknown }> = {};
 	const allJsonSchemas: Record<string, object> = {};
 
 	for (const wf of workflows) {
-		const loaded = loadWorkflow(wf);
-
-		for (const trigger of loaded.triggers) {
-			const existing = registry.lookup(
-				trigger.path,
-				trigger.method ?? "POST",
-			);
+		for (const trigger of wf.triggers) {
+			const existing = registry.lookup(trigger.path, trigger.method ?? "POST");
 			if (existing) {
-				throw new Error(
-					`Duplicate trigger path: ${trigger.path} (method: ${trigger.method ?? "POST"})`,
-				);
+				throw new Error(`Duplicate trigger path: ${trigger.path} (method: ${trigger.method ?? "POST"})`);
 			}
 			registry.register(trigger);
 		}
 
-		allActions.push(...loaded.actions);
-		Object.assign(allEvents, loaded.events);
-
-		for (const [name, schema] of Object.entries(loaded.events)) {
-			allJsonSchemas[name] = z.toJSONSchema(schema);
-		}
+		allActions.push(...wf.actions);
+		Object.assign(allEvents, wf.events);
+		Object.assign(allJsonSchemas, wf.jsonSchemas);
 	}
 
 	return { registry, allActions, allEvents, allJsonSchemas };
