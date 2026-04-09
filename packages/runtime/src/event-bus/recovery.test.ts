@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
-import { createEventFactory } from "../event-factory.js";
+import { createEventSource } from "../event-source.js";
 import { createLogger } from "../logger.js";
 import { createScheduler } from "../services/scheduler.js";
 import { createEventStore, sql } from "./event-store.js";
@@ -18,7 +18,9 @@ import type { StorageBackend } from "../storage/index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
-const defaultEventFactory = createEventFactory({ "order.received": passthroughSchema, "test.event": passthroughSchema });
+function createTestSource(bus: ReturnType<typeof createEventBus>) {
+	return createEventSource({ "order.received": passthroughSchema, "test.event": passthroughSchema }, bus);
+}
 
 let testDir: string;
 let backend: StorageBackend;
@@ -40,6 +42,7 @@ function makeStoredEvent(overrides: Record<string, unknown> = {}): RuntimeEvent 
 		payload: { data: "test" },
 		correlationId: "corr_test",
 		createdAt: new Date(),
+		emittedAt: new Date(),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",
@@ -248,7 +251,8 @@ describe("full startup/recovery integration", () => {
 			handler,
 		};
 
-		const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+		const source = createTestSource(bus);
+		const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 50));

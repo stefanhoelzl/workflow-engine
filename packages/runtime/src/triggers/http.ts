@@ -1,7 +1,7 @@
 import { constants } from "node:http2";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { HttpTriggerContext } from "../context/index.js";
+import type { EventSource } from "../event-source.js";
 import { PayloadValidationError } from "../context/errors.js";
 
 interface HttpTriggerDefinition {
@@ -54,11 +54,6 @@ class HttpTriggerRegistry {
 	}
 }
 
-type TriggerContextFactory = (
-	body: unknown,
-	definition: HttpTriggerResolved,
-) => HttpTriggerContext;
-
 interface Middleware {
 	match: string;
 	handler: MiddlewareHandler;
@@ -68,7 +63,7 @@ const WEBHOOKS_PREFIX = "/webhooks/";
 
 function httpTriggerMiddleware(
 	registry: HttpTriggerRegistry,
-	createContext: TriggerContextFactory,
+	source: EventSource,
 ): Middleware {
 	return {
 		match: `${WEBHOOKS_PREFIX}*`,
@@ -90,9 +85,8 @@ function httpTriggerMiddleware(
 				);
 			}
 
-			const ctx = createContext(body, definition);
 			try {
-				await ctx.emit(definition.event, body);
+				await source.create(definition.event, body, definition.name);
 			} catch (error) {
 				if (error instanceof PayloadValidationError) {
 					return c.json(
@@ -118,5 +112,4 @@ export {
 	HttpTriggerRegistry,
 	httpTriggerMiddleware,
 	type Middleware,
-	type TriggerContextFactory,
 };

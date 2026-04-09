@@ -10,6 +10,9 @@ const baseFields = {
 	createdAt: z.coerce.date(),
 	sourceType: z.enum(["trigger", "action"]),
 	sourceName: z.string(),
+	emittedAt: z.coerce.date(),
+	startedAt: z.coerce.date().optional(),
+	doneAt: z.coerce.date().optional(),
 };
 
 const ActiveEventSchema = z.object({
@@ -49,7 +52,7 @@ interface BusConsumer {
 	handle(event: RuntimeEvent): Promise<void>;
 	bootstrap(
 		events: RuntimeEvent[],
-		options?: { pending?: boolean },
+		options?: { pending?: boolean; finished?: boolean; total?: number },
 	): Promise<void>;
 }
 
@@ -57,7 +60,7 @@ interface EventBus {
 	emit(event: RuntimeEvent): Promise<void>;
 	bootstrap(
 		events: RuntimeEvent[],
-		options?: { pending?: boolean },
+		options?: { pending?: boolean; finished?: boolean; total?: number },
 	): Promise<void>;
 }
 

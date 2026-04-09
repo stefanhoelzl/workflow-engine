@@ -9,11 +9,12 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		payload: { data: "test" },
 		correlationId: "corr_test",
 		createdAt: new Date("2025-01-01T12:00:00Z"),
+		emittedAt: new Date("2025-01-01T12:00:00Z"),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 // Helper: simple query via a pass-through CTE — where(1, "=", 1) is a no-op filter
@@ -60,6 +61,9 @@ rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
 				parentEventId: "evt_parent",
 				targetAction: "processOrder",
 				createdAt: new Date("2025-01-01T12:00:00Z"),
+				emittedAt: new Date("2025-01-01T12:00:01Z"),
+				startedAt: new Date("2025-01-01T12:00:00.500Z"),
+				doneAt: new Date("2025-01-01T12:00:01Z"),
 				state: "done",
 				result: "failed",
 				error: "timeout",
@@ -159,7 +163,7 @@ const row = rows[0]! as any;
 		it("supports chained CTEs", async () => {
 			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
 			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "done", createdAt: new Date("2025-01-01T10:01:00Z") }));
-			await store.handle(makeEvent({ id: "evt_2", correlationId: "corr_B", state: "failed", createdAt: new Date("2025-01-01T10:02:00Z") }));
+			await store.handle({ ...makeEvent({ id: "evt_2", correlationId: "corr_B", createdAt: new Date("2025-01-01T10:02:00Z") }), state: "done", result: "failed", error: "boom" } as RuntimeEvent);
 
 			const rows = await store
 				.with("latest", (events) =>

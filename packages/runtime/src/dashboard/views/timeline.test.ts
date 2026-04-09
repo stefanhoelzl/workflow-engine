@@ -14,6 +14,9 @@ function makeTimelineEvent(overrides: Partial<TimelineEvent> = {}): TimelineEven
 		payload: {},
 		error: null,
 		createdAt: "2025-01-01T10:00:00Z",
+		emittedAt: "2025-01-01T10:00:00Z",
+		startedAt: null,
+		doneAt: null,
 		...overrides,
 	};
 }

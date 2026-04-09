@@ -18,6 +18,7 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		payload: { data: "test" },
 		correlationId: "corr_test",
 		createdAt: new Date(),
+		emittedAt: new Date(),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",

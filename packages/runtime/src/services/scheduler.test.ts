@@ -1,42 +1,14 @@
-import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
 import { type RuntimeEvent, createEventBus } from "../event-bus/index.js";
 import { createWorkQueue } from "../event-bus/work-queue.js";
-import { createEventFactory } from "../event-factory.js";
-import { type Logger, createLogger } from "../logger.js";
+import { createEventSource } from "../event-source.js";
+import { createLogger } from "../logger.js";
 import { createScheduler } from "./scheduler.js";
-
-function createTestLogger(): {
-	logger: Logger;
-	lines: () => Record<string, unknown>[];
-} {
-	const chunks: Buffer[] = [];
-	const stream = new Writable({
-		write(chunk, _encoding, callback) {
-			chunks.push(chunk);
-			callback();
-		},
-	});
-	return {
-		logger: createLogger("scheduler", { level: "trace", destination: stream }),
-		lines: () =>
-			chunks
-				.map((c) => c.toString())
-				.join("")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line)),
-	};
-}
 
 const silentLogger = createLogger("scheduler", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
-const defaultEventFactory = createEventFactory({
-	"order.received": passthroughSchema,
-	"order.validated": passthroughSchema,
-});
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
@@ -45,6 +17,7 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		payload: {},
 		correlationId: "corr_test",
 		createdAt: new Date(),
+		emittedAt: new Date(),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",
@@ -52,34 +25,35 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	} as RuntimeEvent;
 }
 
-function stubContextFactory(event: RuntimeEvent, _actionName: string): ActionContext {
-	return new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
-}
-
-function createTestBus() {
+function createTestSetup() {
 	const emitted: RuntimeEvent[] = [];
 	const workQueue = createWorkQueue();
 	const collector = {
-		async handle(event: RuntimeEvent) {
-			emitted.push(event);
-		},
+		async handle(event: RuntimeEvent) { emitted.push(event); },
 		async bootstrap() { /* no-op */ },
 	};
 	const bus = createEventBus([workQueue, collector]);
-	return { bus, workQueue, emitted };
+	const source = createEventSource(
+		{ "order.received": passthroughSchema, "order.validated": passthroughSchema },
+		bus,
+	);
+	const stubContextFactory = (event: RuntimeEvent, _actionName: string): ActionContext =>
+		new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, {}, silentLogger);
+
+	return { bus, workQueue, emitted, source, stubContextFactory };
 }
 
 describe("createScheduler", () => {
 	describe("directed events", () => {
 		it("executes matching action and emits done", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const handler = vi.fn();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
 				handler,
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			const event = makeEvent({ targetAction: "parseOrder" });
 			await bus.emit(event);
@@ -98,7 +72,7 @@ describe("createScheduler", () => {
 		});
 
 		it("emits failed when action throws", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
@@ -106,7 +80,7 @@ describe("createScheduler", () => {
 					throw new Error("boom");
 				},
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
 
@@ -121,13 +95,13 @@ describe("createScheduler", () => {
 		});
 
 		it("emits skipped when no action matches directed event", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
 				handler: vi.fn(),
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			await bus.emit(makeEvent({ targetAction: "nonexistent" }));
 
@@ -142,7 +116,7 @@ describe("createScheduler", () => {
 		});
 
 		it("actions receive RuntimeEvent with event data", async () => {
-			const { bus, workQueue } = createTestBus();
+			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
 			let receivedEvent: RuntimeEvent | undefined;
 			const action: Action = {
 				name: "parseOrder",
@@ -151,7 +125,7 @@ describe("createScheduler", () => {
 					receivedEvent = ctx.event;
 				},
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			const event = makeEvent({ targetAction: "parseOrder", correlationId: "corr_xyz" });
 			await bus.emit(event);
@@ -168,14 +142,14 @@ describe("createScheduler", () => {
 
 	describe("fan-out", () => {
 		it("creates targeted copies for each matching action", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const handler1 = vi.fn();
 			const handler2 = vi.fn();
 			const actions: Action[] = [
 				{ name: "parseOrder", on: "order.received", handler: handler1 },
 				{ name: "sendEmail", on: "order.received", handler: handler2 },
 			];
-			const scheduler = createScheduler(workQueue, bus, actions, defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory);
 
 			const event = makeEvent();
 			await bus.emit(event);
@@ -205,13 +179,13 @@ describe("createScheduler", () => {
 		});
 
 		it("emits skipped when no actions match the event type", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.validated",
 				handler: vi.fn(),
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			const event = makeEvent({ type: "unknown.event" });
 			await bus.emit(event);
@@ -227,13 +201,13 @@ describe("createScheduler", () => {
 		});
 
 		it("preserves correlationId in forked events", async () => {
-			const { bus, workQueue, emitted } = createTestBus();
+			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
 				handler: vi.fn(),
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			const event = makeEvent({ correlationId: "corr_preserved" });
 			await bus.emit(event);
@@ -250,14 +224,14 @@ describe("createScheduler", () => {
 		});
 
 		it("only fans out to actions matching the event type", async () => {
-			const { bus, workQueue } = createTestBus();
+			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
 			const matchingHandler = vi.fn();
 			const nonMatchingHandler = vi.fn();
 			const actions: Action[] = [
 				{ name: "parseOrder", on: "order.received", handler: matchingHandler },
 				{ name: "updateInventory", on: "order.shipped", handler: nonMatchingHandler },
 			];
-			const scheduler = createScheduler(workQueue, bus, actions, defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory);
 
 			await bus.emit(makeEvent());
 
@@ -273,14 +247,14 @@ describe("createScheduler", () => {
 
 	describe("start and stop", () => {
 		it("start and stop control the loop", async () => {
-			const { bus, workQueue } = createTestBus();
+			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
 			const handler = vi.fn();
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
 				handler,
 			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, silentLogger);
+			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
 
 			const started = scheduler.start();
 			await scheduler.stop();
@@ -290,141 +264,6 @@ describe("createScheduler", () => {
 			await new Promise((r) => setTimeout(r, 10));
 
 			expect(handler).not.toHaveBeenCalled();
-		});
-	});
-
-	describe("logging", () => {
-		it("logs action.started and action.completed on success", async () => {
-			const { bus, workQueue } = createTestBus();
-			const { logger, lines } = createTestLogger();
-			const action: Action = {
-				name: "parseOrder",
-				on: "order.received",
-				handler: vi.fn(),
-			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, logger);
-
-			const event = makeEvent({ targetAction: "parseOrder" });
-			await bus.emit(event);
-
-			const started = scheduler.start();
-			await new Promise((r) => setTimeout(r, 10));
-			await scheduler.stop();
-			await started;
-
-			const output = lines();
-			const startedLog = output.find((l) => l.msg === "action.started");
-			const completed = output.find((l) => l.msg === "action.completed");
-
-			expect(startedLog).toBeDefined();
-			expect(startedLog?.action).toBe("parseOrder");
-			expect(startedLog?.correlationId).toBe("corr_test");
-			expect(startedLog?.eventId).toBe(event.id);
-
-			expect(completed).toBeDefined();
-			expect(completed?.action).toBe("parseOrder");
-			expect(completed?.durationMs).toBeTypeOf("number");
-		});
-
-		it("logs action.failed when action throws", async () => {
-			const { bus, workQueue } = createTestBus();
-			const { logger, lines } = createTestLogger();
-			const action: Action = {
-				name: "parseOrder",
-				on: "order.received",
-				handler: async () => {
-					throw new Error("boom");
-				},
-			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, logger);
-
-			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
-
-			const started = scheduler.start();
-			await new Promise((r) => setTimeout(r, 10));
-			await scheduler.stop();
-			await started;
-
-			const output = lines();
-			const failed = output.find((l) => l.msg === "action.failed");
-			expect(failed).toBeDefined();
-			expect(failed?.action).toBe("parseOrder");
-			expect(failed?.error).toBe("boom");
-			expect(failed?.durationMs).toBeTypeOf("number");
-			expect(failed?.level).toBe(50);
-		});
-
-		it("logs event.no-match for unmatched directed event", async () => {
-			const { bus, workQueue } = createTestBus();
-			const { logger, lines } = createTestLogger();
-			const action: Action = {
-				name: "parseOrder",
-				on: "order.received",
-				handler: vi.fn(),
-			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, logger);
-
-			const event = makeEvent({ targetAction: "nonexistent" });
-			await bus.emit(event);
-
-			const started = scheduler.start();
-			await new Promise((r) => setTimeout(r, 10));
-			await scheduler.stop();
-			await started;
-
-			const output = lines();
-			const noMatch = output.find((l) => l.msg === "event.no-match");
-			expect(noMatch).toBeDefined();
-			expect(noMatch?.type).toBe("order.received");
-			expect(noMatch?.correlationId).toBe("corr_test");
-			expect(noMatch?.level).toBe(40);
-		});
-
-		it("logs event.fanout with target count", async () => {
-			const { bus, workQueue } = createTestBus();
-			const { logger, lines } = createTestLogger();
-			const actions: Action[] = [
-				{ name: "a", on: "order.received", handler: vi.fn() },
-				{ name: "b", on: "order.received", handler: vi.fn() },
-			];
-			const scheduler = createScheduler(workQueue, bus, actions, defaultEventFactory, stubContextFactory, logger);
-
-			await bus.emit(makeEvent());
-
-			const started = scheduler.start();
-			await new Promise((r) => setTimeout(r, 50));
-			await scheduler.stop();
-			await started;
-
-			const output = lines();
-			const fanout = output.find((l) => l.msg === "event.fanout");
-			expect(fanout).toBeDefined();
-			expect(fanout?.targets).toBe(2);
-			expect(fanout?.type).toBe("order.received");
-		});
-
-		it("logs event.fanout.skipped when no actions match", async () => {
-			const { bus, workQueue } = createTestBus();
-			const { logger, lines } = createTestLogger();
-			const action: Action = {
-				name: "parseOrder",
-				on: "order.validated",
-				handler: vi.fn(),
-			};
-			const scheduler = createScheduler(workQueue, bus, [action], defaultEventFactory, stubContextFactory, logger);
-
-			await bus.emit(makeEvent({ type: "unknown.event" }));
-
-			const started = scheduler.start();
-			await new Promise((r) => setTimeout(r, 10));
-			await scheduler.stop();
-			await started;
-
-			const output = lines();
-			const skipped = output.find((l) => l.msg === "event.fanout.skipped");
-			expect(skipped).toBeDefined();
-			expect(skipped?.type).toBe("unknown.event");
-			expect(skipped?.level).toBe(40);
 		});
 	});
 });

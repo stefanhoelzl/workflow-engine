@@ -1,51 +1,13 @@
-import type { EventBus, RuntimeEvent } from "../event-bus/index.js";
-import type { EventFactory } from "../event-factory.js";
+import type { RuntimeEvent } from "../event-bus/index.js";
+import type { EventSource } from "../event-source.js";
 import type { Logger } from "../logger.js";
-import type { HttpTriggerResolved } from "../triggers/http.js";
 
-interface EmitOptions {
-	targetAction?: string;
-}
-
-interface Context {
-	emit(type: string, payload: unknown, options?: EmitOptions): Promise<void>;
-}
-
-class HttpTriggerContext implements Context {
-	readonly request: { body: unknown };
-	readonly definition: HttpTriggerResolved;
-	readonly #emit: (
-		type: string,
-		payload: unknown,
-		options?: EmitOptions,
-	) => Promise<void>;
-
-	constructor(
-		body: unknown,
-		definition: HttpTriggerResolved,
-		emit: (
-			type: string,
-			payload: unknown,
-			options?: EmitOptions,
-		) => Promise<void>,
-	) {
-		this.request = { body };
-		this.definition = definition;
-		this.#emit = emit;
-	}
-
-	emit(type: string, payload: unknown, options?: EmitOptions): Promise<void> {
-		return this.#emit(type, payload, options);
-	}
-}
-
-class ActionContext implements Context {
+class ActionContext {
 	readonly event: RuntimeEvent;
 	readonly env: Record<string, string | undefined>;
 	readonly #emit: (
 		type: string,
 		payload: unknown,
-		options?: EmitOptions,
 	) => Promise<void>;
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #logger: Logger;
@@ -56,7 +18,6 @@ class ActionContext implements Context {
 		emit: (
 			type: string,
 			payload: unknown,
-			options?: EmitOptions,
 		) => Promise<void>,
 		fetch: typeof globalThis.fetch,
 		env: Record<string, string | undefined>,
@@ -69,8 +30,8 @@ class ActionContext implements Context {
 		this.#logger = logger;
 	}
 
-	emit(type: string, payload: unknown, options?: EmitOptions): Promise<void> {
-		return this.#emit(type, payload, options);
+	emit(type: string, payload: unknown): Promise<void> {
+		return this.#emit(type, payload);
 	}
 
 	async fetch(
@@ -115,64 +76,22 @@ class ActionContext implements Context {
 	}
 }
 
-class ContextFactory {
-	readonly #bus: EventBus;
-	readonly #eventFactory: EventFactory;
-	readonly #fetch: typeof globalThis.fetch;
-	readonly #env: Record<string, string | undefined>;
-	readonly #logger: Logger;
-
-	// biome-ignore lint/complexity/useMaxParams: internal constructor, all params are required dependencies
-	constructor(bus: EventBus, eventFactory: EventFactory, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger) {
-		this.#bus = bus;
-		this.#eventFactory = eventFactory;
-		this.#fetch = fetch;
-		this.#env = env;
-		this.#logger = logger;
-	}
-
-	httpTrigger = (
-		body: unknown,
-		definition: HttpTriggerResolved,
-	): HttpTriggerContext => new HttpTriggerContext(
-			body,
-			definition,
-			async (type, payload, options) => {
-				const event = this.#eventFactory.create(type, payload, definition.name);
-				if (options?.targetAction !== undefined) {
-					event.targetAction = options.targetAction;
-				}
-				this.#logEmit(event, payload);
-				await this.#bus.emit(event);
+function createActionContext(
+	source: EventSource,
+	fetch: typeof globalThis.fetch,
+	env: Record<string, string | undefined>,
+	logger: Logger,
+): (event: RuntimeEvent, actionName: string) => ActionContext {
+	return (event, actionName) =>
+		new ActionContext(
+			event,
+			async (type, payload) => {
+				await source.derive(event, type, payload, actionName);
 			},
+			fetch,
+			env,
+			logger,
 		);
-
-	action = (event: RuntimeEvent, actionName: string): ActionContext =>
-		new ActionContext(event, async (type, payload, options) => {
-			const derived = this.#eventFactory.derive(event, type, payload, actionName);
-			if (options?.targetAction !== undefined) {
-				derived.targetAction = options.targetAction;
-			}
-			this.#logEmit(derived, payload);
-			await this.#bus.emit(derived);
-		}, this.#fetch, this.#env, this.#logger);
-
-	#logEmit(event: RuntimeEvent, payload: unknown): void {
-		const logData: Record<string, unknown> = {
-			correlationId: event.correlationId,
-			eventId: event.id,
-			type: event.type,
-		};
-		if (event.parentEventId !== undefined) {
-			logData.parentEventId = event.parentEventId;
-		}
-		if (event.targetAction !== undefined) {
-			logData.targetAction = event.targetAction;
-		}
-		this.#logger.info("event.emitted", logData);
-		this.#logger.trace("event.emitted.payload", { correlationId: event.correlationId, payload });
-	}
 }
 
-export type { Context };
-export { ActionContext, ContextFactory, HttpTriggerContext };
+export { ActionContext, createActionContext };

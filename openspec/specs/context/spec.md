@@ -4,41 +4,13 @@
 
 Provide context objects that wrap event queue access and metadata propagation, giving triggers and actions a clean interface for emitting events with proper correlation and parent tracking.
 
-### Requirement: Context interface with emit
-
-The system SHALL provide a `Context` interface with a single method `emit(type: string, payload: unknown): Promise<void>` that creates a new event and enqueues it.
-
-#### Scenario: Emit creates and enqueues an event
-
-- **GIVEN** a context instance with access to the event queue
-- **WHEN** `ctx.emit("order.validated", { orderId: "abc" })` is called
-- **THEN** a new event is enqueued with `type: "order.validated"` and `payload: { orderId: "abc" }`
-- **AND** the event has a unique `evt_`-prefixed id
-- **AND** the event has `targetAction: undefined` (goes through dispatch)
-- **AND** the event has a `createdAt` timestamp
-
-### Requirement: HttpTriggerContext
-
-The system SHALL provide an `HttpTriggerContext` implementing `Context` that carries the parsed request body and the trigger definition.
-
-#### Scenario: HttpTriggerContext properties
-
-- **GIVEN** an HTTP POST to `/webhooks/order` with body `{ orderId: "abc" }`
-- **AND** a trigger definition with path `"order"`, method `"POST"`, event `"order.received"`
-- **WHEN** an `HttpTriggerContext` is created
-- **THEN** `ctx.request` contains `{ body: { orderId: "abc" } }`
-- **AND** `ctx.definition` contains the trigger definition
-
-#### Scenario: HttpTriggerContext emit creates root event
-
-- **GIVEN** an `HttpTriggerContext` with no parent event
-- **WHEN** `ctx.emit("order.received", { orderId: "abc" })` is called
-- **THEN** the enqueued event has a new `corr_`-prefixed `correlationId`
-- **AND** `parentEventId` is `undefined`
+## Requirements
 
 ### Requirement: ActionContext
 
-The system SHALL provide an `ActionContext` implementing `Context` that carries the source event being processed, an injected fetch function for outbound HTTP requests, and an injected env record exposing environment variables.
+The system SHALL provide an `ActionContext` that carries the source event being processed, an injected fetch function for outbound HTTP requests, and an injected env record exposing environment variables.
+
+The `ActionContext.emit()` method SHALL accept `(type: string, payload: unknown)` and delegate to `EventSource.derive()`. There SHALL be no `EmitOptions` parameter.
 
 The runtime's `ActionContext` uses the internal `Event` type (with `type` field). At the SDK boundary, the runtime maps `event.type` to `event.name` when passing context to SDK-defined action handlers, producing an `EventDefinition` with `{ name, payload }`.
 
@@ -51,38 +23,19 @@ The runtime's `ActionContext` uses the internal `Event` type (with `type` field)
 - **AND** `ctx.fetch` is a callable function
 - **AND** `ctx.env` is `{ "API_KEY": "secret" }`
 
-#### Scenario: ActionContext env exposes injected record
-
-- **GIVEN** an `ActionContext` created with env record `{ "FOO": "bar", "BAZ": "qux" }`
-- **WHEN** the action reads `ctx.env.FOO`
-- **THEN** the value is `"bar"`
-
-#### Scenario: ActionContext env returns undefined for missing keys
-
-- **GIVEN** an `ActionContext` created with env record `{ "FOO": "bar" }`
-- **WHEN** the action reads `ctx.env.MISSING`
-- **THEN** the value is `undefined`
-
-#### Scenario: SDK handler receives mapped event
-
-- **GIVEN** an action processing event `evt_001` with `type: "order.received"` and `payload: { orderId: "abc" }`
-- **WHEN** the runtime invokes the SDK-defined handler
-- **THEN** the handler receives `ctx.event` as `{ name: "order.received", payload: { orderId: "abc" } }`
-
 #### Scenario: ActionContext emit creates child event
 
 - **GIVEN** an `ActionContext` for event `evt_001` with `correlationId: "corr_xyz"`
 - **WHEN** `ctx.emit("order.validated", { valid: true })` is called
-- **THEN** the enqueued event inherits `correlationId: "corr_xyz"`
-- **AND** `parentEventId` is set to `"evt_001"`
+- **THEN** `EventSource.derive()` is called with the parent event, type, and payload
+- **AND** the derived event is automatically emitted to the bus
 
-#### Scenario: ActionContext emit multiple events
+#### Scenario: ActionContext emit with no options parameter
 
-- **GIVEN** an `ActionContext` for event `evt_001`
-- **WHEN** the action calls `ctx.emit()` twice with different types
-- **THEN** two separate events are enqueued
-- **AND** both inherit the same `correlationId` from `evt_001`
-- **AND** both have `parentEventId` set to `"evt_001"`
+- **GIVEN** an `ActionContext`
+- **WHEN** `ctx.emit("order.validated", { valid: true })` is called
+- **THEN** the call succeeds with two arguments (type, payload)
+- **AND** there is no third options parameter
 
 ### Requirement: ActionContext env property
 
@@ -119,74 +72,6 @@ The system SHALL provide a `fetch(url: string | URL, init?: RequestInit): Promis
 - **THEN** the promise rejects with the same error from the injected function
 - **AND** the action can catch the error or let it propagate to the scheduler
 
-### Requirement: ContextFactory
-
-The system SHALL provide a `ContextFactory` class that holds an EventBus reference, an `EventFactory` instance, an injected fetch function, an injected env record, and a Logger instance. It SHALL expose `httpTrigger` and `action` as arrow properties for creating context objects. The Logger SHALL be passed via the constructor.
-
-The `ContextFactory` SHALL delegate event construction to the `EventFactory`:
-- `httpTrigger.emit()` calls `eventFactory.create()` and then `bus.emit()`
-- `action.emit()` calls `eventFactory.derive()` and then `bus.emit()`
-
-#### Scenario: Create HttpTriggerContext via factory
-
-- **GIVEN** a `ContextFactory` initialized with an EventBus, an EventFactory, a fetch function, an env record, and a Logger
-- **WHEN** `factory.httpTrigger(body, definition)` is called
-- **THEN** an `HttpTriggerContext` is returned with the request body, definition, and a working `emit()` method
-- **AND** `HttpTriggerContext` does NOT have an `env` property
-
-#### Scenario: Create ActionContext via factory
-
-- **GIVEN** a `ContextFactory` initialized with an EventBus, an EventFactory, a fetch function, an env record `{ "API_KEY": "secret" }`, and a Logger
-- **WHEN** `factory.action(event)` is called
-- **THEN** an `ActionContext` is returned with the source event, a working `emit()` method, the injected fetch function, and `env` containing `{ "API_KEY": "secret" }`
-
-#### Scenario: HttpTrigger emit uses EventFactory.create
-
-- **GIVEN** a `ContextFactory` with an EventFactory
-- **WHEN** `ctx.emit("order.received", { orderId: "abc" })` is called from an HttpTriggerContext
-- **THEN** `EventFactory.create()` is called with the type, payload, and a new `corr_`-prefixed correlationId
-- **AND** the resulting RuntimeEvent is emitted to the bus
-
-#### Scenario: Action emit uses EventFactory.derive
-
-- **GIVEN** a `ContextFactory` with an EventFactory
-- **AND** an `ActionContext` for event `evt_001` with `correlationId: "corr_xyz"`
-- **WHEN** `ctx.emit("order.validated", { valid: true })` is called
-- **THEN** `EventFactory.derive()` is called with the parent event, type, and payload
-- **AND** the resulting RuntimeEvent is emitted to the bus
-
-#### Scenario: Factory properties can be passed as standalone references
-
-- **GIVEN** a `ContextFactory` instance
-- **WHEN** `factory.action` is assigned to a variable and called
-- **THEN** it works correctly without explicit binding (arrow property captures `this`)
-
-### Requirement: ContextFactory emit logging
-
-The `ContextFactory.#createAndEmit` method SHALL log every event creation. This covers all emits from both `HttpTriggerContext` and `ActionContext` in a single location.
-
-#### Scenario: Root event emitted from trigger
-
-- **GIVEN** a `ContextFactory` with a Logger
-- **AND** an `HttpTriggerContext` created by the factory
-- **WHEN** `ctx.emit("order.received", { orderId: "abc" })` is called
-- **THEN** `event.emitted` is logged at info level with correlationId, type `"order.received"`, and the new eventId
-- **AND** `event.emitted.payload` is logged at trace level with the full payload
-
-#### Scenario: Child event emitted from action
-
-- **GIVEN** a `ContextFactory` with a Logger
-- **AND** an `ActionContext` for event `evt_001` with `correlationId: "corr_xyz"`
-- **WHEN** `ctx.emit("order.validated", { valid: true })` is called
-- **THEN** `event.emitted` is logged at info level with correlationId `"corr_xyz"`, type `"order.validated"`, the new eventId, and parentEventId `"evt_001"`
-- **AND** `event.emitted.payload` is logged at trace level with the full payload
-
-#### Scenario: Targeted event includes targetAction in log
-
-- **GIVEN** a `ContextFactory` with a Logger
-- **WHEN** an event is emitted with `targetAction: "notify"`
-- **THEN** `event.emitted` log entry includes `targetAction: "notify"`
-
 ### Requirement: ActionContext fetch logging
 
 The `ActionContext.fetch` method SHALL log the request lifecycle. The Logger SHALL be provided to `ActionContext` via the `ContextFactory`.
@@ -213,12 +98,19 @@ The `ActionContext.fetch` method SHALL log the request lifecycle. The Logger SHA
 - **AND** `fetch.failed` is logged at error level with correlationId, url, error message, and duration
 - **AND** the promise rejects with the same error from the injected function
 
-### Requirement: HttpTriggerContext uses HttpTriggerResolved
+### Requirement: createActionContext factory function
 
-The `HttpTriggerContext` SHALL use the `HttpTriggerResolved` type (with defaults applied) rather than the raw `HttpTriggerDefinition`.
+The system SHALL provide a `createActionContext(source: EventSource, fetch: typeof globalThis.fetch, env: Record<string, string | undefined>, logger: Logger)` function that returns `(event: RuntimeEvent) => ActionContext`. This replaces the `ContextFactory` class.
 
-#### Scenario: HttpTriggerContext receives resolved definition
+#### Scenario: Create action context factory
 
-- **GIVEN** an HTTP trigger registered with only `path` and `event`
-- **WHEN** an `HttpTriggerContext` is created after lookup
-- **THEN** `ctx.definition` has `method: "POST"` and `response: { status: 200, body: "" }`
+- **GIVEN** an EventSource, fetch function, env record, and Logger
+- **WHEN** `createActionContext(source, fetch, env, logger)` is called
+- **THEN** a function is returned that accepts a RuntimeEvent and returns an ActionContext
+
+#### Scenario: Factory function produces working ActionContext
+
+- **GIVEN** a context factory created via `createActionContext(source, fetch, env, logger)`
+- **AND** a RuntimeEvent `evt_001`
+- **WHEN** `factory(evt_001)` is called
+- **THEN** the returned ActionContext has `event` set to `evt_001`, working `emit()`, `fetch()`, and `env`

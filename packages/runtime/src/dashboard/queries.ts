@@ -35,6 +35,9 @@ interface TimelineEvent {
 	payload: unknown;
 	error: unknown;
 	createdAt: string;
+	emittedAt: string;
+	startedAt: string | null;
+	doneAt: string | null;
 }
 
 interface HeaderStats {
@@ -71,7 +74,7 @@ const SUMMARIES_CTE = (currentEvents: any) =>
 		END`.as("aggregateState"))
 		.select(sql<string>`MIN(CASE WHEN "parentEventId" IS NULL THEN type END)`.as("initialEventType"))
 		.select(sql<number>`COUNT(DISTINCT id)`.as("eventCount"))
-		.select(sql<string>`MAX("createdAt")`.as("lastEventAt"))
+		.select(sql<string>`MAX("emittedAt")`.as("lastEventAt"))
 		.groupBy("correlationId");
 
 function applyFilters(baseQuery: ReturnType<EventStore["with"]>, options: CorrelationListOptions) {
@@ -135,7 +138,7 @@ async function getTimeline(
 		.with("current_events", CURRENT_EVENTS_CTE)
 		.where("correlationId", "=", correlationId)
 		.selectAll()
-		.orderBy("createdAt", "asc")
+		.orderBy("emittedAt", "asc")
 		.execute();
 
 	return rows as unknown as TimelineEvent[];
