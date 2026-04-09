@@ -248,6 +248,7 @@ describe("full startup/recovery integration", () => {
 		const action: Action = {
 			name: "processOrder",
 			on: "order.received",
+			env: {},
 			handler,
 		};
 

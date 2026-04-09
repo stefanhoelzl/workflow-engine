@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createWorkflow } from "./index.js";
+import { createWorkflow, env, ENV_REF } from "./index.js";
 
 // --- Type-level tests ---
 // These verify compile-time type inference. If any @ts-expect-error
@@ -154,15 +154,50 @@ describe("type-level: action handler context", () => {
 
 		wf.action({
 			on: "order.received",
-			env: ["API_KEY"],
+			env: { apiKey: "secret" },
 			handler: async (ctx) => {
-				const _k: string = ctx.env.API_KEY;
-				// @ts-expect-error SECRET not declared
+				const _k: string = ctx.env.apiKey;
+				// @ts-expect-error secret not declared
 				// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
-				ctx.env.SECRET;
+				ctx.env.secret;
 				// @ts-expect-error readonly
-				ctx.env.API_KEY = "x";
+				ctx.env.apiKey = "x";
 				return _k as unknown as undefined;
+			},
+		});
+	});
+
+	it("workflow-level env is available in action ctx.env", () => {
+		const wf = createWorkflow()
+			.env({ baseUrl: "https://example.com" })
+			.event("order.received", z.object({ orderId: z.string() }))
+			.trigger("t", { type: "http", path: "t", event: "order.received" });
+
+		wf.action({
+			on: "order.received",
+			handler: async (ctx) => {
+				const _url: string = ctx.env.baseUrl;
+				return _url as unknown as undefined;
+			},
+		});
+	});
+
+	it("workflow env + action env keys are merged in ctx.env", () => {
+		const wf = createWorkflow()
+			.env({ baseUrl: "https://example.com" })
+			.event("order.received", z.object({ orderId: z.string() }))
+			.trigger("t", { type: "http", path: "t", event: "order.received" });
+
+		wf.action({
+			on: "order.received",
+			env: { apiKey: "secret" },
+			handler: async (ctx) => {
+				const _url: string = ctx.env.baseUrl;
+				const _key: string = ctx.env.apiKey;
+				// @ts-expect-error unknown not declared
+				// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
+				ctx.env.unknown;
+				return [_url, _key] as unknown as undefined;
 			},
 		});
 	});
@@ -213,7 +248,7 @@ describe("workflow builder runtime behavior", () => {
 			});
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
-		wf.action({ on: "order.received", emits: ["order.parsed"], env: ["API_KEY"], handler: async () => {} });
+		wf.action({ on: "order.received", emits: ["order.parsed"], env: { apiKey: "test" }, handler: async () => {} });
 
 		const compiled = wf.compile();
 
@@ -244,12 +279,12 @@ describe("workflow builder runtime behavior", () => {
 			.trigger("t", { type: "http", path: "t", event: "a.event" });
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
-		wf.action({ on: "a.event", emits: ["b.event"], env: ["VAR_A", "VAR_B"], handler: async () => {} });
+		wf.action({ on: "a.event", emits: ["b.event"], env: { varA: "a", varB: "b" }, handler: async () => {} });
 
 		const compiled = wf.compile();
 		const action = compiled.actions[0];
 		expect(action?.emits).toEqual(["b.event"]);
-		expect(action?.env).toEqual(["VAR_A", "VAR_B"]);
+		expect(action?.env).toEqual({ varA: "a", varB: "b" });
 	});
 
 	it("defaults emits and env to empty arrays when omitted", () => {
@@ -263,7 +298,7 @@ describe("workflow builder runtime behavior", () => {
 		const compiled = wf.compile();
 		const action = compiled.actions[0];
 		expect(action?.emits).toEqual([]);
-		expect(action?.env).toEqual([]);
+		expect(action?.env).toEqual({});
 	});
 
 	it("passes trigger definitions through to compile output", () => {
@@ -341,5 +376,149 @@ describe("workflow builder runtime behavior", () => {
 		expect(schema).toHaveProperty("type", "object");
 		expect(schema).toHaveProperty("properties");
 		expect(schema).toHaveProperty("required");
+	});
+});
+
+// --- env() and EnvRef tests ---
+
+describe("env() helper", () => {
+	it("env() with no arguments returns marker with undefined name and default", () => {
+		const ref = env();
+		expect(ENV_REF in ref).toBe(true);
+		expect(ref.name).toBeUndefined();
+		expect(ref.default).toBeUndefined();
+	});
+
+	it("env(name) returns marker with explicit name", () => {
+		const ref = env("MY_VAR");
+		expect(ref.name).toBe("MY_VAR");
+		expect(ref.default).toBeUndefined();
+	});
+
+	it("env({ default }) returns marker with default", () => {
+		const ref = env({ default: "fallback" });
+		expect(ref.name).toBeUndefined();
+		expect(ref.default).toBe("fallback");
+	});
+
+	it("env(name, { default }) returns marker with both", () => {
+		const ref = env("MY_VAR", { default: "fallback" });
+		expect(ref.name).toBe("MY_VAR");
+		expect(ref.default).toBe("fallback");
+	});
+
+	it("plain objects without ENV_REF symbol are not env refs", () => {
+		const plain = { name: "FOO" };
+		expect(ENV_REF in plain).toBe(false);
+	});
+});
+
+describe("workflow env resolution", () => {
+	it("resolves env() markers from envSource using object key", () => {
+		const wf = createWorkflow({ apiUrl: "https://api.example.com" })
+			.env({ apiUrl: env() })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ apiUrl: "https://api.example.com" });
+	});
+
+	it("resolves env() with explicit name from envSource", () => {
+		const wf = createWorkflow({ myApi: "https://api.example.com" })
+			.env({ apiUrl: env("myApi") })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ apiUrl: "https://api.example.com" });
+	});
+
+	it("uses default when env var is missing", () => {
+		const wf = createWorkflow({})
+			.env({ apiUrl: env({ default: "http://localhost" }) })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ apiUrl: "http://localhost" });
+	});
+
+	it("throws when env var is missing without default", () => {
+		expect(() => {
+			createWorkflow({}).env({ apiUrl: env() });
+		}).toThrow("Missing environment variable: apiUrl");
+	});
+
+	it("keeps plain string values as-is", () => {
+		const wf = createWorkflow({})
+			.env({ apiUrl: "https://hardcoded.example.com" })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ apiUrl: "https://hardcoded.example.com" });
+	});
+
+	it("merges workflow env and action env (action wins on conflict)", () => {
+		const wf = createWorkflow({})
+			.env({ a: "workflow-a", b: "workflow-b" })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", env: { b: "action-b", c: "action-c" }, handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ a: "workflow-a", b: "action-b", c: "action-c" });
+	});
+
+	it("action without env inherits workflow env", () => {
+		const wf = createWorkflow({})
+			.env({ base: "https://example.com" })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ base: "https://example.com" });
+	});
+
+	it("action env resolves env() markers from envSource", () => {
+		const wf = createWorkflow({ secret: "s3cr3t" })
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", env: { secret: env() }, handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({ secret: "s3cr3t" });
+	});
+
+	it("no env at any level produces empty env", () => {
+		const wf = createWorkflow()
+			.event("e", z.object({}))
+			.trigger("t", { type: "http", path: "t", event: "e" });
+
+		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
+		wf.action({ on: "e", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.env).toEqual({});
 	});
 });

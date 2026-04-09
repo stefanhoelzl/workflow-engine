@@ -1,17 +1,4 @@
-### Requirement: Dynamic workflow discovery from directory
-The runtime SHALL scan the directory specified by `WORKFLOW_DIR` for subdirectories containing a `manifest.json` file at startup.
-
-#### Scenario: Directory contains workflow subdirectories
-- **WHEN** `WORKFLOW_DIR` points to a directory containing `cronitor/manifest.json` and `alerts/manifest.json`
-- **THEN** the loader SHALL attempt to load both workflows
-
-#### Scenario: Directory is empty
-- **WHEN** `WORKFLOW_DIR` points to an empty directory
-- **THEN** the runtime SHALL start normally with no workflows loaded
-
-#### Scenario: Directory contains non-workflow entries
-- **WHEN** `WORKFLOW_DIR` contains `cronitor/manifest.json` and a file `README.md` at the top level
-- **THEN** the loader SHALL only attempt to load the `cronitor` workflow
+## MODIFIED Requirements
 
 ### Requirement: Manifest-based workflow loading
 The loader SHALL read and parse `manifest.json` from each workflow subdirectory using the SDK's `ManifestSchema` for validation. Event schemas SHALL be reconstructed from JSON Schema via `z.fromJSONSchema()`. Handler functions SHALL be imported from the actions module specified by the manifest's `module` field. Each loaded action SHALL carry its `env: Record<string, string>` from the manifest.
@@ -33,17 +20,6 @@ The loader SHALL read and parse `manifest.json` from each workflow subdirectory 
 #### Scenario: Handler export missing
 - **WHEN** `manifest.json` lists an action with `handler: "processEvent"` but the actions module has no export named `processEvent`
 - **THEN** the loader SHALL log a warning and skip that workflow
-
-### Requirement: Merge loaded workflows into shared registries
-The runtime SHALL merge triggers from all loaded workflows into a single `HttpTriggerRegistry` and combine all actions into a single actions list. Event schemas from all manifests SHALL be merged into a single event schema registry.
-
-#### Scenario: Two workflows with distinct trigger paths
-- **WHEN** workflow A registers trigger path `cronitor` and workflow B registers trigger path `alerts`
-- **THEN** both triggers SHALL be available in the shared registry
-
-#### Scenario: Duplicate trigger paths across workflows
-- **WHEN** two workflows register the same trigger path and HTTP method
-- **THEN** the runtime SHALL fail at startup with an error identifying the conflicting path
 
 ### Requirement: Loaded workflows participate in dispatch
 All actions from loaded workflows SHALL be included in the scheduler's fan-out logic. The scheduler SHALL pass each action's `env` to the context factory when creating `ActionContext` for that action.

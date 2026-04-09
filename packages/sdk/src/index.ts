@@ -48,6 +48,47 @@ interface ActionContext<
 	fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
 }
 
+// --- EnvRef ---
+
+const ENV_REF: unique symbol = Symbol("env");
+
+interface EnvRef {
+	readonly [ENV_REF]: true;
+	readonly name: string | undefined;
+	readonly default: string | undefined;
+}
+
+function env(nameOrOpts?: string | { default: string }, opts?: { default: string }): EnvRef {
+	if (typeof nameOrOpts === "string") {
+		return { [ENV_REF]: true, name: nameOrOpts, default: opts?.default };
+	}
+	return { [ENV_REF]: true, name: undefined, default: nameOrOpts?.default };
+}
+
+function isEnvRef(value: unknown): value is EnvRef {
+	return typeof value === "object" && value !== null && ENV_REF in value;
+}
+
+function resolveEnvRecord(
+	record: Record<string, string | EnvRef>,
+	envSource: Record<string, string | undefined>,
+): Record<string, string> {
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(record)) {
+		if (!isEnvRef(value)) {
+			resolved[key] = value;
+			continue;
+		}
+		const envName = value.name ?? key;
+		const envValue = envSource[envName] ?? value.default;
+		if (envValue === undefined) {
+			throw new Error(`Missing environment variable: ${envName}`);
+		}
+		resolved[key] = envValue;
+	}
+	return resolved;
+}
+
 // --- Manifest types ---
 
 const ajv = new Ajv2020.default();
@@ -88,7 +129,7 @@ const ManifestSchema = z.object({
 			handler: z.string(),
 			on: z.string(),
 			emits: z.array(z.string()),
-			env: z.array(z.string()),
+			env: z.record(z.string(), z.string()),
 		}),
 	),
 	module: z.string(),
@@ -102,7 +143,7 @@ interface CompiledAction {
 	name: string | undefined;
 	on: string;
 	emits: string[];
-	env: string[];
+	env: Record<string, string>;
 	handler: (...args: unknown[]) => Promise<void>;
 }
 
@@ -114,38 +155,42 @@ interface CompileOutput {
 
 // --- WorkflowBuilder (single-phase) ---
 
-interface WorkflowBuilder<E extends EventDefs> {
+interface WorkflowBuilder<E extends EventDefs, WorkflowEnv extends string = never> {
 	event<Name extends string, S extends z.ZodType>(
 		name: Name,
 		schema: S,
-	): WorkflowBuilder<E & Record<Name, S>>;
+	): WorkflowBuilder<E & Record<Name, S>, WorkflowEnv>;
+
+	env<V extends Record<string, string | EnvRef>>(
+		config: V,
+	): WorkflowBuilder<E, WorkflowEnv | (keyof V & string)>;
 
 	trigger(
 		name: string,
 		config: TriggerInput<keyof E & string>,
-	): WorkflowBuilder<E>;
+	): WorkflowBuilder<E, WorkflowEnv>;
 
 	action<
 		K extends keyof E & string,
 		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
-		const Env extends readonly string[] = readonly [],
+		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
 	>(config: {
 		name?: string;
 		on: K;
 		emits?: Emits;
-		env?: Env;
+		env?: ActionEnv;
 		handler: (
 			ctx: ActionContext<
 				z.infer<E[K]>,
 				Pick<EventPayloads<E>, Emits[number] & string>,
-				Env[number]
+				WorkflowEnv | (keyof ActionEnv & string)
 			>,
 		) => Promise<void>;
 	}): (
 		ctx: ActionContext<
 			z.infer<E[K]>,
 			Pick<EventPayloads<E>, Emits[number] & string>,
-			Env[number]
+			WorkflowEnv | (keyof ActionEnv & string)
 		>,
 	) => Promise<void>;
 
@@ -157,16 +202,27 @@ interface WorkflowBuilder<E extends EventDefs> {
 class WorkflowBuilderImpl {
 	readonly #events: Record<string, z.ZodType> = {};
 	readonly #triggers: TriggerConfig[] = [];
+	readonly #workflowEnv: Record<string, string> = {};
+	readonly #envSource: Record<string, string | undefined>;
 	readonly #actions: Array<{
 		name: string | undefined;
 		on: string;
 		emits: string[];
-		env: string[];
+		env: Record<string, string>;
 		handler: (...args: unknown[]) => Promise<void>;
 	}> = [];
 
+	constructor(envSource: Record<string, string | undefined>) {
+		this.#envSource = envSource;
+	}
+
 	event(name: string, schema: z.ZodType): this {
 		this.#events[name] = schema;
+		return this;
+	}
+
+	env(config: Record<string, string | EnvRef>): this {
+		Object.assign(this.#workflowEnv, resolveEnvRecord(config, this.#envSource));
 		return this;
 	}
 
@@ -179,14 +235,14 @@ class WorkflowBuilderImpl {
 		name?: string;
 		on: string;
 		emits?: readonly string[];
-		env?: readonly string[];
+		env?: Record<string, string | EnvRef>;
 		handler: (...args: unknown[]) => Promise<void>;
 	}): (...args: unknown[]) => Promise<void> {
 		this.#actions.push({
 			name: config.name,
 			on: config.on,
 			emits: config.emits ? [...config.emits] : [],
-			env: config.env ? [...config.env] : [],
+			env: config.env ? resolveEnvRecord(config.env, this.#envSource) : {},
 			handler: config.handler,
 		});
 		return config.handler;
@@ -205,7 +261,7 @@ class WorkflowBuilderImpl {
 				name: a.name,
 				on: a.on,
 				emits: [...a.emits],
-				env: [...a.env],
+				env: { ...this.#workflowEnv, ...a.env },
 				handler: a.handler,
 			})),
 		};
@@ -214,11 +270,16 @@ class WorkflowBuilderImpl {
 
 // --- Factory ---
 
-// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-function createWorkflow(): WorkflowBuilder<{}> {
-	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-	return new WorkflowBuilderImpl() as unknown as WorkflowBuilder<{}>;
+function getDefaultEnvSource(): Record<string, string | undefined> {
+	const g = globalThis as Record<string, unknown>;
+	return (g.process as { env: Record<string, string | undefined> } | undefined)?.env ?? {};
 }
 
-export { z, createWorkflow, ManifestSchema };
-export type { Event, Manifest, CompileOutput, CompiledAction, TriggerConfig, WorkflowBuilder, ActionContext };
+// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
+function createWorkflow(envSource?: Record<string, string | undefined>): WorkflowBuilder<{}, never> {
+	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
+	return new WorkflowBuilderImpl(envSource ?? getDefaultEnvSource()) as unknown as WorkflowBuilder<{}, never>;
+}
+
+export { z, createWorkflow, env, ENV_REF, ManifestSchema };
+export type { Event, EnvRef, Manifest, CompileOutput, CompiledAction, TriggerConfig, WorkflowBuilder, ActionContext };

@@ -34,7 +34,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource(defaultSchemas, bus);
-		const createContext = createActionContext(source, globalThis.fetch, {}, silentLogger);
+		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();
@@ -43,6 +43,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			{
 				name: "validateOrder",
 				on: "order.received",
+				env: {},
 				handler: async (ctx) => {
 					await ctx.emit("order.validated", ctx.event.payload);
 				},
@@ -50,11 +51,13 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			{
 				name: "fulfillOrder",
 				on: "order.validated",
+				env: {},
 				handler: fulfillHandler,
 			},
 			{
 				name: "notifyCustomer",
 				on: "order.validated",
+				env: {},
 				handler: notifyHandler,
 			},
 		];

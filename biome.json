@@ -49,6 +49,17 @@
 			}
 		},
 		{
+			"includes": ["workflows/**/*.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off",
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
 			"includes": [".claude/commands/**/*.ts"],
 			"linter": {
 				"rules": {

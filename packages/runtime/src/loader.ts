@@ -72,6 +72,7 @@ async function loadWorkflow(
 		actions.push({
 			name: actionDef.name,
 			on: actionDef.on,
+			env: actionDef.env,
 			handler: handler as Action["handler"],
 		});
 	}

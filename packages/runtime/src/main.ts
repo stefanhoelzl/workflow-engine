@@ -98,8 +98,7 @@ async function init() {
 	const eventBus = createEventBus(consumers);
 
 	const source = createEventSource(allEvents, eventBus);
-	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const createContext = createActionContext(source, globalThis.fetch, process.env, contextLogger);
+	const createContext = createActionContext(source, globalThis.fetch, contextLogger);
 
 	const scheduler = createScheduler(workQueue, source, allActions, createContext);
 	const server = createServer(

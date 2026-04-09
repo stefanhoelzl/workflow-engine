@@ -59,10 +59,16 @@ function devServer(): Plugin {
 			if (!port) {
 				port = await getFreePort();
 			}
-			await viteBuild({
-				configFile: resolve(import.meta.dirname, "workflows/vite.config.ts"),
-				root: resolve(import.meta.dirname, "workflows"),
-			});
+			try {
+				await viteBuild({
+					configFile: resolve(import.meta.dirname, "workflows/vite.config.ts"),
+					root: resolve(import.meta.dirname, "workflows"),
+				});
+			} catch (error) {
+				// biome-ignore lint/suspicious/noConsole: surface workflow build errors clearly
+				console.error(`Workflow build failed: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
 			if (server) {
 				server.kill();
 				// biome-ignore lint/style/noNonNullAssertion: narrowed by if-check above

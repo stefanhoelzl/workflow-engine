@@ -27,7 +27,7 @@ afterEach(async () => {
 const MINIMAL_MANIFEST = {
 	events: [{ name: "test.event", schema: { type: "object", properties: {}, required: [] } }],
 	triggers: [],
-	actions: [{ name: "handle", handler: "handle", on: "test.event", emits: [], env: [] }],
+	actions: [{ name: "handle", handler: "handle", on: "test.event", emits: [], env: {} }],
 	module: "./actions.js",
 };
 
