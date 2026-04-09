@@ -1,11 +1,11 @@
 ### Requirement: Docker Compose file defines the local stack
 
-The repository SHALL contain a `infrastructure/docker-compose.yml` file that defines two services: `app` (workflow-engine) and `proxy` (Caddy reverse proxy).
+The repository SHALL contain a `infrastructure/docker-compose.yml` file that defines three services: `app` (workflow-engine), `proxy` (Caddy reverse proxy), and `oauth2-proxy` (authentication proxy).
 
 #### Scenario: Compose file exists and is valid
 
 - **WHEN** `docker compose -f infrastructure/docker-compose.yml config` is run from the repo root
-- **THEN** it SHALL exit successfully and list services `app` and `proxy`
+- **THEN** it SHALL exit successfully and list services `app`, `proxy`, and `oauth2-proxy`
 
 ### Requirement: app service builds from infrastructure/Dockerfile
 
@@ -80,6 +80,15 @@ All services SHALL use `unless-stopped` restart policy and json-file logging wit
 
 - **WHEN** a service produces log output
 - **THEN** logs SHALL be written with json-file driver, max-size 10MB, max-file 3
+
+### Requirement: Caddy command includes --watch flag
+
+The `proxy` service SHALL override the default command to `caddy run --config /etc/caddy/Caddyfile --watch` for automatic configuration reloading.
+
+#### Scenario: Caddy runs with watch flag
+
+- **WHEN** the compose file is parsed
+- **THEN** the `proxy` service SHALL have command `caddy run --config /etc/caddy/Caddyfile --watch`
 
 ### Requirement: pnpm start runs docker-compose
 
