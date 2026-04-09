@@ -11,27 +11,35 @@ const jedisonJs = readFileSync(require.resolve("jedison/browser"), "utf-8");
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 
-function simplifyNullable(schema: unknown): unknown {
+function prepareSchema(schema: unknown): unknown {
 	if (schema === null || typeof schema !== "object") {
 		return schema;
 	}
 	if (Array.isArray(schema)) {
-		return schema.map(simplifyNullable);
+		return schema.map(prepareSchema);
 	}
 
 	const obj = schema as Record<string, unknown>;
 	const result: Record<string, unknown> = {};
 
 	for (const [key, value] of Object.entries(obj)) {
-		if (key === "anyOf" && Array.isArray(value) && value.length === 2) {
-			const nullVariant = value.find((v: unknown) => typeof v === "object" && v !== null && (v as Record<string, unknown>).type === "null");
-			const otherVariant = value.find((v: unknown) => v !== nullVariant);
-			if (nullVariant && otherVariant) {
-				Object.assign(result, simplifyNullable(otherVariant) as object);
-				continue;
-			}
+		result[key] = prepareSchema(value);
+	}
+
+	if (Array.isArray(result.anyOf)) {
+		const variants = result.anyOf as Record<string, unknown>[];
+		for (const v of variants) {
+			if (!v.title && typeof v.type === "string") { v.title = v.type; }
 		}
-		result[key] = simplifyNullable(value);
+		const nullIdx = variants.findIndex((v) => v.type === "null");
+		if (nullIdx > 0) {
+			const [nil] = variants.splice(nullIdx, 1) as [Record<string, unknown>];
+			variants.unshift(nil);
+		}
+	}
+
+	if ("example" in result && !("default" in result)) {
+		result.default = result.example;
 	}
 
 	return result;
@@ -53,7 +61,7 @@ function renderErrorBanner(eventType: string, issues: { path: string; message: s
 }
 
 function renderEventDetails(name: string, schema: object): string {
-	const schemaJson = JSON.stringify(simplifyNullable(schema));
+	const schemaJson = JSON.stringify(prepareSchema(schema));
 	return `<details class="event-details" ontoggle="initForm(this)">
       <summary class="event-summary">
         <span class="event-name">${escapeHtml(name)}</span>
@@ -188,6 +196,11 @@ function renderTriggerPage(schemas: Record<string, object>): string {
       font-family: var(--font-mono);
     }
 
+    .jedi-required > label::after {
+      content: " *";
+      color: var(--red);
+    }
+
     .form-container fieldset {
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -274,6 +287,54 @@ function renderTriggerPage(schemas: Record<string, object>): string {
   </div>
 
   <script>
+    class EditorInlineMultiple extends Jedison.EditorMultiple {
+      static resolves(schema) { return Jedison.EditorMultiple.resolves(schema); }
+      build() {
+        var inst = this.instance;
+        this.switcherInput = 'select';
+        this.embedSwitcher = false;
+        this.control = this.theme.getMultipleControl({
+          titleHidden: true,
+          id: this.getIdFromPath(inst.path),
+          switcherOptionValues: inst.switcherOptionValues,
+          switcherOptionsLabels: inst.switcherOptionsLabels,
+          switcher: 'select',
+          readOnly: inst.isReadOnly()
+        });
+        var header = this.control.header;
+        var body = this.control.body;
+        var label = document.createElement('label');
+        label.textContent = inst.getKey();
+        label.classList.add('jedi-title');
+        this.control.container.insertBefore(label, header);
+        header.style.display = 'flex';
+        header.style.gap = '8px';
+        header.querySelector('.jedi-switcher').style.flex = '0 0 auto';
+        body.style.flex = '1 1 0';
+        body.style.minWidth = '0';
+        header.appendChild(body);
+      }
+      addEventListeners() {
+        if (this.control.switcher && this.control.switcher.input) {
+          this.control.switcher.input.addEventListener('change', () => {
+            var idx = Number(this.control.switcher.input.value);
+            this.instance.switchInstance(idx, undefined, 'user');
+          });
+        }
+      }
+      refreshUI() {
+        this.refreshDisabledState();
+        this.control.childrenSlot.innerHTML = '';
+        var child = this.instance.activeInstance;
+        if (child && child.ui) {
+          var cc = child.ui.control;
+          if (cc.label) cc.label.style.display = 'none';
+          cc.container.style.margin = '0';
+          this.control.childrenSlot.appendChild(cc.container);
+        }
+      }
+    }
+
     function initForm(details) {
       if (!details.open || details._jedison) return;
       var script = details.querySelector('script[type="application/json"]');
@@ -282,9 +343,18 @@ function renderTriggerPage(schemas: Record<string, object>): string {
       details._jedison = new Jedison.Create({
         container: container,
         theme: new Jedison.Theme(),
+        customEditors: [EditorInlineMultiple],
         schema: schema,
         showErrors: 'never'
       });
+      var props = schema.properties || {};
+      var required = (schema.required || []).filter(function(key) {
+        return !props[key] || !props[key].anyOf;
+      });
+      for (var i = 0; i < required.length; i++) {
+        var el = container.querySelector('[data-path="#/' + required[i] + '"]');
+        if (el) el.classList.add('jedi-required');
+      }
     }
 
     function submitEvent(btn, eventType) {
@@ -353,4 +423,4 @@ function triggerMiddleware(
 	};
 }
 
-export { triggerMiddleware };
+export { triggerMiddleware, prepareSchema };

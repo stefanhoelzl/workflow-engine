@@ -3,17 +3,17 @@ import { workflow, z } from "@workflow-engine/sdk";
 // biome-ignore lint/style/noDefaultExport: workflow convention
 export default workflow()
 	.event("webhook.cronitor", z.object({
-		id: z.string(),
-		monitor: z.string(),
-		description: z.string(),
+		id: z.string().meta({ example: "id" }),
+		monitor: z.string().meta({ example: "monitor" }),
+		description: z.string().meta({ example: "ALERT" }),
 		type: z.enum(["ALERT", "RECOVERY"]),
-		rule: z.string(),
-		environment: z.string(),
+		rule: z.string().meta({ example: "rule" }),
+		environment: z.string().meta({ example: "production" }),
 		group: z.string().nullable(),
 		// biome-ignore lint/style/useNamingConvention: Cronitor API field
-		issue_url: z.string(),
+		issue_url: z.string().meta({ example: "https://example.com/issue/abc-123" }),
 		// biome-ignore lint/style/useNamingConvention: Cronitor API field
-		monitor_url: z.string(),
+		monitor_url: z.string().meta({ example: "https://example.com/monitor/123" }),
 	}))
 	.event("notify.message", z.object({
 		message: z.string(),
