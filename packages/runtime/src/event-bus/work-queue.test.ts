@@ -9,11 +9,12 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		payload: {},
 		correlationId: "corr_test",
 		createdAt: new Date(),
+		emittedAt: new Date(),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",
 		...overrides,
-	};
+	} as RuntimeEvent;
 }
 
 describe("WorkQueue", () => {

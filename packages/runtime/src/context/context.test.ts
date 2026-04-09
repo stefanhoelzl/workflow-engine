@@ -1,9 +1,9 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { type BusConsumer, type EventBus, type RuntimeEvent, createEventBus } from "../event-bus/index.js";
-import { createEventFactory, type EventFactory } from "../event-factory.js";
+import { createEventSource, type EventSource } from "../event-source.js";
 import { type Logger, createLogger } from "../logger.js";
-import { ActionContext, ContextFactory, HttpTriggerContext } from "./index.js";
+import { ActionContext, createActionContext } from "./index.js";
 import { PayloadValidationError } from "./errors.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
@@ -32,7 +32,6 @@ function createTestLogger(level = "info"): {
 }
 
 const EVT_PREFIX = /^evt_/;
-const CORR_PREFIX = /^corr_/;
 const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
 // biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 const mockEnv: Record<string, string | undefined> = { API_KEY: "secret", EMPTY: undefined };
@@ -56,25 +55,23 @@ function createCollectorBus(): { bus: EventBus; emitted: RuntimeEvent[] } {
 	return { bus: createEventBus([collector]), emitted };
 }
 
-function createTestFactory(overrides?: {
+function createTestSetup(overrides?: {
 	bus?: EventBus;
 	schemas?: Record<string, { parse(data: unknown): unknown }>;
-	eventFactory?: EventFactory;
 	fetch?: typeof globalThis.fetch;
 	env?: Record<string, string | undefined>;
 	logger?: Logger;
-}): { factory: ContextFactory; bus: EventBus; emitted: RuntimeEvent[] } {
+}): { createContext: (event: RuntimeEvent, actionName: string) => ActionContext; source: EventSource; bus: EventBus; emitted: RuntimeEvent[] } {
 	const { bus: defaultBus, emitted } = createCollectorBus();
 	const bus = overrides?.bus ?? defaultBus;
-	const eventFactory = overrides?.eventFactory ?? createEventFactory(overrides?.schemas ?? defaultSchemas);
-	const factory = new ContextFactory(
-		bus,
-		eventFactory,
+	const source = createEventSource(overrides?.schemas ?? defaultSchemas, bus);
+	const createContext = createActionContext(
+		source,
 		overrides?.fetch ?? mockFetch,
 		overrides?.env ?? mockEnv,
 		overrides?.logger ?? silentLogger,
 	);
-	return { factory, bus, emitted };
+	return { createContext, source, bus, emitted };
 }
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
@@ -84,6 +81,7 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 		payload: { orderId: "123" },
 		correlationId: "corr_abc",
 		createdAt: new Date(),
+		emittedAt: new Date(),
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "orders",
@@ -91,73 +89,26 @@ function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	} as RuntimeEvent;
 }
 
-describe("ContextFactory", () => {
-	describe("httpTrigger", () => {
-		it("returns an HttpTriggerContext with request and definition", () => {
-			const { factory } = createTestFactory();
-			const definition = {
-				name: "orders",
-				path: "order",
-				method: "POST",
-				event: "order.received",
-				response: { status: 202 as const, body: { accepted: true } },
-			};
-
-			const ctx = factory.httpTrigger({ orderId: "abc" }, definition);
-
-			expect(ctx).toBeInstanceOf(HttpTriggerContext);
-			expect(ctx.request.body).toEqual({ orderId: "abc" });
-			expect(ctx.definition).toBe(definition);
-		});
-
-		it("emit creates RuntimeEvent with pending state and emits to bus", async () => {
-			const { factory, emitted } = createTestFactory();
-			const definition = {
-				name: "orders",
-				path: "order",
-				method: "POST",
-				event: "order.received",
-				response: { status: 202 as const, body: { accepted: true } },
-			};
-
-			const ctx = factory.httpTrigger({ orderId: "abc" }, definition);
-			await ctx.emit("order.received", { orderId: "abc" });
-
-			expect(emitted.length).toBe(1);
-			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-			const event = emitted[0]!;
-			expect(event.type).toBe("order.received");
-			expect(event.payload).toEqual({ orderId: "abc" });
-			expect(event.id).toMatch(EVT_PREFIX);
-			expect(event.correlationId).toMatch(CORR_PREFIX);
-			expect(event.parentEventId).toBeUndefined();
-			expect(event.targetAction).toBeUndefined();
-			expect(event.createdAt).toBeInstanceOf(Date);
-			expect(event.state).toBe("pending");
-			expect(event.sourceType).toBe("trigger");
-			expect(event.sourceName).toBe("orders");
-		});
-	});
-
+describe("createActionContext", () => {
 	describe("action", () => {
 		it("returns an ActionContext with the source event", () => {
-			const { factory } = createTestFactory();
+			const { createContext } = createTestSetup();
 			const event = makeEvent();
 
-			const ctx = factory.action(event, "test-action");
+			const ctx = createContext(event, "test-action");
 
 			expect(ctx).toBeInstanceOf(ActionContext);
 			expect(ctx.event).toBe(event);
 		});
 
 		it("emit creates child RuntimeEvent inheriting correlationId and setting parentEventId", async () => {
-			const { factory, emitted } = createTestFactory();
+			const { createContext, emitted } = createTestSetup();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
 			});
 
-			const ctx = factory.action(parentEvent, "test-action");
+			const ctx = createContext(parentEvent, "test-action");
 			await ctx.emit("order.validated", { valid: true });
 
 			expect(emitted.length).toBe(1);
@@ -175,13 +126,13 @@ describe("ContextFactory", () => {
 		});
 
 		it("multiple emits all inherit from the same parent", async () => {
-			const { factory, emitted } = createTestFactory();
+			const { createContext, emitted } = createTestSetup();
 			const parentEvent = makeEvent({
 				id: "evt_parent",
 				correlationId: "corr_xyz",
 			});
 
-			const ctx = factory.action(parentEvent, "test-action");
+			const ctx = createContext(parentEvent, "test-action");
 			await ctx.emit("order.validated", { valid: true });
 			await ctx.emit("order.logged", { logged: true });
 
@@ -202,8 +153,8 @@ describe("ContextFactory", () => {
 	describe("action fetch", () => {
 		it("delegates GET request to injected fetch", async () => {
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			const res = await ctx.fetch("https://api.example.com/orders/123");
 
@@ -213,8 +164,8 @@ describe("ContextFactory", () => {
 
 		it("delegates POST request with options to injected fetch", async () => {
 			const fetchSpy = vi.fn().mockResolvedValue(Response.json({ id: "123" }));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			const init = {
 				method: "POST",
@@ -229,8 +180,8 @@ describe("ContextFactory", () => {
 
 		it("propagates fetch errors to the caller", async () => {
 			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("fetch failed");
 		});
@@ -239,8 +190,8 @@ describe("ContextFactory", () => {
 	describe("action env", () => {
 		it("exposes injected env record on ctx.env", () => {
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-			const { factory } = createTestFactory({ env: { FOO: "bar", BAZ: "qux" } });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ env: { FOO: "bar", BAZ: "qux" } });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 			expect(ctx.env).toEqual({ FOO: "bar", BAZ: "qux" });
@@ -248,104 +199,10 @@ describe("ContextFactory", () => {
 
 		it("returns undefined for missing env keys", () => {
 			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-			const { factory } = createTestFactory({ env: { FOO: "bar" } });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ env: { FOO: "bar" } });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			expect(ctx.env.MISSING).toBeUndefined();
-		});
-	});
-
-	describe("arrow property binding", () => {
-		it("factory.httpTrigger works when passed as a standalone reference", async () => {
-			const { factory, emitted } = createTestFactory();
-			const definition = {
-				name: "orders",
-				path: "order",
-				method: "POST",
-				event: "order.received",
-				response: { status: 202 as const, body: { accepted: true } },
-			};
-
-			const createCtx = factory.httpTrigger;
-			const ctx = createCtx({ orderId: "abc" }, definition);
-
-			await ctx.emit("order.received", { orderId: "abc" });
-			expect(emitted[0]?.correlationId).toMatch(CORR_PREFIX);
-		});
-
-		it("factory.action works when passed as a standalone reference", async () => {
-			const { factory, emitted } = createTestFactory();
-			const event = makeEvent();
-
-			const createCtx = factory.action;
-			const ctx = createCtx(event, "test-action");
-
-			await ctx.emit("test.event", {});
-			expect(emitted[0]?.correlationId).toBe("corr_abc");
-		});
-	});
-
-	describe("emit logging", () => {
-		it("logs event.emitted at info level for root events from trigger", async () => {
-			const { logger, lines } = createTestLogger();
-			const { factory } = createTestFactory({ logger });
-			const definition = {
-				name: "orders",
-				path: "order",
-				method: "POST",
-				event: "order.received",
-				response: { status: 202 as const, body: { accepted: true } },
-			};
-
-			const ctx = factory.httpTrigger({ orderId: "abc" }, definition);
-			await ctx.emit("order.received", { orderId: "abc" });
-
-			const output = lines();
-			const emitted = output.find((l) => l.msg === "event.emitted");
-			expect(emitted).toBeDefined();
-			expect(emitted?.type).toBe("order.received");
-			expect(emitted?.correlationId).toMatch(CORR_PREFIX);
-			expect(emitted?.eventId).toMatch(EVT_PREFIX);
-			expect(emitted?.parentEventId).toBeUndefined();
-		});
-
-		it("logs event.emitted at info level for child events from action", async () => {
-			const { logger, lines } = createTestLogger();
-			const { factory } = createTestFactory({ logger });
-			const parentEvent = makeEvent({ id: "evt_parent", correlationId: "corr_xyz" });
-
-			const ctx = factory.action(parentEvent, "test-action");
-			await ctx.emit("order.validated", { valid: true });
-
-			const output = lines();
-			const emitted = output.find((l) => l.msg === "event.emitted");
-			expect(emitted).toBeDefined();
-			expect(emitted?.correlationId).toBe("corr_xyz");
-			expect(emitted?.parentEventId).toBe("evt_parent");
-			expect(emitted?.type).toBe("order.validated");
-		});
-
-		it("logs event.emitted.payload at trace level", async () => {
-			const { logger, lines } = createTestLogger("trace");
-			const { factory } = createTestFactory({ logger });
-			const ctx = factory.action(makeEvent(), "test-action");
-			await ctx.emit("order.validated", { orderId: "123" });
-
-			const output = lines();
-			const payload = output.find((l) => l.msg === "event.emitted.payload");
-			expect(payload).toBeDefined();
-			expect(payload?.payload).toEqual({ orderId: "123" });
-		});
-
-		it("includes targetAction in log when set", async () => {
-			const { logger, lines } = createTestLogger();
-			const { factory } = createTestFactory({ logger });
-			const ctx = factory.action(makeEvent(), "test-action");
-			await ctx.emit("order.received", {}, { targetAction: "notify" });
-
-			const output = lines();
-			const emitted = output.find((l) => l.msg === "event.emitted");
-			expect(emitted?.targetAction).toBe("notify");
 		});
 	});
 
@@ -353,8 +210,8 @@ describe("ContextFactory", () => {
 		it("logs fetch.start and fetch.completed on success", async () => {
 			const { logger, lines } = createTestLogger();
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
-			const ctx = factory.action(makeEvent({ correlationId: "corr_fetch" }), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
+			const ctx = createContext(makeEvent({ correlationId: "corr_fetch" }), "test-action");
 
 			await ctx.fetch("https://api.example.com/orders/123");
 
@@ -375,8 +232,8 @@ describe("ContextFactory", () => {
 		it("logs fetch.request.body at trace level", async () => {
 			const { logger, lines } = createTestLogger("trace");
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			await ctx.fetch("https://api.example.com/orders", {
 				method: "POST",
@@ -392,8 +249,8 @@ describe("ContextFactory", () => {
 		it("logs fetch.failed on error", async () => {
 			const { logger, lines } = createTestLogger();
 			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("network error"));
-			const { factory } = createTestFactory({ fetch: fetchSpy as typeof globalThis.fetch, logger });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("network error");
 
@@ -414,10 +271,10 @@ describe("ContextFactory", () => {
 					return { orderId: String(data.orderId) };
 				},
 			};
-			const { factory, emitted } = createTestFactory({
+			const { createContext, emitted } = createTestSetup({
 				schemas: { "order.received": schema },
 			});
-			const ctx = factory.action(makeEvent(), "test-action");
+			const ctx = createContext(makeEvent(), "test-action");
 			await ctx.emit("order.received", { orderId: "abc", extra: true });
 
 			expect(emitted[0]?.payload).toEqual({ orderId: "abc" });
@@ -433,10 +290,10 @@ describe("ContextFactory", () => {
 					throw error;
 				},
 			};
-			const { factory } = createTestFactory({
+			const { createContext } = createTestSetup({
 				schemas: { "order.received": schema },
 			});
-			const ctx = factory.action(makeEvent(), "test-action");
+			const ctx = createContext(makeEvent(), "test-action");
 
 			const error = await ctx.emit("order.received", { orderId: 123 }).catch((e: unknown) => e);
 			expect(error).toBeInstanceOf(PayloadValidationError);
@@ -446,8 +303,8 @@ describe("ContextFactory", () => {
 		});
 
 		it("throws PayloadValidationError for unknown event type", async () => {
-			const { factory } = createTestFactory({ schemas: {} });
-			const ctx = factory.action(makeEvent(), "test-action");
+			const { createContext } = createTestSetup({ schemas: {} });
+			const ctx = createContext(makeEvent(), "test-action");
 
 			const error = await ctx.emit("order.unknown", {}).catch((e: unknown) => e);
 			expect(error).toBeInstanceOf(PayloadValidationError);
@@ -465,11 +322,9 @@ describe("ContextFactory", () => {
 				emit: emitSpy,
 				bootstrap: vi.fn(),
 			} as unknown as EventBus;
-			const { factory } = createTestFactory({
-				bus: fakeBus,
-				schemas: { "order.received": schema },
-			});
-			const ctx = factory.action(makeEvent(), "test-action");
+			const source = createEventSource({ "order.received": schema }, fakeBus);
+			const createContext = createActionContext(source, mockFetch, mockEnv, silentLogger);
+			const ctx = createContext(makeEvent(), "test-action");
 
 			await expect(ctx.emit("order.received", {})).rejects.toThrow();
 			expect(emitSpy).not.toHaveBeenCalled();

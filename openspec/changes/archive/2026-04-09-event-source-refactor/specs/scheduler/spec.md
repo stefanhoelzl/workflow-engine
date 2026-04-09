@@ -1,21 +1,15 @@
-# Scheduler Specification
+## MODIFIED Requirements
 
-## Purpose
+### Requirement: Scheduler is a closure-based factory
 
-Process events from the queue by routing them to actions, managing fan-out for undirected events, and handling success/failure outcomes.
+The scheduler SHALL be created via `createScheduler(workQueue, source, actions, createContext)` which returns a `Service` object. The factory accepts a `WorkQueue` for dequeuing events, an `EventSource` for creating/emitting events and state transitions, an actions array, and a context factory function. There SHALL be no exported `Scheduler` class.
 
-## Requirements
+#### Scenario: Factory returns Service
 
-### Requirement: Concurrent processing
-
-The system SHALL process up to N events in parallel, where N is a configurable global concurrency limit.
-
-#### Scenario: Concurrency limit reached
-
-- GIVEN a concurrency limit of 10
-- AND 10 actions are currently executing
-- WHEN a new event is available in the pending list
-- THEN the scheduler waits until a slot frees up before starting the next execution
+- **GIVEN** a valid WorkQueue, EventSource, actions array, and context factory
+- **WHEN** `createScheduler(workQueue, source, actions, createContext)` is called
+- **THEN** the returned object has `start` and `stop` methods
+- **AND** no class instance is exposed
 
 ### Requirement: Processing lifecycle
 
@@ -93,70 +87,12 @@ The scheduler SHALL route directed events (with `targetAction` set) by finding t
 - **WHEN** the scheduler dequeues the event
 - **THEN** the scheduler calls `source.transition(event, { state: "done", result: "skipped" })`
 
-### Requirement: Scheduler start and stop
+## REMOVED Requirements
 
-The scheduler SHALL be created via a `createScheduler()` factory function that returns a `Service` (with `start(): Promise<void>` and `stop(): Promise<void>`). The `start()` promise resolves when the scheduler is stopped cleanly and rejects if the loop encounters an unrecoverable error. `stop()` signals the scheduler to stop, aborts any pending `dequeue()` call via `AbortSignal`, and resolves when the loop has fully exited.
+### Requirement: Scheduler accepts EventFactory
+**Reason**: Replaced by EventSource which combines EventFactory and EventBus functionality.
+**Migration**: Pass EventSource instead of separate EventFactory and EventBus parameters.
 
-#### Scenario: Start the scheduler
-
-- **GIVEN** a scheduler created via `createScheduler()` with a WorkQueue, EventBus, and registered actions
-- **WHEN** `start()` is called
-- **THEN** the scheduler begins awaiting events from the WorkQueue via `dequeue()`
-- **AND** the returned promise remains pending while the scheduler is running
-
-#### Scenario: Stop the scheduler cleanly
-
-- **GIVEN** a running scheduler with no event being processed
-- **WHEN** `stop()` is called
-- **THEN** the pending `dequeue()` call is aborted via `AbortSignal`
-- **AND** the scheduler loop exits
-- **AND** the `start()` promise resolves
-- **AND** the `stop()` promise resolves
-
-#### Scenario: Stop the scheduler while processing an event
-
-- **GIVEN** a running scheduler currently executing an action handler
-- **WHEN** `stop()` is called
-- **THEN** the current action handler is allowed to complete
-- **AND** the scheduler does not dequeue further events
-- **AND** both `start()` and `stop()` promises resolve after the handler finishes
-
-#### Scenario: Scheduler loop error rejects start
-
-- **GIVEN** a running scheduler
-- **WHEN** a bus emit throws an unexpected error
-- **THEN** the `start()` promise rejects with that error
-
-### Requirement: Scheduler is a closure-based factory
-
-The scheduler SHALL be created via `createScheduler(workQueue, source, actions, createContext)` which returns a `Service` object. The factory accepts a `WorkQueue` for dequeuing events, an `EventSource` for creating/emitting events and state transitions, an actions array, and a context factory function. There SHALL be no exported `Scheduler` class.
-
-#### Scenario: Factory returns Service
-
-- **GIVEN** a valid WorkQueue, EventSource, actions array, and context factory
-- **WHEN** `createScheduler(workQueue, source, actions, createContext)` is called
-- **THEN** the returned object has `start` and `stop` methods
-- **AND** no class instance is exposed
-
-### Requirement: Isolate disposal
-
-The system SHALL dispose the V8 Isolate after every action execution, regardless of success or failure.
-
-#### Scenario: Memory reclamation
-
-- GIVEN an action that allocates 7 MB of data
-- WHEN the action completes
-- THEN the isolate is disposed
-- AND the 7 MB is reclaimed by the host process
-
-### Requirement: Actions receive Event not RuntimeEvent
-
-The scheduler SHALL strip runtime fields (state, error, and infrastructure metadata) from the RuntimeEvent before passing it to the action context factory. Actions SHALL receive the SDK `Event` type (`{ name, payload }`), not `RuntimeEvent`.
-
-#### Scenario: Action context receives clean Event
-
-- **GIVEN** a RuntimeEvent with `id: "evt_abc"`, `type: "order.received"`, `state: "processing"`, `correlationId: "corr_xyz"`
-- **WHEN** the scheduler creates an ActionContext
-- **THEN** the action handler receives `ctx.event` as `{ name: "order.received", payload: ... }`
-- **AND** `state`, `error`, `id`, `correlationId` are NOT visible to the action
-
+### Requirement: Scheduler logging via constructor-injected Logger
+**Reason**: All event lifecycle logging (action.started, action.completed, action.failed, event.no-match, event.fanout, event.fanout.skipped) is now handled by the LoggingConsumer bus consumer, which observes the same state transitions. Duration can be computed from event timestamps.
+**Migration**: Remove Logger parameter from createScheduler. Remove all direct logger calls from scheduler.

@@ -17,6 +17,9 @@ interface EventsTable {
 	createdAt: string;
 	sourceType: string;
 	sourceName: string;
+	emittedAt: string;
+	startedAt: string | null;
+	doneAt: string | null;
 }
 
 interface Database {
@@ -54,7 +57,10 @@ CREATE TABLE IF NOT EXISTS events (
 	error JSON,
 	createdAt TIMESTAMPTZ NOT NULL,
 	sourceType TEXT NOT NULL,
-	sourceName TEXT NOT NULL
+	sourceName TEXT NOT NULL,
+	emittedAt TIMESTAMPTZ NOT NULL,
+	startedAt TIMESTAMPTZ,
+	doneAt TIMESTAMPTZ
 )`;
 
 function createCteChain(
@@ -99,6 +105,9 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 			createdAt: event.createdAt.toISOString(),
 			sourceType: event.sourceType,
 			sourceName: event.sourceName,
+			emittedAt: event.emittedAt.toISOString(),
+			startedAt: event.startedAt?.toISOString() ?? null,
+			doneAt: event.doneAt?.toISOString() ?? null,
 		};
 	}
 

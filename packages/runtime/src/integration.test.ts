@@ -1,11 +1,10 @@
-import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { Action } from "./actions/index.js";
-import { ContextFactory } from "./context/index.js";
+import { createActionContext } from "./context/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
-import { createEventFactory } from "./event-factory.js";
-import { type Logger, createHttpLogger, createLogger } from "./logger.js";
+import { createEventSource } from "./event-source.js";
+import { createLogger } from "./logger.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
@@ -18,33 +17,6 @@ const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
 	"order.validated": passthroughSchema,
 	stop: passthroughSchema,
 };
-
-function createTestLoggers(): {
-	contextLogger: Logger;
-	schedulerLogger: Logger;
-	httpLogger: ReturnType<typeof createHttpLogger>;
-	lines: () => Record<string, unknown>[];
-} {
-	const chunks: Buffer[] = [];
-	const stream = new Writable({
-		write(chunk, _encoding, callback) {
-			chunks.push(chunk);
-			callback();
-		},
-	});
-	return {
-		contextLogger: createLogger("context", { level: "info", destination: stream }),
-		schedulerLogger: createLogger("scheduler", { level: "info", destination: stream }),
-		httpLogger: createHttpLogger("http", { level: "info", destination: stream }),
-		lines: () =>
-			chunks
-				.map((c) => c.toString())
-				.join("")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line)),
-	};
-}
 
 const CORR_PREFIX = /^corr_/;
 
@@ -61,8 +33,8 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
-		const eventFactory = createEventFactory(defaultSchemas);
-		const factory = new ContextFactory(bus, eventFactory, globalThis.fetch, {}, silentLogger);
+		const source = createEventSource(defaultSchemas, bus);
+		const createContext = createActionContext(source, globalThis.fetch, {}, silentLogger);
 
 		const fulfillHandler = vi.fn();
 		const notifyHandler = vi.fn();
@@ -87,11 +59,11 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			},
 		];
 
-		const scheduler = createScheduler(workQueue, bus, actions, eventFactory, factory.action, silentLogger);
+		const scheduler = createScheduler(workQueue, source, actions, createContext);
 		scheduler.start();
 
 		const app = createApp(
-			httpTriggerMiddleware(registry, factory.httpTrigger),
+			httpTriggerMiddleware(registry, source),
 		);
 
 		const res = await app.request("/webhooks/order", {
@@ -120,71 +92,5 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 
 		expect(fulfillCtx.event.parentEventId).toBeDefined();
 		expect(notifyCtx.event.parentEventId).toBeDefined();
-	});
-
-	it("produces structured log output across the full pipeline", async () => {
-		const registry = new HttpTriggerRegistry();
-		registry.register({
-			name: "orders",
-			path: "order",
-			method: "POST",
-			event: "order.received",
-			response: { status: 202 as const, body: { accepted: true } },
-		});
-
-		const workQueue = createWorkQueue();
-		const bus = createEventBus([workQueue]);
-		const { contextLogger, schedulerLogger, httpLogger, lines } = createTestLoggers();
-		const eventFactory = createEventFactory(defaultSchemas);
-		const factory = new ContextFactory(bus, eventFactory, globalThis.fetch, {}, contextLogger);
-
-		const actions: Action[] = [
-			{
-				name: "handleOrder",
-				on: "order.received",
-				handler: vi.fn(),
-			},
-		];
-
-		const scheduler = createScheduler(workQueue, bus, actions, eventFactory, factory.action, schedulerLogger);
-		scheduler.start();
-
-		const app = createApp(
-			httpLogger,
-			httpTriggerMiddleware(registry, factory.httpTrigger),
-		);
-
-		await app.request("/webhooks/order", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ orderId: "abc" }),
-		});
-
-		await new Promise((r) => setTimeout(r, 100));
-
-		await scheduler.stop();
-
-		const output = lines();
-
-		const httpLogs = output.filter((l) => l.name === "http");
-		expect(httpLogs.length).toBeGreaterThanOrEqual(1);
-		const responseLog = httpLogs.find((l) => l.msg === "Request completed");
-		expect(responseLog).toBeDefined();
-		expect(responseLog?.responseTime).toBeTypeOf("number");
-
-		const contextLogs = output.filter((l) => l.name === "context" && l.msg === "event.emitted");
-		expect(contextLogs.length).toBeGreaterThanOrEqual(1);
-		const correlationIds = new Set(contextLogs.map((l) => l.correlationId));
-		correlationIds.delete("corr_stop");
-		expect(correlationIds.size).toBe(1);
-
-		const schedulerLogs = output.filter((l) => l.name === "scheduler");
-		const started = schedulerLogs.filter((l) => l.msg === "action.started");
-		const completed = schedulerLogs.filter((l) => l.msg === "action.completed");
-		expect(started.length).toBeGreaterThanOrEqual(1);
-		expect(completed.length).toBeGreaterThanOrEqual(1);
-		for (const log of completed) {
-			expect(log.durationMs).toBeTypeOf("number");
-		}
 	});
 });

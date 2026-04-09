@@ -11,12 +11,14 @@ import {
 let seq = 0;
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	seq++;
+	const ts = new Date(`2025-01-01T10:00:${String(seq).padStart(2, "0")}Z`);
 	return {
 		id: `evt_${seq}`,
 		type: "test.event",
 		payload: {},
 		correlationId: "corr_1",
-		createdAt: new Date(`2025-01-01T10:00:${String(seq).padStart(2, "0")}Z`),
+		createdAt: ts,
+		emittedAt: overrides.createdAt ?? ts,
 		state: "pending",
 		sourceType: "trigger",
 		sourceName: "test-trigger",
@@ -151,11 +153,11 @@ describe("getTimeline", () => {
 		expect(events).toHaveLength(0);
 	});
 
-	it("orders by createdAt ascending", async () => {
+	it("orders by emittedAt ascending", async () => {
 		await seedEvents();
 		const events = await getTimeline(store, "corr_A");
 
-		const times = events.map((e) => e.createdAt);
+		const times = events.map((e) => e.emittedAt);
 		expect((times[0] ?? "") < (times[1] ?? "")).toBe(true);
 	});
 });

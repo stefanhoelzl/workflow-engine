@@ -1,12 +1,12 @@
 import { constants } from "node:http2";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import { HttpTriggerContext } from "../context/index.js";
 import { PayloadValidationError } from "../context/errors.js";
+import type { EventSource } from "../event-source.js";
+import type { RuntimeEvent } from "../event-bus/index.js";
 import {
 	HttpTriggerRegistry,
 	httpTriggerMiddleware,
-	type TriggerContextFactory,
 } from "./http.js";
 
 describe("HttpTriggerRegistry", () => {
@@ -49,28 +49,30 @@ describe("HttpTriggerRegistry", () => {
 	});
 });
 
-function createApp(
-	registry: HttpTriggerRegistry,
-	createContext: TriggerContextFactory,
-) {
+function stubEventSource(): { source: EventSource; createSpy: ReturnType<typeof vi.fn> } {
+	const createSpy = vi.fn().mockResolvedValue({
+		id: "evt_test",
+		type: "order.received",
+		state: "pending",
+	} as RuntimeEvent);
+	const source = {
+		create: createSpy,
+		derive: vi.fn(),
+		fork: vi.fn(),
+		transition: vi.fn(),
+	} as unknown as EventSource;
+	return { source, createSpy };
+}
+
+function createApp(registry: HttpTriggerRegistry, source: EventSource) {
 	const app = new Hono();
-	const { match, handler } = httpTriggerMiddleware(registry, createContext);
+	const { match, handler } = httpTriggerMiddleware(registry, source);
 	app.use(match, handler);
 	return app;
 }
 
-function stubTriggerContextFactory(): {
-	factory: TriggerContextFactory;
-	emitSpy: ReturnType<typeof vi.fn>;
-} {
-	const emitSpy = vi.fn().mockResolvedValue(undefined);
-	const factory: TriggerContextFactory = (body, definition) =>
-		new HttpTriggerContext(body, definition, emitSpy);
-	return { factory, emitSpy };
-}
-
 describe("httpTriggerMiddleware — matching", () => {
-	it("creates context and calls emit for matching request", async () => {
+	it("calls source.create for matching request", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
 			name: "orders",
@@ -79,8 +81,8 @@ describe("httpTriggerMiddleware — matching", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const { factory, emitSpy } = stubTriggerContextFactory();
-		const app = createApp(registry, factory);
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",
@@ -90,19 +92,15 @@ describe("httpTriggerMiddleware — matching", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_ACCEPTED);
 		expect(await res.json()).toEqual({ accepted: true });
-		expect(emitSpy).toHaveBeenCalledWith(
-			"order.received",
-			{ item: "widget" },
-			undefined,
-		);
+		expect(createSpy).toHaveBeenCalledWith("order.received", { item: "widget" }, "orders");
 	});
 });
 
 describe("httpTriggerMiddleware — pass-through", () => {
 	it("passes through when no trigger matches", async () => {
 		const registry = new HttpTriggerRegistry();
-		const { factory, emitSpy } = stubTriggerContextFactory();
-		const app = createApp(registry, factory);
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
 
 		const res = await app.request("/webhooks/unknown", {
 			method: "POST",
@@ -111,7 +109,7 @@ describe("httpTriggerMiddleware — pass-through", () => {
 		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
-		expect(emitSpy).not.toHaveBeenCalled();
+		expect(createSpy).not.toHaveBeenCalled();
 	});
 
 	it("does not handle requests outside /webhooks/", async () => {
@@ -123,13 +121,13 @@ describe("httpTriggerMiddleware — pass-through", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const { factory, emitSpy } = stubTriggerContextFactory();
-		const app = createApp(registry, factory);
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
 
 		const res = await app.request("/api/health", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
-		expect(emitSpy).not.toHaveBeenCalled();
+		expect(createSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -143,8 +141,8 @@ describe("httpTriggerMiddleware — error handling", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const { factory, emitSpy } = stubTriggerContextFactory();
-		const app = createApp(registry, factory);
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",
@@ -153,7 +151,7 @@ describe("httpTriggerMiddleware — error handling", () => {
 		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_BAD_REQUEST);
-		expect(emitSpy).not.toHaveBeenCalled();
+		expect(createSpy).not.toHaveBeenCalled();
 	});
 
 	it("returns 422 with structured body when payload validation fails", async () => {
@@ -165,14 +163,13 @@ describe("httpTriggerMiddleware — error handling", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const emitSpy = vi.fn().mockRejectedValue(
+		const createSpy = vi.fn().mockRejectedValue(
 			new PayloadValidationError("order.received", [
 				{ path: "orderId", message: "Expected string, received number" },
 			]),
 		);
-		const factory: TriggerContextFactory = (body, definition) =>
-			new HttpTriggerContext(body, definition, emitSpy);
-		const app = createApp(registry, factory);
+		const source = { create: createSpy, derive: vi.fn(), fork: vi.fn(), transition: vi.fn() } as unknown as EventSource;
+		const app = createApp(registry, source);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",
@@ -197,8 +194,8 @@ describe("httpTriggerMiddleware — error handling", () => {
 			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
-		const { factory } = stubTriggerContextFactory();
-		const app = createApp(registry, factory);
+		const { source } = stubEventSource();
+		const app = createApp(registry, source);
 
 		const res = await app.request("/webhooks/order", {
 			method: "POST",

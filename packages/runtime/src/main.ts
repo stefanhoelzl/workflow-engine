@@ -1,16 +1,17 @@
 import type { WorkflowConfig } from "@workflow-engine/sdk";
 import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
-import { ContextFactory } from "./context/index.js";
+import { createActionContext } from "./context/index.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createEventStore } from "./event-bus/event-store.js";
+import { createLoggingConsumer } from "./event-bus/logging-consumer.js";
 import { type PersistenceConsumer, createPersistence } from "./event-bus/persistence.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
-import { createEventFactory } from "./event-factory.js";
+import { createEventSource } from "./event-source.js";
 import { loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import type { Service } from "./services/index.js";
@@ -99,7 +100,7 @@ async function init() {
 	const runtimeLogger = createLogger("runtime", { level: config.logLevel });
 	const httpLogger = createHttpLogger("http", { level: config.logLevel });
 	const contextLogger = createLogger("context", { level: config.logLevel });
-	const schedulerLogger = createLogger("scheduler", { level: config.logLevel });
+	const eventLogger = createLogger("events", { level: config.logLevel });
 
 	runtimeLogger.info("initialize", { config });
 
@@ -109,35 +110,36 @@ async function init() {
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
 	const persistence = initPersistence(config, runtimeLogger);
+	const logging = createLoggingConsumer(eventLogger);
 	const consumers: BusConsumer[] = [];
 	if (persistence) {
 		consumers.push(persistence);
 	}
-	consumers.push(workQueue, eventStore);
+	consumers.push(workQueue, eventStore, logging);
 	const eventBus = createEventBus(consumers);
 
-	const eventFactory = createEventFactory(allEvents);
+	const source = createEventSource(allEvents, eventBus);
 	// biome-ignore lint/style/noProcessEnv: entry-point config
-	const contextFactory = new ContextFactory(eventBus, eventFactory, globalThis.fetch, process.env, contextLogger);
+	const createContext = createActionContext(source, globalThis.fetch, process.env, contextLogger);
 
-	const scheduler = createScheduler(workQueue, eventBus, allActions, eventFactory, contextFactory.action, schedulerLogger);
+	const scheduler = createScheduler(workQueue, source, allActions, createContext);
 	const server = createServer(
 		config.port,
 		httpLogger,
-		httpTriggerMiddleware(registry, contextFactory.httpTrigger),
+		httpTriggerMiddleware(registry, source),
 		dashboardMiddleware(eventStore),
 	);
 
 	return { runtimeLogger, eventBus, persistence, scheduler, server };
 }
 
-async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<number> {
-	let count = 0;
+async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<void> {
+	let total = 0;
 	for await (const { events, pending } of persistence.recover()) {
 		await eventBus.bootstrap(events, { pending });
-		count += events.length;
+		total += events.length;
 	}
-	return count;
+	await eventBus.bootstrap([], { finished: true, total });
 }
 
 function start(logger: ReturnType<typeof createLogger>, ...services: Service[]) {
@@ -173,8 +175,7 @@ async function main() {
 	runtimeLogger.info("main.initialized");
 
 	if (persistence) {
-		const count = await recover(persistence, eventBus);
-		runtimeLogger.info("main.events-recovered", { count });
+		await recover(persistence, eventBus);
 	}
 
 	start(runtimeLogger, scheduler, server);
