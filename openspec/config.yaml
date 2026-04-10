@@ -1,23 +1,31 @@
 schema: spec-driven
 context: |
-  Tech stack: Node.js, TypeScript (strict), Vite + Rolldown, isolated-vm, Zod, pnpm monorepo
-  Architecture: Event-driven, 4 primitives (Trigger → Event → Action → Event), fan-out dispatch
-  Security: Untrusted code runs in V8 Isolates, 8MB/30s limits, minimal host API (ctx.data + ctx.emit only)
-  Queue: Filesystem-backed, append-only, abstracted behind QueueStore interface
-  Build: Vite plugin discovers actions from workflow DSL, bundles each action standalone, emits manifest.json
+  Tech stack: Node.js, TypeScript (strict), Vite + Rolldown, QuickJS WASM (quickjs-emscripten), Zod v4, pnpm monorepo, Hono (HTTP), DuckDB (event index)
+  Architecture: Event-driven, 4 primitives (Trigger → Event → Action → Event), EventBus fans out to consumers (Persistence, WorkQueue, EventStore, Logging)
+  Security: Untrusted code runs in QuickJS WASM sandbox, ctx.event + ctx.env (read) and ctx.emit() + ctx.fetch() (write) cross the boundary
+  Persistence: StorageBackend interface (FS, S3) with append-only event files, DuckDB in-memory event store for queries
+  Build: Vite plugin compiles workflow.ts → per-workflow manifest.json + per-action .js files, TypeScript type-checked at build time
   Testing: Unit + integration, sandbox boundary tests critical
 rules:
   proposal:
     - Consider security implications for any feature touching the sandbox boundary
-    - Identify whether the change affects the QueueStore interface
+    - Identify whether the change affects the EventBus consumer pipeline
     - Note if the change requires manifest format changes
+    - Before listing capabilities, read openspec/specs/ to understand existing spec boundaries
+    - A capability should map to a code module or coherent concept, not a single feature
+    - If the change replaces an existing mechanism, list the old spec as a removed capability
+    - After finalizing artifacts, check if the change makes openspec/project.md or this config's context field stale and update them
   specs:
     - Use Given/When/Then format for scenarios
     - Include both success and failure scenarios
-    - Specify behavior at the isolate boundary explicitly
+    - Specify behavior at the sandbox boundary explicitly
+    - Before creating a new spec, check if the requirement belongs in an existing spec
+    - Prefer adding requirements to existing specs over creating narrow new ones
+    - A spec with only one requirement should usually be a requirement in a parent spec
+    - When a new spec fully replaces an old one, create a REMOVED delta for the old spec
   design:
     - Justify any new API surface exposed to sandboxed actions
     - Include sequence diagrams for cross-component flows
   tasks:
     - Sandbox-related tasks must include security test cases
-    - Queue changes must include crash recovery test cases
+    - Persistence changes must include crash recovery test cases
