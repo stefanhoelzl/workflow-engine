@@ -1,7 +1,6 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDbDialect } from "@oorabona/kysely-duckdb";
-import { Kysely, CompiledQuery } from "kysely";
-import type { SelectQueryBuilder } from "kysely";
+import { Kysely, CompiledQuery, type SelectQueryBuilder } from "kysely";
 import type { BusConsumer, RuntimeEvent } from "./index.js";
 
 interface EventsTable {
@@ -41,6 +40,7 @@ interface CteChain {
 }
 
 interface EventStore extends BusConsumer {
+	readonly query: SelectQueryBuilder<Database, "events", object>;
 	with(name: string, fn: CteCallback): CteChain;
 }
 
@@ -82,6 +82,7 @@ function createCteChain(
 	};
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled event store logic
 async function createEventStore(options?: EventStoreOptions): Promise<EventStore> {
 	const instance = await DuckDBInstance.create();
 	const db = new Kysely<Database>({
@@ -112,6 +113,8 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 	}
 
 	return {
+		query: db.selectFrom("events") as SelectQueryBuilder<Database, "events", object>,
+
 		async handle(event: RuntimeEvent): Promise<void> {
 			try {
 				await db.insertInto("events").values(toRow(event)).execute();

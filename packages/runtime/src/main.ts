@@ -18,6 +18,7 @@ import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
 import { dashboardMiddleware } from "./dashboard/middleware.js";
 import { triggerMiddleware } from "./trigger/middleware.js";
+import { healthMiddleware } from "./health.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
 
 function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
@@ -36,10 +37,10 @@ function createStorageBackend(config: ReturnType<typeof createConfig>): StorageB
 }
 
 function initPersistence(
+	backend: StorageBackend | undefined,
 	config: ReturnType<typeof createConfig>,
 	logger: ReturnType<typeof createLogger>,
 ): PersistenceConsumer | undefined {
-	const backend = createStorageBackend(config);
 	if (!backend) {
 		return;
 	}
@@ -88,7 +89,8 @@ async function init() {
 
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
-	const persistence = initPersistence(config, runtimeLogger);
+	const storageBackend = createStorageBackend(config);
+	const persistence = initPersistence(storageBackend, config, runtimeLogger);
 	const logging = createLoggingConsumer(eventLogger);
 	const consumers: BusConsumer[] = [];
 	if (persistence) {
@@ -104,6 +106,7 @@ async function init() {
 	const server = createServer(
 		config.port,
 		httpLogger,
+		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		httpTriggerMiddleware(registry, source),
 		dashboardMiddleware(eventStore),
 		triggerMiddleware(allJsonSchemas, source),

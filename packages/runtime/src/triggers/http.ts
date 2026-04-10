@@ -44,6 +44,10 @@ class HttpTriggerRegistry {
 		});
 	}
 
+	get size(): number {
+		return this.#triggers.length;
+	}
+
 	lookup(path: string, method: string): HttpTriggerResolved | null {
 		return (
 			this.#triggers.find((t) => t.path === path && t.method === method) ?? null
@@ -66,6 +70,14 @@ function httpTriggerMiddleware(
 		match: `${WEBHOOKS_PREFIX}*`,
 		handler: async (c: Context) => {
 			const triggerPath = c.req.path.slice(WEBHOOKS_PREFIX.length);
+
+			if (triggerPath === "" && c.req.method === "GET") {
+				const status = registry.size > 0
+					? constants.HTTP_STATUS_NO_CONTENT
+					: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
+				return c.body(null, status as ContentfulStatusCode);
+			}
+
 			const definition = registry.lookup(triggerPath, c.req.method);
 
 			if (!definition) {

@@ -25,6 +25,8 @@ const schema = z
 		PERSISTENCE_S3_ENDPOINT: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_S3_REGION: z.string().optional(),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		BASE_URL: z.string().optional(),
 	})
 	.refine(
 		(env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET),
@@ -45,6 +47,7 @@ const schema = z
 		persistenceS3SecretAccessKey: env.PERSISTENCE_S3_SECRET_ACCESS_KEY,
 		persistenceS3Endpoint: env.PERSISTENCE_S3_ENDPOINT,
 		persistenceS3Region: env.PERSISTENCE_S3_REGION,
+		baseUrl: env.BASE_URL,
 	}));
 
 export function createConfig(env: Record<string, string | undefined>) {
