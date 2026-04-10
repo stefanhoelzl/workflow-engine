@@ -107,21 +107,13 @@ Resolve conflicts manually, then run `/ship` again.
 ### 3. Run checks
 
 ```bash
-pnpm lint
+pnpm validate
 ```
 
-```bash
-pnpm check
-```
-
-```bash
-pnpm test
-```
-
-If any check fails: ABORT with:
+If validation fails: ABORT with:
 
 ```
-Cannot ship: <check> failed.
+Cannot ship: validation failed.
 
 Fix the issues, then commit and run `/ship` again.
 ```
