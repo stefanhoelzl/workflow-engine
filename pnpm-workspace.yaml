@@ -1,7 +1,6 @@
 packages:
   - "packages/*"
   - "workflows"
-  - "infrastructure"
 allowBuilds:
   '@fission-ai/openspec': true
   esbuild: true

@@ -1,0 +1,206 @@
+terraform {
+  required_providers {
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.8"
+    }
+  }
+}
+
+variable "oauth2" {
+  type = object({
+    client_id     = string
+    client_secret = string
+    github_user   = string
+  })
+  sensitive   = true
+  description = "GitHub OAuth2 configuration"
+}
+
+variable "network" {
+  type = object({
+    domain     = string
+    https_port = number
+  })
+  description = "Network configuration"
+}
+
+locals {
+  base_url         = var.network.https_port == 443 ? "https://${var.network.domain}" : "https://${var.network.domain}:${var.network.https_port}"
+  redirect_url     = "${local.base_url}/oauth2/callback"
+  whitelist_domain = var.network.https_port == 443 ? var.network.domain : "${var.network.domain}:${var.network.https_port}"
+}
+
+resource "random_password" "cookie_secret" {
+  length = 32
+}
+
+resource "kubernetes_secret_v1" "oauth2_proxy" {
+  metadata {
+    name = "oauth2-proxy-credentials"
+  }
+
+  data = {
+    client-id     = var.oauth2.client_id
+    client-secret = var.oauth2.client_secret
+    cookie-secret = random_password.cookie_secret.result
+  }
+}
+
+resource "kubernetes_deployment_v1" "oauth2_proxy" {
+  metadata {
+    name = "oauth2-proxy"
+    labels = {
+      app = "oauth2-proxy"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = "oauth2-proxy"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "oauth2-proxy"
+        }
+      }
+
+      spec {
+        container {
+          name  = "oauth2-proxy"
+          image = "quay.io/oauth2-proxy/oauth2-proxy:v7.15.1"
+
+          port {
+            container_port = 4180
+          }
+
+          env {
+            name = "OAUTH2_PROXY_CLIENT_ID"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.oauth2_proxy.metadata[0].name
+                key  = "client-id"
+              }
+            }
+          }
+
+          env {
+            name = "OAUTH2_PROXY_CLIENT_SECRET"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.oauth2_proxy.metadata[0].name
+                key  = "client-secret"
+              }
+            }
+          }
+
+          env {
+            name = "OAUTH2_PROXY_COOKIE_SECRET"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.oauth2_proxy.metadata[0].name
+                key  = "cookie-secret"
+              }
+            }
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_PROVIDER"
+            value = "github"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_GITHUB_USER"
+            value = var.oauth2.github_user
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_REDIRECT_URL"
+            value = local.redirect_url
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_WHITELIST_DOMAINS"
+            value = local.whitelist_domain
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_HTTP_ADDRESS"
+            value = "0.0.0.0:4180"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_REVERSE_PROXY"
+            value = "true"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_EMAIL_DOMAINS"
+            value = "*"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_COOKIE_SECURE"
+            value = "true"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_SET_XAUTHREQUEST"
+            value = "true"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_UPSTREAMS"
+            value = "static://202"
+          }
+
+          env {
+            name  = "OAUTH2_PROXY_LOGOUT_REDIRECT_URL"
+            value = "/oauth2/sign_in"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/ping"
+              port = 4180
+            }
+            period_seconds = 5
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service_v1" "oauth2_proxy" {
+  metadata {
+    name = "oauth2-proxy"
+  }
+
+  spec {
+    selector = {
+      app = "oauth2-proxy"
+    }
+
+    port {
+      port        = 4180
+      target_port = 4180
+    }
+  }
+}
+
+output "service_name" {
+  value       = kubernetes_service_v1.oauth2_proxy.metadata[0].name
+  description = "K8s service name for oauth2-proxy"
+}
+
+output "service_port" {
+  value       = 4180
+  description = "K8s service port for oauth2-proxy"
+}

@@ -9,18 +9,21 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/runtime/package.json packages/runtime/
 COPY packages/sdk/package.json packages/sdk/
+COPY packages/vite-plugin/package.json packages/vite-plugin/
 COPY workflows/package.json workflows/
 RUN pnpm install --frozen-lockfile
 
 COPY vite.config.ts tsconfig.base.json ./
 COPY packages/runtime/tsconfig.json packages/runtime/
 COPY packages/sdk/tsconfig.json packages/sdk/
+COPY packages/vite-plugin/tsconfig.json packages/vite-plugin/
 COPY packages/runtime/src/ packages/runtime/src/
 COPY packages/sdk/src/ packages/sdk/src/
+COPY packages/vite-plugin/src/ packages/vite-plugin/src/
 COPY workflows/tsconfig.json workflows/vite.config.ts workflows/
 COPY workflows/*.ts workflows/
 RUN pnpm build
-RUN pnpm deploy --prod --filter @workflow-engine/runtime /app/deploy
+RUN pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy
 RUN cp -r dist/* /app/deploy/
 RUN cp -r workflows/dist /workflows
 
