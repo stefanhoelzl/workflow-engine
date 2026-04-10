@@ -8,15 +8,14 @@
 		}
 	},
 	"scripts": {
-		"build": "vite build && pnpm --filter workflows build",
+		"build": "pnpm -r build",
 		"check": "tsc --build",
 		"lint": "biome lint --error-on-warnings .",
 		"format": "biome format --write . && tofu fmt -recursive infrastructure/",
 		"format:check": "biome format .",
 		"test": "vitest run",
 		"validate": "concurrently -g --names lint,format,tsc,test,tofu-fmt,tofu-val \"pnpm lint\" \"pnpm format:check\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/dev validate\"",
-		"start": "pnpm --filter workflows build && PERSISTENCE_PATH=$PWD/.persistence pnpm --filter @workflow-engine/runtime start",
-		"dev": "vite build --watch",
+		"dev": "PERSISTENCE_PATH=$PWD/.persistence pnpm --filter @workflow-engine/runtime dev",
 		"postinstall": "tofu -chdir=infrastructure/dev init",
 		"infra:init": "tofu -chdir=infrastructure/dev init",
 		"infra:up": "tofu -chdir=infrastructure/dev apply",
