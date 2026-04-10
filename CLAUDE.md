@@ -13,6 +13,20 @@
 - `pnpm build` — Build runtime + workflows
 - `pnpm start` — Build workflows and start runtime
 
+## Infrastructure (OpenTofu + kind)
+
+Prerequisites: OpenTofu >= 1.11, Podman
+
+- `pnpm infra:init` — install providers (first time only)
+- `pnpm infra:up` — create/update dev environment
+- `pnpm infra:up:build` — rebuild app image + create/update dev environment
+- `pnpm infra:destroy` — tear down dev environment
+
+Dev stack: kind K8s cluster, Traefik (Helm), S2 (local S3), oauth2-proxy, workflow-engine app.
+Accessible at `https://localhost:8443` (self-signed cert).
+
+Secrets: copy `infrastructure/dev/dev.secrets.auto.tfvars.example` to `dev.secrets.auto.tfvars` and fill in OAuth2 credentials.
+
 ## Definition of Done
 
 - `pnpm validate` must pass (runs lint, format check, type check, and tests)

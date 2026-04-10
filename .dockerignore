@@ -1,0 +1,7 @@
+node_modules
+dist
+.git
+infrastructure/dev/.terraform
+infrastructure/dev/*.tfstate*
+openspec
+.claude

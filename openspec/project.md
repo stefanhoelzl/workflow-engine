@@ -97,6 +97,19 @@ On startup, the persistence consumer's `recover()` method scans `pending/` and `
 
 No ordering guarantees. No retry in v1.
 
+## Infrastructure
+
+- **IaC**: OpenTofu (HCL) with modular architecture
+- **Local dev**: kind (Kubernetes IN Docker) cluster via `tehcyx/kind` provider
+- **Reverse proxy**: Traefik deployed via Helm with IngressRoute CRDs and ForwardAuth middleware
+- **Auth**: oauth2-proxy (GitHub OAuth) protecting dashboard and trigger routes
+- **Local S3**: S2 (mojatter/s2-server) with filesystem backend for dev persistence
+- **Image build**: Podman build via `terraform_data` local-exec, loaded into kind cluster
+
+Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a shared `workflow-engine` application module composing app, oauth2-proxy, and routing sub-modules.
+
+Infrastructure lives in `infrastructure/` with `modules/` (shared) and `dev/` (environment root).
+
 ## Monorepo Structure
 
 ```
@@ -105,6 +118,7 @@ packages/
 ├── vite-plugin/      # @workflow-engine/vite-plugin
 └── runtime/          # @workflow-engine/runtime
 workflows/            # User-defined workflows (build target, not a package)
+infrastructure/       # OpenTofu IaC (modules + dev environment)
 ```
 
 - **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, `ManifestSchema`, Zod re-exports.

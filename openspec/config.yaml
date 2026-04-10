@@ -6,6 +6,7 @@ context: |
   Persistence: StorageBackend interface (FS, S3) with append-only event files, DuckDB in-memory event store for queries
   Build: Vite plugin compiles workflow.ts → per-workflow manifest.json + per-action .js files, TypeScript type-checked at build time
   Testing: Unit + integration, sandbox boundary tests critical
+  Infrastructure: OpenTofu (HCL), kind (local K8s), Traefik (Helm + IngressRoute CRDs), oauth2-proxy, S2 (local S3). Strategy pattern modules with consistent output contracts.
 rules:
   proposal:
     - Consider security implications for any feature touching the sandbox boundary
