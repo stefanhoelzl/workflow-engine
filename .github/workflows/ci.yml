@@ -21,7 +21,7 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
 
       - run: pnpm install --frozen-lockfile
-      - run: tofu -chdir=infrastructure/dev init
 
       - run: pnpm validate
+      - run: git diff --exit-code infrastructure/dev/.terraform.lock.hcl
       - run: pnpm build
