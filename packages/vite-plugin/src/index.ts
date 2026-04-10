@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import type { Plugin } from "vite";
+import { basename, join, resolve } from "node:path";
+import ts from "typescript";
+import type { Plugin, ResolvedConfig } from "vite";
 
 interface WorkflowPluginOptions {
 	workflows: string[];
@@ -38,9 +39,55 @@ interface PluginContext {
 	error(message: string): never;
 }
 
+const typecheckCompilerOptions: ts.CompilerOptions = {
+	strict: true,
+	noUncheckedIndexedAccess: true,
+	exactOptionalPropertyTypes: true,
+	verbatimModuleSyntax: true,
+	noEmit: true,
+	isolatedModules: true,
+	skipLibCheck: true,
+	target: ts.ScriptTarget.ESNext,
+	module: ts.ModuleKind.NodeNext,
+	moduleResolution: ts.ModuleResolutionKind.NodeNext,
+};
+
+function typecheckWorkflows(workflows: string[], root: string): void {
+	const rootNames = workflows.map((wf) => resolve(root, wf));
+	const program = ts.createProgram(rootNames, typecheckCompilerOptions);
+	const diagnostics = ts.getPreEmitDiagnostics(program);
+
+	if (diagnostics.length > 0) {
+		const host: ts.FormatDiagnosticsHost = {
+			getCanonicalFileName: (f) => f,
+			getCurrentDirectory: () => root,
+			getNewLine: () => "\n",
+		};
+		const formatted = ts.formatDiagnosticsWithColorAndContext(
+			diagnostics,
+			host,
+		);
+		throw new Error(`TypeScript errors in workflows:\n${formatted}`);
+	}
+}
+
 function workflowPlugin(options: WorkflowPluginOptions): Plugin {
+	let resolvedConfig: ResolvedConfig;
+
 	return {
 		name: "workflow-engine",
+
+		configResolved(config) {
+			resolvedConfig = config;
+		},
+
+		buildStart() {
+			if (!resolvedConfig.build.watch) {
+				typecheckWorkflows(options.workflows, resolvedConfig.root);
+				// biome-ignore lint/suspicious/noConsole: intentional build output
+				console.log("TypeScript check passed");
+			}
+		},
 
 		config() {
 			const entries = Object.fromEntries(
@@ -208,5 +255,5 @@ function findMatchingBrace(code: string, openPos: number): number {
 	return code.length - 1;
 }
 
-export { workflowPlugin };
+export { typecheckWorkflows, workflowPlugin };
 export type { WorkflowPluginOptions };

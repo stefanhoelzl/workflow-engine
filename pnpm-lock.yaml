@@ -92,6 +92,9 @@ importers:
       '@workflow-engine/sdk':
         specifier: workspace:*
         version: link:../sdk
+      typescript:
+        specifier: '>=6.0.0'
+        version: 6.0.2
       vite:
         specifier: '>=6.0.0'
         version: 8.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@25.5.0)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
