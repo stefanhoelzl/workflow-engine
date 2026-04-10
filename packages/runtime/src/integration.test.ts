@@ -33,7 +33,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
-		const source = createEventSource(defaultSchemas, bus);
+		const source = createEventSource({ events: defaultSchemas }, bus);
 		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
@@ -69,11 +69,11 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			},
 		];
 
-		const scheduler = createScheduler(workQueue, source, actions, createContext, sandbox);
+		const scheduler = createScheduler(workQueue, source, { actions }, createContext, sandbox);
 		scheduler.start();
 
 		const app = createApp(
-			httpTriggerMiddleware(registry, source),
+			httpTriggerMiddleware({ triggerRegistry: registry }, source),
 		);
 
 		const res = await app.request("/webhooks/order", {
@@ -126,7 +126,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
-		const source = createEventSource(defaultSchemas, bus);
+		const source = createEventSource({ events: defaultSchemas }, bus);
 		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
@@ -141,10 +141,10 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			{ name: "handleOrder", on: "webhook.order", env: {}, source: "export default async (ctx) => { /* handleOrder */ }" },
 		];
 
-		const scheduler = createScheduler(workQueue, source, actions, createContext, sandbox);
+		const scheduler = createScheduler(workQueue, source, { actions }, createContext, sandbox);
 		scheduler.start();
 
-		const app = createApp(httpTriggerMiddleware(registry, source));
+		const app = createApp(httpTriggerMiddleware({ triggerRegistry: registry }, source));
 
 		await app.request("/webhooks/order?source=shopify", {
 			method: "POST",

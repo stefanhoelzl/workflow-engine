@@ -1,6 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
+import { pack as tarPack } from "tar-stream";
 import ts from "typescript";
 import type { Plugin, ResolvedConfig } from "vite";
 
@@ -9,6 +12,7 @@ interface WorkflowPluginOptions {
 }
 
 interface CompileOutput {
+	name: string;
 	events: Array<{ name: string; schema: object }>;
 	triggers: Array<{
 		name: string;
@@ -110,14 +114,15 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 		},
 
 		async generateBundle(_options, bundle) {
-			const entryChunks = Object.values(bundle).filter(
-				(chunk): chunk is typeof chunk & { type: "chunk" } =>
-					chunk.type === "chunk" && chunk.isEntry,
+			const entryChunks = Object.entries(bundle).filter(
+				(entry): entry is [string, (typeof entry)[1] & { type: "chunk" }] =>
+					entry[1].type === "chunk" && entry[1].isEntry,
 			);
 
-			for (const chunk of entryChunks) {
+			for (const [key, chunk] of entryChunks) {
 				// biome-ignore lint/performance/noAwaitInLoops: sequential processing for error reporting
 				await processEntryChunk(chunk, this);
+				delete bundle[key];
 			}
 		},
 	};
@@ -125,7 +130,7 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 
 async function processEntryChunk(
 	chunk: { name: string; code: string; exports: string[]; fileName: string },
-	ctx: PluginContext & { emitFile(file: { type: "asset"; fileName: string; source: string }): void },
+	ctx: PluginContext & { emitFile(file: { type: "asset"; fileName: string; source: string | Uint8Array }): void },
 ): Promise<void> {
 	const name = chunk.name;
 	const tmpFile = join(tmpdir(), `wf-${name}-${Date.now()}.mjs`);
@@ -150,13 +155,25 @@ async function processEntryChunk(
 	for (const [actionName, source] of Object.entries(actionSources)) {
 		ctx.emitFile({
 			type: "asset",
-			fileName: `${name}/${actionName}.js`,
+			fileName: `${name}/actions/${actionName}.js`,
 			source,
 		});
 	}
 
-	// Empty the original combined actions.js — individual files replace it
-	chunk.code = "";
+	// Emit tar.gz bundle for upload
+	const bundleFiles: Record<string, string> = {
+		"manifest.json": JSON.stringify(manifest, null, 2),
+	};
+	for (const [actionName, source] of Object.entries(actionSources)) {
+		bundleFiles[`actions/${actionName}.js`] = source;
+	}
+	const bundle = await createTarGzBundle(bundleFiles);
+	ctx.emitFile({
+		type: "asset",
+		fileName: `${name}/bundle.tar.gz`,
+		source: bundle,
+	});
+
 }
 
 // biome-ignore lint/complexity/useMaxParams: all parameters are distinct required inputs
@@ -193,7 +210,7 @@ function extractManifest(
 		const actionName = action.name ?? exportName;
 		actions.push({
 			name: actionName,
-			module: `./${actionName}.js`,
+			module: `actions/${actionName}.js`,
 			on: action.on,
 			emits: action.emits,
 			env: action.env,
@@ -208,6 +225,7 @@ function extractManifest(
 
 	return {
 		manifest: {
+			name: compiled.name,
 			events: compiled.events,
 			triggers: compiled.triggers,
 			actions,
@@ -264,6 +282,21 @@ function findMatchingBrace(code: string, openPos: number): number {
 		}
 	}
 	return code.length - 1;
+}
+
+async function createTarGzBundle(files: Record<string, string>): Promise<Uint8Array> {
+	const packer = tarPack();
+	for (const [name, content] of Object.entries(files)) {
+		packer.entry({ name }, content);
+	}
+	packer.finalize();
+
+	const chunks: Buffer[] = [];
+	const gzip = createGzip();
+	gzip.on("data", (chunk: Buffer) => chunks.push(chunk));
+
+	await pipeline(packer, gzip);
+	return Buffer.concat(chunks);
 }
 
 export { typecheckWorkflows, workflowPlugin };

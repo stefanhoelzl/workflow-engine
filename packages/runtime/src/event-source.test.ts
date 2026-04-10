@@ -20,7 +20,7 @@ function createCollector() {
 function makeSource(schemas: Record<string, { parse(data: unknown): unknown }> = {}) {
 	const collector = createCollector();
 	const bus = createEventBus([collector.consumer]);
-	const source = createEventSource(schemas, bus);
+	const source = createEventSource({ events: schemas }, bus);
 	return { source, emitted: collector.events };
 }
 

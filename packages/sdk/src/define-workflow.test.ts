@@ -8,7 +8,7 @@ import { createWorkflow, http, env, ENV_REF } from "./index.js";
 
 describe("type-level: phase transitions", () => {
 	it("createWorkflow() returns TriggerPhase with trigger, event, action, compile", () => {
-		const wf = createWorkflow();
+		const wf = createWorkflow("test");
 		// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
 		wf.trigger;
 		// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
@@ -18,7 +18,7 @@ describe("type-level: phase transitions", () => {
 	});
 
 	it(".trigger() stays in TriggerPhase", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order" }));
 		// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
 		wf.trigger;
@@ -29,7 +29,7 @@ describe("type-level: phase transitions", () => {
 	});
 
 	it(".event() transitions to EventPhase (no .trigger())", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.event("order.validated", z.object({ orderId: z.string() }));
 		// @ts-expect-error trigger not available in EventPhase
 		// biome-ignore lint/suspicious/noUnusedExpressions: type-level test
@@ -41,7 +41,7 @@ describe("type-level: phase transitions", () => {
 	});
 
 	it("trigger -> event -> action transitions correctly", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.validated", z.object({ orderId: z.string() }))
 			.action({
@@ -55,21 +55,21 @@ describe("type-level: phase transitions", () => {
 
 describe("type-level: unique name enforcement", () => {
 	it("duplicate trigger names are a compile error", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order" }))
 			// @ts-expect-error 'webhook.order' already exists in T
 			.trigger("webhook.order", http({ path: "order2" }));
 	});
 
 	it("event name colliding with trigger name is a compile error", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order" }))
 			// @ts-expect-error 'webhook.order' already exists in T
 			.event("webhook.order", z.object({}));
 	});
 
 	it("duplicate event names are a compile error", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.event("a", z.object({}))
 			// @ts-expect-error 'a' already exists in E
 			.event("a", z.object({}));
@@ -78,7 +78,7 @@ describe("type-level: unique name enforcement", () => {
 
 describe("type-level: action handler context", () => {
 	it("ctx.event.payload is typed from trigger event schema (HTTP payload shape)", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
 				on: "webhook.order",
@@ -93,7 +93,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.event.payload is typed from action event schema", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.event("order.validated", z.object({ orderId: z.string() }))
 			.action({
 				on: "order.validated",
@@ -105,7 +105,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.emit validates event name and payload type when in emits", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.action({
@@ -118,7 +118,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.emit rejects trigger event (cannot emit trigger events)", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.action({
@@ -132,7 +132,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.emit rejects event not in emits array", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.event("order.shipped", z.object({}))
@@ -147,7 +147,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.emit rejects unknown event name", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.action({
@@ -161,7 +161,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.emit rejects wrong payload type", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.action({
@@ -175,7 +175,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("no emits declaration makes ctx.emit accept never", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.event("order.parsed", z.object({ total: z.number() }))
 			.action({
@@ -188,7 +188,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("ctx.env narrowed to declared keys, readonly, typed as string", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
 				on: "webhook.order",
@@ -206,7 +206,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("workflow-level env is available in action ctx.env", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.env({ baseUrl: "https://example.com" })
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
@@ -219,7 +219,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("workflow env + action env keys are merged in ctx.env", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.env({ baseUrl: "https://example.com" })
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
@@ -237,7 +237,7 @@ describe("type-level: action handler context", () => {
 	});
 
 	it("no env declaration makes ctx.env an empty readonly record", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
 				on: "webhook.order",
@@ -252,7 +252,7 @@ describe("type-level: action handler context", () => {
 
 describe("type-level: event references", () => {
 	it("invalid action event reference is a compile error", () => {
-		createWorkflow()
+		createWorkflow("test")
 			.trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))
 			.action({
 				// @ts-expect-error 'order.typo' is not a valid event key
@@ -267,7 +267,7 @@ describe("type-level: event references", () => {
 
 describe("workflow builder runtime behavior", () => {
 	it("compile returns correct structure with trigger-owned and action-owned events", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.order", http({
 				path: "orders",
 				body: z.object({ orderId: z.string() }),
@@ -280,6 +280,7 @@ describe("workflow builder runtime behavior", () => {
 
 		const compiled = wf.compile();
 
+		expect(compiled.name).toBe("test");
 		expect(compiled.events).toHaveLength(2);
 		const eventNames = compiled.events.map((e) => e.name);
 		expect(eventNames).toContain("webhook.order");
@@ -298,7 +299,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("trigger entries have no event field", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.order", http({
 				path: "orders",
 				body: z.object({ orderId: z.string() }),
@@ -315,7 +316,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("action() returns the handler function directly (reference equality)", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({ path: "test" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
@@ -326,7 +327,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("preserves action emits and env", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.a", http({ path: "a" }))
 			.event("b.event", z.object({}));
 
@@ -340,7 +341,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("defaults emits and env to empty when omitted", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({ path: "test" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
@@ -353,7 +354,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("optional action name is preserved in compile output", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({ path: "test" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
@@ -364,7 +365,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("action name is undefined when not provided", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({ path: "test" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
@@ -375,7 +376,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("compile handler references match action return values", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.a", http({ path: "a" }))
 			.event("b", z.object({}));
 
@@ -390,7 +391,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("event schemas are valid JSON Schema", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.event("test.event", z.object({
 				id: z.string(),
 				count: z.number(),
@@ -407,7 +408,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("http() with body schema generates wrapped JSON Schema", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({
 				path: "test",
 				body: z.object({ id: z.string() }),
@@ -425,7 +426,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("http() without body schema defaults to unknown", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.ping", http({ path: "ping", method: "GET" }));
 
 		const compiled = wf.compile();
@@ -436,7 +437,7 @@ describe("workflow builder runtime behavior", () => {
 	});
 
 	it("http() with response config passes through to trigger", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.test", http({
 				path: "test",
 				response: { status: 202, body: { accepted: true } },
@@ -483,7 +484,7 @@ describe("env() helper", () => {
 
 describe("workflow env resolution", () => {
 	it("resolves env() markers from envSource using object key", () => {
-		const wf = createWorkflow({ apiUrl: "https://api.example.com" })
+		const wf = createWorkflow("test", { apiUrl: "https://api.example.com" })
 			.env({ apiUrl: env() })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -495,7 +496,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("resolves env() with explicit name from envSource", () => {
-		const wf = createWorkflow({ myApi: "https://api.example.com" })
+		const wf = createWorkflow("test", { myApi: "https://api.example.com" })
 			.env({ apiUrl: env("myApi") })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -507,7 +508,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("uses default when env var is missing", () => {
-		const wf = createWorkflow({})
+		const wf = createWorkflow("test", {})
 			.env({ apiUrl: env({ default: "http://localhost" }) })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -520,12 +521,12 @@ describe("workflow env resolution", () => {
 
 	it("throws when env var is missing without default", () => {
 		expect(() => {
-			createWorkflow({}).env({ apiUrl: env() });
+			createWorkflow("test", {}).env({ apiUrl: env() });
 		}).toThrow("Missing environment variable: apiUrl");
 	});
 
 	it("keeps plain string values as-is", () => {
-		const wf = createWorkflow({})
+		const wf = createWorkflow("test", {})
 			.env({ apiUrl: "https://hardcoded.example.com" })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -537,7 +538,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("merges workflow env and action env (action wins on conflict)", () => {
-		const wf = createWorkflow({})
+		const wf = createWorkflow("test", {})
 			.env({ a: "workflow-a", b: "workflow-b" })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -549,7 +550,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("action without env inherits workflow env", () => {
-		const wf = createWorkflow({})
+		const wf = createWorkflow("test", {})
 			.env({ base: "https://example.com" })
 			.trigger("webhook.e", http({ path: "e" }));
 
@@ -561,7 +562,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("action env resolves env() markers from envSource", () => {
-		const wf = createWorkflow({ secret: "s3cr3t" })
+		const wf = createWorkflow("test", { secret: "s3cr3t" })
 			.trigger("webhook.e", http({ path: "e" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub
@@ -572,7 +573,7 @@ describe("workflow env resolution", () => {
 	});
 
 	it("no env at any level produces empty env", () => {
-		const wf = createWorkflow()
+		const wf = createWorkflow("test")
 			.trigger("webhook.e", http({ path: "e" }));
 
 		// biome-ignore lint/suspicious/noEmptyBlockStatements: test stub

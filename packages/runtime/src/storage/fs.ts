@@ -23,14 +23,20 @@ function createFsStorage(root: string): StorageBackend {
 
 		async *list(prefix) {
 			const dir = join(root, prefix);
-			let entries: string[];
+			let entries: import("node:fs").Dirent[];
 			try {
-				entries = await readdir(dir);
+				entries = await readdir(dir, { recursive: true, withFileTypes: true });
 			} catch {
 				return;
 			}
-			entries.sort();
-			for (const entry of entries) {
+			const paths = entries
+				.filter((e) => e.isFile())
+				.map((e) => {
+					const relative = e.parentPath.slice(dir.length);
+					return relative ? `${relative}/${e.name}` : e.name;
+				})
+				.sort();
+			for (const entry of paths) {
 				yield `${prefix}${entry}`;
 			}
 		},

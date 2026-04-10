@@ -13,7 +13,7 @@
 		"lint": "biome lint .",
 		"format": "biome format --write .",
 		"test": "vitest run",
-		"start": "pnpm --filter workflows build && WORKFLOW_DIR=$PWD/workflows/dist pnpm --filter @workflow-engine/runtime start",
+		"start": "pnpm --filter workflows build && PERSISTENCE_PATH=$PWD/.persistence pnpm --filter @workflow-engine/runtime start",
 		"dev": "vite build --watch"
 	},
 	"devDependencies": {

@@ -145,6 +145,7 @@ const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) =>
 );
 
 const ManifestSchema = z.object({
+	name: z.string(),
 	events: z.array(
 		z.object({
 			name: z.string(),
@@ -189,6 +190,7 @@ interface CompiledAction {
 }
 
 interface CompileOutput {
+	name: string;
 	events: Array<{ name: string; schema: object }>;
 	triggers: TriggerConfig[];
 	actions: CompiledAction[];
@@ -292,6 +294,7 @@ interface ActionPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv exte
 // --- WorkflowBuilderImpl ---
 
 class WorkflowBuilderImpl {
+	readonly #name: string;
 	readonly #events: Record<string, z.ZodType> = {};
 	readonly #triggers: TriggerConfig[] = [];
 	readonly #workflowEnv: Record<string, string> = {};
@@ -304,7 +307,8 @@ class WorkflowBuilderImpl {
 		handler: (...args: unknown[]) => Promise<void>;
 	}> = [];
 
-	constructor(envSource: Record<string, string | undefined>) {
+	constructor(name: string, envSource: Record<string, string | undefined>) {
+		this.#name = name;
 		this.#envSource = envSource;
 	}
 
@@ -354,6 +358,7 @@ class WorkflowBuilderImpl {
 		}));
 
 		return {
+			name: this.#name,
 			events,
 			triggers: [...this.#triggers],
 			actions: this.#actions.map((a) => ({
@@ -375,9 +380,9 @@ function getDefaultEnvSource(): Record<string, string | undefined> {
 }
 
 // biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-function createWorkflow(envSource?: Record<string, string | undefined>): TriggerPhase<{}, never> {
+function createWorkflow(name: string, envSource?: Record<string, string | undefined>): TriggerPhase<{}, never> {
 	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-	return new WorkflowBuilderImpl(envSource ?? getDefaultEnvSource()) as unknown as TriggerPhase<{}, never>;
+	return new WorkflowBuilderImpl(name, envSource ?? getDefaultEnvSource()) as unknown as TriggerPhase<{}, never>;
 }
 
 export { z, createWorkflow, http, env, ENV_REF, ManifestSchema };

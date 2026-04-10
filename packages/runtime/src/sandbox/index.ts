@@ -1,4 +1,4 @@
-import { type QuickJSContext, type QuickJSHandle, type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
+import { type QuickJSContext, type QuickJSHandle, getQuickJS } from "quickjs-emscripten";
 import type { ActionContext } from "../context/index.js";
 import { bridgeCtx } from "./bridge.js";
 import { setupGlobals } from "./globals.js";

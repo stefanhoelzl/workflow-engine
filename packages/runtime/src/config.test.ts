@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createConfig } from "./config.js";
 
-// biome-ignore lint/style/useNamingConvention: env var name
-const REQUIRED = { WORKFLOW_DIR: "/tmp/workflows" };
+const REQUIRED = {};
 
 describe("createConfig", () => {
 	it("parses valid values", () => {
@@ -41,8 +40,15 @@ describe("createConfig", () => {
 		expect(() => createConfig({ ...REQUIRED, PORT: "abc" })).toThrow();
 	});
 
-	it("requires WORKFLOW_DIR", () => {
-		expect(() => createConfig({})).toThrow();
+	it("parses GITHUB_USER when provided", () => {
+		// biome-ignore lint/style/useNamingConvention: env var name
+		const config = createConfig({ GITHUB_USER: "stefanhoelzl" });
+		expect(config.githubUser).toBe("stefanhoelzl");
+	});
+
+	it("GITHUB_USER is undefined when not provided", () => {
+		const config = createConfig({});
+		expect(config.githubUser).toBeUndefined();
 	});
 
 	it("parses S3 config fields", () => {

@@ -43,16 +43,19 @@ The runtime entry point (`main.ts`) SHALL use the config object returned by `cre
 - **THEN** the logger level SHALL be set from `config.logLevel`
 - **AND** the HTTP server SHALL listen on `config.port`
 
-### Requirement: WORKFLOW_DIR config variable
-The config schema SHALL include a `WORKFLOW_DIR` field that accepts a string path. It SHALL have no default value and SHALL be required.
+### Requirement: GITHUB_USER config variable
 
-#### Scenario: WORKFLOW_DIR is set
-- **WHEN** `createConfig` is called with `{ WORKFLOW_DIR: "/app/workflows" }`
-- **THEN** it SHALL return a config with `workflowDir` set to `"/app/workflows"`
+The config schema SHALL accept an optional `GITHUB_USER` environment variable. When provided, the GitHub authentication middleware SHALL be enabled on `/api/*` routes.
 
-#### Scenario: WORKFLOW_DIR is not set
-- **WHEN** `createConfig` is called without `WORKFLOW_DIR`
-- **THEN** it SHALL throw a validation error
+#### Scenario: GITHUB_USER is set
+
+- **WHEN** `createConfig` is called with `{ GITHUB_USER: "stefanhoelzl" }`
+- **THEN** the config SHALL contain `githubUser: "stefanhoelzl"`
+
+#### Scenario: GITHUB_USER is not set
+
+- **WHEN** `createConfig` is called without `GITHUB_USER`
+- **THEN** `githubUser` SHALL be `undefined`
 
 ### Requirement: S3 persistence configuration
 

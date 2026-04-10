@@ -1,4 +1,3 @@
-import type { Action } from "./actions/index.js";
 import { createConfig } from "./config.js";
 import { createActionContext } from "./context/index.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
@@ -11,7 +10,6 @@ import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
-import { type LoadedWorkflow, loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { createSandbox } from "./sandbox/index.js";
 import type { Service } from "./services/index.js";
@@ -20,7 +18,9 @@ import { createServer } from "./services/server.js";
 import { dashboardMiddleware } from "./dashboard/middleware.js";
 import { triggerMiddleware } from "./trigger/middleware.js";
 import { healthMiddleware } from "./health.js";
-import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
+import { httpTriggerMiddleware } from "./triggers/http.js";
+import { createWorkflowRegistry } from "./workflow-registry.js";
+import { apiMiddleware } from "./api/index.js";
 
 function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
 	if (config.persistenceS3Bucket) {
@@ -51,29 +51,7 @@ function initPersistence(
 	});
 }
 
-function registerWorkflows(workflows: LoadedWorkflow[]) {
-	const registry = new HttpTriggerRegistry();
-	const allActions: Action[] = [];
-	const allEvents: Record<string, { parse(data: unknown): unknown }> = {};
-	const allJsonSchemas: Record<string, object> = {};
-
-	for (const wf of workflows) {
-		for (const trigger of wf.triggers) {
-			const existing = registry.lookup(trigger.path, trigger.method ?? "POST");
-			if (existing) {
-				throw new Error(`Duplicate trigger path: ${trigger.path} (method: ${trigger.method ?? "POST"})`);
-			}
-			registry.register(trigger);
-		}
-
-		allActions.push(...wf.actions);
-		Object.assign(allEvents, wf.events);
-		Object.assign(allJsonSchemas, wf.jsonSchemas);
-	}
-
-	return { registry, allActions, allEvents, allJsonSchemas };
-}
-
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: entry-point initialization wires all components
 async function init() {
 	// biome-ignore lint/style/noProcessEnv: entry-point config
 	const config = createConfig(process.env);
@@ -85,12 +63,15 @@ async function init() {
 
 	runtimeLogger.info("initialize", { config });
 
-	const workflows = await loadWorkflows(config.workflowDir, runtimeLogger);
-	const { registry, allActions, allEvents, allJsonSchemas } = registerWorkflows(workflows);
+	// 1. Init storage backend
+	const storageBackend = createStorageBackend(config);
+	if (storageBackend) {
+		await storageBackend.init();
+	}
 
+	// 2. Init event bus + consumers
 	const workQueue = createWorkQueue();
 	const eventStore = await createEventStore({ logger: runtimeLogger });
-	const storageBackend = createStorageBackend(config);
 	const persistence = initPersistence(storageBackend, config, runtimeLogger);
 	const logging = createLoggingConsumer(eventLogger);
 	const consumers: BusConsumer[] = [];
@@ -100,21 +81,33 @@ async function init() {
 	consumers.push(workQueue, eventStore, logging);
 	const eventBus = createEventBus(consumers);
 
-	const source = createEventSource(allEvents, eventBus);
+	// 3. Recover events
+	if (persistence) {
+		await recover(persistence, eventBus);
+	}
+
+	// 4. Load workflows from storage backend
+	const registry = createWorkflowRegistry({ backend: storageBackend, logger: runtimeLogger });
+	await registry.recover();
+
+	// Wire up event source and scheduler using registry getters
+	const source = createEventSource(registry, eventBus);
 	const createContext = createActionContext(source, globalThis.fetch, contextLogger);
 	const sandbox = await createSandbox();
 
-	const scheduler = createScheduler(workQueue, source, allActions, createContext, sandbox);
+	const scheduler = createScheduler(workQueue, source, registry, createContext, sandbox);
+
 	const server = createServer(
 		config.port,
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		httpTriggerMiddleware(registry, source),
 		dashboardMiddleware(eventStore),
-		triggerMiddleware(allJsonSchemas, source),
+		triggerMiddleware(registry, source),
+		...apiMiddleware({ registry, githubUser: config.githubUser }),
 	);
 
-	return { runtimeLogger, eventBus, persistence, scheduler, server };
+	return { runtimeLogger, scheduler, server };
 }
 
 async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<void> {
@@ -155,13 +148,10 @@ function start(logger: ReturnType<typeof createLogger>, ...services: Service[]) 
 }
 
 async function main() {
-	const { runtimeLogger, eventBus, persistence, scheduler, server } = await init();
+	const { runtimeLogger, scheduler, server } = await init();
 	runtimeLogger.info("main.initialized");
 
-	if (persistence) {
-		await recover(persistence, eventBus);
-	}
-
+	// 5. Start scheduler + server
 	start(runtimeLogger, scheduler, server);
 	runtimeLogger.info("main.started");
 }

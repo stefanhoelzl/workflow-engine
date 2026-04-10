@@ -50,8 +50,8 @@ describe("persistence handle", () => {
 		// Wait a tick for fire-and-forget archive
 		await new Promise((r) => setTimeout(r, 50));
 
-		const pendingFiles = (await readdir(join(testDir, "pending"))).filter((f) => f.endsWith(".json"));
-		const archiveFilesResult = (await readdir(join(testDir, "archive"))).filter((f) => f.endsWith(".json"));
+		const pendingFiles = (await readdir(join(testDir, "events/pending"))).filter((f) => f.endsWith(".json"));
+		const archiveFilesResult = (await readdir(join(testDir, "events/archive"))).filter((f) => f.endsWith(".json"));
 
 		// pending/ should be empty (processing archived pending, done wrote to archive + archived processing)
 		expect(pendingFiles.length).toBe(0);
@@ -69,7 +69,7 @@ describe("persistence handle", () => {
 		await persistence.handle(event2);
 
 		const files: string[] = [];
-		for await (const path of backend.list("pending/")) {
+		for await (const path of backend.list("events/pending/")) {
 			files.push(path);
 		}
 		files.sort();
@@ -90,9 +90,9 @@ describe("persistence handle", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const pending: string[] = [];
-		for await (const p of backend.list("pending/")) { pending.push(p); }
+		for await (const p of backend.list("events/pending/")) { pending.push(p); }
 		const archive: string[] = [];
-		for await (const p of backend.list("archive/")) { archive.push(p); }
+		for await (const p of backend.list("events/archive/")) { archive.push(p); }
 
 		expect(pending.length).toBe(0);
 		expect(archive.length).toBe(2);
@@ -109,7 +109,7 @@ describe("persistence handle", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const archive: string[] = [];
-		for await (const p of backend.list("archive/")) { archive.push(p); }
+		for await (const p of backend.list("events/archive/")) { archive.push(p); }
 		expect(archive.length).toBe(2);
 	});
 
@@ -124,7 +124,7 @@ describe("persistence handle", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const archive: string[] = [];
-		for await (const p of backend.list("archive/")) { archive.push(p); }
+		for await (const p of backend.list("events/archive/")) { archive.push(p); }
 		expect(archive.length).toBe(2);
 	});
 
@@ -142,7 +142,7 @@ describe("persistence handle", () => {
 		await persistence.handle(event);
 
 		const files: string[] = [];
-		for await (const p of backend.list("pending/")) { files.push(p); }
+		for await (const p of backend.list("events/pending/")) { files.push(p); }
 
 		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 		const content = JSON.parse(await backend.read(files[0]!));
@@ -165,8 +165,8 @@ describe("persistence handle", () => {
 		await persistence.handle({ ...event, state: "pending" });
 
 		// Remove the pending dir to cause archive to fail when listing files
-		await rm(join(testDir, "pending"), { recursive: true });
-		await mkdir(join(testDir, "pending"), { recursive: true });
+		await rm(join(testDir, "events/pending"), { recursive: true });
+		await mkdir(join(testDir, "events/pending"), { recursive: true });
 
 		// This should not throw even though archive will fail
 		await persistence.handle({ ...event, state: "done", result: "succeeded" });
@@ -182,7 +182,7 @@ describe("persistence handle", () => {
 		await persistence.bootstrap([makeEvent()], { pending: true });
 
 		const pending: string[] = [];
-		for await (const p of backend.list("pending/")) { pending.push(p); }
+		for await (const p of backend.list("events/pending/")) { pending.push(p); }
 		expect(pending.filter((f) => f.endsWith(".json")).length).toBe(0);
 	});
 });
@@ -190,11 +190,11 @@ describe("persistence handle", () => {
 describe("persistence recover", () => {
 	it("recovers pending events", async () => {
 		await backend.init();
-		await mkdir(join(testDir, "pending"), { recursive: true });
-		await mkdir(join(testDir, "archive"), { recursive: true });
+		await mkdir(join(testDir, "events/pending"), { recursive: true });
+		await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_pend", state: "pending" });
-		await backend.write("pending/000001_evt_pend.json", JSON.stringify(event));
+		await backend.write("events/pending/000001_evt_pend.json", JSON.stringify(event));
 
 		const persistence = createPersistence(backend);
 		const allEvents: RuntimeEvent[] = [];
@@ -209,16 +209,16 @@ describe("persistence recover", () => {
 
 	it("recovers processing events (crash recovery) — takes latest state", async () => {
 		await backend.init();
-		await mkdir(join(testDir, "pending"), { recursive: true });
-		await mkdir(join(testDir, "archive"), { recursive: true });
+		await mkdir(join(testDir, "events/pending"), { recursive: true });
+		await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_proc" });
 		await backend.write(
-			"pending/000001_evt_proc.json",
+			"events/pending/000001_evt_proc.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
 		await backend.write(
-			"pending/000002_evt_proc.json",
+			"events/pending/000002_evt_proc.json",
 			JSON.stringify({ ...event, state: "processing" }),
 		);
 
@@ -236,16 +236,16 @@ describe("persistence recover", () => {
 
 	it("handles crash case — deduplicates and moves older to archive", async () => {
 		await backend.init();
-		await mkdir(join(testDir, "pending"), { recursive: true });
-		await mkdir(join(testDir, "archive"), { recursive: true });
+		await mkdir(join(testDir, "events/pending"), { recursive: true });
+		await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_crash" });
 		await backend.write(
-			"pending/000001_evt_crash.json",
+			"events/pending/000001_evt_crash.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
 		await backend.write(
-			"pending/000002_evt_crash.json",
+			"events/pending/000002_evt_crash.json",
 			JSON.stringify({ ...event, state: "processing" }),
 		);
 
@@ -255,9 +255,9 @@ describe("persistence recover", () => {
 		}
 
 		const pending: string[] = [];
-		for await (const p of backend.list("pending/")) { pending.push(p); }
+		for await (const p of backend.list("events/pending/")) { pending.push(p); }
 		const archive: string[] = [];
-		for await (const p of backend.list("archive/")) { archive.push(p); }
+		for await (const p of backend.list("events/archive/")) { archive.push(p); }
 
 		expect(pending.length).toBe(1);
 		expect(pending[0]).toContain("000002_");
@@ -267,16 +267,16 @@ describe("persistence recover", () => {
 
 	it("recovers counter from existing files", async () => {
 		await backend.init();
-		await mkdir(join(testDir, "pending"), { recursive: true });
-		await mkdir(join(testDir, "archive"), { recursive: true });
+		await mkdir(join(testDir, "events/pending"), { recursive: true });
+		await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 		const event = makeEvent({ id: "evt_cnt" });
 		await backend.write(
-			"archive/000042_evt_old.json",
+			"events/archive/000042_evt_old.json",
 			JSON.stringify({ ...event, id: "evt_old", state: "done", result: "succeeded" }),
 		);
 		await backend.write(
-			"pending/000043_evt_cnt.json",
+			"events/pending/000043_evt_cnt.json",
 			JSON.stringify({ ...event, state: "pending" }),
 		);
 
@@ -286,7 +286,7 @@ describe("persistence recover", () => {
 		await persistence.handle(makeEvent({ id: "evt_new" }));
 
 		const pending: string[] = [];
-		for await (const p of backend.list("pending/")) { pending.push(p); }
+		for await (const p of backend.list("events/pending/")) { pending.push(p); }
 		const newFile = pending.find((f) => f.includes("evt_new"));
 		expect(newFile).toContain("000044_");
 	});
@@ -308,7 +308,7 @@ describe("persistence recover", () => {
 		await persistence.handle(makeEvent({ id: "evt_first" }));
 
 		const pending: string[] = [];
-		for await (const p of backend.list("pending/")) { pending.push(p); }
+		for await (const p of backend.list("events/pending/")) { pending.push(p); }
 		expect(pending[0]).toContain("000001_");
 	});
 });

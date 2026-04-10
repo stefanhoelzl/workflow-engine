@@ -20,7 +20,7 @@ import type { StorageBackend } from "../storage/index.js";
 const silentLogger = createLogger("test", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
 function createTestSource(bus: ReturnType<typeof createEventBus>) {
-	return createEventSource({ "order.received": passthroughSchema, "test.event": passthroughSchema }, bus);
+	return createEventSource({ events: { "order.received": passthroughSchema, "test.event": passthroughSchema } }, bus);
 }
 
 let testDir: string;
@@ -58,9 +58,9 @@ function stubContextFactory(event: RuntimeEvent, _actionName: string): ActionCon
 describe("recovery", () => {
 	describe("recover yields RecoveryBatch with pending flag", () => {
 		it("yields latest batch for single pending event", async () => {
-			const pendingDir = join(testDir, "pending");
+			const pendingDir = join(testDir, "events/pending");
 			await mkdir(pendingDir, { recursive: true });
-			await mkdir(join(testDir, "archive"), { recursive: true });
+			await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 			const event = makeStoredEvent({ id: "evt_single", state: "pending" });
 			await writeFile(join(pendingDir, "000001_evt_single.json"), JSON.stringify(event));
@@ -78,9 +78,9 @@ describe("recovery", () => {
 		});
 
 		it("deduplicates pending files — takes latest state per event", async () => {
-			const pendingDir = join(testDir, "pending");
+			const pendingDir = join(testDir, "events/pending");
 			await mkdir(pendingDir, { recursive: true });
-			await mkdir(join(testDir, "archive"), { recursive: true });
+			await mkdir(join(testDir, "events/archive"), { recursive: true });
 
 			const pending = makeStoredEvent({ id: "evt_multi", state: "pending" });
 			const processing = makeStoredEvent({ id: "evt_multi", state: "processing" });
@@ -105,8 +105,8 @@ describe("recovery", () => {
 		});
 
 		it("yields pending then archive batches", async () => {
-			const pendingDir = join(testDir, "pending");
-			const archiveDir = join(testDir, "archive");
+			const pendingDir = join(testDir, "events/pending");
+			const archiveDir = join(testDir, "events/archive");
 			await mkdir(pendingDir, { recursive: true });
 			await mkdir(archiveDir, { recursive: true });
 
@@ -137,8 +137,8 @@ describe("recovery", () => {
 		});
 
 		it("completes interrupted archive during recovery", async () => {
-			const pendingDir = join(testDir, "pending");
-			const archiveDir = join(testDir, "archive");
+			const pendingDir = join(testDir, "events/pending");
+			const archiveDir = join(testDir, "events/archive");
 			await mkdir(pendingDir, { recursive: true });
 			await mkdir(archiveDir, { recursive: true });
 
@@ -161,8 +161,8 @@ describe("recovery", () => {
 		});
 
 		it("recovers counter from max across both directories", async () => {
-			const pendingDir = join(testDir, "pending");
-			const archiveDir = join(testDir, "archive");
+			const pendingDir = join(testDir, "events/pending");
+			const archiveDir = join(testDir, "events/archive");
 			await mkdir(pendingDir, { recursive: true });
 			await mkdir(archiveDir, { recursive: true });
 
@@ -199,8 +199,8 @@ describe("recovery", () => {
 
 describe("full startup/recovery integration", () => {
 	it("persists events to FS, recovers on restart, and WorkQueue has them", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
+		const pendingDir = join(testDir, "events/pending");
+		const archiveDir = join(testDir, "events/archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 
@@ -224,8 +224,8 @@ describe("full startup/recovery integration", () => {
 	});
 
 	it("recovered events are processed by scheduler", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
+		const pendingDir = join(testDir, "events/pending");
+		const archiveDir = join(testDir, "events/archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 
@@ -255,7 +255,7 @@ describe("full startup/recovery integration", () => {
 		};
 
 		const source = createTestSource(bus);
-		const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+		const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 50));
@@ -267,8 +267,8 @@ describe("full startup/recovery integration", () => {
 	});
 
 	it("recovery populates EventStore with all events from both directories", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
+		const pendingDir = join(testDir, "events/pending");
+		const archiveDir = join(testDir, "events/archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 
@@ -314,8 +314,8 @@ describe("full startup/recovery integration", () => {
 
 describe("non-atomic move crash recovery", () => {
 	it("recovers when file exists in both pending and archive (simulated S3 crash)", async () => {
-		const pendingDir = join(testDir, "pending");
-		const archiveDir = join(testDir, "archive");
+		const pendingDir = join(testDir, "events/pending");
+		const archiveDir = join(testDir, "events/archive");
 		await mkdir(pendingDir, { recursive: true });
 		await mkdir(archiveDir, { recursive: true });
 

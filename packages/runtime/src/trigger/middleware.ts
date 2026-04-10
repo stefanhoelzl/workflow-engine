@@ -379,12 +379,12 @@ function renderTriggerPage(schemas: Record<string, object>): string {
 }
 
 function triggerMiddleware(
-	schemas: Record<string, object>,
+	schemaSource: { readonly jsonSchemas: Record<string, object> },
 	source: EventSource,
 ): Middleware {
 	const app = new Hono().basePath("/trigger");
 
-	app.get("/", (c) => c.html(renderTriggerPage(schemas)));
+	app.get("/", (c) => c.html(renderTriggerPage(schemaSource.jsonSchemas)));
 
 	app.post("/:eventType", async (c) => {
 		const eventType = c.req.param("eventType");

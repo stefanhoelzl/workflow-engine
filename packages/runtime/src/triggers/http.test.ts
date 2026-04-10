@@ -63,7 +63,7 @@ function stubEventSource(): { source: EventSource; createSpy: ReturnType<typeof 
 
 function createApp(registry: HttpTriggerRegistry, source: EventSource) {
 	const app = new Hono();
-	const { match, handler } = httpTriggerMiddleware(registry, source);
+	const { match, handler } = httpTriggerMiddleware({ triggerRegistry: registry }, source);
 	app.use(match, handler);
 	return app;
 }

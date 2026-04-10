@@ -12,7 +12,7 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		FILE_IO_CONCURRENCY: z.coerce.number().default(10),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		WORKFLOW_DIR: z.string(),
+		GITHUB_USER: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_PATH: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -40,7 +40,7 @@ const schema = z
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
 		fileIoConcurrency: env.FILE_IO_CONCURRENCY,
-		workflowDir: env.WORKFLOW_DIR,
+		githubUser: env.GITHUB_USER,
 		persistencePath: env.PERSISTENCE_PATH,
 		persistenceS3Bucket: env.PERSISTENCE_S3_BUCKET,
 		persistenceS3AccessKeyId: env.PERSISTENCE_S3_ACCESS_KEY_ID,
