@@ -1,4 +1,4 @@
-localhost {
+{$DOMAIN} {
 	handle /oauth2/* {
 		reverse_proxy oauth2-proxy:4180 {
 			header_up X-Real-IP {remote_host}

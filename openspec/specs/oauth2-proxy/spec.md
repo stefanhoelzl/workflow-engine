@@ -1,12 +1,12 @@
 ### Requirement: oauth2-proxy container runs in the compose stack
 
-The docker-compose stack SHALL include an `oauth2-proxy` service using the `quay.io/oauth2-proxy/oauth2-proxy:latest` image.
+oauth2-proxy SHALL run as a Docker container managed by the Pulumi program, using the `quay.io/oauth2-proxy/oauth2-proxy:v7.15.1` image.
 
-#### Scenario: oauth2-proxy service is defined
+#### Scenario: oauth2-proxy container is defined
 
-- **WHEN** the compose file is parsed
-- **THEN** a service named `oauth2-proxy` SHALL exist
-- **AND** it SHALL use image `quay.io/oauth2-proxy/oauth2-proxy:latest`
+- **WHEN** `pulumi up` completes
+- **THEN** a container named `oauth2-proxy` SHALL be running
+- **AND** it SHALL use image `quay.io/oauth2-proxy/oauth2-proxy:v7.15.1`
 
 ### Requirement: oauth2-proxy uses GitHub as OAuth provider
 
@@ -29,19 +29,17 @@ oauth2-proxy SHALL expose port 4180 to other compose services but SHALL NOT publ
 
 ### Requirement: Secrets are provided via shell environment variables
 
-oauth2-proxy SHALL receive `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, and `OAUTH2_PROXY_COOKIE_SECRET` from shell environment variables interpolated in docker-compose.yml. These values SHALL NOT be hardcoded or committed to version control.
+oauth2-proxy credentials (`OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, `OAUTH2_PROXY_COOKIE_SECRET`, `OAUTH2_PROXY_GITHUB_USER`) SHALL be stored as Pulumi encrypted secrets and injected into the container as environment variables by the Pulumi program. They SHALL NOT be read from shell environment variables or `.env` files.
 
-#### Scenario: Secrets are interpolated from shell environment
+#### Scenario: Secrets are managed by Pulumi
 
-- **WHEN** the compose file is parsed
-- **THEN** `OAUTH2_PROXY_CLIENT_ID` SHALL reference `${OAUTH2_PROXY_CLIENT_ID}`
-- **AND** `OAUTH2_PROXY_CLIENT_SECRET` SHALL reference `${OAUTH2_PROXY_CLIENT_SECRET}`
-- **AND** `OAUTH2_PROXY_COOKIE_SECRET` SHALL reference `${OAUTH2_PROXY_COOKIE_SECRET}`
+- **WHEN** `pulumi up` is run
+- **THEN** oauth2-proxy SHALL receive decrypted secret values as container environment variables
 
-#### Scenario: Missing secrets cause startup failure
+#### Scenario: Missing secrets cause deployment failure
 
-- **WHEN** any of the required secret environment variables are not set in the shell
-- **THEN** oauth2-proxy SHALL fail to start with an error indicating the missing configuration
+- **WHEN** any required secret is not configured in the Pulumi stack
+- **THEN** `pulumi up` SHALL fail with an error identifying the missing secret
 
 ### Requirement: Access is restricted to a specific GitHub user
 
@@ -61,11 +59,11 @@ oauth2-proxy SHALL restrict access to the GitHub username specified by the `OAUT
 
 ### Requirement: oauth2-proxy callback URL matches localhost
 
-oauth2-proxy SHALL be configured with `OAUTH2_PROXY_REDIRECT_URL=https://localhost:8443/oauth2/callback` to match the GitHub OAuth App's registered callback URL.
+oauth2-proxy SHALL be configured with `OAUTH2_PROXY_REDIRECT_URL` derived from the Pulumi stack's `domain` and `httpsPort` config values, in the format `https://{domain}:{httpsPort}/oauth2/callback`.
 
-#### Scenario: Callback URL is set
+#### Scenario: Callback URL is derived from stack config
 
-- **WHEN** oauth2-proxy starts
+- **WHEN** oauth2-proxy starts with dev stack config (`domain=localhost`, `httpsPort=8443`)
 - **THEN** it SHALL use `https://localhost:8443/oauth2/callback` as the redirect URL
 
 ### Requirement: oauth2-proxy uses standard restart and logging policies

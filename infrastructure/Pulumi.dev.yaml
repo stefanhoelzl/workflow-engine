@@ -1,0 +1,9 @@
+config:
+  workflow-engine:domain: localhost
+  workflow-engine:httpsPort: "8443"
+  workflow-engine:oauth2GithubUser: stefanhoelzl
+  workflow-engine:oauth2ClientId:
+    secure: AAABAHemyq3l/dYK4MKMuQ1pX6hBU4Jl6sOntxRCRIkbRTE5H+np7PqEgeaAQB4uepWKjg==
+  workflow-engine:oauth2ClientSecret:
+    secure: AAABADugj0udPrIzo4qt+uxJlzYQW7OP1ll9JyGD1P7vbMdm1DQ8INjYE6hz10khT7CSkmJrk7wTwGA0+PObjairY9kW/UZX
+  docker:host: unix:///run/user/1000/podman/podman.sock
