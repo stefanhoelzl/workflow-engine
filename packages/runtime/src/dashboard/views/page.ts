@@ -285,8 +285,10 @@ function renderPage(): string {
     }
 
     .tooltip-payload {
+      position: relative;
       margin-top: 8px;
       padding: 8px;
+      padding-right: 32px;
       background: var(--bg-surface);
       border-radius: var(--radius-sm);
       font-family: var(--font-mono);
@@ -297,6 +299,29 @@ function renderPage(): string {
       overflow-y: auto;
     }
 
+    .copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+
+    .copy-btn:hover {
+      background: var(--bg-elevated);
+      color: var(--text);
+    }
+
     .empty-state {
       text-align: center;
       padding: 48px 24px;
@@ -305,7 +330,7 @@ function renderPage(): string {
     }
   </style>`;
 
-	const bodyAttrs = `x-data="{ tip: null, tipX: 0, tipY: 0, _tipTimer: null }"`;
+	const bodyAttrs = `x-data="{ tip: null, tipX: 0, tipY: 0, _tipTimer: null, _copied: false }"`;
 
 	const content = `
   <div class="tooltip"
@@ -322,7 +347,7 @@ function renderPage(): string {
           <span x-text="tip.type"></span>
           <span class="badge" :class="tip.state" x-text="tip.state" style="margin-left: auto"></span>
         </div>
-        <div class="tooltip-payload" x-text="tip.event"></div>
+        <div class="tooltip-payload"><button class="copy-btn" @click="navigator.clipboard.writeText(tip.event); _copied = true; setTimeout(() => _copied = false, 1500)" :title="_copied ? 'Copied!' : 'Copy JSON'"><svg x-show="!_copied" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg x-show="_copied" x-cloak xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button><span x-text="tip.event"></span></div>
       </div>
     </template>
   </div>
