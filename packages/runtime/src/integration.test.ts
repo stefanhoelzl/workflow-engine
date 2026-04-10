@@ -34,7 +34,11 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
+		const createContext = createActionContext(
+			source,
+			globalThis.fetch,
+			silentLogger,
+		);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
 		const sandbox: Sandbox = {
@@ -69,7 +73,13 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			},
 		];
 
-		const scheduler = createScheduler(workQueue, source, { actions }, createContext, sandbox);
+		const scheduler = createScheduler(
+			workQueue,
+			source,
+			{ actions },
+			createContext,
+			sandbox,
+		);
 		scheduler.start();
 
 		const app = createApp(
@@ -92,8 +102,12 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		// validateOrder + fulfillOrder + notifyCustomer
 		expect(spawnCalls).toHaveLength(3);
 
-		const fulfillCall = spawnCalls.find((c) => c.source.includes("fulfillOrder"));
-		const notifyCall = spawnCalls.find((c) => c.source.includes("notifyCustomer"));
+		const fulfillCall = spawnCalls.find((c) =>
+			c.source.includes("fulfillOrder"),
+		);
+		const notifyCall = spawnCalls.find((c) =>
+			c.source.includes("notifyCustomer"),
+		);
 		expect(fulfillCall).toBeDefined();
 		expect(notifyCall).toBeDefined();
 
@@ -102,7 +116,9 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		// biome-ignore lint/style/noNonNullAssertion: test assertions guarantee elements exist
 		const notify = notifyCall!;
 
-		expect(fulfill.ctx.event.correlationId).toBe(notify.ctx.event.correlationId);
+		expect(fulfill.ctx.event.correlationId).toBe(
+			notify.ctx.event.correlationId,
+		);
 		expect(fulfill.ctx.event.correlationId).toMatch(CORR_PREFIX);
 
 		// Payload includes the full HTTP context shape
@@ -127,7 +143,11 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
+		const createContext = createActionContext(
+			source,
+			globalThis.fetch,
+			silentLogger,
+		);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
 		const sandbox: Sandbox = {
@@ -138,13 +158,26 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		};
 
 		const actions: Action[] = [
-			{ name: "handleOrder", on: "webhook.order", env: {}, source: "export default async (ctx) => { /* handleOrder */ }" },
+			{
+				name: "handleOrder",
+				on: "webhook.order",
+				env: {},
+				source: "export default async (ctx) => { /* handleOrder */ }",
+			},
 		];
 
-		const scheduler = createScheduler(workQueue, source, { actions }, createContext, sandbox);
+		const scheduler = createScheduler(
+			workQueue,
+			source,
+			{ actions },
+			createContext,
+			sandbox,
+		);
 		scheduler.start();
 
-		const app = createApp(httpTriggerMiddleware({ triggerRegistry: registry }, source));
+		const app = createApp(
+			httpTriggerMiddleware({ triggerRegistry: registry }, source),
+		);
 
 		await app.request("/webhooks/order?source=shopify", {
 			method: "POST",

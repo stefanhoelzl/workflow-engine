@@ -3,7 +3,12 @@ import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { EventStore } from "./event-bus/event-store.js";
 import type { StorageBackend } from "./storage/index.js";
-import { healthMiddleware, type HealthDeps, type HealthResponse, type CheckResult } from "./health.js";
+import {
+	healthMiddleware,
+	type HealthDeps,
+	type HealthResponse,
+	type CheckResult,
+} from "./health.js";
 
 const CONTENT_TYPE = "application/health+json";
 
@@ -13,7 +18,9 @@ function stubEventStore(): EventStore {
 		executeTakeFirstOrThrow: vi.fn().mockResolvedValue({ count: 5 }),
 	};
 	// Make select return an object with executeTakeFirstOrThrow
-	query.select.mockReturnValue({ executeTakeFirstOrThrow: query.executeTakeFirstOrThrow });
+	query.select.mockReturnValue({
+		executeTakeFirstOrThrow: query.executeTakeFirstOrThrow,
+	});
 
 	return {
 		query,
@@ -60,7 +67,7 @@ describe("GET /livez", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_OK);
 		expect(res.headers.get("content-type")).toContain(CONTENT_TYPE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body).toEqual({ status: "pass" });
 	});
 });
@@ -73,17 +80,19 @@ describe("GET /healthz", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_OK);
 		expect(res.headers.get("content-type")).toContain(CONTENT_TYPE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body).toEqual({ status: "pass" });
 	});
 
 	it("eventstore check returns IETF format with duration", async () => {
 		const app = createApp(defaultDeps({ eventStore: stubEventStore() }));
 
-		const res = await app.request("/healthz?eventstore=true", { method: "GET" });
+		const res = await app.request("/healthz?eventstore=true", {
+			method: "GET",
+		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_OK);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("pass");
 		expect(body.checks).toBeDefined();
 
@@ -97,13 +106,19 @@ describe("GET /healthz", () => {
 	it("persistence check without backend returns 503 with no backend configured", async () => {
 		const app = createApp(defaultDeps({ storageBackend: undefined }));
 
-		const res = await app.request("/healthz?persistence=true", { method: "GET" });
+		const res = await app.request("/healthz?persistence=true", {
+			method: "GET",
+		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("fail");
 
-		for (const key of ["persistence:write", "persistence:read", "persistence:list"]) {
+		for (const key of [
+			"persistence:write",
+			"persistence:read",
+			"persistence:list",
+		]) {
 			const check = body.checks?.[key]?.[0] as CheckResult;
 			expect(check.status).toBe("fail");
 			expect(check.output).toBe("no backend configured");
@@ -114,13 +129,19 @@ describe("GET /healthz", () => {
 		const backend = stubStorageBackend();
 		const app = createApp(defaultDeps({ storageBackend: backend }));
 
-		const res = await app.request("/healthz?persistence=true", { method: "GET" });
+		const res = await app.request("/healthz?persistence=true", {
+			method: "GET",
+		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_OK);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("pass");
 
-		for (const key of ["persistence:write", "persistence:read", "persistence:list"]) {
+		for (const key of [
+			"persistence:write",
+			"persistence:read",
+			"persistence:list",
+		]) {
 			const check = body.checks?.[key]?.[0] as CheckResult;
 			expect(check.status).toBe("pass");
 			expect(check.componentType).toBe("datastore");
@@ -128,7 +149,10 @@ describe("GET /healthz", () => {
 			expect(typeof check.observedValue).toBe("number");
 		}
 
-		expect(backend.write).toHaveBeenCalledWith(".healthz/sentinel", expect.any(String));
+		expect(backend.write).toHaveBeenCalledWith(
+			".healthz/sentinel",
+			expect.any(String),
+		);
 		expect(backend.read).toHaveBeenCalledWith(".healthz/sentinel");
 		expect(backend.list).toHaveBeenCalledWith("pending/");
 	});
@@ -139,7 +163,7 @@ describe("GET /healthz", () => {
 		const res = await app.request("/healthz?webhooks=true", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("fail");
 		const check = body.checks?.webhooks?.[0] as CheckResult;
 		expect(check.status).toBe("fail");
@@ -149,11 +173,10 @@ describe("GET /healthz", () => {
 	it("domain check without BASE_URL returns 503", async () => {
 		const app = createApp(defaultDeps({ baseUrl: undefined }));
 
-		// biome-ignore lint/security/noSecrets: test URL with query params, not a secret
 		const res = await app.request("/healthz?domain=true", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("fail");
 		const check = body.checks?.domain?.[0] as CheckResult;
 		expect(check.status).toBe("fail");
@@ -162,18 +185,26 @@ describe("GET /healthz", () => {
 
 	it("custom timeout is applied via query param", async () => {
 		const slowEventStore = stubEventStore();
-		(slowEventStore.query as unknown as { select: ReturnType<typeof vi.fn> }).select.mockReturnValue({
-			executeTakeFirstOrThrow: vi.fn().mockImplementation(
-				() => new Promise((resolve) => setTimeout(() => resolve({ count: 0 }), 200)),
-			),
+		(
+			slowEventStore.query as unknown as { select: ReturnType<typeof vi.fn> }
+		).select.mockReturnValue({
+			executeTakeFirstOrThrow: vi
+				.fn()
+				.mockImplementation(
+					() =>
+						new Promise((resolve) =>
+							setTimeout(() => resolve({ count: 0 }), 200),
+						),
+				),
 		});
 		const app = createApp(defaultDeps({ eventStore: slowEventStore }));
 
-		// biome-ignore lint/security/noSecrets: test URL with query params, not a secret
-		const res = await app.request("/healthz?eventstore=true&timeout=50", { method: "GET" });
+		const res = await app.request("/healthz?eventstore=true&timeout=50", {
+			method: "GET",
+		});
 
 		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("fail");
 		const check = body.checks?.eventstore?.[0] as CheckResult;
 		expect(check.status).toBe("fail");
@@ -183,23 +214,28 @@ describe("GET /healthz", () => {
 
 describe("GET /readyz", () => {
 	it("with all deps configured and healthy returns 200", async () => {
-		const fetchSpy = vi.fn()
-			.mockResolvedValueOnce(new Response(JSON.stringify({ status: "pass" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}))
+		const fetchSpy = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ status: "pass" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
 			.mockResolvedValueOnce(new Response(null, { status: 204 }));
 		vi.stubGlobal("fetch", fetchSpy);
 
-		const app = createApp(defaultDeps({
-			eventStore: stubEventStore(),
-			storageBackend: stubStorageBackend(),
-			baseUrl: "http://localhost:8080",
-		}));
+		const app = createApp(
+			defaultDeps({
+				eventStore: stubEventStore(),
+				storageBackend: stubStorageBackend(),
+				baseUrl: "http://localhost:8080",
+			}),
+		);
 
 		const res = await app.request("/readyz", { method: "GET" });
 
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(res.status).toBe(constants.HTTP_STATUS_OK);
 		expect(body.status).toBe("pass");
 		expect(body.checks).toBeDefined();
@@ -214,23 +250,29 @@ describe("GET /readyz", () => {
 	});
 
 	it("with missing deps returns 503 with failures for unconfigured checks", async () => {
-		const app = createApp(defaultDeps({
-			eventStore: stubEventStore(),
-			storageBackend: undefined,
-			baseUrl: undefined,
-		}));
+		const app = createApp(
+			defaultDeps({
+				eventStore: stubEventStore(),
+				storageBackend: undefined,
+				baseUrl: undefined,
+			}),
+		);
 
 		const res = await app.request("/readyz", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = await res.json() as HealthResponse;
+		const body = (await res.json()) as HealthResponse;
 		expect(body.status).toBe("fail");
 
 		// eventstore should pass
 		expect(body.checks?.eventstore?.[0]?.status).toBe("pass");
 
 		// persistence checks should fail
-		for (const key of ["persistence:write", "persistence:read", "persistence:list"]) {
+		for (const key of [
+			"persistence:write",
+			"persistence:read",
+			"persistence:list",
+		]) {
 			expect(body.checks?.[key]?.[0]?.status).toBe("fail");
 			expect(body.checks?.[key]?.[0]?.output).toBe("no backend configured");
 		}

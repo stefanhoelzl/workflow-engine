@@ -83,7 +83,9 @@ function createCteChain(
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled event store logic
-async function createEventStore(options?: EventStoreOptions): Promise<EventStore> {
+async function createEventStore(
+	options?: EventStoreOptions,
+): Promise<EventStore> {
 	const instance = await DuckDBInstance.create();
 	const db = new Kysely<Database>({
 		dialect: new DuckDbDialect({ database: instance }),
@@ -101,8 +103,12 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 			targetAction: event.targetAction ?? null,
 			state: event.state,
 			result: event.state === "done" ? event.result : null,
-			payload: event.payload === undefined ? null : JSON.stringify(event.payload),
-			error: event.state === "done" && event.result === "failed" ? JSON.stringify(event.error) : null,
+			payload:
+				event.payload === undefined ? null : JSON.stringify(event.payload),
+			error:
+				event.state === "done" && event.result === "failed"
+					? JSON.stringify(event.error)
+					: null,
 			createdAt: event.createdAt.toISOString(),
 			sourceType: event.sourceType,
 			sourceName: event.sourceName,
@@ -113,7 +119,11 @@ async function createEventStore(options?: EventStoreOptions): Promise<EventStore
 	}
 
 	return {
-		query: db.selectFrom("events") as SelectQueryBuilder<Database, "events", object>,
+		query: db.selectFrom("events") as SelectQueryBuilder<
+			Database,
+			"events",
+			object
+		>,
 
 		async handle(event: RuntimeEvent): Promise<void> {
 			try {

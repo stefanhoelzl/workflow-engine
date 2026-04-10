@@ -78,19 +78,25 @@ function createPersistence(
 			// Archive older pending file for this event (fire-and-forget)
 			const oldFile = pendingIndex.get(event.id);
 			if (oldFile) {
-				backend.move(oldFile.path, `events/archive/${oldFile.filename}`).catch((err) => {
-					logger?.error("archive-failed", {
-						eventId: event.id,
-						error: err instanceof Error ? err.message : String(err),
+				backend
+					.move(oldFile.path, `events/archive/${oldFile.filename}`)
+					.catch((err) => {
+						logger?.error("archive-failed", {
+							eventId: event.id,
+							error: err instanceof Error ? err.message : String(err),
+						});
 					});
-				});
 			}
 
 			// Update index
 			if (isTerminal) {
 				pendingIndex.delete(event.id);
 			} else {
-				pendingIndex.set(event.id, { path: `${prefix}${filename}`, filename, counter });
+				pendingIndex.set(event.id, {
+					path: `${prefix}${filename}`,
+					filename,
+					counter,
+				});
 			}
 		},
 
@@ -121,13 +127,22 @@ function createPersistence(
 			const existing = pendingIndex.get(parsed.eventId);
 			if (existing) {
 				// Files are sorted by counter (ascending), so existing has lower counter — archive it
-				await backend.move(existing.path, `events/archive/${existing.filename}`);
+				await backend.move(
+					existing.path,
+					`events/archive/${existing.filename}`,
+				);
 			}
-			pendingIndex.set(parsed.eventId, { path, filename, counter: parsed.counter });
+			pendingIndex.set(parsed.eventId, {
+				path,
+				filename,
+				counter: parsed.counter,
+			});
 		}
 	}
 
-	async function* parseEventPaths(prefix: string): AsyncGenerator<{ path: string; counter: number }> {
+	async function* parseEventPaths(
+		prefix: string,
+	): AsyncGenerator<{ path: string; counter: number }> {
 		for await (const path of backend.list(prefix)) {
 			const parsed = parseFilename(extractFilename(path));
 			if (parsed) {
@@ -142,7 +157,9 @@ function createPersistence(
 	}
 
 	async function* readAll(
-		source: AsyncIterable<{ path: string; counter: number }> | Iterable<{ path: string; counter: number }>,
+		source:
+			| AsyncIterable<{ path: string; counter: number }>
+			| Iterable<{ path: string; counter: number }>,
 	): AsyncGenerator<RuntimeEvent> {
 		const iter = toAsyncIterator(source);
 		const queue: Promise<RuntimeEvent>[] = [];
@@ -195,7 +212,9 @@ function createPersistence(
 	}
 }
 
-function toAsyncIterator<T>(source: AsyncIterable<T> | Iterable<T>): AsyncIterator<T> {
+function toAsyncIterator<T>(
+	source: AsyncIterable<T> | Iterable<T>,
+): AsyncIterator<T> {
 	if (Symbol.asyncIterator in (source as object)) {
 		return (source as AsyncIterable<T>)[Symbol.asyncIterator]();
 	}

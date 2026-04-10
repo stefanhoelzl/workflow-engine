@@ -17,9 +17,22 @@ const logger = {
 
 const MANIFEST = {
 	name: "test-workflow",
-	events: [{ name: "test.event", schema: { type: "object", properties: {}, required: [] } }],
+	events: [
+		{
+			name: "test.event",
+			schema: { type: "object", properties: {}, required: [] },
+		},
+	],
 	triggers: [],
-	actions: [{ name: "handle", module: "actions/handle.js", on: "test.event", emits: [], env: {} }],
+	actions: [
+		{
+			name: "handle",
+			module: "actions/handle.js",
+			on: "test.event",
+			emits: [],
+			env: {},
+		},
+	],
 };
 
 const ACTION_SOURCE = "export default async (ctx) => {}";

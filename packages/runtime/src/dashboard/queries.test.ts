@@ -35,21 +35,125 @@ beforeEach(async () => {
 
 async function seedEvents() {
 	// corr_A: order.created chain — all done
-	await store.handle(makeEvent({ id: "e1", correlationId: "corr_A", type: "order.created", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
-	await store.handle(makeEvent({ id: "e1", correlationId: "corr_A", type: "order.created", state: "done", result: "succeeded", createdAt: new Date("2025-01-01T10:00:01Z") }));
-	await store.handle(makeEvent({ id: "e2", correlationId: "corr_A", type: "order.validated", state: "pending", parentEventId: "e1", targetAction: "validate", createdAt: new Date("2025-01-01T10:00:02Z") }));
-	await store.handle(makeEvent({ id: "e2", correlationId: "corr_A", type: "order.validated", state: "done", result: "succeeded", parentEventId: "e1", targetAction: "validate", createdAt: new Date("2025-01-01T10:00:03Z") }));
+	await store.handle(
+		makeEvent({
+			id: "e1",
+			correlationId: "corr_A",
+			type: "order.created",
+			state: "pending",
+			createdAt: new Date("2025-01-01T10:00:00Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e1",
+			correlationId: "corr_A",
+			type: "order.created",
+			state: "done",
+			result: "succeeded",
+			createdAt: new Date("2025-01-01T10:00:01Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e2",
+			correlationId: "corr_A",
+			type: "order.validated",
+			state: "pending",
+			parentEventId: "e1",
+			targetAction: "validate",
+			createdAt: new Date("2025-01-01T10:00:02Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e2",
+			correlationId: "corr_A",
+			type: "order.validated",
+			state: "done",
+			result: "succeeded",
+			parentEventId: "e1",
+			targetAction: "validate",
+			createdAt: new Date("2025-01-01T10:00:03Z"),
+		}),
+	);
 
 	// corr_B: user.signup chain — has a pending event
-	await store.handle(makeEvent({ id: "e3", correlationId: "corr_B", type: "user.signup", state: "pending", createdAt: new Date("2025-01-01T10:01:00Z") }));
-	await store.handle(makeEvent({ id: "e3", correlationId: "corr_B", type: "user.signup", state: "done", result: "succeeded", createdAt: new Date("2025-01-01T10:01:01Z") }));
-	await store.handle(makeEvent({ id: "e4", correlationId: "corr_B", type: "welcome.email", state: "pending", parentEventId: "e3", targetAction: "send-email", createdAt: new Date("2025-01-01T10:01:02Z") }));
+	await store.handle(
+		makeEvent({
+			id: "e3",
+			correlationId: "corr_B",
+			type: "user.signup",
+			state: "pending",
+			createdAt: new Date("2025-01-01T10:01:00Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e3",
+			correlationId: "corr_B",
+			type: "user.signup",
+			state: "done",
+			result: "succeeded",
+			createdAt: new Date("2025-01-01T10:01:01Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e4",
+			correlationId: "corr_B",
+			type: "welcome.email",
+			state: "pending",
+			parentEventId: "e3",
+			targetAction: "send-email",
+			createdAt: new Date("2025-01-01T10:01:02Z"),
+		}),
+	);
 
 	// corr_C: cronitor.check chain — has a failed event
-	await store.handle(makeEvent({ id: "e5", correlationId: "corr_C", type: "cronitor.check", state: "pending", createdAt: new Date("2025-01-01T10:02:00Z") }));
-	await store.handle(makeEvent({ id: "e5", correlationId: "corr_C", type: "cronitor.check", state: "done", result: "succeeded", createdAt: new Date("2025-01-01T10:02:01Z") }));
-	await store.handle(makeEvent({ id: "e6", correlationId: "corr_C", type: "notification.send", state: "pending", parentEventId: "e5", targetAction: "send-slack", createdAt: new Date("2025-01-01T10:02:02Z") }));
-	await store.handle(makeEvent({ id: "e6", correlationId: "corr_C", type: "notification.send", state: "done", result: "failed", parentEventId: "e5", targetAction: "send-slack", error: { message: "rate limited", stack: "" }, createdAt: new Date("2025-01-01T10:02:03Z") }));
+	await store.handle(
+		makeEvent({
+			id: "e5",
+			correlationId: "corr_C",
+			type: "cronitor.check",
+			state: "pending",
+			createdAt: new Date("2025-01-01T10:02:00Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e5",
+			correlationId: "corr_C",
+			type: "cronitor.check",
+			state: "done",
+			result: "succeeded",
+			createdAt: new Date("2025-01-01T10:02:01Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e6",
+			correlationId: "corr_C",
+			type: "notification.send",
+			state: "pending",
+			parentEventId: "e5",
+			targetAction: "send-slack",
+			createdAt: new Date("2025-01-01T10:02:02Z"),
+		}),
+	);
+	await store.handle(
+		makeEvent({
+			id: "e6",
+			correlationId: "corr_C",
+			type: "notification.send",
+			state: "done",
+			result: "failed",
+			parentEventId: "e5",
+			targetAction: "send-slack",
+			error: { message: "rate limited", stack: "" },
+			createdAt: new Date("2025-01-01T10:02:03Z"),
+		}),
+	);
 }
 
 describe("listCorrelations", () => {
@@ -113,7 +217,10 @@ describe("listCorrelations", () => {
 		expect(page1.items).toHaveLength(2);
 		expect(page1.nextCursor).toBe("2");
 
-		const page2 = await listCorrelations(store, { limit: 2, cursor: page1.nextCursor ?? undefined });
+		const page2 = await listCorrelations(store, {
+			limit: 2,
+			cursor: page1.nextCursor ?? undefined,
+		});
 		expect(page2.items).toHaveLength(1);
 		expect(page2.nextCursor).toBeNull();
 	});

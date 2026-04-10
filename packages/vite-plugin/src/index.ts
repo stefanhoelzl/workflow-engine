@@ -130,7 +130,13 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 
 async function processEntryChunk(
 	chunk: { name: string; code: string; exports: string[]; fileName: string },
-	ctx: PluginContext & { emitFile(file: { type: "asset"; fileName: string; source: string | Uint8Array }): void },
+	ctx: PluginContext & {
+		emitFile(file: {
+			type: "asset";
+			fileName: string;
+			source: string | Uint8Array;
+		}): void;
+	},
 ): Promise<void> {
 	const name = chunk.name;
 	const tmpFile = join(tmpdir(), `wf-${name}-${Date.now()}.mjs`);
@@ -140,10 +146,18 @@ async function processEntryChunk(
 	try {
 		mod = (await import(tmpFile)) as Record<string, unknown>;
 	} catch (error) {
-		ctx.error(`Failed to import workflow "${name}": ${error instanceof Error ? error.message : String(error)}`);
+		ctx.error(
+			`Failed to import workflow "${name}": ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
-	const { manifest, actionSources } = extractManifest(mod, name, chunk.code, chunk.exports, ctx);
+	const { manifest, actionSources } = extractManifest(
+		mod,
+		name,
+		chunk.code,
+		chunk.exports,
+		ctx,
+	);
 
 	ctx.emitFile({
 		type: "asset",
@@ -173,7 +187,6 @@ async function processEntryChunk(
 		fileName: `${name}/bundle.tar.gz`,
 		source: bundle,
 	});
-
 }
 
 // biome-ignore lint/complexity/useMaxParams: all parameters are distinct required inputs
@@ -184,16 +197,22 @@ function extractManifest(
 	_exports: string[],
 	ctx: PluginContext,
 ): { manifest: object; actionSources: Record<string, string> } {
-	const defaultExport = mod.default as { compile?: () => CompileOutput } | undefined;
+	const defaultExport = mod.default as
+		| { compile?: () => CompileOutput }
+		| undefined;
 	if (!defaultExport || typeof defaultExport.compile !== "function") {
-		ctx.error(`Workflow "${name}" default export does not have a .compile() method`);
+		ctx.error(
+			`Workflow "${name}" default export does not have a .compile() method`,
+		);
 	}
 
 	let compiled: CompileOutput;
 	try {
 		compiled = defaultExport.compile();
 	} catch (error) {
-		ctx.error(`Workflow "${name}" .compile() failed: ${error instanceof Error ? error.message : String(error)}`);
+		ctx.error(
+			`Workflow "${name}" .compile() failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	const namedExports = Object.entries(mod).filter(([key]) => key !== "default");
@@ -203,7 +222,9 @@ function extractManifest(
 	for (const action of compiled.actions) {
 		const match = namedExports.find(([, fn]) => fn === action.handler);
 		if (!match) {
-			ctx.error(`Workflow "${name}": action with on="${action.on}" has no matching named export`);
+			ctx.error(
+				`Workflow "${name}": action with on="${action.on}" has no matching named export`,
+			);
 		}
 
 		const [exportName] = match;
@@ -237,7 +258,10 @@ function extractManifest(
 const ACTION_CALL_RE = /var\s+(\w+)\s*=\s*\w+\.action\(\{/g;
 const HANDLER_KEY_RE = /handler:\s*/;
 
-function extractHandlerSource(code: string, exportName: string): string | undefined {
+function extractHandlerSource(
+	code: string,
+	exportName: string,
+): string | undefined {
 	const pattern = new RegExp(ACTION_CALL_RE.source, "g");
 	let match: RegExpExecArray | null = pattern.exec(code);
 
@@ -255,7 +279,11 @@ function extractHandlerSource(code: string, exportName: string): string | undefi
 			continue;
 		}
 
-		const handlerStart = match.index + match[0].length + handlerMatch.index + handlerMatch[0].length;
+		const handlerStart =
+			match.index +
+			match[0].length +
+			handlerMatch.index +
+			handlerMatch[0].length;
 		const braceStart = code.indexOf("{", handlerStart);
 		if (braceStart === -1) {
 			match = pattern.exec(code);
@@ -284,7 +312,9 @@ function findMatchingBrace(code: string, openPos: number): number {
 	return code.length - 1;
 }
 
-async function createTarGzBundle(files: Record<string, string>): Promise<Uint8Array> {
+async function createTarGzBundle(
+	files: Record<string, string>,
+): Promise<Uint8Array> {
 	const packer = tarPack();
 	for (const [name, content] of Object.entries(files)) {
 		packer.entry({ name }, content);

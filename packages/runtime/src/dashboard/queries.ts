@@ -67,17 +67,26 @@ const CURRENT_EVENTS_CTE = (latest: any) =>
 const SUMMARIES_CTE = (currentEvents: any) =>
 	currentEvents
 		.select(["correlationId"])
-		.select(sql<string>`CASE
+		.select(
+			sql<string>`CASE
 			WHEN COUNT(*) FILTER (WHERE state IN ('pending', 'processing')) > 0 THEN 'pending'
 			WHEN COUNT(*) FILTER (WHERE result = 'failed') > 0 THEN 'failed'
 			ELSE 'done'
-		END`.as("aggregateState"))
-		.select(sql<string>`MIN(CASE WHEN "parentEventId" IS NULL THEN type END)`.as("initialEventType"))
+		END`.as("aggregateState"),
+		)
+		.select(
+			sql<string>`MIN(CASE WHEN "parentEventId" IS NULL THEN type END)`.as(
+				"initialEventType",
+			),
+		)
 		.select(sql<number>`COUNT(DISTINCT id)`.as("eventCount"))
 		.select(sql<string>`MAX("emittedAt")`.as("lastEventAt"))
 		.groupBy("correlationId");
 
-function applyFilters(baseQuery: ReturnType<EventStore["with"]>, options: CorrelationListOptions) {
+function applyFilters(
+	baseQuery: ReturnType<EventStore["with"]>,
+	options: CorrelationListOptions,
+) {
 	let query = baseQuery.where(sql`1`, "=", 1);
 	if (options.state) {
 		query = query.where("aggregateState", "=", options.state);
@@ -144,7 +153,9 @@ async function getTimeline(
 	return rows as unknown as TimelineEvent[];
 }
 
-async function getDistinctEventTypes(eventStore: EventStore): Promise<string[]> {
+async function getDistinctEventTypes(
+	eventStore: EventStore,
+): Promise<string[]> {
 	const rows = await eventStore
 		.with("latest", LATEST_STATE_CTE)
 		.with("current_events", CURRENT_EVENTS_CTE)

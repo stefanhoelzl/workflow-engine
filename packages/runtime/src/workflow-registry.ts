@@ -36,7 +36,10 @@ type LoadResult =
 	| { ok: true; name: string; workflow: LoadedWorkflow }
 	| { ok: false; name?: string | undefined; error: string };
 
-function buildLoadedWorkflow(manifest: Manifest, files: Map<string, string>): LoadResult {
+function buildLoadedWorkflow(
+	manifest: Manifest,
+	files: Map<string, string>,
+): LoadResult {
 	const events: Record<string, Schema> = {};
 	const jsonSchemas: Record<string, object> = {};
 	for (const event of manifest.events) {
@@ -48,7 +51,11 @@ function buildLoadedWorkflow(manifest: Manifest, files: Map<string, string>): Lo
 	for (const actionDef of manifest.actions) {
 		const source = files.get(actionDef.module);
 		if (source === undefined) {
-			return { ok: false, name: manifest.name, error: `missing action source: ${actionDef.module}` };
+			return {
+				ok: false,
+				name: manifest.name,
+				error: `missing action source: ${actionDef.module}`,
+			};
 		}
 		actions.push({
 			name: actionDef.name,
@@ -58,7 +65,11 @@ function buildLoadedWorkflow(manifest: Manifest, files: Map<string, string>): Lo
 		});
 	}
 
-	return { ok: true, name: manifest.name, workflow: { actions, triggers: manifest.triggers, events, jsonSchemas } };
+	return {
+		ok: true,
+		name: manifest.name,
+		workflow: { actions, triggers: manifest.triggers, events, jsonSchemas },
+	};
 }
 
 function loadWorkflow(files: Map<string, string>): LoadResult {
@@ -93,7 +104,9 @@ function parseWorkflowNames(paths: string[]): string[] {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled registry logic
-function createWorkflowRegistry(options: WorkflowRegistryOptions): WorkflowRegistry {
+function createWorkflowRegistry(
+	options: WorkflowRegistryOptions,
+): WorkflowRegistry {
 	const { backend, logger } = options;
 	const workflows = new Map<string, LoadedWorkflow>();
 	let derivedActions: Action[] = [];
@@ -117,7 +130,10 @@ function createWorkflowRegistry(options: WorkflowRegistryOptions): WorkflowRegis
 		}
 	}
 
-	async function persist(name: string, files: Map<string, string>): Promise<void> {
+	async function persist(
+		name: string,
+		files: Map<string, string>,
+	): Promise<void> {
 		if (!backend) {
 			return;
 		}
@@ -147,7 +163,10 @@ function createWorkflowRegistry(options: WorkflowRegistryOptions): WorkflowRegis
 			const result = loadWorkflow(files);
 			if (!result.ok) {
 				if (result.name && workflows.delete(result.name)) {
-					logger.warn("workflow.removed", { name: result.name, reason: result.error });
+					logger.warn("workflow.removed", {
+						name: result.name,
+						reason: result.error,
+					});
 					rebuild();
 				}
 				logger.warn("workflow.register-failed", { error: result.error });

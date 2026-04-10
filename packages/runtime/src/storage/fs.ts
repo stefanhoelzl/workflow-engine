@@ -1,4 +1,11 @@
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	readFile,
+	readdir,
+	rename,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import type { StorageBackend } from "./index.js";
 

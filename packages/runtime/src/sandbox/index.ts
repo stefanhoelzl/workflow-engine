@@ -1,4 +1,8 @@
-import { type QuickJSContext, type QuickJSHandle, getQuickJS } from "quickjs-emscripten";
+import {
+	type QuickJSContext,
+	type QuickJSHandle,
+	getQuickJS,
+} from "quickjs-emscripten";
 import type { ActionContext } from "../context/index.js";
 import { bridgeCtx } from "./bridge.js";
 import { setupGlobals } from "./globals.js";
@@ -13,7 +17,11 @@ interface SpawnOptions {
 }
 
 interface Sandbox {
-	spawn(source: string, ctx: ActionContext, options?: SpawnOptions): Promise<SandboxResult>;
+	spawn(
+		source: string,
+		ctx: ActionContext,
+		options?: SpawnOptions,
+	): Promise<SandboxResult>;
 }
 
 function dumpError(vm: QuickJSContext, handle: QuickJSHandle): SandboxResult {
@@ -39,7 +47,9 @@ async function createSandbox(): Promise<Sandbox> {
 				timerCleanup = setupGlobals(vm, runtime);
 				bridgeCtx(vm, runtime, ctx);
 
-				const handlerSource = source.replace(EXPORT_DEFAULT_RE, "").replace(TRAILING_SEMICOLON_RE, "");
+				const handlerSource = source
+					.replace(EXPORT_DEFAULT_RE, "")
+					.replace(TRAILING_SEMICOLON_RE, "");
 				const filename = options?.filename ?? "action.js";
 
 				const fnResult = vm.evalCode(`(${handlerSource})`, filename);
@@ -48,7 +58,11 @@ async function createSandbox(): Promise<Sandbox> {
 				}
 
 				const ctxHandle = vm.getProp(vm.global, "ctx");
-				const callResult = vm.callFunction(fnResult.value, vm.undefined, ctxHandle);
+				const callResult = vm.callFunction(
+					fnResult.value,
+					vm.undefined,
+					ctxHandle,
+				);
 				ctxHandle.dispose();
 				fnResult.value.dispose();
 				if (callResult.error) {

@@ -29,7 +29,9 @@ function prepareSchema(schema: unknown): unknown {
 	if (Array.isArray(result.anyOf)) {
 		const variants = result.anyOf as Record<string, unknown>[];
 		for (const v of variants) {
-			if (!v.title && typeof v.type === "string") { v.title = v.type; }
+			if (!v.title && typeof v.type === "string") {
+				v.title = v.type;
+			}
 		}
 		const nullIdx = variants.findIndex((v) => v.type === "null");
 		if (nullIdx > 0) {
@@ -46,17 +48,30 @@ function prepareSchema(schema: unknown): unknown {
 }
 
 function escapeHtml(str: string): string {
-	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 function renderSuccessBanner(): string {
 	return `<div class="banner success">Event emitted</div>`;
 }
 
-function renderErrorBanner(eventType: string, issues: { path: string; message: string }[]): string {
-	const issueList = issues.length > 0
-		? issues.map((i) => `<li><strong>${escapeHtml(i.path || "(root)")}</strong>: ${escapeHtml(i.message)}</li>`).join("")
-		: `<li>Invalid payload for event <strong>${escapeHtml(eventType)}</strong></li>`;
+function renderErrorBanner(
+	eventType: string,
+	issues: { path: string; message: string }[],
+): string {
+	const issueList =
+		issues.length > 0
+			? issues
+					.map(
+						(i) =>
+							`<li><strong>${escapeHtml(i.path || "(root)")}</strong>: ${escapeHtml(i.message)}</li>`,
+					)
+					.join("")
+			: `<li>Invalid payload for event <strong>${escapeHtml(eventType)}</strong></li>`;
 	return `<div class="banner error"><ul>${issueList}</ul></div>`;
 }
 
@@ -393,7 +408,11 @@ function triggerMiddleware(
 		try {
 			body = await c.req.json();
 		} catch {
-			return c.html(renderErrorBanner(eventType, [{ path: "", message: "Invalid JSON body" }]));
+			return c.html(
+				renderErrorBanner(eventType, [
+					{ path: "", message: "Invalid JSON body" },
+				]),
+			);
 		}
 
 		try {

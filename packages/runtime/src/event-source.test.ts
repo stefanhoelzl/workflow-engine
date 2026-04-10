@@ -11,13 +11,19 @@ const passthroughSchema = { parse: (d: unknown) => d };
 function createCollector() {
 	const events: RuntimeEvent[] = [];
 	const consumer: BusConsumer = {
-		async handle(event) { events.push(event); },
-		async bootstrap() { /* no-op */ },
+		async handle(event) {
+			events.push(event);
+		},
+		async bootstrap() {
+			/* no-op */
+		},
 	};
 	return { events, consumer };
 }
 
-function makeSource(schemas: Record<string, { parse(data: unknown): unknown }> = {}) {
+function makeSource(
+	schemas: Record<string, { parse(data: unknown): unknown }> = {},
+) {
 	const collector = createCollector();
 	const bus = createEventBus([collector.consumer]);
 	const source = createEventSource({ events: schemas }, bus);
@@ -42,9 +48,15 @@ function makeParent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 describe("createEventSource", () => {
 	describe("create", () => {
 		it("returns a pending RuntimeEvent and emits it", async () => {
-			const { source, emitted } = makeSource({ "order.received": passthroughSchema });
+			const { source, emitted } = makeSource({
+				"order.received": passthroughSchema,
+			});
 
-			const event = await source.create("order.received", { orderId: "abc" }, "orders");
+			const event = await source.create(
+				"order.received",
+				{ orderId: "abc" },
+				"orders",
+			);
 
 			expect(event.id).toMatch(EVT_PREFIX);
 			expect(event.type).toBe("order.received");
@@ -61,11 +73,17 @@ describe("createEventSource", () => {
 
 		it("uses parsed output from schema", async () => {
 			const schema = {
-				parse: (d: unknown) => ({ orderId: String((d as Record<string, unknown>).orderId) }),
+				parse: (d: unknown) => ({
+					orderId: String((d as Record<string, unknown>).orderId),
+				}),
 			};
 			const { source } = makeSource({ "order.received": schema });
 
-			const event = await source.create("order.received", { orderId: "abc", extra: true }, "orders");
+			const event = await source.create(
+				"order.received",
+				{ orderId: "abc", extra: true },
+				"orders",
+			);
 
 			expect(event.payload).toEqual({ orderId: "abc" });
 		});
@@ -82,9 +100,9 @@ describe("createEventSource", () => {
 			};
 			const { source, emitted } = makeSource({ "order.received": schema });
 
-			await expect(source.create("order.received", { orderId: 123 }, "orders")).rejects.toThrow(
-				PayloadValidationError,
-			);
+			await expect(
+				source.create("order.received", { orderId: 123 }, "orders"),
+			).rejects.toThrow(PayloadValidationError);
 			expect(emitted).toHaveLength(0);
 		});
 
@@ -104,10 +122,17 @@ describe("createEventSource", () => {
 
 	describe("derive", () => {
 		it("returns a child event and emits it", async () => {
-			const { source, emitted } = makeSource({ "order.validated": passthroughSchema });
+			const { source, emitted } = makeSource({
+				"order.validated": passthroughSchema,
+			});
 			const parent = makeParent();
 
-			const event = await source.derive(parent, "order.validated", { valid: true }, "validateOrder");
+			const event = await source.derive(
+				parent,
+				"order.validated",
+				{ valid: true },
+				"validateOrder",
+			);
 
 			expect(event.id).toMatch(EVT_PREFIX);
 			expect(event.id).not.toBe(parent.id);
@@ -134,9 +159,14 @@ describe("createEventSource", () => {
 			};
 			const { source, emitted } = makeSource({ "order.validated": schema });
 
-			await expect(source.derive(makeParent(), "order.validated", { valid: "yes" }, "validateOrder")).rejects.toThrow(
-				PayloadValidationError,
-			);
+			await expect(
+				source.derive(
+					makeParent(),
+					"order.validated",
+					{ valid: "yes" },
+					"validateOrder",
+				),
+			).rejects.toThrow(PayloadValidationError);
 			expect(emitted).toHaveLength(0);
 		});
 	});
@@ -217,13 +247,20 @@ describe("createEventSource", () => {
 			const { source, emitted } = makeSource({});
 			const event = makeParent({ state: "processing", startedAt: new Date() });
 
-			await source.transition(event, { state: "done", result: "failed", error: { message: "timeout", stack: "" } });
+			await source.transition(event, {
+				state: "done",
+				result: "failed",
+				error: { message: "timeout", stack: "" },
+			});
 
 			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 			const transitioned = emitted[0]!;
 			expect(transitioned.state).toBe("done");
 			expect((transitioned as { result: string }).result).toBe("failed");
-			expect((transitioned as { error: unknown }).error).toEqual({ message: "timeout", stack: "" });
+			expect((transitioned as { error: unknown }).error).toEqual({
+				message: "timeout",
+				stack: "",
+			});
 			expect(transitioned.doneAt).toBeInstanceOf(Date);
 		});
 

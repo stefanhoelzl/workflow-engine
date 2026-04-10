@@ -27,7 +27,11 @@ const TIME_SLICE_END = 8;
 const TIME_PATTERN = /\d{2}:\d{2}:\d{2}/;
 
 function escapeHtml(s: string): string {
-	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 function buildTree(events: TimelineEvent[]): LayoutNode[] {
@@ -52,7 +56,10 @@ function buildTree(events: TimelineEvent[]): LayoutNode[] {
 	return roots;
 }
 
-function assignPositions(roots: LayoutNode[]): { width: number; height: number } {
+function assignPositions(roots: LayoutNode[]): {
+	width: number;
+	height: number;
+} {
 	let col = 0;
 	let maxY = 0;
 
@@ -105,32 +112,45 @@ function displayState(event: TimelineEvent): string {
 
 function stateColor(state: string): string {
 	switch (state) {
-		case "done": return "var(--green)";
+		case "done":
+			return "var(--green)";
 		case "pending":
-		case "processing": return "var(--yellow)";
-		case "failed": return "var(--red)";
-		case "skipped": return "none";
-		default: return "var(--grey)";
+		case "processing":
+			return "var(--yellow)";
+		case "failed":
+			return "var(--red)";
+		case "skipped":
+			return "none";
+		default:
+			return "var(--grey)";
 	}
 }
 
 function stateBorderColor(state: string): string {
 	switch (state) {
-		case "done": return "var(--green-border)";
+		case "done":
+			return "var(--green-border)";
 		case "pending":
-		case "processing": return "var(--yellow-border)";
-		case "failed": return "var(--red-border)";
-		default: return "var(--grey)";
+		case "processing":
+			return "var(--yellow-border)";
+		case "failed":
+			return "var(--red-border)";
+		default:
+			return "var(--grey)";
 	}
 }
 
 function stateColorName(state: string): string {
 	switch (state) {
-		case "done": return "green";
+		case "done":
+			return "green";
 		case "pending":
-		case "processing": return "yellow";
-		case "failed": return "red";
-		default: return "grey";
+		case "processing":
+			return "yellow";
+		case "failed":
+			return "red";
+		default:
+			return "grey";
 	}
 }
 
@@ -142,11 +162,16 @@ function renderEdge(parent: LayoutNode, child: LayoutNode): string {
 
 function formatTimestamp(value: string | Date): string {
 	if ((value as unknown) instanceof Date) {
-		return (value as unknown as Date).toISOString().split("T")[1]?.slice(0, TIME_SLICE_END) ?? String(value);
+		return (
+			(value as unknown as Date)
+				.toISOString()
+				.split("T")[1]
+				?.slice(0, TIME_SLICE_END) ?? String(value)
+		);
 	}
 	const s = String(value);
 	const match = s.match(TIME_PATTERN);
-	return match ? match[0] : s.split("T")[1]?.slice(0, TIME_SLICE_END) ?? s;
+	return match ? match[0] : (s.split("T")[1]?.slice(0, TIME_SLICE_END) ?? s);
 }
 
 function truncate(s: string, max: number): string {
@@ -165,17 +190,26 @@ function buildTipJson(e: TimelineEvent, colorName: string, ds: string): string {
 		payload: typeof e.payload === "string" ? JSON.parse(e.payload) : e.payload,
 	};
 	if (e.error) {
-		fullEvent.error = typeof e.error === "string" ? e.error : JSON.parse(JSON.stringify(e.error));
+		fullEvent.error =
+			typeof e.error === "string"
+				? e.error
+				: JSON.parse(JSON.stringify(e.error));
 	}
-	return escapeHtml(JSON.stringify({
-		type: e.type,
-		state: ds,
-		color: colorName,
-		event: JSON.stringify(fullEvent, null, 2),
-	}));
+	return escapeHtml(
+		JSON.stringify({
+			type: e.type,
+			state: ds,
+			color: colorName,
+			event: JSON.stringify(fullEvent, null, 2),
+		}),
+	);
 }
 
-function renderEventNode(node: LayoutNode, tipJson: string, ds: string): string {
+function renderEventNode(
+	node: LayoutNode,
+	tipJson: string,
+	ds: string,
+): string {
 	const e = node.event;
 	const fill = stateColor(ds);
 	const isSkipped = ds === "skipped";
@@ -193,12 +227,23 @@ function renderEventNode(node: LayoutNode, tipJson: string, ds: string): string 
   </g>`;
 }
 
-function renderActionNode(node: LayoutNode, tipJson: string, ds: string): string {
+function renderActionNode(
+	node: LayoutNode,
+	tipJson: string,
+	ds: string,
+): string {
 	const e = node.event;
 	const actionName = e.targetAction ?? "";
 	const displayName = truncate(actionName, MAX_ACTION_CHARS);
 	const textWidth = displayName.length * CHAR_WIDTH;
-	const pillWidth = Math.max(MIN_PILL_WIDTH, PILL_PADDING_X + PILL_DOT_RADIUS * 2 + PILL_DOT_GAP + textWidth + PILL_PADDING_X);
+	const pillWidth = Math.max(
+		MIN_PILL_WIDTH,
+		PILL_PADDING_X +
+			PILL_DOT_RADIUS * 2 +
+			PILL_DOT_GAP +
+			textWidth +
+			PILL_PADDING_X,
+	);
 	const pillX = node.x - pillWidth / 2;
 	const pillY = node.y - PILL_HEIGHT / 2;
 	const dotCx = pillX + PILL_PADDING_X + PILL_DOT_RADIUS;

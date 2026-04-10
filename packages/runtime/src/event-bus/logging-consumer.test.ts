@@ -13,7 +13,10 @@ function createTestLogger(level = "trace") {
 		},
 	});
 	return {
-		logger: createLogger("events", { level: level as "trace", destination: stream }),
+		logger: createLogger("events", {
+			level: level as "trace",
+			destination: stream,
+		}),
 		lines: () =>
 			chunks
 				.map((c) => c.toString())
@@ -70,7 +73,11 @@ describe("LoggingConsumer", () => {
 			const { logger, lines } = createTestLogger();
 			const consumer = createLoggingConsumer(logger);
 
-			await consumer.handle({ ...makeEvent(), state: "done", result: "succeeded" } as RuntimeEvent);
+			await consumer.handle({
+				...makeEvent(),
+				state: "done",
+				result: "succeeded",
+			} as RuntimeEvent);
 
 			const output = lines();
 			const log = output.find((l) => l.msg === "event.done");
@@ -83,7 +90,12 @@ describe("LoggingConsumer", () => {
 			const { logger, lines } = createTestLogger();
 			const consumer = createLoggingConsumer(logger);
 
-			await consumer.handle({ ...makeEvent(), state: "done", result: "failed", error: { message: "timeout", stack: "" } } as RuntimeEvent);
+			await consumer.handle({
+				...makeEvent(),
+				state: "done",
+				result: "failed",
+				error: { message: "timeout", stack: "" },
+			} as RuntimeEvent);
 
 			const output = lines();
 			const log = output.find((l) => l.msg === "event.failed");

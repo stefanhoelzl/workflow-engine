@@ -31,8 +31,17 @@ describe("WorkQueue", () => {
 		it("ignores non-pending events", async () => {
 			const queue = createWorkQueue();
 			await queue.handle(makeEvent({ state: "processing" }));
-			await queue.handle({ ...makeEvent(), state: "done", result: "succeeded" });
-			await queue.handle({ ...makeEvent(), state: "done", result: "failed", error: { message: "boom", stack: "" } });
+			await queue.handle({
+				...makeEvent(),
+				state: "done",
+				result: "succeeded",
+			});
+			await queue.handle({
+				...makeEvent(),
+				state: "done",
+				result: "failed",
+				error: { message: "boom", stack: "" },
+			});
 			await queue.handle({ ...makeEvent(), state: "done", result: "skipped" });
 
 			// Buffer should be empty — dequeue should block
@@ -90,7 +99,12 @@ describe("WorkQueue", () => {
 			const queue = createWorkQueue();
 			await queue.bootstrap([
 				{ ...makeEvent(), state: "done", result: "succeeded" },
-				{ ...makeEvent(), state: "done", result: "failed", error: { message: "boom", stack: "" } },
+				{
+					...makeEvent(),
+					state: "done",
+					result: "failed",
+					error: { message: "boom", stack: "" },
+				},
 				{ ...makeEvent(), state: "done", result: "skipped" },
 			]);
 
@@ -110,7 +124,10 @@ describe("WorkQueue", () => {
 		it("skips archive batches (pending: false)", async () => {
 			const queue = createWorkQueue();
 			await queue.bootstrap(
-				[makeEvent({ id: "evt_1", state: "pending" }), makeEvent({ id: "evt_2", state: "processing" })],
+				[
+					makeEvent({ id: "evt_1", state: "pending" }),
+					makeEvent({ id: "evt_2", state: "processing" }),
+				],
 				{ pending: false },
 			);
 
@@ -215,7 +232,9 @@ describe("WorkQueue", () => {
 			const dequeuePromise = queue.dequeue(ac.signal);
 
 			ac.abort();
-			await dequeuePromise.catch(() => { /* expected */ });
+			await dequeuePromise.catch(() => {
+				/* expected */
+			});
 
 			// Subsequent event should not resolve the aborted promise
 			const event = makeEvent();

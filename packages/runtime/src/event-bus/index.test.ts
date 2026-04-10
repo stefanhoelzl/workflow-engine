@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { type BusConsumer, type RuntimeEvent, createEventBus } from "./index.js";
+import {
+	type BusConsumer,
+	type RuntimeEvent,
+	createEventBus,
+} from "./index.js";
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {
@@ -104,7 +108,9 @@ describe("createEventBus", () => {
 			const events = [makeEvent()];
 			await bus.bootstrap(events, { pending: true });
 
-			expect(consumer.bootstrap).toHaveBeenCalledWith(events, { pending: true });
+			expect(consumer.bootstrap).toHaveBeenCalledWith(events, {
+				pending: true,
+			});
 		});
 
 		it("passes pending flag through", async () => {
@@ -125,7 +131,9 @@ describe("createEventBus", () => {
 			const b = mockConsumer();
 			const bus = createEventBus([a, b]);
 
-			await expect(bus.bootstrap([makeEvent()])).rejects.toThrow("bootstrap failed");
+			await expect(bus.bootstrap([makeEvent()])).rejects.toThrow(
+				"bootstrap failed",
+			);
 			expect(b.bootstrap).not.toHaveBeenCalled();
 		});
 

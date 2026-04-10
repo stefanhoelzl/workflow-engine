@@ -34,7 +34,11 @@ describe("EventStore", () => {
 			const event = makeEvent({ id: "evt_abc" });
 			await store.handle(event);
 
-			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_abc").selectAll().execute();
+			const rows = await store
+				.with("q", (e) => e.selectAll())
+				.where("id", "=", "evt_abc")
+				.selectAll()
+				.execute();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.id).toBe("evt_abc");
 			expect(rows[0]?.state).toBe("pending");
@@ -46,10 +50,16 @@ describe("EventStore", () => {
 			await store.handle({ ...event, state: "processing" });
 			await store.handle({ ...event, state: "done", result: "succeeded" });
 
-			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_multi").selectAll().execute();
+			const rows = await store
+				.with("q", (e) => e.selectAll())
+				.where("id", "=", "evt_multi")
+				.selectAll()
+				.execute();
 			expect(rows).toHaveLength(3);
-			expect(// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
-rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
+			expect(
+				// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
+				rows.map((r: any) => r.state),
+			).toEqual(["pending", "processing", "done"]);
 		});
 
 		it("stores all RuntimeEvent fields", async () => {
@@ -72,11 +82,15 @@ rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
 			};
 			await store.handle(event);
 
-			const rows = await store.with("q", (e) => e.selectAll()).where("id", "=", "evt_full").selectAll().execute();
+			const rows = await store
+				.with("q", (e) => e.selectAll())
+				.where("id", "=", "evt_full")
+				.selectAll()
+				.execute();
 			expect(rows).toHaveLength(1);
 			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 			// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
-const row = rows[0]! as any;
+			const row = rows[0]! as any;
 			expect(row.type).toBe("order.received");
 			expect(row.correlationId).toBe("corr_xyz");
 			expect(row.parentEventId).toBe("evt_parent");
@@ -89,7 +103,9 @@ const row = rows[0]! as any;
 
 		it("does not throw on error (non-fatal)", async () => {
 			const errorSpy = vi.fn();
-			const errorStore = await createEventStore({ logger: { error: errorSpy } });
+			const errorStore = await createEventStore({
+				logger: { error: errorSpy },
+			});
 
 			await errorStore.handle(makeEvent());
 			expect(errorSpy).not.toHaveBeenCalled();
@@ -141,15 +157,37 @@ const row = rows[0]! as any;
 
 	describe("with (CTE queries)", () => {
 		it("supports CTE with ROW_NUMBER for latest state", async () => {
-			await store.handle(makeEvent({ id: "evt_1", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
-			await store.handle(makeEvent({ id: "evt_1", state: "processing", createdAt: new Date("2025-01-01T10:01:00Z") }));
-			await store.handle(makeEvent({ id: "evt_1", state: "done", createdAt: new Date("2025-01-01T10:02:00Z") }));
+			await store.handle(
+				makeEvent({
+					id: "evt_1",
+					state: "pending",
+					createdAt: new Date("2025-01-01T10:00:00Z"),
+				}),
+			);
+			await store.handle(
+				makeEvent({
+					id: "evt_1",
+					state: "processing",
+					createdAt: new Date("2025-01-01T10:01:00Z"),
+				}),
+			);
+			await store.handle(
+				makeEvent({
+					id: "evt_1",
+					state: "done",
+					createdAt: new Date("2025-01-01T10:02:00Z"),
+				}),
+			);
 
 			const rows = await store
 				.with("latest", (events) =>
-					events.selectAll().select(
-						sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as("rn"),
-					),
+					events
+						.selectAll()
+						.select(
+							sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as(
+								"rn",
+							),
+						),
 				)
 				.where("rn", "=", 1)
 				.selectAll()
@@ -161,15 +199,42 @@ const row = rows[0]! as any;
 		});
 
 		it("supports chained CTEs", async () => {
-			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
-			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "done", createdAt: new Date("2025-01-01T10:01:00Z") }));
-			await store.handle({ ...makeEvent({ id: "evt_2", correlationId: "corr_B", createdAt: new Date("2025-01-01T10:02:00Z") }), state: "done", result: "failed", error: { message: "boom", stack: "" } } as RuntimeEvent);
+			await store.handle(
+				makeEvent({
+					id: "evt_1",
+					correlationId: "corr_A",
+					state: "pending",
+					createdAt: new Date("2025-01-01T10:00:00Z"),
+				}),
+			);
+			await store.handle(
+				makeEvent({
+					id: "evt_1",
+					correlationId: "corr_A",
+					state: "done",
+					createdAt: new Date("2025-01-01T10:01:00Z"),
+				}),
+			);
+			await store.handle({
+				...makeEvent({
+					id: "evt_2",
+					correlationId: "corr_B",
+					createdAt: new Date("2025-01-01T10:02:00Z"),
+				}),
+				state: "done",
+				result: "failed",
+				error: { message: "boom", stack: "" },
+			} as RuntimeEvent);
 
 			const rows = await store
 				.with("latest", (events) =>
-					events.selectAll().select(
-						sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as("rn"),
-					),
+					events
+						.selectAll()
+						.select(
+							sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as(
+								"rn",
+							),
+						),
 				)
 				.with("current_events", (latest) =>
 					latest.selectAll().where("rn", "=", 1),

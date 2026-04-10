@@ -2,7 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createWorkflowRegistry, parseWorkflowNames } from "./workflow-registry.js";
+import {
+	createWorkflowRegistry,
+	parseWorkflowNames,
+} from "./workflow-registry.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 
@@ -17,17 +20,34 @@ const logger = {
 
 const MANIFEST = {
 	name: "test",
-	events: [{ name: "test.event", schema: { type: "object", properties: {}, required: [] } }],
+	events: [
+		{
+			name: "test.event",
+			schema: { type: "object", properties: {}, required: [] },
+		},
+	],
 	triggers: [],
-	actions: [{ name: "handle", module: "actions/handle.js", on: "test.event", emits: [], env: {} }],
+	actions: [
+		{
+			name: "handle",
+			module: "actions/handle.js",
+			on: "test.event",
+			emits: [],
+			env: {},
+		},
+	],
 };
 
 const ACTION_SOURCE = "export default async (ctx) => {}";
 
-function makeFiles(overrides?: { manifest?: object; actionFiles?: Map<string, string> }): Map<string, string> {
+function makeFiles(overrides?: {
+	manifest?: object;
+	actionFiles?: Map<string, string>;
+}): Map<string, string> {
 	const files = new Map<string, string>();
 	files.set("manifest.json", JSON.stringify(overrides?.manifest ?? MANIFEST));
-	const actionFiles = overrides?.actionFiles ?? new Map([["actions/handle.js", ACTION_SOURCE]]);
+	const actionFiles =
+		overrides?.actionFiles ?? new Map([["actions/handle.js", ACTION_SOURCE]]);
 	for (const [name, content] of actionFiles) {
 		files.set(name, content);
 	}
@@ -45,10 +65,7 @@ describe("parseWorkflowNames", () => {
 	});
 
 	it("ignores non-workflow paths", () => {
-		const paths = [
-			"events/pending/001.json",
-			"workflows/foo/manifest.json",
-		];
+		const paths = ["events/pending/001.json", "workflows/foo/manifest.json"];
 		expect(parseWorkflowNames(paths)).toEqual(["foo"]);
 	});
 
@@ -86,8 +103,22 @@ describe("WorkflowRegistry", () => {
 		const registry = createWorkflowRegistry({ logger });
 		await registry.register(makeFiles());
 
-		const newManifest = { ...MANIFEST, actions: [{ ...MANIFEST.actions[0], name: "handleNew", module: "actions/handleNew.js" }] };
-		await registry.register(makeFiles({ manifest: newManifest, actionFiles: new Map([["actions/handleNew.js", "new code"]]) }));
+		const newManifest = {
+			...MANIFEST,
+			actions: [
+				{
+					...MANIFEST.actions[0],
+					name: "handleNew",
+					module: "actions/handleNew.js",
+				},
+			],
+		};
+		await registry.register(
+			makeFiles({
+				manifest: newManifest,
+				actionFiles: new Map([["actions/handleNew.js", "new code"]]),
+			}),
+		);
 
 		expect(registry.actions).toHaveLength(1);
 		expect(registry.actions[0]?.name).toBe("handleNew");
@@ -126,7 +157,11 @@ describe("WorkflowRegistry", () => {
 		const registry = createWorkflowRegistry({ logger });
 		await registry.register(makeFiles());
 
-		const manifest2 = { ...MANIFEST, name: "other", actions: [{ ...MANIFEST.actions[0], name: "handleOther" }] };
+		const manifest2 = {
+			...MANIFEST,
+			name: "other",
+			actions: [{ ...MANIFEST.actions[0], name: "handleOther" }],
+		};
 		await registry.register(makeFiles({ manifest: manifest2 }));
 
 		expect(registry.actions).toHaveLength(2);
@@ -201,7 +236,10 @@ describe("WorkflowRegistry with storage backend", () => {
 	});
 
 	it("recover loads workflows from storage backend", async () => {
-		await backend.write("workflows/test/manifest.json", JSON.stringify(MANIFEST));
+		await backend.write(
+			"workflows/test/manifest.json",
+			JSON.stringify(MANIFEST),
+		);
 		await backend.write("workflows/test/actions/handle.js", ACTION_SOURCE);
 
 		const registry = createWorkflowRegistry({ backend, logger });
@@ -210,7 +248,9 @@ describe("WorkflowRegistry with storage backend", () => {
 		expect(registry.actions).toHaveLength(1);
 		expect(registry.actions[0]?.name).toBe("handle");
 		expect(registry.actions[0]?.source).toBe(ACTION_SOURCE);
-		expect(logger.info).toHaveBeenCalledWith("workflow.loaded", { name: "test" });
+		expect(logger.info).toHaveBeenCalledWith("workflow.loaded", {
+			name: "test",
+		});
 	});
 
 	it("recover with empty storage starts empty", async () => {
@@ -234,12 +274,18 @@ describe("WorkflowRegistry with storage backend", () => {
 		expect(registry.actions).toEqual([]);
 		expect(logger.warn).toHaveBeenCalledWith(
 			"workflow.load-failed",
-			expect.objectContaining({ name: "bad", error: expect.stringContaining("invalid manifest") }),
+			expect.objectContaining({
+				name: "bad",
+				error: expect.stringContaining("invalid manifest"),
+			}),
 		);
 	});
 
 	it("recover skips workflows with missing action source", async () => {
-		await backend.write("workflows/broken/manifest.json", JSON.stringify({ ...MANIFEST, name: "broken" }));
+		await backend.write(
+			"workflows/broken/manifest.json",
+			JSON.stringify({ ...MANIFEST, name: "broken" }),
+		);
 
 		const registry = createWorkflowRegistry({ backend, logger });
 		await registry.recover();
@@ -247,23 +293,31 @@ describe("WorkflowRegistry with storage backend", () => {
 		expect(registry.actions).toEqual([]);
 		expect(logger.warn).toHaveBeenCalledWith(
 			"workflow.load-failed",
-			expect.objectContaining({ name: "broken", error: expect.stringContaining("missing action source") }),
+			expect.objectContaining({
+				name: "broken",
+				error: expect.stringContaining("missing action source"),
+			}),
 		);
 	});
 
 	it("reconstructs event schemas from JSON Schema", async () => {
 		const manifest = {
 			...MANIFEST,
-			events: [{
-				name: "test.event",
-				schema: {
-					type: "object",
-					properties: { id: { type: "string" } },
-					required: ["id"],
+			events: [
+				{
+					name: "test.event",
+					schema: {
+						type: "object",
+						properties: { id: { type: "string" } },
+						required: ["id"],
+					},
 				},
-			}],
+			],
 		};
-		await backend.write("workflows/schema/manifest.json", JSON.stringify(manifest));
+		await backend.write(
+			"workflows/schema/manifest.json",
+			JSON.stringify(manifest),
+		);
 		await backend.write("workflows/schema/actions/handle.js", ACTION_SOURCE);
 
 		const registry = createWorkflowRegistry({ backend, logger });

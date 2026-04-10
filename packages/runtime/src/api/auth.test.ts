@@ -11,9 +11,11 @@ function createApp(githubUser: string, fetchFn: typeof globalThis.fetch) {
 
 describe("githubAuthMiddleware", () => {
 	it("allows request with valid token and matching user", async () => {
-		const fetchFn = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ login: "stefan" }), { status: 200 }),
-		);
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ login: "stefan" }), { status: 200 }),
+			);
 		const app = createApp("stefan", fetchFn);
 
 		const res = await app.request("/api/workflows", {
@@ -45,7 +47,9 @@ describe("githubAuthMiddleware", () => {
 
 	it("returns 401 when token is invalid (GitHub returns error)", async () => {
 		const fetchFn = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }),
+			new Response(JSON.stringify({ message: "Bad credentials" }), {
+				status: 401,
+			}),
 		);
 		const app = createApp("stefan", fetchFn);
 
@@ -70,9 +74,11 @@ describe("githubAuthMiddleware", () => {
 	});
 
 	it("returns 403 when token is valid but user does not match", async () => {
-		const fetchFn = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ login: "other-user" }), { status: 200 }),
-		);
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ login: "other-user" }), { status: 200 }),
+			);
 		const app = createApp("stefan", fetchFn);
 
 		const res = await app.request("/api/workflows", {

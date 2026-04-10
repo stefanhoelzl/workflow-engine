@@ -28,13 +28,19 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		BASE_URL: z.string().optional(),
 	})
+	.refine((env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET), {
+		message:
+			"PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET are mutually exclusive",
+	})
 	.refine(
-		(env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET),
-		{ message: "PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET are mutually exclusive" },
-	)
-	.refine(
-		(env) => !env.PERSISTENCE_S3_BUCKET || (env.PERSISTENCE_S3_ACCESS_KEY_ID && env.PERSISTENCE_S3_SECRET_ACCESS_KEY),
-		{ message: "PERSISTENCE_S3_BUCKET requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY" },
+		(env) =>
+			!env.PERSISTENCE_S3_BUCKET ||
+			(env.PERSISTENCE_S3_ACCESS_KEY_ID &&
+				env.PERSISTENCE_S3_SECRET_ACCESS_KEY),
+		{
+			message:
+				"PERSISTENCE_S3_BUCKET requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY",
+		},
 	)
 	.transform((env) => ({
 		logLevel: env.LOG_LEVEL,

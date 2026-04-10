@@ -39,11 +39,26 @@
 					"complexity": {
 						"noExcessiveLinesPerFunction": "off"
 					},
+					"security": {
+						"noSecrets": "off"
+					},
 					"style": {
-						"noMagicNumbers": "off"
+						"noMagicNumbers": "off",
+						"useNamingConvention": "off"
 					},
 					"suspicious": {
+						"noEmptyBlockStatements": "off",
 						"useAwait": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["**/storage/s3.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"useNamingConvention": "off"
 					}
 				}
 			}
