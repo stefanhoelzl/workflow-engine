@@ -18,10 +18,12 @@ interface TriggerDef<S extends z.ZodType = z.ZodType> {
 	schema: S;
 	path: string;
 	method?: string | undefined;
-	response?: {
-		status?: number | undefined;
-		body?: unknown;
-	} | undefined;
+	response?:
+		| {
+				status?: number | undefined;
+				body?: unknown;
+		  }
+		| undefined;
 }
 
 interface TriggerConfig {
@@ -29,10 +31,12 @@ interface TriggerConfig {
 	type: string;
 	path: string;
 	method?: string | undefined;
-	response?: {
-		status?: number | undefined;
-		body?: unknown;
-	} | undefined;
+	response?:
+		| {
+				status?: number | undefined;
+				body?: unknown;
+		  }
+		| undefined;
 }
 
 interface HttpTriggerInput<B extends z.ZodType = z.ZodType> {
@@ -55,7 +59,9 @@ type HttpPayloadSchema<B extends z.ZodType> = z.ZodObject<{
 function http<B extends z.ZodType = z.ZodUnknown>(
 	config: HttpTriggerInput<B>,
 ): TriggerDef<HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B>> {
-	const bodySchema = (config.body ?? z.unknown()) as B extends undefined ? z.ZodUnknown : B;
+	const bodySchema = (config.body ?? z.unknown()) as B extends undefined
+		? z.ZodUnknown
+		: B;
 	const schema = z.object({
 		body: bodySchema,
 		headers: z.record(z.string(), z.string()),
@@ -101,7 +107,10 @@ interface EnvRef {
 	readonly default: string | undefined;
 }
 
-function env(nameOrOpts?: string | { default: string }, opts?: { default: string }): EnvRef {
+function env(
+	nameOrOpts?: string | { default: string },
+	opts?: { default: string },
+): EnvRef {
 	if (typeof nameOrOpts === "string") {
 		return { [ENV_REF]: true, name: nameOrOpts, default: opts?.default };
 	}
@@ -236,8 +245,11 @@ type ActionReturn<
 	>,
 ) => Promise<void>;
 
-// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-interface TriggerPhase<T extends EventDefs = {}, WorkflowEnv extends string = never> {
+interface TriggerPhase<
+	// biome-ignore lint/complexity/noBannedTypes: empty initial state for accumulated event defs
+	T extends EventDefs = {},
+	WorkflowEnv extends string = never,
+> {
 	trigger<Name extends string, S extends z.ZodType>(
 		name: Name extends keyof T ? never : Name,
 		config: TriggerDef<S>,
@@ -256,13 +268,20 @@ interface TriggerPhase<T extends EventDefs = {}, WorkflowEnv extends string = ne
 		K extends keyof T & string,
 		const Emits extends readonly never[] = readonly [],
 		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
-	// biome-ignore lint/complexity/noBannedTypes: empty E pool in TriggerPhase (no action events defined yet)
-	>(config: ActionConfig<T, {}, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, {}, K, Emits, WorkflowEnv, ActionEnv>;
+	>(
+		// biome-ignore lint/complexity/noBannedTypes: no action events defined yet in TriggerPhase
+		config: ActionConfig<T, {}, K, Emits, WorkflowEnv, ActionEnv>,
+		// biome-ignore lint/complexity/noBannedTypes: no action events defined yet in TriggerPhase
+	): ActionReturn<T, {}, K, Emits, WorkflowEnv, ActionEnv>;
 
 	compile(): CompileOutput;
 }
 
-interface EventPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv extends string = never> {
+interface EventPhase<
+	T extends EventDefs,
+	E extends EventDefs,
+	WorkflowEnv extends string = never,
+> {
 	event<Name extends string, S extends z.ZodType>(
 		name: Name extends keyof T | keyof E ? never : Name,
 		schema: S,
@@ -276,17 +295,25 @@ interface EventPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv exten
 		K extends keyof AllEvents<T, E> & string,
 		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
 		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
-	>(config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
+	>(
+		config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>,
+	): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
 
 	compile(): CompileOutput;
 }
 
-interface ActionPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv extends string = never> {
+interface ActionPhase<
+	T extends EventDefs,
+	E extends EventDefs,
+	WorkflowEnv extends string = never,
+> {
 	action<
 		K extends keyof AllEvents<T, E> & string,
 		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
 		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
-	>(config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
+	>(
+		config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>,
+	): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
 
 	compile(): CompileOutput;
 }
@@ -376,14 +403,35 @@ class WorkflowBuilderImpl {
 
 function getDefaultEnvSource(): Record<string, string | undefined> {
 	const g = globalThis as Record<string, unknown>;
-	return (g.process as { env: Record<string, string | undefined> } | undefined)?.env ?? {};
+	return (
+		(g.process as { env: Record<string, string | undefined> } | undefined)
+			?.env ?? {}
+	);
 }
 
-// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-function createWorkflow(name: string, envSource?: Record<string, string | undefined>): TriggerPhase<{}, never> {
-	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-	return new WorkflowBuilderImpl(name, envSource ?? getDefaultEnvSource()) as unknown as TriggerPhase<{}, never>;
+function createWorkflow(
+	name: string,
+	envSource?: Record<string, string | undefined>,
+	// biome-ignore lint/complexity/noBannedTypes: empty initial state for accumulated event defs
+): TriggerPhase<{}, never> {
+	return new WorkflowBuilderImpl(
+		name,
+		envSource ?? getDefaultEnvSource(),
+		// biome-ignore lint/complexity/noBannedTypes: empty initial state for accumulated event defs
+	) as unknown as TriggerPhase<{}, never>;
 }
 
 export { z, createWorkflow, http, env, ENV_REF, ManifestSchema };
-export type { Event, EnvRef, Manifest, CompileOutput, CompiledAction, TriggerConfig, TriggerDef, TriggerPhase, EventPhase, ActionPhase, ActionContext };
+export type {
+	Event,
+	EnvRef,
+	Manifest,
+	CompileOutput,
+	CompiledAction,
+	TriggerConfig,
+	TriggerDef,
+	TriggerPhase,
+	EventPhase,
+	ActionPhase,
+	ActionContext,
+};

@@ -8,10 +8,12 @@ interface HttpTriggerDefinition {
 	name: string;
 	path: string;
 	method?: string | undefined;
-	response?: {
-		status?: number | undefined;
-		body?: unknown;
-	} | undefined;
+	response?:
+		| {
+				status?: number | undefined;
+				body?: unknown;
+		  }
+		| undefined;
 }
 
 interface HttpTriggerResolved {
@@ -25,8 +27,7 @@ interface HttpTriggerResolved {
 }
 
 const DEFAULT_METHOD = "POST";
-const DEFAULT_RESPONSE_STATUS =
-	200 as ContentfulStatusCode;
+const DEFAULT_RESPONSE_STATUS = 200 as ContentfulStatusCode;
 const DEFAULT_RESPONSE_BODY = "";
 
 class HttpTriggerRegistry {
@@ -34,13 +35,16 @@ class HttpTriggerRegistry {
 
 	register(definition: HttpTriggerDefinition): void {
 		const method = definition.method ?? DEFAULT_METHOD;
-		const existing = this.#triggers.findIndex((t) => t.path === definition.path && t.method === method);
+		const existing = this.#triggers.findIndex(
+			(t) => t.path === definition.path && t.method === method,
+		);
 		const resolved: HttpTriggerResolved = {
 			name: definition.name,
 			path: definition.path,
 			method,
 			response: {
-				status: (definition.response?.status ?? DEFAULT_RESPONSE_STATUS) as ContentfulStatusCode,
+				status: (definition.response?.status ??
+					DEFAULT_RESPONSE_STATUS) as ContentfulStatusCode,
 				body: definition.response?.body ?? DEFAULT_RESPONSE_BODY,
 			},
 		};
@@ -79,13 +83,17 @@ function httpTriggerMiddleware(
 			const triggerPath = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (triggerPath === "" && c.req.method === "GET") {
-				const status = triggerSource.triggerRegistry.size > 0
-					? constants.HTTP_STATUS_NO_CONTENT
-					: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
+				const status =
+					triggerSource.triggerRegistry.size > 0
+						? constants.HTTP_STATUS_NO_CONTENT
+						: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
 				return c.body(null, status as ContentfulStatusCode);
 			}
 
-			const definition = triggerSource.triggerRegistry.lookup(triggerPath, c.req.method);
+			const definition = triggerSource.triggerRegistry.lookup(
+				triggerPath,
+				c.req.method,
+			);
 
 			if (!definition) {
 				return c.notFound();

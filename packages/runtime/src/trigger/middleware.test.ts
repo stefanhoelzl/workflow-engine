@@ -48,8 +48,13 @@ describe("prepareSchema", () => {
 			},
 		};
 		const result = prepareSchema(schema) as Record<string, unknown>;
-		const address = (result.properties as Record<string, Record<string, unknown>>).address;
-		const nested = address?.properties as Record<string, Record<string, unknown>>;
+		const address = (
+			result.properties as Record<string, Record<string, unknown>>
+		).address;
+		const nested = address?.properties as Record<
+			string,
+			Record<string, unknown>
+		>;
 		expect(nested.city?.default).toBe("Berlin");
 		expect(nested.zip?.default).toBe("10115");
 	});

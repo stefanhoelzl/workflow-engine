@@ -27,20 +27,35 @@ interface HealthDeps {
 	baseUrl: string | undefined;
 }
 
-async function timed<T>(fn: () => Promise<T>, timeoutMs: number): Promise<{ durationMs: number; result: T }> {
+async function timed<T>(
+	fn: () => Promise<T>,
+	timeoutMs: number,
+): Promise<{ durationMs: number; result: T }> {
 	const start = performance.now();
 	const timeout = new Promise<never>((_, reject) => {
-		setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+		setTimeout(
+			() => reject(new Error(`timeout after ${timeoutMs}ms`)),
+			timeoutMs,
+		);
 	});
 	const result = await Promise.race([fn(), timeout]);
 	return { durationMs: Math.round(performance.now() - start), result };
 }
 
 function pass(componentType: string, durationMs: number): CheckResult {
-	return { status: "pass", componentType, observedValue: durationMs, observedUnit: "ms" };
+	return {
+		status: "pass",
+		componentType,
+		observedValue: durationMs,
+		observedUnit: "ms",
+	};
 }
 
-function fail(componentType: string, output: string, durationMs?: number): CheckResult {
+function fail(
+	componentType: string,
+	output: string,
+	durationMs?: number,
+): CheckResult {
 	const result: CheckResult = { status: "fail", componentType, output };
 	if (durationMs !== undefined) {
 		result.observedValue = durationMs;
@@ -49,19 +64,32 @@ function fail(componentType: string, output: string, durationMs?: number): Check
 	return result;
 }
 
-async function checkEventstore(deps: HealthDeps, timeoutMs: number): Promise<Record<string, CheckResult[]>> {
+async function checkEventstore(
+	deps: HealthDeps,
+	timeoutMs: number,
+): Promise<Record<string, CheckResult[]>> {
 	try {
 		const { durationMs } = await timed(
-			() => deps.eventStore.query.select((eb) => eb.fn.countAll<number>().as("count")).executeTakeFirstOrThrow(),
+			() =>
+				deps.eventStore.query
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.executeTakeFirstOrThrow(),
 			timeoutMs,
 		);
 		return { eventstore: [pass("datastore", durationMs)] };
 	} catch (err) {
-		return { eventstore: [fail("datastore", err instanceof Error ? err.message : String(err))] };
+		return {
+			eventstore: [
+				fail("datastore", err instanceof Error ? err.message : String(err)),
+			],
+		};
 	}
 }
 
-async function checkPersistence(deps: HealthDeps, timeoutMs: number): Promise<Record<string, CheckResult[]>> {
+async function checkPersistence(
+	deps: HealthDeps,
+	timeoutMs: number,
+): Promise<Record<string, CheckResult[]>> {
 	if (!deps.storageBackend) {
 		const msg = "no backend configured";
 		return {
@@ -77,17 +105,24 @@ async function checkPersistence(deps: HealthDeps, timeoutMs: number): Promise<Re
 	const content = new Date().toISOString();
 
 	try {
-		const { durationMs } = await timed(() => backend.write(sentinel, content), timeoutMs);
+		const { durationMs } = await timed(
+			() => backend.write(sentinel, content),
+			timeoutMs,
+		);
 		checks["persistence:write"] = [pass("datastore", durationMs)];
 	} catch (err) {
-		checks["persistence:write"] = [fail("datastore", err instanceof Error ? err.message : String(err))];
+		checks["persistence:write"] = [
+			fail("datastore", err instanceof Error ? err.message : String(err)),
+		];
 	}
 
 	try {
 		const { durationMs } = await timed(() => backend.read(sentinel), timeoutMs);
 		checks["persistence:read"] = [pass("datastore", durationMs)];
 	} catch (err) {
-		checks["persistence:read"] = [fail("datastore", err instanceof Error ? err.message : String(err))];
+		checks["persistence:read"] = [
+			fail("datastore", err instanceof Error ? err.message : String(err)),
+		];
 	}
 
 	try {
@@ -98,55 +133,94 @@ async function checkPersistence(deps: HealthDeps, timeoutMs: number): Promise<Re
 		}, timeoutMs);
 		checks["persistence:list"] = [pass("datastore", durationMs)];
 	} catch (err) {
-		checks["persistence:list"] = [fail("datastore", err instanceof Error ? err.message : String(err))];
+		checks["persistence:list"] = [
+			fail("datastore", err instanceof Error ? err.message : String(err)),
+		];
 	}
 
 	return checks;
 }
 
-async function checkWebhooks(deps: HealthDeps, timeoutMs: number): Promise<Record<string, CheckResult[]>> {
+async function checkWebhooks(
+	deps: HealthDeps,
+	timeoutMs: number,
+): Promise<Record<string, CheckResult[]>> {
 	if (!deps.baseUrl) {
 		return { webhooks: [fail("component", "BASE_URL not configured")] };
 	}
 
 	try {
 		const { durationMs, result: res } = await timed(
-			() => fetch(`${deps.baseUrl}/webhooks/`, { signal: AbortSignal.timeout(timeoutMs) }),
+			() =>
+				fetch(`${deps.baseUrl}/webhooks/`, {
+					signal: AbortSignal.timeout(timeoutMs),
+				}),
 			timeoutMs,
 		);
 		if (res.status === constants.HTTP_STATUS_NO_CONTENT) {
 			return { webhooks: [pass("component", durationMs)] };
 		}
-		return { webhooks: [fail("component", `unexpected status ${res.status}`, durationMs)] };
+		return {
+			webhooks: [
+				fail("component", `unexpected status ${res.status}`, durationMs),
+			],
+		};
 	} catch (err) {
-		return { webhooks: [fail("component", err instanceof Error ? err.message : String(err))] };
+		return {
+			webhooks: [
+				fail("component", err instanceof Error ? err.message : String(err)),
+			],
+		};
 	}
 }
 
-async function checkDomain(deps: HealthDeps, timeoutMs: number): Promise<Record<string, CheckResult[]>> {
+async function checkDomain(
+	deps: HealthDeps,
+	timeoutMs: number,
+): Promise<Record<string, CheckResult[]>> {
 	if (!deps.baseUrl) {
 		return { domain: [fail("system", "BASE_URL not configured")] };
 	}
 
 	try {
 		const { durationMs, result: res } = await timed(
-			() => fetch(`${deps.baseUrl}/healthz`, { signal: AbortSignal.timeout(timeoutMs) }),
+			() =>
+				fetch(`${deps.baseUrl}/healthz`, {
+					signal: AbortSignal.timeout(timeoutMs),
+				}),
 			timeoutMs,
 		);
 		if (res.status !== constants.HTTP_STATUS_OK) {
-			return { domain: [fail("system", `unexpected status ${res.status}`, durationMs)] };
+			return {
+				domain: [fail("system", `unexpected status ${res.status}`, durationMs)],
+			};
 		}
 		const body = (await res.json()) as { status?: string };
 		if (body.status !== "pass") {
-			return { domain: [fail("system", `unexpected response status "${body.status}"`, durationMs)] };
+			return {
+				domain: [
+					fail(
+						"system",
+						`unexpected response status "${body.status}"`,
+						durationMs,
+					),
+				],
+			};
 		}
 		return { domain: [pass("system", durationMs)] };
 	} catch (err) {
-		return { domain: [fail("system", err instanceof Error ? err.message : String(err))] };
+		return {
+			domain: [
+				fail("system", err instanceof Error ? err.message : String(err)),
+			],
+		};
 	}
 }
 
-type CheckFn = (deps: HealthDeps, timeoutMs: number) => Promise<Record<string, CheckResult[]>>;
+type CheckFn = (
+	deps: HealthDeps,
+	timeoutMs: number,
+) => Promise<Record<string, CheckResult[]>>;
 
 const CHECK_MAP: Record<string, CheckFn> = {
 	eventstore: checkEventstore,
@@ -185,9 +259,10 @@ async function runChecks(
 }
 
 function healthJson(c: Context, response: HealthResponse): Response {
-	const status = response.status === "pass"
-		? constants.HTTP_STATUS_OK
-		: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
+	const status =
+		response.status === "pass"
+			? constants.HTTP_STATUS_OK
+			: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
 	return c.body(JSON.stringify(response), {
 		status: status as ContentfulStatusCode,
 		headers: { "Content-Type": CONTENT_TYPE },
@@ -214,13 +289,18 @@ function healthMiddleware(deps: HealthDeps): Middleware {
 				}
 
 				const timeoutParam = c.req.query("timeout");
-				const timeoutMs = timeoutParam ? Number(timeoutParam) : DEFAULT_TIMEOUT_MS;
+				const timeoutMs = timeoutParam
+					? Number(timeoutParam)
+					: DEFAULT_TIMEOUT_MS;
 				return healthJson(c, await runChecks(deps, requestedChecks, timeoutMs));
 			}
 
 			if (path === "/readyz") {
 				const allCheckNames = Object.keys(CHECK_MAP);
-				return healthJson(c, await runChecks(deps, allCheckNames, DEFAULT_TIMEOUT_MS));
+				return healthJson(
+					c,
+					await runChecks(deps, allCheckNames, DEFAULT_TIMEOUT_MS),
+				);
 			}
 
 			await next();

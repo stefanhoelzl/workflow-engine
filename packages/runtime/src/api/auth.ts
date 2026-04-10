@@ -2,7 +2,8 @@ import { constants } from "node:http2";
 import type { MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-const HTTP_UNAUTHORIZED = constants.HTTP_STATUS_UNAUTHORIZED as ContentfulStatusCode;
+const HTTP_UNAUTHORIZED =
+	constants.HTTP_STATUS_UNAUTHORIZED as ContentfulStatusCode;
 const HTTP_FORBIDDEN = constants.HTTP_STATUS_FORBIDDEN as ContentfulStatusCode;
 
 interface GitHubAuthOptions {
@@ -17,7 +18,10 @@ function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
 	return async (c, next) => {
 		const authHeader = c.req.header("authorization");
 		if (!authHeader?.startsWith("Bearer ")) {
-			return c.json({ error: "Missing or invalid Authorization header" }, HTTP_UNAUTHORIZED);
+			return c.json(
+				{ error: "Missing or invalid Authorization header" },
+				HTTP_UNAUTHORIZED,
+			);
 		}
 
 		const token = authHeader.slice("Bearer ".length);

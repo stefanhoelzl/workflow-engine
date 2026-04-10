@@ -1,10 +1,17 @@
-import type { QuickJSContext, QuickJSHandle, QuickJSRuntime } from "quickjs-emscripten";
+import type {
+	QuickJSContext,
+	QuickJSHandle,
+	QuickJSRuntime,
+} from "quickjs-emscripten";
 
 interface TimerCleanup {
 	dispose(): void;
 }
 
-function setupGlobals(vm: QuickJSContext, runtime: QuickJSRuntime): TimerCleanup {
+function setupGlobals(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+): TimerCleanup {
 	setupBtoaAtob(vm);
 	return setupTimers(vm, runtime);
 }
@@ -26,24 +33,30 @@ function setupBtoaAtob(vm: QuickJSContext): void {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: registering all timer globals together is clearer than splitting
-function setupTimers(vm: QuickJSContext, runtime: QuickJSRuntime): TimerCleanup {
+function setupTimers(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+): TimerCleanup {
 	const pendingCallbacks = new Map<number, QuickJSHandle>();
 
-	const setTimeoutFn = vm.newFunction("setTimeout", (callbackHandle, delayHandle) => {
-		const delay = vm.getNumber(delayHandle);
-		const cb = callbackHandle.dup();
+	const setTimeoutFn = vm.newFunction(
+		"setTimeout",
+		(callbackHandle, delayHandle) => {
+			const delay = vm.getNumber(delayHandle);
+			const cb = callbackHandle.dup();
 
-		const id = setTimeout(() => {
-			pendingCallbacks.delete(id as unknown as number);
-			vm.callFunction(cb, vm.undefined);
-			cb.dispose();
-			runtime.executePendingJobs();
-		}, delay);
+			const id = setTimeout(() => {
+				pendingCallbacks.delete(id as unknown as number);
+				vm.callFunction(cb, vm.undefined);
+				cb.dispose();
+				runtime.executePendingJobs();
+			}, delay);
 
-		const numId = id as unknown as number;
-		pendingCallbacks.set(numId, cb);
-		return vm.newNumber(numId);
-	});
+			const numId = id as unknown as number;
+			pendingCallbacks.set(numId, cb);
+			return vm.newNumber(numId);
+		},
+	);
 	vm.setProp(vm.global, "setTimeout", setTimeoutFn);
 	setTimeoutFn.dispose();
 
@@ -59,19 +72,22 @@ function setupTimers(vm: QuickJSContext, runtime: QuickJSRuntime): TimerCleanup 
 	vm.setProp(vm.global, "clearTimeout", clearTimeoutFn);
 	clearTimeoutFn.dispose();
 
-	const setIntervalFn = vm.newFunction("setInterval", (callbackHandle, delayHandle) => {
-		const delay = vm.getNumber(delayHandle);
-		const cb = callbackHandle.dup();
+	const setIntervalFn = vm.newFunction(
+		"setInterval",
+		(callbackHandle, delayHandle) => {
+			const delay = vm.getNumber(delayHandle);
+			const cb = callbackHandle.dup();
 
-		const id = setInterval(() => {
-			vm.callFunction(cb, vm.undefined);
-			runtime.executePendingJobs();
-		}, delay);
+			const id = setInterval(() => {
+				vm.callFunction(cb, vm.undefined);
+				runtime.executePendingJobs();
+			}, delay);
 
-		const numId = id as unknown as number;
-		pendingCallbacks.set(numId, cb);
-		return vm.newNumber(numId);
-	});
+			const numId = id as unknown as number;
+			pendingCallbacks.set(numId, cb);
+			return vm.newNumber(numId);
+		},
+	);
 	vm.setProp(vm.global, "setInterval", setIntervalFn);
 	setIntervalFn.dispose();
 

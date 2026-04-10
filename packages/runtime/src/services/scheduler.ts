@@ -6,7 +6,11 @@ import type { EventSource } from "../event-source.js";
 import type { Sandbox } from "../sandbox/index.js";
 import type { Service } from "./index.js";
 
-type ActionContextFactory = (event: RuntimeEvent, actionName: string, env: Record<string, string>) => ActionContext;
+type ActionContextFactory = (
+	event: RuntimeEvent,
+	actionName: string,
+	env: Record<string, string>,
+) => ActionContext;
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled lifecycle logic
 // biome-ignore lint/complexity/useMaxParams: factory dependencies are all required
@@ -73,9 +77,14 @@ function createScheduler(
 		await source.transition(event, { state: "done", result: "succeeded" });
 	}
 
-	async function executeAction(event: RuntimeEvent, action: Action): Promise<void> {
+	async function executeAction(
+		event: RuntimeEvent,
+		action: Action,
+	): Promise<void> {
 		const ctx = createContext(event, action.name, action.env);
-		const result = await sandbox.spawn(action.source, ctx, { filename: `${action.name}.js` });
+		const result = await sandbox.spawn(action.source, ctx, {
+			filename: `${action.name}.js`,
+		});
 		if (result.ok) {
 			await source.transition(event, { state: "done", result: "succeeded" });
 		} else {

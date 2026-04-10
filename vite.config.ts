@@ -47,7 +47,10 @@ function devServer(): Plugin {
 			for (const dir of watchDirs) {
 				const abs = resolve(import.meta.dirname, dir);
 				for (const file of readdirSync(abs, { recursive: true })) {
-					if (file.toString().endsWith(".ts") && !file.toString().includes("config")) {
+					if (
+						file.toString().endsWith(".ts") &&
+						!file.toString().includes("config")
+					) {
 						this.addWatchFile(resolve(abs, file.toString()));
 					}
 				}
@@ -67,7 +70,9 @@ function devServer(): Plugin {
 				});
 			} catch (error) {
 				// biome-ignore lint/suspicious/noConsole: surface workflow build errors clearly
-				console.error(`Workflow build failed: ${error instanceof Error ? error.message : String(error)}`);
+				console.error(
+					`Workflow build failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
 				return;
 			}
 			if (server) {
@@ -75,16 +80,20 @@ function devServer(): Plugin {
 				// biome-ignore lint/style/noNonNullAssertion: narrowed by if-check above
 				await new Promise<void>((r) => server!.on("exit", r));
 			}
-			server = spawn(process.execPath, [resolve(import.meta.dirname, "packages/runtime/dist/main.js")], {
-				stdio: "inherit",
-				env: {
-					...process.env,
-					WORKFLOW_DIR: resolve(import.meta.dirname, "workflows/dist"),
-					PERSISTENCE_PATH: resolve(import.meta.dirname, ".persistence"),
-					PORT: String(port),
-					BASE_URL: `http://localhost:${port}`,
+			server = spawn(
+				process.execPath,
+				[resolve(import.meta.dirname, "packages/runtime/dist/main.js")],
+				{
+					stdio: "inherit",
+					env: {
+						...process.env,
+						WORKFLOW_DIR: resolve(import.meta.dirname, "workflows/dist"),
+						PERSISTENCE_PATH: resolve(import.meta.dirname, ".persistence"),
+						PORT: String(port),
+						BASE_URL: `http://localhost:${port}`,
+					},
 				},
-			});
+			);
 			// biome-ignore lint/suspicious/noConsole: intentional startup message
 			console.log(`Server listening on http://localhost:${port}`);
 		},

@@ -6,7 +6,5 @@
 		"outDir": "dist"
 	},
 	"include": ["*.ts"],
-	"references": [
-		{ "path": "../packages/sdk" }
-	]
+	"references": [{ "path": "../packages/sdk" }]
 }

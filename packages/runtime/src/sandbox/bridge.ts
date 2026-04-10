@@ -1,7 +1,15 @@
-import type { QuickJSContext, QuickJSHandle, QuickJSRuntime } from "quickjs-emscripten";
+import type {
+	QuickJSContext,
+	QuickJSHandle,
+	QuickJSRuntime,
+} from "quickjs-emscripten";
 import type { ActionContext } from "../context/index.js";
 
-function bridgeCtx(vm: QuickJSContext, runtime: QuickJSRuntime, ctx: ActionContext): void {
+function bridgeCtx(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+	ctx: ActionContext,
+): void {
 	const ctxHandle = vm.newObject();
 
 	bridgeEvent(vm, ctxHandle, ctx);
@@ -13,7 +21,11 @@ function bridgeCtx(vm: QuickJSContext, runtime: QuickJSRuntime, ctx: ActionConte
 	ctxHandle.dispose();
 }
 
-function bridgeEvent(vm: QuickJSContext, ctxHandle: QuickJSHandle, ctx: ActionContext): void {
+function bridgeEvent(
+	vm: QuickJSContext,
+	ctxHandle: QuickJSHandle,
+	ctx: ActionContext,
+): void {
 	const eventJson = JSON.stringify({
 		name: ctx.event.type,
 		payload: ctx.event.payload,
@@ -27,7 +39,11 @@ function bridgeEvent(vm: QuickJSContext, ctxHandle: QuickJSHandle, ctx: ActionCo
 	}
 }
 
-function bridgeEnv(vm: QuickJSContext, ctxHandle: QuickJSHandle, ctx: ActionContext): void {
+function bridgeEnv(
+	vm: QuickJSContext,
+	ctxHandle: QuickJSHandle,
+	ctx: ActionContext,
+): void {
 	const envJson = JSON.stringify(ctx.env);
 	const envResult = vm.evalCode(`(${envJson})`);
 	if (envResult.error) {
@@ -38,7 +54,12 @@ function bridgeEnv(vm: QuickJSContext, ctxHandle: QuickJSHandle, ctx: ActionCont
 	}
 }
 
-function bridgeEmit(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: QuickJSHandle, ctx: ActionContext): void {
+function bridgeEmit(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+	ctxHandle: QuickJSHandle,
+	ctx: ActionContext,
+): void {
 	const emitFn = vm.newFunction("emit", (typeHandle, payloadHandle) => {
 		const type = vm.getString(typeHandle);
 		const payload = vm.dump(payloadHandle);
@@ -51,7 +72,9 @@ function bridgeEmit(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: Quic
 				runtime.executePendingJobs();
 			},
 			(err) => {
-				const errObj = vm.newError(err instanceof Error ? err.message : String(err));
+				const errObj = vm.newError(
+					err instanceof Error ? err.message : String(err),
+				);
 				deferred.reject(errObj);
 				errObj.dispose();
 				runtime.executePendingJobs();
@@ -64,7 +87,12 @@ function bridgeEmit(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: Quic
 	emitFn.dispose();
 }
 
-function bridgeFetch(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: QuickJSHandle, ctx: ActionContext): void {
+function bridgeFetch(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+	ctxHandle: QuickJSHandle,
+	ctx: ActionContext,
+): void {
 	const fetchFn = vm.newFunction("fetch", (urlHandle, initHandle) => {
 		const url = vm.getString(urlHandle);
 		const init = initHandle ? vm.dump(initHandle) : undefined;
@@ -79,7 +107,9 @@ function bridgeFetch(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: Qui
 				runtime.executePendingJobs();
 			},
 			(err) => {
-				const errObj = vm.newError(err instanceof Error ? err.message : String(err));
+				const errObj = vm.newError(
+					err instanceof Error ? err.message : String(err),
+				);
 				deferred.reject(errObj);
 				errObj.dispose();
 				runtime.executePendingJobs();
@@ -93,7 +123,11 @@ function bridgeFetch(vm: QuickJSContext, runtime: QuickJSRuntime, ctxHandle: Qui
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: assembling a multi-faceted Response proxy in one place is clearer than splitting
-function marshalResponse(vm: QuickJSContext, runtime: QuickJSRuntime, response: Response): QuickJSHandle {
+function marshalResponse(
+	vm: QuickJSContext,
+	runtime: QuickJSRuntime,
+	response: Response,
+): QuickJSHandle {
 	const obj = vm.newObject();
 
 	// Properties
@@ -136,7 +170,9 @@ function marshalResponse(vm: QuickJSContext, runtime: QuickJSRuntime, response: 
 					runtime.executePendingJobs();
 				},
 				(err) => {
-					const errObj = vm.newError(err instanceof Error ? err.message : String(err));
+					const errObj = vm.newError(
+						err instanceof Error ? err.message : String(err),
+					);
 					deferred.reject(errObj);
 					errObj.dispose();
 					runtime.executePendingJobs();
@@ -163,7 +199,9 @@ function marshalResponse(vm: QuickJSContext, runtime: QuickJSRuntime, response: 
 					runtime.executePendingJobs();
 				},
 				(err) => {
-					const errObj = vm.newError(err instanceof Error ? err.message : String(err));
+					const errObj = vm.newError(
+						err instanceof Error ? err.message : String(err),
+					);
 					deferred.reject(errObj);
 					errObj.dispose();
 					runtime.executePendingJobs();
@@ -178,11 +216,17 @@ function marshalResponse(vm: QuickJSContext, runtime: QuickJSRuntime, response: 
 	return obj;
 }
 
-function marshalHeaders(vm: QuickJSContext, responseHandle: QuickJSHandle, response: Response): void {
+function marshalHeaders(
+	vm: QuickJSContext,
+	responseHandle: QuickJSHandle,
+	response: Response,
+): void {
 	// Build a Map from headers, with lowercase keys
 	const entries: string[] = [];
 	response.headers.forEach((value, key) => {
-		entries.push(`[${JSON.stringify(key.toLowerCase())},${JSON.stringify(value)}]`);
+		entries.push(
+			`[${JSON.stringify(key.toLowerCase())},${JSON.stringify(value)}]`,
+		);
 	});
 	const mapCode = `new Map([${entries.join(",")}])`;
 	const mapResult = vm.evalCode(mapCode);

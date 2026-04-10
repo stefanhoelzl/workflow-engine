@@ -30,21 +30,42 @@ function createTestSetup() {
 	const emitted: RuntimeEvent[] = [];
 	const workQueue = createWorkQueue();
 	const collector = {
-		async handle(event: RuntimeEvent) { emitted.push(event); },
-		async bootstrap() { /* no-op */ },
+		async handle(event: RuntimeEvent) {
+			emitted.push(event);
+		},
+		async bootstrap() {
+			/* no-op */
+		},
 	};
 	const bus = createEventBus([workQueue, collector]);
 	const source = createEventSource(
-		{ events: { "order.received": passthroughSchema, "order.validated": passthroughSchema } },
+		{
+			events: {
+				"order.received": passthroughSchema,
+				"order.validated": passthroughSchema,
+			},
+		},
 		bus,
 	);
-	const stubContextFactory = (event: RuntimeEvent, _actionName: string, env: Record<string, string>): ActionContext =>
-		new ActionContext(event, vi.fn(), vi.fn() as unknown as typeof globalThis.fetch, env, silentLogger);
+	const stubContextFactory = (
+		event: RuntimeEvent,
+		_actionName: string,
+		env: Record<string, string>,
+	): ActionContext =>
+		new ActionContext(
+			event,
+			vi.fn(),
+			vi.fn() as unknown as typeof globalThis.fetch,
+			env,
+			silentLogger,
+		);
 
 	return { bus, workQueue, emitted, source, stubContextFactory };
 }
 
-function createMockSandbox(handler?: (source: string, ctx: ActionContext) => Promise<SandboxResult>): Sandbox {
+function createMockSandbox(
+	handler?: (source: string, ctx: ActionContext) => Promise<SandboxResult>,
+): Sandbox {
 	return {
 		spawn: handler ?? (async () => ({ ok: true as const })),
 	};
@@ -53,7 +74,8 @@ function createMockSandbox(handler?: (source: string, ctx: ActionContext) => Pro
 describe("createScheduler", () => {
 	describe("directed events", () => {
 		it("executes matching action and emits done", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const spawnSpy = vi.fn(async () => ({ ok: true as const }));
 			const sandbox = createMockSandbox(spawnSpy);
 			const action: Action = {
@@ -62,7 +84,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			const event = makeEvent({ targetAction: "parseOrder" });
 			await bus.emit(event);
@@ -82,7 +110,8 @@ describe("createScheduler", () => {
 		});
 
 		it("emits failed when action throws", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const sandbox = createMockSandbox(async () => ({
 				ok: false as const,
 				error: { message: "boom", stack: "at test:1" },
@@ -93,7 +122,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => { throw new Error('boom') }",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
 
@@ -102,13 +137,20 @@ describe("createScheduler", () => {
 			await scheduler.stop();
 			await started;
 
-			const failed = emitted.find((e) => e.state === "done" && e.result === "failed");
+			const failed = emitted.find(
+				(e) => e.state === "done" && e.result === "failed",
+			);
 			expect(failed).toBeDefined();
-			expect(failed?.state === "done" && failed.result === "failed" ? failed.error : undefined).toEqual({ message: "boom", stack: "at test:1" });
+			expect(
+				failed?.state === "done" && failed.result === "failed"
+					? failed.error
+					: undefined,
+			).toEqual({ message: "boom", stack: "at test:1" });
 		});
 
 		it("emits skipped when no action matches directed event", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const sandbox = createMockSandbox();
 			const action: Action = {
 				name: "parseOrder",
@@ -116,7 +158,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			await bus.emit(makeEvent({ targetAction: "nonexistent" }));
 
@@ -125,7 +173,9 @@ describe("createScheduler", () => {
 			await scheduler.stop();
 			await started;
 
-			const skipped = emitted.find((e) => e.state === "done" && e.result === "skipped");
+			const skipped = emitted.find(
+				(e) => e.state === "done" && e.result === "skipped",
+			);
 			expect(skipped).toBeDefined();
 		});
 
@@ -142,9 +192,18 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
-			const event = makeEvent({ targetAction: "parseOrder", correlationId: "corr_xyz" });
+			const event = makeEvent({
+				targetAction: "parseOrder",
+				correlationId: "corr_xyz",
+			});
 			await bus.emit(event);
 
 			const started = scheduler.start();
@@ -159,14 +218,31 @@ describe("createScheduler", () => {
 
 	describe("fan-out", () => {
 		it("creates targeted copies for each matching action", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const spawnSpy = vi.fn(async () => ({ ok: true as const }));
 			const sandbox = createMockSandbox(spawnSpy);
 			const actions: Action[] = [
-				{ name: "parseOrder", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
-				{ name: "sendEmail", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
+				{
+					name: "parseOrder",
+					on: "order.received",
+					env: {},
+					source: "export default async (ctx) => {}",
+				},
+				{
+					name: "sendEmail",
+					on: "order.received",
+					env: {},
+					source: "export default async (ctx) => {}",
+				},
 			];
-			const scheduler = createScheduler(workQueue, source, { actions }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions },
+				stubContextFactory,
+				sandbox,
+			);
 
 			const event = makeEvent();
 			await bus.emit(event);
@@ -195,7 +271,8 @@ describe("createScheduler", () => {
 		});
 
 		it("emits skipped when no actions match the event type", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const sandbox = createMockSandbox();
 			const action: Action = {
 				name: "parseOrder",
@@ -203,7 +280,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			const event = makeEvent({ type: "unknown.event" });
 			await bus.emit(event);
@@ -213,12 +296,16 @@ describe("createScheduler", () => {
 			await scheduler.stop();
 			await started;
 
-			const skipped = emitted.find((e) => e.id === event.id && e.state === "done" && e.result === "skipped");
+			const skipped = emitted.find(
+				(e) =>
+					e.id === event.id && e.state === "done" && e.result === "skipped",
+			);
 			expect(skipped).toBeDefined();
 		});
 
 		it("preserves correlationId in forked events", async () => {
-			const { bus, workQueue, emitted, source, stubContextFactory } = createTestSetup();
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
 			const sandbox = createMockSandbox();
 			const action: Action = {
 				name: "parseOrder",
@@ -226,7 +313,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			const event = makeEvent({ correlationId: "corr_preserved" });
 			await bus.emit(event);
@@ -247,10 +340,26 @@ describe("createScheduler", () => {
 			const matchingSpawn = vi.fn(async () => ({ ok: true as const }));
 			const sandbox = createMockSandbox(matchingSpawn);
 			const actions: Action[] = [
-				{ name: "parseOrder", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
-				{ name: "updateInventory", on: "order.shipped", env: {}, source: "export default async (ctx) => {}" },
+				{
+					name: "parseOrder",
+					on: "order.received",
+					env: {},
+					source: "export default async (ctx) => {}",
+				},
+				{
+					name: "updateInventory",
+					on: "order.shipped",
+					env: {},
+					source: "export default async (ctx) => {}",
+				},
 			];
-			const scheduler = createScheduler(workQueue, source, { actions }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions },
+				stubContextFactory,
+				sandbox,
+			);
 
 			await bus.emit(makeEvent());
 
@@ -275,7 +384,13 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
 
 			const started = scheduler.start();
 			await scheduler.stop();

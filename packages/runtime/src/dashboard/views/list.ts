@@ -4,12 +4,19 @@ const TIME_SLICE_END = 8;
 const TIME_PATTERN = /\d{2}:\d{2}:\d{2}/;
 
 function escapeHtml(s: string): string {
-	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 function formatTime(value: string | Date): string {
 	if (value instanceof Date) {
-		return value.toISOString().split("T")[1]?.slice(0, TIME_SLICE_END) ?? value.toISOString();
+		return (
+			value.toISOString().split("T")[1]?.slice(0, TIME_SLICE_END) ??
+			value.toISOString()
+		);
 	}
 	const s = String(value);
 	const spaceMatch = s.match(TIME_PATTERN);
@@ -43,7 +50,11 @@ function renderEntryRow(item: CorrelationSummary): string {
 </div>`;
 }
 
-function renderEntryList(items: CorrelationSummary[], nextCursor: string | null, params: URLSearchParams): string {
+function renderEntryList(
+	items: CorrelationSummary[],
+	nextCursor: string | null,
+	params: URLSearchParams,
+): string {
 	if (items.length === 0) {
 		return `<div class="empty-state">No workflow executions found.</div>`;
 	}
@@ -80,15 +91,25 @@ function renderTypeFilter(types: string[], selected: string): string {
 	return `<option value="">All trigger types</option>\n${options.join("\n")}`;
 }
 
-function renderEventTypeCheckboxes(types: string[], selected: string[]): string {
+function renderEventTypeCheckboxes(
+	types: string[],
+	selected: string[],
+): string {
 	const selectedSet = new Set(selected);
-	return types.map((t) => {
-		const checked = selectedSet.has(t) ? " checked" : "";
-		return `<label class="event-type-option">
+	return types
+		.map((t) => {
+			const checked = selectedSet.has(t) ? " checked" : "";
+			return `<label class="event-type-option">
   <input type="checkbox" value="${escapeHtml(t)}"${checked} @change="toggleEventType('${escapeHtml(t)}')" />
   ${escapeHtml(t)}
 </label>`;
-	}).join("\n");
+		})
+		.join("\n");
 }
 
-export { renderEntryList, renderHeaderStats, renderTypeFilter, renderEventTypeCheckboxes };
+export {
+	renderEntryList,
+	renderHeaderStats,
+	renderTypeFilter,
+	renderEventTypeCheckboxes,
+};

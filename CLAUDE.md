@@ -15,7 +15,7 @@
 
 ## Definition of Done
 
-- `pnpm lint`, `pnpm check`, and `pnpm test` must pass
+- `pnpm validate` must pass (runs lint, format check, type check, and tests)
 
 ## Code Conventions
 

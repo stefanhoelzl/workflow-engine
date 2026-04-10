@@ -1,24 +1,34 @@
 import { createWorkflow, z, http, env } from "@workflow-engine/sdk";
 
 const workflow = createWorkflow("cronitor")
-	.trigger("webhook.cronitor", http({
-		path: "cronitor",
-		body: z.object({
-			id: z.string().meta({ example: "id" }),
-			monitor: z.string().meta({ example: "monitor" }),
-			description: z.string().meta({ example: "ALERT" }),
-			type: z.enum(["ALERT", "RECOVERY"]),
-			rule: z.string().meta({ example: "rule" }),
-			environment: z.string().meta({ example: "production" }),
-			group: z.string().nullable(),
-			issue_url: z.string().meta({ example: "https://example.com/issue/abc-123" }),
-			monitor_url: z.string().meta({ example: "https://example.com/monitor/123" }),
+	.trigger(
+		"webhook.cronitor",
+		http({
+			path: "cronitor",
+			body: z.object({
+				id: z.string().meta({ example: "id" }),
+				monitor: z.string().meta({ example: "monitor" }),
+				description: z.string().meta({ example: "ALERT" }),
+				type: z.enum(["ALERT", "RECOVERY"]),
+				rule: z.string().meta({ example: "rule" }),
+				environment: z.string().meta({ example: "production" }),
+				group: z.string().nullable(),
+				issue_url: z
+					.string()
+					.meta({ example: "https://example.com/issue/abc-123" }),
+				monitor_url: z
+					.string()
+					.meta({ example: "https://example.com/monitor/123" }),
+			}),
+			response: { status: 202 },
 		}),
-		response: { status: 202 },
-	}))
-	.event("notify.message", z.object({
-		message: z.string(),
-	}));
+	)
+	.event(
+		"notify.message",
+		z.object({
+			message: z.string(),
+		}),
+	);
 
 export const handleCronitorEvent = workflow.action({
 	on: "webhook.cronitor",
@@ -33,8 +43,8 @@ export const handleCronitorEvent = workflow.action({
 			`Environment: ${body.environment}`,
 			body.issue_url,
 		].join("\n");
-		await ctx.emit("notify.message", {message});
-	}
+		await ctx.emit("notify.message", { message });
+	},
 });
 
 export const sendMessage = workflow.action({

@@ -26,25 +26,29 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 			secretAccessKey: options.secretAccessKey,
 		},
 		region: options.region ?? "us-east-1",
-		...(options.endpoint ? { endpoint: options.endpoint, forcePathStyle: true } : {}),
+		...(options.endpoint
+			? { endpoint: options.endpoint, forcePathStyle: true }
+			: {}),
 	});
 
 	return {
 		async init() {
-			// biome-ignore lint/style/useNamingConvention: AWS SDK convention
 			await client.send(new HeadBucketCommand({ Bucket: bucket }));
 		},
 
 		async write(path, data) {
 			await client.send(
-				// biome-ignore lint/style/useNamingConvention: AWS SDK convention
-				new PutObjectCommand({ Bucket: bucket, Key: path, Body: data, ContentType: "application/json" }),
+				new PutObjectCommand({
+					Bucket: bucket,
+					Key: path,
+					Body: data,
+					ContentType: "application/json",
+				}),
 			);
 		},
 
 		async read(path) {
 			const response = await client.send(
-				// biome-ignore lint/style/useNamingConvention: AWS SDK convention
 				new GetObjectCommand({ Bucket: bucket, Key: path }),
 			);
 			return (await response.Body?.transformToString("utf-8")) ?? "";
@@ -55,8 +59,11 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 			do {
 				// biome-ignore lint/performance/noAwaitInLoops: sequential pagination required by S3 API
 				const response = await client.send(
-					// biome-ignore lint/style/useNamingConvention: AWS SDK convention
-					new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: continuationToken }),
+					new ListObjectsV2Command({
+						Bucket: bucket,
+						Prefix: prefix,
+						ContinuationToken: continuationToken,
+					}),
 				);
 				if (response.Contents) {
 					const keys = response.Contents.map((obj) => obj.Key)
@@ -71,21 +78,18 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 		},
 
 		async remove(path) {
-			await client.send(
-				// biome-ignore lint/style/useNamingConvention: AWS SDK convention
-				new DeleteObjectCommand({ Bucket: bucket, Key: path }),
-			);
+			await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: path }));
 		},
 
 		async move(from, to) {
 			await client.send(
-				// biome-ignore lint/style/useNamingConvention: AWS SDK convention
-				new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${from}`, Key: to }),
+				new CopyObjectCommand({
+					Bucket: bucket,
+					CopySource: `${bucket}/${from}`,
+					Key: to,
+				}),
 			);
-			await client.send(
-				// biome-ignore lint/style/useNamingConvention: AWS SDK convention
-				new DeleteObjectCommand({ Bucket: bucket, Key: from }),
-			);
+			await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: from }));
 		},
 	};
 }

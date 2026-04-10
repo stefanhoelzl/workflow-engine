@@ -8,12 +8,24 @@ interface Schema {
 type TransitionOpts =
 	| { state: "processing" }
 	| { state: "done"; result: "succeeded" | "skipped" }
-	| { state: "done"; result: "failed"; error: { message: string; stack: string } };
+	| {
+			state: "done";
+			result: "failed";
+			error: { message: string; stack: string };
+	  };
 
 interface EventSource {
 	create(type: string, payload: unknown, source: string): Promise<RuntimeEvent>;
-	derive(parent: RuntimeEvent, type: string, payload: unknown, source: string): Promise<RuntimeEvent>;
-	fork(parent: RuntimeEvent, options: { targetAction: string }): Promise<RuntimeEvent>;
+	derive(
+		parent: RuntimeEvent,
+		type: string,
+		payload: unknown,
+		source: string,
+	): Promise<RuntimeEvent>;
+	fork(
+		parent: RuntimeEvent,
+		options: { targetAction: string },
+	): Promise<RuntimeEvent>;
 	transition(event: RuntimeEvent, opts: TransitionOpts): Promise<void>;
 }
 
@@ -31,15 +43,23 @@ function createEventSource(
 			return schema.parse(payload);
 		} catch (error) {
 			const issues =
-				error instanceof Error && "issues" in error && Array.isArray((error as { issues: unknown[] }).issues)
-					? (error as { issues: { path: (string | number)[]; message: string }[] }).issues.map(
-							(issue) => ({
-								path: issue.path.join("."),
-								message: issue.message,
-							}),
-						)
+				error instanceof Error &&
+				"issues" in error &&
+				Array.isArray((error as { issues: unknown[] }).issues)
+					? (
+							error as {
+								issues: { path: (string | number)[]; message: string }[];
+							}
+						).issues.map((issue) => ({
+							path: issue.path.join("."),
+							message: issue.message,
+						}))
 					: [];
-			throw new PayloadValidationError(type, issues, error instanceof Error ? error : undefined);
+			throw new PayloadValidationError(
+				type,
+				issues,
+				error instanceof Error ? error : undefined,
+			);
 		}
 	}
 
@@ -103,11 +123,22 @@ function createEventSource(
 		async transition(event, opts) {
 			const now = new Date();
 			if (opts.state === "processing") {
-				await bus.emit({ ...event, state: "processing", emittedAt: now, startedAt: now });
+				await bus.emit({
+					...event,
+					state: "processing",
+					emittedAt: now,
+					startedAt: now,
+				});
 			} else {
 				const doneAt = now;
 				const startedAt = event.startedAt ?? doneAt;
-				await bus.emit({ ...event, ...opts, emittedAt: now, startedAt, doneAt });
+				await bus.emit({
+					...event,
+					...opts,
+					emittedAt: now,
+					startedAt,
+					doneAt,
+				});
 			}
 		},
 	};

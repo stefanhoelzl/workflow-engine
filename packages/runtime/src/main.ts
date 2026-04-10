@@ -4,7 +4,10 @@ import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createEventStore } from "./event-bus/event-store.js";
 import { createLoggingConsumer } from "./event-bus/logging-consumer.js";
-import { type PersistenceConsumer, createPersistence } from "./event-bus/persistence.js";
+import {
+	type PersistenceConsumer,
+	createPersistence,
+} from "./event-bus/persistence.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
@@ -22,14 +25,20 @@ import { httpTriggerMiddleware } from "./triggers/http.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
 import { apiMiddleware } from "./api/index.js";
 
-function createStorageBackend(config: ReturnType<typeof createConfig>): StorageBackend | undefined {
+function createStorageBackend(
+	config: ReturnType<typeof createConfig>,
+): StorageBackend | undefined {
 	if (config.persistenceS3Bucket) {
 		return createS3Storage({
 			bucket: config.persistenceS3Bucket,
 			accessKeyId: config.persistenceS3AccessKeyId ?? "",
 			secretAccessKey: config.persistenceS3SecretAccessKey ?? "",
-			...(config.persistenceS3Endpoint ? { endpoint: config.persistenceS3Endpoint } : {}),
-			...(config.persistenceS3Region ? { region: config.persistenceS3Region } : {}),
+			...(config.persistenceS3Endpoint
+				? { endpoint: config.persistenceS3Endpoint }
+				: {}),
+			...(config.persistenceS3Region
+				? { region: config.persistenceS3Region }
+				: {}),
 		});
 	}
 	if (config.persistencePath) {
@@ -87,15 +96,28 @@ async function init() {
 	}
 
 	// 4. Load workflows from storage backend
-	const registry = createWorkflowRegistry({ backend: storageBackend, logger: runtimeLogger });
+	const registry = createWorkflowRegistry({
+		backend: storageBackend,
+		logger: runtimeLogger,
+	});
 	await registry.recover();
 
 	// Wire up event source and scheduler using registry getters
 	const source = createEventSource(registry, eventBus);
-	const createContext = createActionContext(source, globalThis.fetch, contextLogger);
+	const createContext = createActionContext(
+		source,
+		globalThis.fetch,
+		contextLogger,
+	);
 	const sandbox = await createSandbox();
 
-	const scheduler = createScheduler(workQueue, source, registry, createContext, sandbox);
+	const scheduler = createScheduler(
+		workQueue,
+		source,
+		registry,
+		createContext,
+		sandbox,
+	);
 
 	const server = createServer(
 		config.port,
@@ -110,7 +132,10 @@ async function init() {
 	return { runtimeLogger, scheduler, server };
 }
 
-async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Promise<void> {
+async function recover(
+	persistence: PersistenceConsumer,
+	eventBus: EventBus,
+): Promise<void> {
 	let total = 0;
 	for await (const { events, pending } of persistence.recover()) {
 		await eventBus.bootstrap(events, { pending });
@@ -119,7 +144,10 @@ async function recover(persistence: PersistenceConsumer, eventBus: EventBus): Pr
 	await eventBus.bootstrap([], { finished: true, total });
 }
 
-function start(logger: ReturnType<typeof createLogger>, ...services: Service[]) {
+function start(
+	logger: ReturnType<typeof createLogger>,
+	...services: Service[]
+) {
 	let shuttingDown = false;
 	const shutdown = async (code: number) => {
 		if (shuttingDown) {

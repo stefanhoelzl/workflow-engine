@@ -1,6 +1,11 @@
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { type BusConsumer, type EventBus, type RuntimeEvent, createEventBus } from "../event-bus/index.js";
+import {
+	type BusConsumer,
+	type EventBus,
+	type RuntimeEvent,
+	createEventBus,
+} from "../event-bus/index.js";
 import { createEventSource, type EventSource } from "../event-source.js";
 import { type Logger, createLogger } from "../logger.js";
 import { ActionContext, createActionContext } from "./index.js";
@@ -20,7 +25,10 @@ function createTestLogger(level = "info"): {
 		},
 	});
 	return {
-		logger: createLogger("context", { level: level as "info", destination: stream }),
+		logger: createLogger("context", {
+			level: level as "info",
+			destination: stream,
+		}),
 		lines: () =>
 			chunks
 				.map((c) => c.toString())
@@ -33,7 +41,6 @@ function createTestLogger(level = "info"): {
 
 const EVT_PREFIX = /^evt_/;
 const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
-// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 const mockEnv: Record<string, string> = { API_KEY: "secret" };
 
 const passthroughSchema = { parse: (d: unknown) => d };
@@ -50,7 +57,9 @@ function createCollectorBus(): { bus: EventBus; emitted: RuntimeEvent[] } {
 		async handle(event) {
 			emitted.push(event);
 		},
-		async bootstrap() { /* no-op */ },
+		async bootstrap() {
+			/* no-op */
+		},
 	};
 	return { bus: createEventBus([collector]), emitted };
 }
@@ -61,7 +70,16 @@ function createTestSetup(overrides?: {
 	fetch?: typeof globalThis.fetch;
 	env?: Record<string, string>;
 	logger?: Logger;
-}): { createContext: (event: RuntimeEvent, actionName: string, env?: Record<string, string>) => ActionContext; source: EventSource; bus: EventBus; emitted: RuntimeEvent[] } {
+}): {
+	createContext: (
+		event: RuntimeEvent,
+		actionName: string,
+		env?: Record<string, string>,
+	) => ActionContext;
+	source: EventSource;
+	bus: EventBus;
+	emitted: RuntimeEvent[];
+} {
 	const { bus: defaultBus, emitted } = createCollectorBus();
 	const bus = overrides?.bus ?? defaultBus;
 	const schemas = overrides?.schemas ?? defaultSchemas;
@@ -72,8 +90,11 @@ function createTestSetup(overrides?: {
 		overrides?.fetch ?? mockFetch,
 		overrides?.logger ?? silentLogger,
 	);
-	const createContext = (event: RuntimeEvent, actionName: string, env?: Record<string, string>) =>
-		factory(event, actionName, env ?? defaultEnv);
+	const createContext = (
+		event: RuntimeEvent,
+		actionName: string,
+		env?: Record<string, string>,
+	) => factory(event, actionName, env ?? defaultEnv);
 	return { createContext, source, bus, emitted };
 }
 
@@ -156,18 +177,25 @@ describe("createActionContext", () => {
 	describe("action fetch", () => {
 		it("delegates GET request to injected fetch", async () => {
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
 			const res = await ctx.fetch("https://api.example.com/orders/123");
 
-			expect(fetchSpy).toHaveBeenCalledWith("https://api.example.com/orders/123", undefined);
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.example.com/orders/123",
+				undefined,
+			);
 			expect(await res.text()).toBe("ok");
 		});
 
 		it("delegates POST request with options to injected fetch", async () => {
 			const fetchSpy = vi.fn().mockResolvedValue(Response.json({ id: "123" }));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
 			const init = {
@@ -177,31 +205,37 @@ describe("createActionContext", () => {
 			};
 			const res = await ctx.fetch("https://api.example.com/orders", init);
 
-			expect(fetchSpy).toHaveBeenCalledWith("https://api.example.com/orders", init);
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.example.com/orders",
+				init,
+			);
 			expect(res).toBeInstanceOf(Response);
 		});
 
 		it("propagates fetch errors to the caller", async () => {
 			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch });
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
-			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("fetch failed");
+			await expect(
+				ctx.fetch("https://unreachable.example.com"),
+			).rejects.toThrow("fetch failed");
 		});
 	});
 
 	describe("action env", () => {
 		it("exposes injected env record on ctx.env", () => {
-			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
-			const { createContext } = createTestSetup({ env: { FOO: "bar", BAZ: "qux" } });
+			const { createContext } = createTestSetup({
+				env: { FOO: "bar", BAZ: "qux" },
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
-			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 			expect(ctx.env).toEqual({ FOO: "bar", BAZ: "qux" });
 		});
 
 		it("env only contains declared keys", () => {
-			// biome-ignore lint/style/useNamingConvention: env var names are SCREAMING_CASE by convention
 			const { createContext } = createTestSetup({ env: { FOO: "bar" } });
 			const ctx = createContext(makeEvent(), "test-action");
 
@@ -212,9 +246,17 @@ describe("createActionContext", () => {
 	describe("fetch logging", () => {
 		it("logs fetch.start and fetch.completed on success", async () => {
 			const { logger, lines } = createTestLogger();
-			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
-			const ctx = createContext(makeEvent({ correlationId: "corr_fetch" }), "test-action");
+			const fetchSpy = vi
+				.fn()
+				.mockResolvedValue(new Response("ok", { status: 200 }));
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+				logger,
+			});
+			const ctx = createContext(
+				makeEvent({ correlationId: "corr_fetch" }),
+				"test-action",
+			);
 
 			await ctx.fetch("https://api.example.com/orders/123");
 
@@ -235,7 +277,10 @@ describe("createActionContext", () => {
 		it("logs fetch.request.body at trace level", async () => {
 			const { logger, lines } = createTestLogger("trace");
 			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+				logger,
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
 			await ctx.fetch("https://api.example.com/orders", {
@@ -251,11 +296,18 @@ describe("createActionContext", () => {
 
 		it("logs fetch.failed on error", async () => {
 			const { logger, lines } = createTestLogger();
-			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("network error"));
-			const { createContext } = createTestSetup({ fetch: fetchSpy as typeof globalThis.fetch, logger });
+			const fetchSpy = vi
+				.fn()
+				.mockRejectedValue(new TypeError("network error"));
+			const { createContext } = createTestSetup({
+				fetch: fetchSpy as typeof globalThis.fetch,
+				logger,
+			});
 			const ctx = createContext(makeEvent(), "test-action");
 
-			await expect(ctx.fetch("https://unreachable.example.com")).rejects.toThrow("network error");
+			await expect(
+				ctx.fetch("https://unreachable.example.com"),
+			).rejects.toThrow("network error");
 
 			const output = lines();
 			const failed = output.find((l) => l.msg === "fetch.failed");
@@ -288,7 +340,12 @@ describe("createActionContext", () => {
 				parse: () => {
 					const error = new Error("validation failed");
 					Object.assign(error, {
-						issues: [{ path: ["orderId"], message: "Expected string, received number" }],
+						issues: [
+							{
+								path: ["orderId"],
+								message: "Expected string, received number",
+							},
+						],
 					});
 					throw error;
 				},
@@ -298,18 +355,24 @@ describe("createActionContext", () => {
 			});
 			const ctx = createContext(makeEvent(), "test-action");
 
-			const error = await ctx.emit("order.received", { orderId: 123 }).catch((e: unknown) => e);
+			const error = await ctx
+				.emit("order.received", { orderId: 123 })
+				.catch((e: unknown) => e);
 			expect(error).toBeInstanceOf(PayloadValidationError);
 			const pve = error as PayloadValidationError;
 			expect(pve.eventType).toBe("order.received");
-			expect(pve.issues).toEqual([{ path: "orderId", message: "Expected string, received number" }]);
+			expect(pve.issues).toEqual([
+				{ path: "orderId", message: "Expected string, received number" },
+			]);
 		});
 
 		it("throws PayloadValidationError for unknown event type", async () => {
 			const { createContext } = createTestSetup({ schemas: {} });
 			const ctx = createContext(makeEvent(), "test-action");
 
-			const error = await ctx.emit("order.unknown", {}).catch((e: unknown) => e);
+			const error = await ctx
+				.emit("order.unknown", {})
+				.catch((e: unknown) => e);
 			expect(error).toBeInstanceOf(PayloadValidationError);
 			const pve = error as PayloadValidationError;
 			expect(pve.eventType).toBe("order.unknown");
@@ -318,14 +381,19 @@ describe("createActionContext", () => {
 
 		it("does not emit to bus when validation fails", async () => {
 			const schema = {
-				parse: () => { throw new Error("invalid"); },
+				parse: () => {
+					throw new Error("invalid");
+				},
 			};
 			const emitSpy = vi.fn();
 			const fakeBus = {
 				emit: emitSpy,
 				bootstrap: vi.fn(),
 			} as unknown as EventBus;
-			const source = createEventSource({ events: { "order.received": schema } }, fakeBus);
+			const source = createEventSource(
+				{ events: { "order.received": schema } },
+				fakeBus,
+			);
 			const factory = createActionContext(source, mockFetch, silentLogger);
 			const ctx = factory(makeEvent(), "test-action", {});
 

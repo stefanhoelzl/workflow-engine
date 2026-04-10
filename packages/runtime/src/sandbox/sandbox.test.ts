@@ -6,7 +6,14 @@ import type { Sandbox } from "./index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 
-function makeCtx(overrides: { emit?: ActionContext["emit"]; fetch?: typeof globalThis.fetch; env?: Record<string, string>; payload?: unknown } = {}): ActionContext {
+function makeCtx(
+	overrides: {
+		emit?: ActionContext["emit"];
+		fetch?: typeof globalThis.fetch;
+		env?: Record<string, string>;
+		payload?: unknown;
+	} = {},
+): ActionContext {
 	const event = {
 		id: "evt_1",
 		type: "test.event",
@@ -20,7 +27,10 @@ function makeCtx(overrides: { emit?: ActionContext["emit"]; fetch?: typeof globa
 	};
 	return new ActionContext(
 		event,
-		overrides.emit ?? vi.fn(async () => { /* no-op */ }),
+		overrides.emit ??
+			vi.fn(async () => {
+				/* no-op */
+			}),
 		overrides.fetch ?? (vi.fn() as unknown as typeof globalThis.fetch),
 		overrides.env ?? {},
 		silentLogger,
@@ -113,7 +123,9 @@ describe("sandbox results", () => {
 
 describe("ctx bridge", () => {
 	it("ctx.emit calls host-side emit", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit });
 
 		const result = await sandbox.spawn(
@@ -126,7 +138,9 @@ describe("ctx bridge", () => {
 	});
 
 	it("ctx.event exposes event data", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, payload: { orderId: "abc" } });
 
 		const result = await sandbox.spawn(
@@ -139,8 +153,9 @@ describe("ctx bridge", () => {
 	});
 
 	it("ctx.env exposes environment variables", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
-		// biome-ignore lint/style/useNamingConvention: env var keys use UPPER_SNAKE
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, env: { API_KEY: "secret123" } });
 
 		const result = await sandbox.spawn(
@@ -153,15 +168,18 @@ describe("ctx bridge", () => {
 	});
 
 	it("ctx.fetch returns Response proxy with status and json()", async () => {
-		const mockFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ data: "hello" }), {
-				status: 200,
-				statusText: "OK",
-				headers: { "Content-Type": "application/json" },
-			}),
+		const mockFetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: "hello" }), {
+					status: 200,
+					statusText: "OK",
+					headers: { "Content-Type": "application/json" },
+				}),
 		) as unknown as typeof globalThis.fetch;
 
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, fetch: mockFetch });
 
 		const result = await sandbox.spawn(
@@ -174,16 +192,25 @@ describe("ctx bridge", () => {
 		);
 
 		expect(result.ok).toBe(true);
-		expect(mockFetch).toHaveBeenCalledWith("https://api.example.com/data", undefined);
-		expect(emit).toHaveBeenCalledWith("result", { status: 200, ok: true, data: "hello" });
+		expect(mockFetch).toHaveBeenCalledWith(
+			"https://api.example.com/data",
+			undefined,
+		);
+		expect(emit).toHaveBeenCalledWith("result", {
+			status: 200,
+			ok: true,
+			data: "hello",
+		});
 	});
 
 	it("ctx.fetch Response has text() method", async () => {
-		const mockFetch = vi.fn(async () =>
-			new Response("plain text body", { status: 200 }),
+		const mockFetch = vi.fn(
+			async () => new Response("plain text body", { status: 200 }),
 		) as unknown as typeof globalThis.fetch;
 
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, fetch: mockFetch });
 
 		const result = await sandbox.spawn(
@@ -200,14 +227,17 @@ describe("ctx bridge", () => {
 	});
 
 	it("ctx.fetch Response has headers as Map", async () => {
-		const mockFetch = vi.fn(async () =>
-			new Response("", {
-				status: 200,
-				headers: { "X-Custom": "test-value", "Content-Type": "text/plain" },
-			}),
+		const mockFetch = vi.fn(
+			async () =>
+				new Response("", {
+					status: 200,
+					headers: { "X-Custom": "test-value", "Content-Type": "text/plain" },
+				}),
 		) as unknown as typeof globalThis.fetch;
 
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, fetch: mockFetch });
 
 		const result = await sandbox.spawn(
@@ -233,7 +263,9 @@ describe("ctx bridge", () => {
 
 describe("globals", () => {
 	it("btoa/atob work", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit });
 
 		const result = await sandbox.spawn(
@@ -246,11 +278,16 @@ describe("globals", () => {
 		);
 
 		expect(result.ok).toBe(true);
-		expect(emit).toHaveBeenCalledWith("result", { encoded: "aGVsbG8=", decoded: "hello" });
+		expect(emit).toHaveBeenCalledWith("result", {
+			encoded: "aGVsbG8=",
+			decoded: "hello",
+		});
 	});
 
 	it("setTimeout fires callback and pumps promises", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit });
 
 		const result = await sandbox.spawn(
@@ -266,7 +303,9 @@ describe("globals", () => {
 	});
 
 	it("clearTimeout cancels timer", async () => {
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit });
 
 		const result = await sandbox.spawn(
@@ -285,9 +324,14 @@ describe("globals", () => {
 
 describe("concurrent async", () => {
 	it("Promise.all with multiple ctx.fetch works", async () => {
-		const mockFetch = vi.fn(async (url: string) => new Response(JSON.stringify({ url }), { status: 200 })) as unknown as typeof globalThis.fetch;
+		const mockFetch = vi.fn(
+			async (url: string) =>
+				new Response(JSON.stringify({ url }), { status: 200 }),
+		) as unknown as typeof globalThis.fetch;
 
-		const emit = vi.fn(async () => { /* no-op */ });
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
 		const ctx = makeCtx({ emit, fetch: mockFetch });
 
 		const result = await sandbox.spawn(

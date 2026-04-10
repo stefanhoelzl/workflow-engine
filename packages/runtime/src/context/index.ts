@@ -5,20 +5,14 @@ import type { Logger } from "../logger.js";
 class ActionContext {
 	readonly event: RuntimeEvent;
 	readonly env: Record<string, string>;
-	readonly #emit: (
-		type: string,
-		payload: unknown,
-	) => Promise<void>;
+	readonly #emit: (type: string, payload: unknown) => Promise<void>;
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #logger: Logger;
 
 	// biome-ignore lint/complexity/useMaxParams: internal constructor, all params are required dependencies
 	constructor(
 		event: RuntimeEvent,
-		emit: (
-			type: string,
-			payload: unknown,
-		) => Promise<void>,
+		emit: (type: string, payload: unknown) => Promise<void>,
 		fetch: typeof globalThis.fetch,
 		env: Record<string, string>,
 		logger: Logger,
@@ -34,10 +28,7 @@ class ActionContext {
 		return this.#emit(type, payload);
 	}
 
-	async fetch(
-		url: string | URL,
-		init?: RequestInit,
-	): Promise<Response> {
+	async fetch(url: string | URL, init?: RequestInit): Promise<Response> {
 		const method = init?.method ?? "GET";
 		this.#logger.info("fetch.start", {
 			correlationId: this.event.correlationId,
@@ -80,7 +71,11 @@ function createActionContext(
 	source: EventSource,
 	fetch: typeof globalThis.fetch,
 	logger: Logger,
-): (event: RuntimeEvent, actionName: string, env: Record<string, string>) => ActionContext {
+): (
+	event: RuntimeEvent,
+	actionName: string,
+	env: Record<string, string>,
+) => ActionContext {
 	return (event, actionName, env) =>
 		new ActionContext(
 			event,

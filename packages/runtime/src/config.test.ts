@@ -7,9 +7,7 @@ describe("createConfig", () => {
 	it("parses valid values", () => {
 		const config = createConfig({
 			...REQUIRED,
-			// biome-ignore lint/style/useNamingConvention: env var name
 			LOG_LEVEL: "debug",
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PORT: "3000",
 		});
 		expect(config.logLevel).toBe("debug");
@@ -24,24 +22,20 @@ describe("createConfig", () => {
 	});
 
 	it("fills missing optional values with defaults", () => {
-		// biome-ignore lint/style/useNamingConvention: env var name
 		const config = createConfig({ ...REQUIRED, PORT: "9090" });
 		expect(config.port).toBe(9090);
 		expect(config.logLevel).toBe("info");
 	});
 
 	it("rejects invalid log level", () => {
-		// biome-ignore lint/style/useNamingConvention: env var name
 		expect(() => createConfig({ ...REQUIRED, LOG_LEVEL: "verbose" })).toThrow();
 	});
 
 	it("rejects non-numeric port", () => {
-		// biome-ignore lint/style/useNamingConvention: env var name
 		expect(() => createConfig({ ...REQUIRED, PORT: "abc" })).toThrow();
 	});
 
 	it("parses GITHUB_USER when provided", () => {
-		// biome-ignore lint/style/useNamingConvention: env var name
 		const config = createConfig({ GITHUB_USER: "stefanhoelzl" });
 		expect(config.githubUser).toBe("stefanhoelzl");
 	});
@@ -54,15 +48,10 @@ describe("createConfig", () => {
 	it("parses S3 config fields", () => {
 		const config = createConfig({
 			...REQUIRED,
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PERSISTENCE_S3_BUCKET: "my-bucket",
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PERSISTENCE_S3_ACCESS_KEY_ID: "key",
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PERSISTENCE_S3_SECRET_ACCESS_KEY: "secret",
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PERSISTENCE_S3_ENDPOINT: "http://minio:9000",
-			// biome-ignore lint/style/useNamingConvention: env var name
 			PERSISTENCE_S3_REGION: "eu-central-1",
 		});
 		expect(config.persistenceS3Bucket).toBe("my-bucket");
@@ -82,19 +71,18 @@ describe("createConfig", () => {
 		expect(() =>
 			createConfig({
 				...REQUIRED,
-				// biome-ignore lint/style/useNamingConvention: env var name
 				PERSISTENCE_S3_BUCKET: "my-bucket",
 			}),
-		).toThrow("requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY");
+		).toThrow(
+			"requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY",
+		);
 	});
 
 	it("rejects both PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET", () => {
 		expect(() =>
 			createConfig({
 				...REQUIRED,
-				// biome-ignore lint/style/useNamingConvention: env var name
 				PERSISTENCE_PATH: "/data/events",
-				// biome-ignore lint/style/useNamingConvention: env var name
 				PERSISTENCE_S3_BUCKET: "my-bucket",
 			}),
 		).toThrow("mutually exclusive");

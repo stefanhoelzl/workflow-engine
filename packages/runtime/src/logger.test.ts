@@ -43,7 +43,10 @@ describe("createLogger", () => {
 
 	it("uses (msg, data?) argument order — data appears as top-level fields", () => {
 		const { logger, lines } = createTestLogger("test");
-		logger.info("event.emitted", { eventId: "evt_001", type: "order.received" });
+		logger.info("event.emitted", {
+			eventId: "evt_001",
+			type: "order.received",
+		});
 		const output = lines();
 		expect(output[0]?.msg).toBe("event.emitted");
 		expect(output[0]?.eventId).toBe("evt_001");

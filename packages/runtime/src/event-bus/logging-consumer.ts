@@ -32,7 +32,10 @@ function createLoggingConsumer(logger: Logger): BusConsumer {
 		},
 
 		// biome-ignore lint/suspicious/useAwait: synchronous logging, async required by BusConsumer interface
-		async bootstrap(_events: RuntimeEvent[], options?: { pending?: boolean; finished?: boolean; total?: number }): Promise<void> {
+		async bootstrap(
+			_events: RuntimeEvent[],
+			options?: { pending?: boolean; finished?: boolean; total?: number },
+		): Promise<void> {
 			if (options?.finished) {
 				logger.info("events.recovered", { count: options.total ?? 0 });
 			}
