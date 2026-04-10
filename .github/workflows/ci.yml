@@ -18,7 +18,10 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - uses: opentofu/setup-opentofu@v2
+
       - run: pnpm install --frozen-lockfile
+      - run: tofu -chdir=infrastructure/dev init
 
       - run: pnpm validate
       - run: pnpm build
