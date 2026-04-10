@@ -8,7 +8,6 @@ interface HttpTriggerDefinition {
 	name: string;
 	path: string;
 	method?: string | undefined;
-	event: string;
 	response?: {
 		status?: number | undefined;
 		body?: unknown;
@@ -19,7 +18,6 @@ interface HttpTriggerResolved {
 	name: string;
 	path: string;
 	method: string;
-	event: string;
 	response: {
 		status: ContentfulStatusCode;
 		body: unknown;
@@ -39,7 +37,6 @@ class HttpTriggerRegistry {
 			name: definition.name,
 			path: definition.path,
 			method: definition.method ?? DEFAULT_METHOD,
-			event: definition.event,
 			response: {
 				status: (definition.response?.status ?? DEFAULT_RESPONSE_STATUS) as ContentfulStatusCode,
 				body: definition.response?.body ?? DEFAULT_RESPONSE_BODY,
@@ -81,12 +78,19 @@ function httpTriggerMiddleware(
 			} catch {
 				return c.json(
 					{ error: "Invalid JSON body" },
-					constants.HTTP_STATUS_BAD_REQUEST as ContentfulStatusCode,
+					constants.HTTP_STATUS_UNPROCESSABLE_ENTITY as ContentfulStatusCode,
 				);
 			}
 
+			const payload = {
+				body,
+				headers: Object.fromEntries(c.req.raw.headers),
+				url: c.req.url,
+				method: c.req.method,
+			};
+
 			try {
-				await source.create(definition.event, body, definition.name);
+				await source.create(definition.name, payload, definition.name);
 			} catch (error) {
 				if (error instanceof PayloadValidationError) {
 					return c.json(

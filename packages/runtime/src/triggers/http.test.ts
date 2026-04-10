@@ -13,18 +13,16 @@ describe("HttpTriggerRegistry", () => {
 	it("returns a registered trigger on matching path and method", () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202, body: { accepted: true } },
 		});
 
 		expect(registry.lookup("order", "POST")).toEqual({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202, body: { accepted: true } },
 		});
 	});
@@ -38,10 +36,9 @@ describe("HttpTriggerRegistry", () => {
 	it("returns null when method does not match", () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 
@@ -52,7 +49,7 @@ describe("HttpTriggerRegistry", () => {
 function stubEventSource(): { source: EventSource; createSpy: ReturnType<typeof vi.fn> } {
 	const createSpy = vi.fn().mockResolvedValue({
 		id: "evt_test",
-		type: "order.received",
+		type: "webhook.order",
 		state: "pending",
 	} as RuntimeEvent);
 	const source = {
@@ -72,13 +69,12 @@ function createApp(registry: HttpTriggerRegistry, source: EventSource) {
 }
 
 describe("httpTriggerMiddleware — matching", () => {
-	it("calls source.create for matching request", async () => {
+	it("calls source.create with full payload shape for matching request", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const { source, createSpy } = stubEventSource();
@@ -92,7 +88,66 @@ describe("httpTriggerMiddleware — matching", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_ACCEPTED);
 		expect(await res.json()).toEqual({ accepted: true });
-		expect(createSpy).toHaveBeenCalledWith("order.received", { item: "widget" }, "orders");
+		expect(createSpy).toHaveBeenCalledOnce();
+
+		const [eventType, payload, sourceName] = createSpy.mock.calls[0] as [string, unknown, string];
+		expect(eventType).toBe("webhook.order");
+		expect(sourceName).toBe("webhook.order");
+		const p = payload as { body: unknown; headers: Record<string, string>; url: string; method: string };
+		expect(p.body).toEqual({ item: "widget" });
+		expect(p.method).toBe("POST");
+		expect(p.headers).toHaveProperty("content-type", "application/json");
+		expect(p.url).toBe("http://localhost/webhooks/order");
+	});
+
+	it("includes query string in path", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 202 as const, body: { ok: true } },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		// biome-ignore lint/security/noSecrets: test URL with query params, not a secret
+		await app.request("/webhooks/order?source=shopify&ref=abc", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [string, { url: string }];
+		// biome-ignore lint/security/noSecrets: test URL with query params, not a secret
+		expect(payload.url).toBe("http://localhost/webhooks/order?source=shopify&ref=abc");
+	});
+
+	it("forwards all headers including custom ones", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 200 as const },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		await app.request("/webhooks/order", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Signature": "sha256=abc",
+				// biome-ignore lint/style/useNamingConvention: HTTP header
+				"Authorization": "Bearer tk_test",
+			},
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [string, { headers: Record<string, string> }];
+		expect(payload.headers["x-signature"]).toBe("sha256=abc");
+		expect(payload.headers.authorization).toBe("Bearer tk_test");
 	});
 });
 
@@ -115,10 +170,9 @@ describe("httpTriggerMiddleware — pass-through", () => {
 	it("does not handle requests outside /webhooks/", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const { source, createSpy } = stubEventSource();
@@ -132,13 +186,12 @@ describe("httpTriggerMiddleware — pass-through", () => {
 });
 
 describe("httpTriggerMiddleware — error handling", () => {
-	it("returns 400 for non-JSON request body", async () => {
+	it("returns 422 for non-JSON request body", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const { source, createSpy } = stubEventSource();
@@ -150,22 +203,21 @@ describe("httpTriggerMiddleware — error handling", () => {
 			body: "not json",
 		});
 
-		expect(res.status).toBe(constants.HTTP_STATUS_BAD_REQUEST);
+		expect(res.status).toBe(constants.HTTP_STATUS_UNPROCESSABLE_ENTITY);
 		expect(createSpy).not.toHaveBeenCalled();
 	});
 
 	it("returns 422 with structured body when payload validation fails", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const createSpy = vi.fn().mockRejectedValue(
-			new PayloadValidationError("order.received", [
-				{ path: "orderId", message: "Expected string, received number" },
+			new PayloadValidationError("webhook.order", [
+				{ path: "body.orderId", message: "Expected string, received number" },
 			]),
 		);
 		const source = { create: createSpy, derive: vi.fn(), fork: vi.fn(), transition: vi.fn() } as unknown as EventSource;
@@ -180,18 +232,17 @@ describe("httpTriggerMiddleware — error handling", () => {
 		expect(res.status).toBe(constants.HTTP_STATUS_UNPROCESSABLE_ENTITY);
 		expect(await res.json()).toEqual({
 			error: "payload_validation_failed",
-			event: "order.received",
-			issues: [{ path: "orderId", message: "Expected string, received number" }],
+			event: "webhook.order",
+			issues: [{ path: "body.orderId", message: "Expected string, received number" }],
 		});
 	});
 
 	it("returns configured response when payload is valid", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 		const { source } = stubEventSource();

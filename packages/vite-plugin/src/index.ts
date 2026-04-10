@@ -15,7 +15,6 @@ interface CompileOutput {
 		type: string;
 		path: string;
 		method?: string;
-		event: string;
 		response?: { status?: number; body?: unknown };
 	}>;
 	actions: Array<{
