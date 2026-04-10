@@ -9,32 +9,22 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/runtime/package.json packages/runtime/
 COPY packages/sdk/package.json packages/sdk/
-COPY packages/vite-plugin/package.json packages/vite-plugin/
-COPY workflows/package.json workflows/
 RUN pnpm install --frozen-lockfile
 
-COPY vite.config.ts tsconfig.base.json ./
-COPY packages/runtime/tsconfig.json packages/runtime/
-COPY packages/sdk/tsconfig.json packages/sdk/
-COPY packages/vite-plugin/tsconfig.json packages/vite-plugin/
+COPY tsconfig.base.json ./
+COPY packages/runtime/tsconfig.json packages/runtime/vite.config.ts packages/runtime/
 COPY packages/runtime/src/ packages/runtime/src/
+COPY packages/sdk/tsconfig.json packages/sdk/
 COPY packages/sdk/src/ packages/sdk/src/
-COPY packages/vite-plugin/src/ packages/vite-plugin/src/
-COPY workflows/tsconfig.json workflows/vite.config.ts workflows/
-COPY workflows/*.ts workflows/
-RUN pnpm build
+RUN pnpm --filter @workflow-engine/runtime exec vite build
 RUN pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy
-RUN cp -r dist/* /app/deploy/
-RUN cp -r workflows/dist /workflows
+RUN cp -r packages/runtime/dist/* /app/deploy/
 
 FROM gcr.io/distroless/nodejs24-debian13
 
 WORKDIR /app
 
 COPY --from=build /app/deploy .
-COPY --from=build /workflows /workflows
-
-ENV WORKFLOW_DIR=/workflows
 
 EXPOSE 8080
 
