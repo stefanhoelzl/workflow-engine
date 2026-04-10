@@ -13,6 +13,7 @@ import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
 import { type LoadedWorkflow, loadWorkflows } from "./loader.js";
 import { createHttpLogger, createLogger } from "./logger.js";
+import { createSandbox } from "./sandbox/index.js";
 import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createServer } from "./services/server.js";
@@ -101,8 +102,9 @@ async function init() {
 
 	const source = createEventSource(allEvents, eventBus);
 	const createContext = createActionContext(source, globalThis.fetch, contextLogger);
+	const sandbox = await createSandbox();
 
-	const scheduler = createScheduler(workQueue, source, allActions, createContext);
+	const scheduler = createScheduler(workQueue, source, allActions, createContext, sandbox);
 	const server = createServer(
 		config.port,
 		httpLogger,

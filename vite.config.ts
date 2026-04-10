@@ -99,7 +99,7 @@ export default defineConfig({
 	ssr: {
 		target: "node",
 		noExternal: true,
-		external: ["@duckdb/node-api", "@duckdb/node-bindings"],
+		external: ["@duckdb/node-bindings", "@jitl/quickjs-wasmfile-release-sync"],
 	},
 	plugins: [devServer()],
 });

@@ -32,7 +32,7 @@ describe("WorkQueue", () => {
 			const queue = createWorkQueue();
 			await queue.handle(makeEvent({ state: "processing" }));
 			await queue.handle({ ...makeEvent(), state: "done", result: "succeeded" });
-			await queue.handle({ ...makeEvent(), state: "done", result: "failed", error: "boom" });
+			await queue.handle({ ...makeEvent(), state: "done", result: "failed", error: { message: "boom", stack: "" } });
 			await queue.handle({ ...makeEvent(), state: "done", result: "skipped" });
 
 			// Buffer should be empty — dequeue should block
@@ -90,7 +90,7 @@ describe("WorkQueue", () => {
 			const queue = createWorkQueue();
 			await queue.bootstrap([
 				{ ...makeEvent(), state: "done", result: "succeeded" },
-				{ ...makeEvent(), state: "done", result: "failed", error: "boom" },
+				{ ...makeEvent(), state: "done", result: "failed", error: { message: "boom", stack: "" } },
 				{ ...makeEvent(), state: "done", result: "skipped" },
 			]);
 

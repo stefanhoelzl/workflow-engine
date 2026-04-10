@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Action } from "./actions/index.js";
-import { createActionContext } from "./context/index.js";
+import { type ActionContext, createActionContext } from "./context/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
 import { createLogger } from "./logger.js";
+import type { Sandbox } from "./sandbox/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
@@ -35,33 +36,40 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const source = createEventSource(defaultSchemas, bus);
 		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
 
-		const fulfillHandler = vi.fn();
-		const notifyHandler = vi.fn();
+		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
+		const sandbox: Sandbox = {
+			async spawn(actionSource, ctx) {
+				spawnCalls.push({ source: actionSource, ctx });
+				// Simulate the validateOrder action emitting
+				if (actionSource.includes("validateOrder")) {
+					await ctx.emit("order.validated", ctx.event.payload);
+				}
+				return { ok: true };
+			},
+		};
 
 		const actions: Action[] = [
 			{
 				name: "validateOrder",
 				on: "webhook.order",
 				env: {},
-				handler: async (ctx) => {
-					await ctx.emit("order.validated", ctx.event.payload);
-				},
+				source: "export default async (ctx) => { /* validateOrder */ }",
 			},
 			{
 				name: "fulfillOrder",
 				on: "order.validated",
 				env: {},
-				handler: fulfillHandler,
+				source: "export default async (ctx) => { /* fulfillOrder */ }",
 			},
 			{
 				name: "notifyCustomer",
 				on: "order.validated",
 				env: {},
-				handler: notifyHandler,
+				source: "export default async (ctx) => { /* notifyCustomer */ }",
 			},
 		];
 
-		const scheduler = createScheduler(workQueue, source, actions, createContext);
+		const scheduler = createScheduler(workQueue, source, actions, createContext, sandbox);
 		scheduler.start();
 
 		const app = createApp(
@@ -81,22 +89,30 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 
 		await scheduler.stop();
 
-		expect(fulfillHandler).toHaveBeenCalledTimes(1);
-		expect(notifyHandler).toHaveBeenCalledTimes(1);
+		// validateOrder + fulfillOrder + notifyCustomer
+		expect(spawnCalls).toHaveLength(3);
 
-		const fulfillCtx = fulfillHandler.mock.calls.at(0)?.at(0);
-		const notifyCtx = notifyHandler.mock.calls.at(0)?.at(0);
-		expect(fulfillCtx.event.correlationId).toBe(notifyCtx.event.correlationId);
-		expect(fulfillCtx.event.correlationId).toMatch(CORR_PREFIX);
+		const fulfillCall = spawnCalls.find((c) => c.source.includes("fulfillOrder"));
+		const notifyCall = spawnCalls.find((c) => c.source.includes("notifyCustomer"));
+		expect(fulfillCall).toBeDefined();
+		expect(notifyCall).toBeDefined();
+
+		// biome-ignore lint/style/noNonNullAssertion: test assertions guarantee elements exist
+		const fulfill = fulfillCall!;
+		// biome-ignore lint/style/noNonNullAssertion: test assertions guarantee elements exist
+		const notify = notifyCall!;
+
+		expect(fulfill.ctx.event.correlationId).toBe(notify.ctx.event.correlationId);
+		expect(fulfill.ctx.event.correlationId).toMatch(CORR_PREFIX);
 
 		// Payload includes the full HTTP context shape
-		expect(fulfillCtx.event.payload).toHaveProperty("body");
-		expect(fulfillCtx.event.payload).toHaveProperty("headers");
-		expect(fulfillCtx.event.payload).toHaveProperty("url");
-		expect(fulfillCtx.event.payload).toHaveProperty("method");
+		expect(fulfill.ctx.event.payload).toHaveProperty("body");
+		expect(fulfill.ctx.event.payload).toHaveProperty("headers");
+		expect(fulfill.ctx.event.payload).toHaveProperty("url");
+		expect(fulfill.ctx.event.payload).toHaveProperty("method");
 
-		expect(fulfillCtx.event.parentEventId).toBeDefined();
-		expect(notifyCtx.event.parentEventId).toBeDefined();
+		expect(fulfill.ctx.event.parentEventId).toBeDefined();
+		expect(notify.ctx.event.parentEventId).toBeDefined();
 	});
 
 	it("propagates headers and url through the full pipeline", async () => {
@@ -113,12 +129,19 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const source = createEventSource(defaultSchemas, bus);
 		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
 
-		const actionHandler = vi.fn();
+		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
+		const sandbox: Sandbox = {
+			async spawn(actionSource, ctx) {
+				spawnCalls.push({ source: actionSource, ctx });
+				return { ok: true };
+			},
+		};
+
 		const actions: Action[] = [
-			{ name: "handleOrder", on: "webhook.order", env: {}, handler: actionHandler },
+			{ name: "handleOrder", on: "webhook.order", env: {}, source: "export default async (ctx) => { /* handleOrder */ }" },
 		];
 
-		const scheduler = createScheduler(workQueue, source, actions, createContext);
+		const scheduler = createScheduler(workQueue, source, actions, createContext, sandbox);
 		scheduler.start();
 
 		const app = createApp(httpTriggerMiddleware(registry, source));
@@ -135,8 +158,9 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		await new Promise((r) => setTimeout(r, 100));
 		await scheduler.stop();
 
-		expect(actionHandler).toHaveBeenCalledOnce();
-		const ctx = actionHandler.mock.calls[0]?.[0];
+		expect(spawnCalls).toHaveLength(1);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
+		const ctx = spawnCalls[0]!.ctx;
 		const payload = ctx.event.payload as {
 			body: { orderId: string };
 			headers: Record<string, string>;

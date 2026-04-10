@@ -3,16 +3,19 @@ import type { ActionContext } from "../context/index.js";
 import type { RuntimeEvent } from "../event-bus/index.js";
 import type { WorkQueue } from "../event-bus/work-queue.js";
 import type { EventSource } from "../event-source.js";
+import type { Sandbox } from "../sandbox/index.js";
 import type { Service } from "./index.js";
 
 type ActionContextFactory = (event: RuntimeEvent, actionName: string, env: Record<string, string>) => ActionContext;
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled lifecycle logic
+// biome-ignore lint/complexity/useMaxParams: factory dependencies are all required
 function createScheduler(
 	workQueue: WorkQueue,
 	source: EventSource,
 	actions: Action[],
 	createContext: ActionContextFactory,
+	sandbox: Sandbox,
 ): Service {
 	let running = false;
 	let loopPromise: Promise<void> | null = null;
@@ -71,15 +74,15 @@ function createScheduler(
 	}
 
 	async function executeAction(event: RuntimeEvent, action: Action): Promise<void> {
-		try {
-			const ctx = createContext(event, action.name, action.env);
-			await action.handler(ctx);
+		const ctx = createContext(event, action.name, action.env);
+		const result = await sandbox.spawn(action.source, ctx, { filename: `${action.name}.js` });
+		if (result.ok) {
 			await source.transition(event, { state: "done", result: "succeeded" });
-		} catch (error) {
+		} else {
 			await source.transition(event, {
 				state: "done",
 				result: "failed",
-				error: error instanceof Error ? error.message : String(error),
+				error: result.error,
 			});
 		}
 	}

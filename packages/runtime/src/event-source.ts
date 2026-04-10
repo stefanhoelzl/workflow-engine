@@ -8,7 +8,7 @@ interface Schema {
 type TransitionOpts =
 	| { state: "processing" }
 	| { state: "done"; result: "succeeded" | "skipped" }
-	| { state: "done"; result: "failed"; error: string };
+	| { state: "done"; result: "failed"; error: { message: string; stack: string } };
 
 interface EventSource {
 	create(type: string, payload: unknown, source: string): Promise<RuntimeEvent>;

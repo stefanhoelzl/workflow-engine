@@ -28,7 +28,7 @@ interface CompileOutput {
 
 interface ManifestAction {
 	name: string;
-	handler: string;
+	module: string;
 	on: string;
 	emits: string[];
 	env: Record<string, string>;
@@ -124,7 +124,7 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 }
 
 async function processEntryChunk(
-	chunk: { name: string; code: string; exports: string[] },
+	chunk: { name: string; code: string; exports: string[]; fileName: string },
 	ctx: PluginContext & { emitFile(file: { type: "asset"; fileName: string; source: string }): void },
 ): Promise<void> {
 	const name = chunk.name;
@@ -138,10 +138,7 @@ async function processEntryChunk(
 		ctx.error(`Failed to import workflow "${name}": ${error instanceof Error ? error.message : String(error)}`);
 	}
 
-	const manifest = extractManifest(mod, name, ctx);
-	if (!manifest) {
-		return;
-	}
+	const { manifest, actionSources } = extractManifest(mod, name, chunk.code, chunk.exports, ctx);
 
 	ctx.emitFile({
 		type: "asset",
@@ -149,14 +146,27 @@ async function processEntryChunk(
 		source: JSON.stringify(manifest, null, 2),
 	});
 
-	chunk.code = transformBundledHandlers(chunk.code, chunk.exports);
+	// Emit one file per action with default export
+	for (const [actionName, source] of Object.entries(actionSources)) {
+		ctx.emitFile({
+			type: "asset",
+			fileName: `${name}/${actionName}.js`,
+			source,
+		});
+	}
+
+	// Empty the original combined actions.js — individual files replace it
+	chunk.code = "";
 }
 
+// biome-ignore lint/complexity/useMaxParams: all parameters are distinct required inputs
 function extractManifest(
 	mod: Record<string, unknown>,
 	name: string,
+	code: string,
+	_exports: string[],
 	ctx: PluginContext,
-): object | undefined {
+): { manifest: object; actionSources: Record<string, string> } {
 	const defaultExport = mod.default as { compile?: () => CompileOutput } | undefined;
 	if (!defaultExport || typeof defaultExport.compile !== "function") {
 		ctx.error(`Workflow "${name}" default export does not have a .compile() method`);
@@ -171,6 +181,7 @@ function extractManifest(
 
 	const namedExports = Object.entries(mod).filter(([key]) => key !== "default");
 	const actions: ManifestAction[] = [];
+	const actionSources: Record<string, string> = {};
 
 	for (const action of compiled.actions) {
 		const match = namedExports.find(([, fn]) => fn === action.handler);
@@ -179,37 +190,42 @@ function extractManifest(
 		}
 
 		const [exportName] = match;
+		const actionName = action.name ?? exportName;
 		actions.push({
-			name: action.name ?? exportName,
-			handler: exportName,
+			name: actionName,
+			module: `./${actionName}.js`,
 			on: action.on,
 			emits: action.emits,
 			env: action.env,
 		});
+
+		// Extract handler source and wrap as default export
+		const handlerSource = extractHandlerSource(code, exportName);
+		actionSources[actionName] = handlerSource
+			? `export default ${handlerSource};\n`
+			: `export default ${action.handler.toString()};\n`;
 	}
 
 	return {
-		events: compiled.events,
-		triggers: compiled.triggers,
-		actions,
-		module: "./actions.js",
+		manifest: {
+			events: compiled.events,
+			triggers: compiled.triggers,
+			actions,
+		},
+		actionSources,
 	};
 }
 
 const ACTION_CALL_RE = /var\s+(\w+)\s*=\s*\w+\.action\(\{/g;
 const HANDLER_KEY_RE = /handler:\s*/;
 
-function transformBundledHandlers(code: string, exports: string[]): string {
-	// Extract only the handler functions from var X = *.action({...handler: fn...}) patterns
-	const handlerExports = exports.filter((e) => e !== "default");
-	const handlers: string[] = [];
-
+function extractHandlerSource(code: string, exportName: string): string | undefined {
 	const pattern = new RegExp(ACTION_CALL_RE.source, "g");
 	let match: RegExpExecArray | null = pattern.exec(code);
 
 	while (match !== null) {
 		const varName = match[1];
-		if (!handlerExports.includes(varName ?? "")) {
+		if (varName !== exportName) {
 			match = pattern.exec(code);
 			continue;
 		}
@@ -229,14 +245,10 @@ function transformBundledHandlers(code: string, exports: string[]): string {
 		}
 
 		const handlerBodyEnd = findMatchingBrace(code, braceStart);
-		const handlerSource = code.slice(handlerStart, handlerBodyEnd + 1);
-		handlers.push(`var ${varName} = ${handlerSource};`);
-
-		match = pattern.exec(code);
+		return code.slice(handlerStart, handlerBodyEnd + 1);
 	}
 
-	const exportLine = `export { ${handlerExports.join(", ")} };`;
-	return `${handlers.join("\n")}\n${exportLine}\n`;
+	return;
 }
 
 function findMatchingBrace(code: string, openPos: number): number {
