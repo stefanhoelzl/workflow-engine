@@ -1,31 +1,25 @@
-# Triggers Specification
-
-## Purpose
-
-Receive external stimuli and convert them into typed events in the queue. Triggers are built into the platform runtime and are not user-extensible in v1.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: HTTP trigger payload shape
 
-HTTP trigger events SHALL have a payload containing the full HTTP request context as a structured object with four fields: `body`, `headers`, `url`, and `method`.
+HTTP trigger events SHALL have a payload containing the full HTTP request context as a structured object with four fields: `body`, `headers`, `path`, and `method`.
 
 - `body`: The JSON-parsed request body, validated against the trigger's body schema (or `z.unknown()` if no body schema is provided).
 - `headers`: All HTTP request headers as `Record<string, string>`. Multi-value headers SHALL be joined with `, ` (per HTTP spec).
-- `url`: The full request path including query string (e.g. `/webhooks/cronitor?source=api`).
+- `path`: The full request path including query string (e.g. `/webhooks/cronitor?source=api`).
 - `method`: The HTTP method string (e.g. `"POST"`).
 
 #### Scenario: HTTP trigger with body schema
 
 - **GIVEN** a trigger defined as `trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))`
 - **WHEN** a `POST /webhooks/order` request is received with body `{ "orderId": "abc" }` and header `x-signature: sha256=...`
-- **THEN** the event payload SHALL be `{ body: { orderId: "abc" }, headers: { "x-signature": "sha256=...", ... }, url: "/webhooks/order", method: "POST" }`
+- **THEN** the event payload SHALL be `{ body: { orderId: "abc" }, headers: { "x-signature": "sha256=...", ... }, path: "/webhooks/order", method: "POST" }`
 
 #### Scenario: HTTP trigger without body schema
 
 - **GIVEN** a trigger defined as `trigger("webhook.ping", http({ path: "ping", method: "GET" }))`
 - **WHEN** a `GET /webhooks/ping?check=true` request is received with body `{}`
-- **THEN** the event payload SHALL have `body` validated against `z.unknown()`, `url` as `"/webhooks/ping?check=true"`, and `method` as `"GET"`
+- **THEN** the event payload SHALL have `body` validated against `z.unknown()`, `path` as `"/webhooks/ping?check=true"`, and `method` as `"GET"`
 
 #### Scenario: Headers include all request headers
 
@@ -49,17 +43,17 @@ The config SHALL accept:
 - `body`: `z.ZodType` (optional, default `z.unknown()`) — schema for the JSON request body
 - `response`: object (optional) with `status` (number) and `body` (unknown) — static response
 
-The returned `TriggerDef` SHALL carry a generated schema wrapping the body with `headers`, `url`, and `method` fields: `z.object({ body: <bodySchema>, headers: z.record(z.string(), z.string()), url: z.string(), method: z.string() })`.
+The returned `TriggerDef` SHALL carry a generated schema wrapping the body with `headers`, `path`, and `method` fields: `z.object({ body: <bodySchema>, headers: z.record(z.string(), z.string()), path: z.string(), method: z.string() })`.
 
 #### Scenario: http() with body schema
 
 - **WHEN** `http({ path: "order", body: z.object({ orderId: z.string() }) })` is called
-- **THEN** the returned `TriggerDef` SHALL have a schema equivalent to `z.object({ body: z.object({ orderId: z.string() }), headers: z.record(z.string(), z.string()), url: z.string(), method: z.string() })`
+- **THEN** the returned `TriggerDef` SHALL have a schema equivalent to `z.object({ body: z.object({ orderId: z.string() }), headers: z.record(z.string(), z.string()), path: z.string(), method: z.string() })`
 
 #### Scenario: http() without body schema
 
 - **WHEN** `http({ path: "ping", method: "GET" })` is called
-- **THEN** the returned `TriggerDef` SHALL have a schema with `body: z.unknown()`, `headers: z.record(z.string(), z.string())`, `url: z.string()`, `method: z.string()`
+- **THEN** the returned `TriggerDef` SHALL have a schema with `body: z.unknown()`, `headers: z.record(z.string(), z.string())`, `path: z.string()`, `method: z.string()`
 
 #### Scenario: http() with response config
 
@@ -70,7 +64,9 @@ The returned `TriggerDef` SHALL carry a generated schema wrapping the body with 
 
 - **GIVEN** `const def = http({ path: "order", body: z.object({ orderId: z.string() }) })`
 - **WHEN** the `TriggerDef` schema is inferred via `z.infer`
-- **THEN** the inferred type SHALL be `{ body: { orderId: string }, headers: Record<string, string>, url: string, method: string }`
+- **THEN** the inferred type SHALL be `{ body: { orderId: string }, headers: Record<string, string>, path: string, method: string }`
+
+## MODIFIED Requirements
 
 ### Requirement: HttpTriggerDefinition is a pure data type
 
@@ -109,6 +105,40 @@ The `HttpTriggerRegistry` SHALL resolve optional fields to defaults when registe
 - **WHEN** registering an `HttpTriggerDefinition` with `name: "webhook.order"`, `method: "PUT"`, and `response: { status: 202, body: { ok: true } }`
 - **THEN** `lookup()` returns an `HttpTriggerResolved` preserving the explicit values and `name: "webhook.order"`
 
+### Requirement: httpTriggerMiddleware matches requests under /webhooks/
+
+The `httpTriggerMiddleware` SHALL be a Hono middleware that intercepts requests under the `/webhooks/` path prefix, strips the prefix, looks up the remaining path and method in the registry, and either handles the request or returns 404.
+
+The middleware SHALL always JSON-parse the request body. On parse failure, the middleware SHALL return a 422 response. The middleware SHALL construct a payload object with `body` (the parsed JSON), `headers` (all request headers as `Record<string, string>`), `path` (full request path including query string), and `method` (HTTP method string), then call `source.create(definition.name, payload, definition.name)` to create and emit the event using the trigger name as both event type and source name.
+
+#### Scenario: Matching trigger request with full payload
+
+- **WHEN** a `POST /webhooks/order?source=shopify` request is received with headers `Content-Type: application/json`, `X-Signature: abc123` and body `{ "orderId": "abc" }`
+- **AND** a trigger with path `"order"` and method `"POST"` is registered with name `"webhook.order"`
+- **THEN** the middleware SHALL parse the request body as JSON
+- **AND** construct payload `{ body: { orderId: "abc" }, headers: { "content-type": "application/json", "x-signature": "abc123", ... }, path: "/webhooks/order?source=shopify", method: "POST" }`
+- **AND** call `source.create("webhook.order", payload, "webhook.order")`
+- **AND** return the trigger's configured static response
+
+#### Scenario: Payload validation error
+
+- **WHEN** a `POST /webhooks/order` request is received with a body that fails schema validation
+- **AND** a trigger with path `"order"` is registered
+- **THEN** the middleware SHALL catch the `PayloadValidationError` from `source.create()`
+- **AND** return a 422 response with error details
+
+#### Scenario: No matching trigger
+
+- **WHEN** a `POST /webhooks/unknown` request is received
+- **AND** no trigger is registered for path `"unknown"` and method `"POST"`
+- **THEN** the middleware SHALL return a `404` response
+
+#### Scenario: Non-JSON request body
+
+- **WHEN** a `POST /webhooks/order` request is received with a non-JSON body
+- **AND** a trigger with path `"order"` and method `"POST"` is registered
+- **THEN** the middleware SHALL return a `422` response
+
 ### Requirement: HttpTriggerRegistry supports registration and lookup
 
 The `HttpTriggerRegistry` SHALL allow registering `HttpTriggerDefinition` objects and looking them up by path and method.
@@ -131,40 +161,6 @@ The registry SHALL expose:
 
 - **WHEN** a trigger is registered with path `"order"` and method `"POST"`
 - **THEN** `lookup("order", "GET")` SHALL return `null`
-
-### Requirement: httpTriggerMiddleware matches requests under /webhooks/
-
-The `httpTriggerMiddleware` SHALL be a Hono middleware that intercepts requests under the `/webhooks/` path prefix, strips the prefix, looks up the remaining path and method in the registry, and either handles the request or returns 404.
-
-The middleware SHALL always JSON-parse the request body. On parse failure, the middleware SHALL return a 422 response. The middleware SHALL construct a payload object with `body` (the parsed JSON), `headers` (all request headers as `Record<string, string>`), `url` (full request path including query string), and `method` (HTTP method string), then call `source.create(definition.name, payload, definition.name)` to create and emit the event using the trigger name as both event type and source name.
-
-#### Scenario: Matching trigger request with full payload
-
-- **WHEN** a `POST /webhooks/order?source=shopify` request is received with headers `Content-Type: application/json`, `X-Signature: abc123` and body `{ "orderId": "abc" }`
-- **AND** a trigger with path `"order"` and method `"POST"` is registered with name `"webhook.order"`
-- **THEN** the middleware SHALL parse the request body as JSON
-- **AND** construct payload `{ body: { orderId: "abc" }, headers: { "content-type": "application/json", "x-signature": "abc123", ... }, url: "/webhooks/order?source=shopify", method: "POST" }`
-- **AND** call `source.create("webhook.order", payload, "webhook.order")`
-- **AND** return the trigger's configured static response
-
-#### Scenario: Payload validation error
-
-- **WHEN** a `POST /webhooks/order` request is received with a body that fails schema validation
-- **AND** a trigger with path `"order"` is registered
-- **THEN** the middleware SHALL catch the `PayloadValidationError` from `source.create()`
-- **AND** return a 422 response with error details
-
-#### Scenario: No matching trigger
-
-- **WHEN** a `POST /webhooks/unknown` request is received
-- **AND** no trigger is registered for path `"unknown"` and method `"POST"`
-- **THEN** the middleware SHALL return a `404` response
-
-#### Scenario: Non-JSON request body
-
-- **WHEN** a `POST /webhooks/order` request is received with a non-JSON body
-- **AND** a trigger with path `"order"` and method `"POST"` is registered
-- **THEN** the middleware SHALL return a `422` response
 
 ### Requirement: Native implementation
 

@@ -13,7 +13,7 @@ const silentLogger = createLogger("test", { level: "silent" });
 
 const passthroughSchema = { parse: (d: unknown) => d };
 const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
-	"order.received": passthroughSchema,
+	"webhook.order": passthroughSchema,
 	"order.validated": passthroughSchema,
 	stop: passthroughSchema,
 };
@@ -24,10 +24,9 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 	it("processes a full chaining pipeline with fan-out after emit", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
-			name: "orders",
+			name: "webhook.order",
 			path: "order",
 			method: "POST",
-			event: "order.received",
 			response: { status: 202 as const, body: { accepted: true } },
 		});
 
@@ -42,7 +41,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const actions: Action[] = [
 			{
 				name: "validateOrder",
-				on: "order.received",
+				on: "webhook.order",
 				env: {},
 				handler: async (ctx) => {
 					await ctx.emit("order.validated", ctx.event.payload);
@@ -90,10 +89,64 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		expect(fulfillCtx.event.correlationId).toBe(notifyCtx.event.correlationId);
 		expect(fulfillCtx.event.correlationId).toMatch(CORR_PREFIX);
 
-		expect(fulfillCtx.event.payload).toEqual({ orderId: "abc" });
-		expect(notifyCtx.event.payload).toEqual({ orderId: "abc" });
+		// Payload includes the full HTTP context shape
+		expect(fulfillCtx.event.payload).toHaveProperty("body");
+		expect(fulfillCtx.event.payload).toHaveProperty("headers");
+		expect(fulfillCtx.event.payload).toHaveProperty("url");
+		expect(fulfillCtx.event.payload).toHaveProperty("method");
 
 		expect(fulfillCtx.event.parentEventId).toBeDefined();
 		expect(notifyCtx.event.parentEventId).toBeDefined();
+	});
+
+	it("propagates headers and url through the full pipeline", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 202 as const, body: { ok: true } },
+		});
+
+		const workQueue = createWorkQueue();
+		const bus = createEventBus([workQueue]);
+		const source = createEventSource(defaultSchemas, bus);
+		const createContext = createActionContext(source, globalThis.fetch, silentLogger);
+
+		const actionHandler = vi.fn();
+		const actions: Action[] = [
+			{ name: "handleOrder", on: "webhook.order", env: {}, handler: actionHandler },
+		];
+
+		const scheduler = createScheduler(workQueue, source, actions, createContext);
+		scheduler.start();
+
+		const app = createApp(httpTriggerMiddleware(registry, source));
+
+		await app.request("/webhooks/order?source=shopify", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Signature": "sha256=test",
+			},
+			body: JSON.stringify({ orderId: "xyz" }),
+		});
+
+		await new Promise((r) => setTimeout(r, 100));
+		await scheduler.stop();
+
+		expect(actionHandler).toHaveBeenCalledOnce();
+		const ctx = actionHandler.mock.calls[0]?.[0];
+		const payload = ctx.event.payload as {
+			body: { orderId: string };
+			headers: Record<string, string>;
+			url: string;
+			method: string;
+		};
+
+		expect(payload.body).toEqual({ orderId: "xyz" });
+		expect(payload.headers["x-signature"]).toBe("sha256=test");
+		expect(payload.url).toBe("http://localhost/webhooks/order?source=shopify");
+		expect(payload.method).toBe("POST");
 	});
 });

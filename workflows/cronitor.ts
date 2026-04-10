@@ -1,41 +1,37 @@
-import { createWorkflow, env, z } from "@workflow-engine/sdk";
+import { createWorkflow, z, http, env } from "@workflow-engine/sdk";
 
 const workflow = createWorkflow()
-	.event("webhook.cronitor", z.object({
-		id: z.string().meta({ example: "id" }),
-		monitor: z.string().meta({ example: "monitor" }),
-		description: z.string().meta({ example: "ALERT" }),
-		type: z.enum(["ALERT", "RECOVERY"]),
-		rule: z.string().meta({ example: "rule" }),
-		environment: z.string().meta({ example: "production" }),
-		group: z.string().nullable(),
-		// biome-ignore lint/style/useNamingConvention: Cronitor API field
-		issue_url: z.string().meta({ example: "https://example.com/issue/abc-123" }),
-		// biome-ignore lint/style/useNamingConvention: Cronitor API field
-		monitor_url: z.string().meta({ example: "https://example.com/monitor/123" }),
+	.trigger("webhook.cronitor", http({
+		path: "cronitor",
+		body: z.object({
+			id: z.string().meta({ example: "id" }),
+			monitor: z.string().meta({ example: "monitor" }),
+			description: z.string().meta({ example: "ALERT" }),
+			type: z.enum(["ALERT", "RECOVERY"]),
+			rule: z.string().meta({ example: "rule" }),
+			environment: z.string().meta({ example: "production" }),
+			group: z.string().nullable(),
+			issue_url: z.string().meta({ example: "https://example.com/issue/abc-123" }),
+			monitor_url: z.string().meta({ example: "https://example.com/monitor/123" }),
+		}),
+		response: { status: 202 },
 	}))
 	.event("notify.message", z.object({
 		message: z.string(),
-	}))
-	.trigger("cronitor", {
-		type: "http",
-		path: "cronitor",
-		event: "webhook.cronitor",
-		response: { status: 202 },
-	});
+	}));
 
 export const handleCronitorEvent = workflow.action({
 	on: "webhook.cronitor",
 	emits: ["notify.message"],
 	handler: async (ctx) => {
-		const payload = ctx.event.payload;
-		const emoji = payload.type === "ALERT" ? "\u26a0\ufe0f" : "\u2705";
-		const label = payload.type === "ALERT" ? "Alert" : "Recovery";
+		const { body } = ctx.event.payload;
+		const emoji = body.type === "ALERT" ? "\u26a0\ufe0f" : "\u2705";
+		const label = body.type === "ALERT" ? "Alert" : "Recovery";
 		const message = [
-			`**${emoji} ${label}: ${payload.monitor}**`,
-			`Rule: ${payload.rule}`,
-			`Environment: ${payload.environment}`,
-			payload.issue_url,
+			`**${emoji} ${label}: ${body.monitor}**`,
+			`Rule: ${body.rule}`,
+			`Environment: ${body.environment}`,
+			body.issue_url,
 		].join("\n");
 		await ctx.emit("notify.message", {message});
 	}
@@ -55,10 +51,8 @@ export const sendMessage = workflow.action({
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				// biome-ignore lint/style/useNamingConvention: HTTP header
 				Accept: "application/json",
 				"OCS-APIRequest": "true",
-				// biome-ignore lint/style/useNamingConvention: HTTP header
 				Authorization: `Basic ${btoa(`${ctx.env.NEXTCLOUD_USERNAME}:${ctx.env.NEXTCLOUD_APP_PASSWORD}`)}`,
 			},
 			body: JSON.stringify({ message: ctx.event.payload.message }),

@@ -13,20 +13,63 @@ interface Event<Payload = unknown> {
 
 // --- Trigger types ---
 
-interface HttpTriggerInput<E extends string> {
-	type: "http";
+interface TriggerDef<S extends z.ZodType = z.ZodType> {
+	type: string;
+	schema: S;
+	path: string;
+	method?: string | undefined;
+	response?: {
+		status?: number | undefined;
+		body?: unknown;
+	} | undefined;
+}
+
+interface TriggerConfig {
+	name: string;
+	type: string;
+	path: string;
+	method?: string | undefined;
+	response?: {
+		status?: number | undefined;
+		body?: unknown;
+	} | undefined;
+}
+
+interface HttpTriggerInput<B extends z.ZodType = z.ZodType> {
 	path: string;
 	method?: string;
-	event: E;
+	body?: B;
 	response?: {
 		status?: number;
 		body?: unknown;
 	};
 }
 
-type TriggerInput<E extends string> = HttpTriggerInput<E>;
+type HttpPayloadSchema<B extends z.ZodType> = z.ZodObject<{
+	body: B;
+	headers: z.ZodRecord<z.ZodString, z.ZodString>;
+	url: z.ZodString;
+	method: z.ZodString;
+}>;
 
-type TriggerConfig = TriggerInput<string> & { name: string };
+function http<B extends z.ZodType = z.ZodUnknown>(
+	config: HttpTriggerInput<B>,
+): TriggerDef<HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B>> {
+	const bodySchema = (config.body ?? z.unknown()) as B extends undefined ? z.ZodUnknown : B;
+	const schema = z.object({
+		body: bodySchema,
+		headers: z.record(z.string(), z.string()),
+		url: z.string(),
+		method: z.string(),
+	});
+	return {
+		type: "http",
+		schema: schema as HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B>,
+		path: config.path,
+		method: config.method,
+		response: config.response,
+	};
+}
 
 // --- Action context ---
 
@@ -114,7 +157,6 @@ const ManifestSchema = z.object({
 			type: z.string(),
 			path: z.string(),
 			method: z.string().optional(),
-			event: z.string(),
 			response: z
 				.object({
 					status: z.number().optional(),
@@ -153,46 +195,97 @@ interface CompileOutput {
 	actions: CompiledAction[];
 }
 
-// --- WorkflowBuilder (single-phase) ---
+// --- Phase-typed builder ---
 
-interface WorkflowBuilder<E extends EventDefs, WorkflowEnv extends string = never> {
-	event<Name extends string, S extends z.ZodType>(
-		name: Name,
-		schema: S,
-	): WorkflowBuilder<E & Record<Name, S>, WorkflowEnv>;
+type AllEvents<T extends EventDefs, E extends EventDefs> = T & E;
 
-	env<V extends Record<string, string | EnvRef>>(
-		config: V,
-	): WorkflowBuilder<E, WorkflowEnv | (keyof V & string)>;
-
-	trigger(
-		name: string,
-		config: TriggerInput<keyof E & string>,
-	): WorkflowBuilder<E, WorkflowEnv>;
-
-	action<
-		K extends keyof E & string,
-		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
-		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
-	>(config: {
-		name?: string;
-		on: K;
-		emits?: Emits;
-		env?: ActionEnv;
-		handler: (
-			ctx: ActionContext<
-				z.infer<E[K]>,
-				Pick<EventPayloads<E>, Emits[number] & string>,
-				WorkflowEnv | (keyof ActionEnv & string)
-			>,
-		) => Promise<void>;
-	}): (
+interface ActionConfig<
+	T extends EventDefs,
+	E extends EventDefs,
+	K extends keyof AllEvents<T, E> & string,
+	Emits extends ReadonlyArray<keyof E & string>,
+	WorkflowEnv extends string,
+	ActionEnv extends Record<string, string | EnvRef>,
+> {
+	name?: string;
+	on: K;
+	emits?: Emits;
+	env?: ActionEnv;
+	handler: (
 		ctx: ActionContext<
-			z.infer<E[K]>,
+			z.infer<AllEvents<T, E>[K]>,
 			Pick<EventPayloads<E>, Emits[number] & string>,
 			WorkflowEnv | (keyof ActionEnv & string)
 		>,
 	) => Promise<void>;
+}
+
+type ActionReturn<
+	T extends EventDefs,
+	E extends EventDefs,
+	K extends keyof AllEvents<T, E> & string,
+	Emits extends ReadonlyArray<keyof E & string>,
+	WorkflowEnv extends string,
+	ActionEnv extends Record<string, string | EnvRef>,
+> = (
+	ctx: ActionContext<
+		z.infer<AllEvents<T, E>[K]>,
+		Pick<EventPayloads<E>, Emits[number] & string>,
+		WorkflowEnv | (keyof ActionEnv & string)
+	>,
+) => Promise<void>;
+
+// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
+interface TriggerPhase<T extends EventDefs = {}, WorkflowEnv extends string = never> {
+	trigger<Name extends string, S extends z.ZodType>(
+		name: Name extends keyof T ? never : Name,
+		config: TriggerDef<S>,
+	): TriggerPhase<T & Record<Name, S>, WorkflowEnv>;
+
+	event<Name extends string, S extends z.ZodType>(
+		name: Name extends keyof T ? never : Name,
+		schema: S,
+	): EventPhase<T, Record<Name, S>, WorkflowEnv>;
+
+	env<V extends Record<string, string | EnvRef>>(
+		config: V,
+	): TriggerPhase<T, WorkflowEnv | (keyof V & string)>;
+
+	action<
+		K extends keyof T & string,
+		const Emits extends readonly never[] = readonly [],
+		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
+	// biome-ignore lint/complexity/noBannedTypes: empty E pool in TriggerPhase (no action events defined yet)
+	>(config: ActionConfig<T, {}, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, {}, K, Emits, WorkflowEnv, ActionEnv>;
+
+	compile(): CompileOutput;
+}
+
+interface EventPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv extends string = never> {
+	event<Name extends string, S extends z.ZodType>(
+		name: Name extends keyof T | keyof E ? never : Name,
+		schema: S,
+	): EventPhase<T, E & Record<Name, S>, WorkflowEnv>;
+
+	env<V extends Record<string, string | EnvRef>>(
+		config: V,
+	): EventPhase<T, E, WorkflowEnv | (keyof V & string)>;
+
+	action<
+		K extends keyof AllEvents<T, E> & string,
+		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
+		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
+	>(config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
+
+	compile(): CompileOutput;
+}
+
+interface ActionPhase<T extends EventDefs, E extends EventDefs, WorkflowEnv extends string = never> {
+	action<
+		K extends keyof AllEvents<T, E> & string,
+		const Emits extends ReadonlyArray<keyof E & string> = readonly [],
+		ActionEnv extends Record<string, string | EnvRef> = Record<never, never>,
+	>(config: ActionConfig<T, E, K, Emits, WorkflowEnv, ActionEnv>): ActionReturn<T, E, K, Emits, WorkflowEnv, ActionEnv>;
 
 	compile(): CompileOutput;
 }
@@ -226,8 +319,15 @@ class WorkflowBuilderImpl {
 		return this;
 	}
 
-	trigger(name: string, input: TriggerInput<string>): this {
-		this.#triggers.push({ ...input, name });
+	trigger(name: string, def: TriggerDef): this {
+		this.#events[name] = def.schema;
+		this.#triggers.push({
+			name,
+			type: def.type,
+			path: def.path,
+			method: def.method,
+			response: def.response,
+		});
 		return this;
 	}
 
@@ -276,10 +376,10 @@ function getDefaultEnvSource(): Record<string, string | undefined> {
 }
 
 // biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-function createWorkflow(envSource?: Record<string, string | undefined>): WorkflowBuilder<{}, never> {
+function createWorkflow(envSource?: Record<string, string | undefined>): TriggerPhase<{}, never> {
 	// biome-ignore lint/complexity/noBannedTypes: empty object is the correct initial state for accumulated event defs
-	return new WorkflowBuilderImpl(envSource ?? getDefaultEnvSource()) as unknown as WorkflowBuilder<{}, never>;
+	return new WorkflowBuilderImpl(envSource ?? getDefaultEnvSource()) as unknown as TriggerPhase<{}, never>;
 }
 
-export { z, createWorkflow, env, ENV_REF, ManifestSchema };
-export type { Event, EnvRef, Manifest, CompileOutput, CompiledAction, TriggerConfig, WorkflowBuilder, ActionContext };
+export { z, createWorkflow, http, env, ENV_REF, ManifestSchema };
+export type { Event, EnvRef, Manifest, CompileOutput, CompiledAction, TriggerConfig, TriggerDef, TriggerPhase, EventPhase, ActionPhase, ActionContext };
