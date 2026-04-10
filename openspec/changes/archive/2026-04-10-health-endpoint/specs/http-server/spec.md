@@ -1,10 +1,4 @@
-# HTTP Server Specification
-
-## Purpose
-
-Generic HTTP server foundation for the runtime. Accepts middleware and serves as the base for all platform HTTP endpoints.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: createServer accepts middleware and returns a Hono app
 
@@ -53,28 +47,3 @@ The health middleware SHALL be passed to `createServer` alongside the existing m
 #### Scenario: Health middleware is wired into the server
 - **WHEN** the runtime initializes
 - **THEN** `healthMiddleware` SHALL be passed to `createServer` with access to eventStore, storageBackend, and baseUrl
-
-### Requirement: Unmatched routes return 404
-
-The server SHALL return a `404` response for requests that do not match any middleware or route.
-
-#### Scenario: Request to unknown path
-- **WHEN** a `GET /nonexistent` request is received
-- **AND** no middleware handles the request
-- **THEN** the server SHALL return a `404` response
-
-### Requirement: Server port is configurable via PORT environment variable
-
-The runtime SHALL read the `PORT` environment variable to determine the HTTP server listen port. If `PORT` is not set, it SHALL default to `8080`.
-
-#### Scenario: PORT env var is set
-- **WHEN** the runtime starts with `PORT=9090`
-- **THEN** the HTTP server SHALL listen on port 9090
-
-#### Scenario: PORT env var is not set
-- **WHEN** the runtime starts without a `PORT` environment variable
-- **THEN** the HTTP server SHALL listen on port 8080
-
-#### Scenario: Startup log includes the port
-- **WHEN** the runtime starts
-- **THEN** it SHALL log `Runtime listening on port <port>` with the actual port number

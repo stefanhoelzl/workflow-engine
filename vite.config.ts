@@ -18,6 +18,7 @@ function getFreePort(): Promise<number> {
 	});
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Vite plugin lifecycle hooks in single closure
 function devServer(): Plugin {
 	let server: ChildProcess | null = null;
 	let enabled = false;
@@ -81,6 +82,7 @@ function devServer(): Plugin {
 					WORKFLOW_DIR: resolve(import.meta.dirname, "workflows/dist"),
 					PERSISTENCE_PATH: resolve(import.meta.dirname, ".persistence"),
 					PORT: String(port),
+					BASE_URL: `http://localhost:${port}`,
 				},
 			});
 			// biome-ignore lint/suspicious/noConsole: intentional startup message

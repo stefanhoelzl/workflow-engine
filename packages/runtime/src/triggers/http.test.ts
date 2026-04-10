@@ -178,10 +178,57 @@ describe("httpTriggerMiddleware — pass-through", () => {
 		const { source, createSpy } = stubEventSource();
 		const app = createApp(registry, source);
 
-		const res = await app.request("/api/health", { method: "GET" });
+		const res = await app.request("/other", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
 		expect(createSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("httpTriggerMiddleware — webhooks status", () => {
+	it("returns 204 when triggers are registered", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+		});
+		const { source } = stubEventSource();
+		const app = createApp(registry, source);
+
+		const res = await app.request("/webhooks/", { method: "GET" });
+
+		expect(res.status).toBe(constants.HTTP_STATUS_NO_CONTENT);
+	});
+
+	it("returns 503 when no triggers are registered", async () => {
+		const registry = new HttpTriggerRegistry();
+		const { source } = stubEventSource();
+		const app = createApp(registry, source);
+
+		const res = await app.request("/webhooks/", { method: "GET" });
+
+		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
+	});
+
+	it("does not interfere with POST to trigger paths", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 202 as const, body: { accepted: true } },
+		});
+		const { source } = stubEventSource();
+		const app = createApp(registry, source);
+
+		const res = await app.request("/webhooks/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ item: "widget" }),
+		});
+
+		expect(res.status).toBe(constants.HTTP_STATUS_ACCEPTED);
 	});
 });
 
