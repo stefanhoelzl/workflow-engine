@@ -49,7 +49,7 @@ async function seedEvents() {
 	await store.handle(makeEvent({ id: "e5", correlationId: "corr_C", type: "cronitor.check", state: "pending", createdAt: new Date("2025-01-01T10:02:00Z") }));
 	await store.handle(makeEvent({ id: "e5", correlationId: "corr_C", type: "cronitor.check", state: "done", result: "succeeded", createdAt: new Date("2025-01-01T10:02:01Z") }));
 	await store.handle(makeEvent({ id: "e6", correlationId: "corr_C", type: "notification.send", state: "pending", parentEventId: "e5", targetAction: "send-slack", createdAt: new Date("2025-01-01T10:02:02Z") }));
-	await store.handle(makeEvent({ id: "e6", correlationId: "corr_C", type: "notification.send", state: "done", result: "failed", parentEventId: "e5", targetAction: "send-slack", error: "rate limited", createdAt: new Date("2025-01-01T10:02:03Z") }));
+	await store.handle(makeEvent({ id: "e6", correlationId: "corr_C", type: "notification.send", state: "done", result: "failed", parentEventId: "e5", targetAction: "send-slack", error: { message: "rate limited", stack: "" }, createdAt: new Date("2025-01-01T10:02:03Z") }));
 }
 
 describe("listCorrelations", () => {
@@ -144,7 +144,7 @@ describe("getTimeline", () => {
 		const events = await getTimeline(store, "corr_C");
 
 		const failed = events.find((e) => e.result === "failed");
-		expect(failed?.error).toBe("rate limited");
+		expect(failed?.error).toEqual({ message: "rate limited", stack: "" });
 	});
 
 	it("returns empty array for unknown correlationId", async () => {

@@ -83,13 +83,13 @@ describe("LoggingConsumer", () => {
 			const { logger, lines } = createTestLogger();
 			const consumer = createLoggingConsumer(logger);
 
-			await consumer.handle({ ...makeEvent(), state: "done", result: "failed", error: "timeout" } as RuntimeEvent);
+			await consumer.handle({ ...makeEvent(), state: "done", result: "failed", error: { message: "timeout", stack: "" } } as RuntimeEvent);
 
 			const output = lines();
 			const log = output.find((l) => l.msg === "event.failed");
 			expect(log).toBeDefined();
 			expect(log?.result).toBe("failed");
-			expect(log?.error).toBe("timeout");
+			expect(log?.error).toEqual({ message: "timeout", stack: "" });
 			expect(log?.level).toBe(50); // error
 		});
 

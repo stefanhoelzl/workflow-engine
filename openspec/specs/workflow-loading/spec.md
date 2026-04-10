@@ -14,25 +14,31 @@ The runtime SHALL scan the directory specified by `WORKFLOW_DIR` for subdirector
 - **THEN** the loader SHALL only attempt to load the `cronitor` workflow
 
 ### Requirement: Manifest-based workflow loading
-The loader SHALL read and parse `manifest.json` from each workflow subdirectory using the SDK's `ManifestSchema` for validation. Event schemas SHALL be reconstructed from JSON Schema via `z.fromJSONSchema()`. Handler functions SHALL be imported from the actions module specified by the manifest's `module` field. Each loaded action SHALL carry its `env: Record<string, string>` from the manifest.
 
-#### Scenario: Valid manifest and actions module
-- **WHEN** a subdirectory contains a valid `manifest.json` with actions having `env: { "API_KEY": "value" }` and a matching `actions.js`
-- **THEN** the loader SHALL parse the manifest, reconstruct Zod schemas for each event, import the actions module, and match named exports to action entries via the `handler` field
-- **AND** each loaded `Action` object SHALL include its `env: Record<string, string>` from the manifest
+The loader SHALL read and parse `manifest.json` from each workflow subdirectory using the SDK's `ManifestSchema` for validation. Event schemas SHALL be reconstructed from JSON Schema via `z.fromJSONSchema()`. Action source code SHALL be read from individual source files specified by each action's `module` field in the manifest. Each loaded action SHALL carry its `source: string` (the file contents) and `env: Record<string, string>` from the manifest.
+
+#### Scenario: Valid manifest and action source files
+
+- **WHEN** a subdirectory contains a valid `manifest.json` with actions having `module: "./handleCronitorEvent.js"` and `env: { "API_KEY": "value" }`
+- **THEN** the loader SHALL parse the manifest, reconstruct Zod schemas for each event, read each action's source file as a string via `readFile`, and produce `Action` objects with `source` and `env` fields
+- **AND** each loaded `Action` object SHALL include its `source: string` (the file contents) and `env: Record<string, string>` from the manifest
 
 #### Scenario: Manifest fails validation
+
 - **WHEN** a `manifest.json` fails `ManifestSchema` parsing
 - **THEN** the loader SHALL log a warning with the directory name and validation error
 - **AND** the loader SHALL skip that workflow and continue loading remaining workflows
 
-#### Scenario: Actions module fails to import
-- **WHEN** `manifest.json` is valid but the actions module specified by `module` cannot be imported
+#### Scenario: Action source file fails to read
+
+- **WHEN** `manifest.json` is valid but an action's source file specified by `module` cannot be read
 - **THEN** the loader SHALL log a warning and skip that workflow
 
-#### Scenario: Handler export missing
-- **WHEN** `manifest.json` lists an action with `handler: "processEvent"` but the actions module has no export named `processEvent`
-- **THEN** the loader SHALL log a warning and skip that workflow
+#### Scenario: Action type is source string not function
+
+- **WHEN** the loader produces an `Action` object
+- **THEN** the `Action` SHALL have `source: string` containing the JavaScript source code
+- **AND** the `Action` SHALL NOT have a `handler` function reference
 
 ### Requirement: Merge loaded workflows into shared registries
 The runtime SHALL merge triggers from all loaded workflows into a single `HttpTriggerRegistry` and combine all actions into a single actions list. Event schemas from all manifests SHALL be merged into a single event schema registry.

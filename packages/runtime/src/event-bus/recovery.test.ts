@@ -6,6 +6,7 @@ import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
 import { createEventSource } from "../event-source.js";
 import { createLogger } from "../logger.js";
+import type { Sandbox } from "../sandbox/index.js";
 import { createScheduler } from "../services/scheduler.js";
 import { createEventStore, sql } from "./event-store.js";
 import type { RuntimeEvent } from "./index.js";
@@ -244,24 +245,25 @@ describe("full startup/recovery integration", () => {
 			await bus.bootstrap(events, { pending });
 		}
 
-		const handler = vi.fn();
+		const spawnSpy = vi.fn(async () => ({ ok: true as const }));
+		const sandbox: Sandbox = { spawn: spawnSpy };
 		const action: Action = {
 			name: "processOrder",
 			on: "order.received",
 			env: {},
-			handler,
+			source: "export default async (ctx) => {}",
 		};
 
 		const source = createTestSource(bus);
-		const scheduler = createScheduler(workQueue, source, [action], stubContextFactory);
+		const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
 
 		const started = scheduler.start();
 		await new Promise((r) => setTimeout(r, 50));
 		await scheduler.stop();
 		await started;
 
-		expect(handler).toHaveBeenCalledTimes(1);
-		expect(handler.mock.calls.at(0)?.at(0)).toBeInstanceOf(ActionContext);
+		expect(spawnSpy).toHaveBeenCalledTimes(1);
+		expect(spawnSpy.mock.calls.at(0)?.at(1)).toBeInstanceOf(ActionContext);
 	});
 
 	it("recovery populates EventStore with all events from both directories", async () => {

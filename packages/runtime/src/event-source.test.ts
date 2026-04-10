@@ -217,13 +217,13 @@ describe("createEventSource", () => {
 			const { source, emitted } = makeSource({});
 			const event = makeParent({ state: "processing", startedAt: new Date() });
 
-			await source.transition(event, { state: "done", result: "failed", error: "timeout" });
+			await source.transition(event, { state: "done", result: "failed", error: { message: "timeout", stack: "" } });
 
 			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 			const transitioned = emitted[0]!;
 			expect(transitioned.state).toBe("done");
 			expect((transitioned as { result: string }).result).toBe("failed");
-			expect((transitioned as { error: unknown }).error).toBe("timeout");
+			expect((transitioned as { error: unknown }).error).toEqual({ message: "timeout", stack: "" });
 			expect(transitioned.doneAt).toBeInstanceOf(Date);
 		});
 

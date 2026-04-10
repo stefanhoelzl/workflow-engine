@@ -10,6 +10,7 @@
 		"@aws-sdk/client-s3": "^3.1026.0",
 		"@duckdb/node-api": "1.5.1-r.1",
 		"@hono/node-server": "^1.19.12",
+		"@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
 		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/sdk": "workspace:*",
 		"alpinejs": "^3.14.9",
@@ -18,7 +19,8 @@
 		"htmx.org": "^2.0.4",
 		"jedison": "^1.11.1",
 		"kysely": "^0.28.15",
-		"pino": "^10.3.1"
+		"pino": "^10.3.1",
+		"quickjs-emscripten": "^0.32.0"
 	},
 	"devDependencies": {
 		"s3rver": "^3.7.1"

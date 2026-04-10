@@ -168,13 +168,12 @@ const ManifestSchema = z.object({
 	actions: z.array(
 		z.object({
 			name: z.string(),
-			handler: z.string(),
+			module: z.string(),
 			on: z.string(),
 			emits: z.array(z.string()),
 			env: z.record(z.string(), z.string()),
 		}),
 	),
-	module: z.string(),
 });
 
 type Manifest = z.infer<typeof ManifestSchema>;

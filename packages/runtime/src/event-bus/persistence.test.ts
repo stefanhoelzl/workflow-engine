@@ -104,7 +104,7 @@ describe("persistence handle", () => {
 
 		const event = makeEvent({ id: "evt_fail" });
 		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "done", result: "failed", error: "boom" });
+		await persistence.handle({ ...event, state: "done", result: "failed", error: { message: "boom", stack: "" } });
 
 		await new Promise((r) => setTimeout(r, 50));
 

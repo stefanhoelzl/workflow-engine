@@ -27,15 +27,21 @@ afterEach(async () => {
 const MINIMAL_MANIFEST = {
 	events: [{ name: "test.event", schema: { type: "object", properties: {}, required: [] } }],
 	triggers: [],
-	actions: [{ name: "handle", handler: "handle", on: "test.event", emits: [], env: {} }],
-	module: "./actions.js",
+	actions: [{ name: "handle", module: "./handle.js", on: "test.event", emits: [], env: {} }],
 };
 
-async function createWorkflowDir(name: string, manifest: object, actionsCode: string) {
+const ACTION_SOURCE = "export default async (ctx) => {}";
+
+async function createWorkflowDir(name: string, manifest: object, actionFiles?: Record<string, string>) {
 	const wfDir = join(dir, name);
 	await mkdir(wfDir, { recursive: true });
 	await writeFile(join(wfDir, "manifest.json"), JSON.stringify(manifest));
-	await writeFile(join(wfDir, "actions.js"), actionsCode);
+	if (actionFiles) {
+		for (const [filename, code] of Object.entries(actionFiles)) {
+			// biome-ignore lint/performance/noAwaitInLoops: test setup writes files sequentially
+			await writeFile(join(wfDir, filename), code);
+		}
+	}
 }
 
 describe("loadWorkflows", () => {
@@ -44,20 +50,21 @@ describe("loadWorkflows", () => {
 		expect(result).toEqual([]);
 	});
 
-	it("loads a valid workflow from manifest.json + actions.js", async () => {
-		await createWorkflowDir("test", MINIMAL_MANIFEST, "export async function handle() {}");
+	it("loads a valid workflow from manifest.json + action source files", async () => {
+		await createWorkflowDir("test", MINIMAL_MANIFEST, { "handle.js": ACTION_SOURCE });
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toHaveLength(1);
 		expect(result[0]?.actions).toHaveLength(1);
 		expect(result[0]?.actions[0]?.name).toBe("handle");
 		expect(result[0]?.actions[0]?.on).toBe("test.event");
+		expect(result[0]?.actions[0]?.source).toBe(ACTION_SOURCE);
 		expect(logger.info).toHaveBeenCalledWith("workflow.loaded", { dir: "test" });
 	});
 
 	it("skips non-directory entries", async () => {
 		await writeFile(join(dir, "readme.md"), "# hello");
-		await createWorkflowDir("test", MINIMAL_MANIFEST, "export async function handle() {}");
+		await createWorkflowDir("test", MINIMAL_MANIFEST, { "handle.js": ACTION_SOURCE });
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toHaveLength(1);
@@ -66,7 +73,7 @@ describe("loadWorkflows", () => {
 	it("warns and skips directories without manifest.json", async () => {
 		const wfDir = join(dir, "nomanifest");
 		await mkdir(wfDir);
-		await writeFile(join(wfDir, "actions.js"), "export async function handle() {}");
+		await writeFile(join(wfDir, "handle.js"), ACTION_SOURCE);
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toEqual([]);
@@ -88,34 +95,20 @@ describe("loadWorkflows", () => {
 		);
 	});
 
-	it("warns and skips when actions module cannot be imported", async () => {
-		const wfDir = join(dir, "broken");
-		await mkdir(wfDir);
-		await writeFile(join(wfDir, "manifest.json"), JSON.stringify(MINIMAL_MANIFEST));
-		await writeFile(join(wfDir, "actions.js"), "throw new Error('broken');");
+	it("warns and skips when action source file is missing", async () => {
+		await createWorkflowDir("broken", MINIMAL_MANIFEST);
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toEqual([]);
 		expect(logger.warn).toHaveBeenCalledWith(
-			"workflow.actions-import-failed",
-			expect.objectContaining({ dir: expect.stringContaining("broken") }),
-		);
-	});
-
-	it("warns and skips when handler export is missing", async () => {
-		await createWorkflowDir("missing", MINIMAL_MANIFEST, "export async function other() {}");
-
-		const result = await loadWorkflows(dir, logger);
-		expect(result).toEqual([]);
-		expect(logger.warn).toHaveBeenCalledWith(
-			"workflow.handler-missing",
-			expect.objectContaining({ handler: "handle" }),
+			"workflow.action-source-missing",
+			expect.objectContaining({ module: "./handle.js" }),
 		);
 	});
 
 	it("loads multiple workflows", async () => {
-		await createWorkflowDir("a", MINIMAL_MANIFEST, "export async function handle() {}");
-		await createWorkflowDir("b", MINIMAL_MANIFEST, "export async function handle() {}");
+		await createWorkflowDir("a", MINIMAL_MANIFEST, { "handle.js": ACTION_SOURCE });
+		await createWorkflowDir("b", MINIMAL_MANIFEST, { "handle.js": ACTION_SOURCE });
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toHaveLength(2);
@@ -133,7 +126,7 @@ describe("loadWorkflows", () => {
 				},
 			}],
 		};
-		await createWorkflowDir("schema", manifest, "export async function handle() {}");
+		await createWorkflowDir("schema", manifest, { "handle.js": ACTION_SOURCE });
 
 		const result = await loadWorkflows(dir, logger);
 		expect(result).toHaveLength(1);

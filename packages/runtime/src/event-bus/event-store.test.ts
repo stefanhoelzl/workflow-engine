@@ -66,7 +66,7 @@ rows.map((r: any) => r.state)).toEqual(["pending", "processing", "done"]);
 				doneAt: new Date("2025-01-01T12:00:01Z"),
 				state: "done",
 				result: "failed",
-				error: "timeout",
+				error: { message: "timeout", stack: "" },
 				sourceType: "trigger",
 				sourceName: "orders",
 			};
@@ -84,7 +84,7 @@ const row = rows[0]! as any;
 			expect(row.state).toBe("done");
 			expect(row.result).toBe("failed");
 			expect(row.payload).toEqual({ orderId: "123" });
-			expect(row.error).toBe("timeout");
+			expect(row.error).toEqual({ message: "timeout", stack: "" });
 		});
 
 		it("does not throw on error (non-fatal)", async () => {
@@ -163,7 +163,7 @@ const row = rows[0]! as any;
 		it("supports chained CTEs", async () => {
 			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "pending", createdAt: new Date("2025-01-01T10:00:00Z") }));
 			await store.handle(makeEvent({ id: "evt_1", correlationId: "corr_A", state: "done", createdAt: new Date("2025-01-01T10:01:00Z") }));
-			await store.handle({ ...makeEvent({ id: "evt_2", correlationId: "corr_B", createdAt: new Date("2025-01-01T10:02:00Z") }), state: "done", result: "failed", error: "boom" } as RuntimeEvent);
+			await store.handle({ ...makeEvent({ id: "evt_2", correlationId: "corr_B", createdAt: new Date("2025-01-01T10:02:00Z") }), state: "done", result: "failed", error: { message: "boom", stack: "" } } as RuntimeEvent);
 
 			const rows = await store
 				.with("latest", (events) =>

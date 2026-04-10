@@ -39,19 +39,6 @@ async function loadWorkflow(
 		return;
 	}
 
-	const modulePath = resolve(dir, manifest.module);
-	let mod: Record<string, unknown>;
-	try {
-		mod = (await import(modulePath)) as Record<string, unknown>;
-	} catch (error) {
-		logger.warn("workflow.actions-import-failed", {
-			dir,
-			module: manifest.module,
-			error: String(error),
-		});
-		return;
-	}
-
 	const events: Record<string, Schema> = {};
 	const jsonSchemas: Record<string, object> = {};
 	for (const event of manifest.events) {
@@ -61,11 +48,16 @@ async function loadWorkflow(
 
 	const actions: Action[] = [];
 	for (const actionDef of manifest.actions) {
-		const handler = mod[actionDef.handler];
-		if (typeof handler !== "function") {
-			logger.warn("workflow.handler-missing", {
+		const sourcePath = resolve(dir, actionDef.module);
+		let source: string;
+		try {
+			// biome-ignore lint/performance/noAwaitInLoops: sequential loading for error reporting
+			source = await readFile(sourcePath, "utf-8");
+		} catch (error) {
+			logger.warn("workflow.action-source-missing", {
 				dir,
-				handler: actionDef.handler,
+				module: actionDef.module,
+				error: String(error),
 			});
 			return;
 		}
@@ -73,7 +65,7 @@ async function loadWorkflow(
 			name: actionDef.name,
 			on: actionDef.on,
 			env: actionDef.env,
-			handler: handler as Action["handler"],
+			source,
 		});
 	}
 
