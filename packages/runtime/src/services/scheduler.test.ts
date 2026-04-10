@@ -35,7 +35,7 @@ function createTestSetup() {
 	};
 	const bus = createEventBus([workQueue, collector]);
 	const source = createEventSource(
-		{ "order.received": passthroughSchema, "order.validated": passthroughSchema },
+		{ events: { "order.received": passthroughSchema, "order.validated": passthroughSchema } },
 		bus,
 	);
 	const stubContextFactory = (event: RuntimeEvent, _actionName: string, env: Record<string, string>): ActionContext =>
@@ -62,7 +62,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			const event = makeEvent({ targetAction: "parseOrder" });
 			await bus.emit(event);
@@ -93,7 +93,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => { throw new Error('boom') }",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
 
@@ -116,7 +116,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			await bus.emit(makeEvent({ targetAction: "nonexistent" }));
 
@@ -142,7 +142,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			const event = makeEvent({ targetAction: "parseOrder", correlationId: "corr_xyz" });
 			await bus.emit(event);
@@ -166,7 +166,7 @@ describe("createScheduler", () => {
 				{ name: "parseOrder", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
 				{ name: "sendEmail", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
 			];
-			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions }, stubContextFactory, sandbox);
 
 			const event = makeEvent();
 			await bus.emit(event);
@@ -203,7 +203,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			const event = makeEvent({ type: "unknown.event" });
 			await bus.emit(event);
@@ -226,7 +226,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			const event = makeEvent({ correlationId: "corr_preserved" });
 			await bus.emit(event);
@@ -250,7 +250,7 @@ describe("createScheduler", () => {
 				{ name: "parseOrder", on: "order.received", env: {}, source: "export default async (ctx) => {}" },
 				{ name: "updateInventory", on: "order.shipped", env: {}, source: "export default async (ctx) => {}" },
 			];
-			const scheduler = createScheduler(workQueue, source, actions, stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions }, stubContextFactory, sandbox);
 
 			await bus.emit(makeEvent());
 
@@ -275,7 +275,7 @@ describe("createScheduler", () => {
 				env: {},
 				source: "export default async (ctx) => {}",
 			};
-			const scheduler = createScheduler(workQueue, source, [action], stubContextFactory, sandbox);
+			const scheduler = createScheduler(workQueue, source, { actions: [action] }, stubContextFactory, sandbox);
 
 			const started = scheduler.start();
 			await scheduler.stop();

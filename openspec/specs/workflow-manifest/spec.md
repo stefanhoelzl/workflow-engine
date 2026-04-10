@@ -1,21 +1,23 @@
 ### Requirement: Manifest JSON format
 
-The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: events (with JSON Schema), triggers, and actions. The manifest SHALL NOT contain executable code or function references.
+The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: name, events (with JSON Schema), triggers, and actions. The manifest SHALL NOT contain executable code or function references.
+
+The manifest SHALL include a required `name` field containing the workflow name as specified in `createWorkflow("name")`.
 
 Trigger entries SHALL NOT have an `event` field. The trigger `name` SHALL be used to resolve the corresponding event from the `events` array. Trigger-owned events SHALL appear in the `events` array with their full schema (including the HTTP payload wrapper fields `body`, `headers`, `url`, `method`).
 
-Each action entry SHALL have a `module` field pointing to its individual source file (e.g., `"./handleCronitorEvent.js"`). There SHALL be no shared `module` field at the manifest root.
+Each action entry SHALL have a `module` field pointing to its source file under the `actions/` subdirectory (e.g., `"actions/handleCronitorEvent.js"`). There SHALL be no shared `module` field at the manifest root.
 
-#### Scenario: Manifest contains all workflow metadata
+#### Scenario: Manifest contains name and all workflow metadata
 
-- **WHEN** a workflow defines 1 trigger, 1 action event, and 2 actions
-- **THEN** `manifest.json` SHALL contain an `events` array with 2 entries, a `triggers` array with 1 entry (without an `event` field), and an `actions` array with 2 entries
+- **WHEN** a workflow named "cronitor" defines 1 trigger, 1 action event, and 2 actions
+- **THEN** `manifest.json` SHALL contain a `name` field with value `"cronitor"`, an `events` array with 2 entries, a `triggers` array with 1 entry (without an `event` field), and an `actions` array with 2 entries
 - **AND** each action entry SHALL have its own `module` field
 
-#### Scenario: Per-action module paths
+#### Scenario: Per-action module paths under actions directory
 
 - **WHEN** a workflow defines actions `handleCronitorEvent` and `sendMessage`
-- **THEN** the manifest SHALL contain action entries with `module: "./handleCronitorEvent.js"` and `module: "./sendMessage.js"` respectively
+- **THEN** the manifest SHALL contain action entries with `module: "actions/handleCronitorEvent.js"` and `module: "actions/sendMessage.js"` respectively
 - **AND** there SHALL be no root-level `module` field
 
 #### Scenario: Trigger entry has no event field
@@ -49,15 +51,19 @@ Each action entry SHALL have a `module` field pointing to its individual source 
 - **THEN** the action entry in `manifest.json` SHALL contain `name`, `module`, `on`, `emits`, and `env` fields
 - **AND** `env` SHALL be a JSON object mapping string keys to string values
 - **AND** `name` SHALL be the action identity (from export name or explicit override)
-- **AND** `module` SHALL be the relative path to the action's source file
+- **AND** `module` SHALL be the relative path to the action's source file under `actions/`
 
 ### Requirement: ManifestSchema validation
 
-The SDK SHALL export a `ManifestSchema` Zod object for validating `manifest.json` files. The `actions[].env` field in the schema SHALL be `z.record(z.string())`. The trigger schema SHALL NOT require an `event` field. The runtime SHALL parse every manifest through `ManifestSchema` at load time.
+The SDK SHALL export a `ManifestSchema` Zod object for validating `manifest.json` files. The schema SHALL include a required `name` field of type `z.string()`. The `actions[].env` field in the schema SHALL be `z.record(z.string())`. The trigger schema SHALL NOT require an `event` field. The runtime SHALL parse every manifest through `ManifestSchema` at load time.
 
 #### Scenario: Valid manifest passes validation
-- **WHEN** a well-formed `manifest.json` with `env` as `Record<string, string>` and triggers lacking the `event` field is parsed through `ManifestSchema`
+- **WHEN** a well-formed `manifest.json` with `name`, `env` as `Record<string, string>`, and triggers lacking the `event` field is parsed through `ManifestSchema`
 - **THEN** parsing SHALL succeed and return the typed manifest object
+
+#### Scenario: Manifest missing name field
+- **WHEN** a `manifest.json` is missing the `name` field
+- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
 
 #### Scenario: Malformed manifest rejected
 

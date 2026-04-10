@@ -97,6 +97,21 @@ function storageBackendTests(
 			expect(results).not.toContain("pending/a.json");
 		});
 
+		it("list yields paths recursively", async () => {
+			await backend.write("workflows/foo/manifest.json", "{}");
+			await backend.write("workflows/foo/actions/handle.js", "code");
+			await backend.write("events/pending/001.json", "evt");
+
+			const results: string[] = [];
+			for await (const path of backend.list("workflows/")) {
+				results.push(path);
+			}
+
+			expect(results).toContain("workflows/foo/manifest.json");
+			expect(results).toContain("workflows/foo/actions/handle.js");
+			expect(results).not.toContain("events/pending/001.json");
+		});
+
 		it("write overwrites existing file", async () => {
 			await backend.write("pending/a.json", "old");
 			await backend.write("pending/a.json", "new");

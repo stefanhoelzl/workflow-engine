@@ -13,7 +13,7 @@ type ActionContextFactory = (event: RuntimeEvent, actionName: string, env: Recor
 function createScheduler(
 	workQueue: WorkQueue,
 	source: EventSource,
-	actions: Action[],
+	actionSource: { readonly actions: Action[] },
 	createContext: ActionContextFactory,
 	sandbox: Sandbox,
 ): Service {
@@ -45,7 +45,7 @@ function createScheduler(
 			return;
 		}
 
-		const action = actions.find(
+		const action = actionSource.actions.find(
 			(a) => a.name === event.targetAction && a.on === event.type,
 		);
 
@@ -58,7 +58,7 @@ function createScheduler(
 	}
 
 	async function fanOut(event: RuntimeEvent): Promise<void> {
-		const matching = actions.filter((a) => a.on === event.type);
+		const matching = actionSource.actions.filter((a) => a.on === event.type);
 
 		if (matching.length === 0) {
 			await source.transition(event, { state: "done", result: "skipped" });

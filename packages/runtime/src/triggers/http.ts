@@ -33,15 +33,22 @@ class HttpTriggerRegistry {
 	readonly #triggers: HttpTriggerResolved[] = [];
 
 	register(definition: HttpTriggerDefinition): void {
-		this.#triggers.push({
+		const method = definition.method ?? DEFAULT_METHOD;
+		const existing = this.#triggers.findIndex((t) => t.path === definition.path && t.method === method);
+		const resolved: HttpTriggerResolved = {
 			name: definition.name,
 			path: definition.path,
-			method: definition.method ?? DEFAULT_METHOD,
+			method,
 			response: {
 				status: (definition.response?.status ?? DEFAULT_RESPONSE_STATUS) as ContentfulStatusCode,
 				body: definition.response?.body ?? DEFAULT_RESPONSE_BODY,
 			},
-		});
+		};
+		if (existing === -1) {
+			this.#triggers.push(resolved);
+		} else {
+			this.#triggers[existing] = resolved;
+		}
 	}
 
 	get size(): number {
@@ -63,7 +70,7 @@ interface Middleware {
 const WEBHOOKS_PREFIX = "/webhooks/";
 
 function httpTriggerMiddleware(
-	registry: HttpTriggerRegistry,
+	triggerSource: { readonly triggerRegistry: HttpTriggerRegistry },
 	source: EventSource,
 ): Middleware {
 	return {
@@ -72,13 +79,13 @@ function httpTriggerMiddleware(
 			const triggerPath = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (triggerPath === "" && c.req.method === "GET") {
-				const status = registry.size > 0
+				const status = triggerSource.triggerRegistry.size > 0
 					? constants.HTTP_STATUS_NO_CONTENT
 					: constants.HTTP_STATUS_SERVICE_UNAVAILABLE;
 				return c.body(null, status as ContentfulStatusCode);
 			}
 
-			const definition = registry.lookup(triggerPath, c.req.method);
+			const definition = triggerSource.triggerRegistry.lookup(triggerPath, c.req.method);
 
 			if (!definition) {
 				return c.notFound();

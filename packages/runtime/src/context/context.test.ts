@@ -64,7 +64,8 @@ function createTestSetup(overrides?: {
 }): { createContext: (event: RuntimeEvent, actionName: string, env?: Record<string, string>) => ActionContext; source: EventSource; bus: EventBus; emitted: RuntimeEvent[] } {
 	const { bus: defaultBus, emitted } = createCollectorBus();
 	const bus = overrides?.bus ?? defaultBus;
-	const source = createEventSource(overrides?.schemas ?? defaultSchemas, bus);
+	const schemas = overrides?.schemas ?? defaultSchemas;
+	const source = createEventSource({ events: schemas }, bus);
 	const defaultEnv = overrides?.env ?? mockEnv;
 	const factory = createActionContext(
 		source,
@@ -324,7 +325,7 @@ describe("createActionContext", () => {
 				emit: emitSpy,
 				bootstrap: vi.fn(),
 			} as unknown as EventBus;
-			const source = createEventSource({ "order.received": schema }, fakeBus);
+			const source = createEventSource({ events: { "order.received": schema } }, fakeBus);
 			const factory = createActionContext(source, mockFetch, silentLogger);
 			const ctx = factory(makeEvent(), "test-action", {});
 

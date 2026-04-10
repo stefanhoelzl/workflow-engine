@@ -15,3 +15,18 @@ The SDK SHALL depend on `zod@^4.0.0` and import the Zod API from `"zod"`. The `z
 - **GIVEN** a workflow file that imports `z` from `@workflow-engine/sdk`
 - **WHEN** the author uses `z.object()`, `z.string()`, `z.enum()`, `z.nullable()`
 - **THEN** these SHALL be Zod v4 functions
+
+### Requirement: createWorkflow requires a name argument
+
+The `createWorkflow()` function SHALL accept a required first argument: the workflow name as a `string`. This name SHALL be included in the compiled manifest's `name` field.
+
+#### Scenario: Workflow created with name
+
+- **WHEN** `createWorkflow("cronitor")` is called
+- **THEN** the workflow builder SHALL store the name "cronitor"
+- **AND** the compiled manifest SHALL contain `name: "cronitor"`
+
+#### Scenario: Workflow created without name
+
+- **WHEN** `createWorkflow()` is called without a name argument
+- **THEN** it SHALL fail with a TypeScript type error at compile time

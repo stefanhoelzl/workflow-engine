@@ -69,7 +69,7 @@ function createPersistence(
 			const isTerminal = event.state === "done";
 
 			// Terminal states go directly to archive/; others go to pending/
-			const prefix = isTerminal ? "archive/" : "pending/";
+			const prefix = isTerminal ? "events/archive/" : "events/pending/";
 			await backend.write(
 				`${prefix}${filename}`,
 				JSON.stringify(event, null, 2),
@@ -78,7 +78,7 @@ function createPersistence(
 			// Archive older pending file for this event (fire-and-forget)
 			const oldFile = pendingIndex.get(event.id);
 			if (oldFile) {
-				backend.move(oldFile.path, `archive/${oldFile.filename}`).catch((err) => {
+				backend.move(oldFile.path, `events/archive/${oldFile.filename}`).catch((err) => {
 					logger?.error("archive-failed", {
 						eventId: event.id,
 						error: err instanceof Error ? err.message : String(err),
@@ -106,12 +106,12 @@ function createPersistence(
 			await cleanupPending();
 
 			yield* batch(readAll(pendingIndex.values()), true);
-			yield* batch(readAll(parseEventPaths("archive/")), false);
+			yield* batch(readAll(parseEventPaths("events/archive/")), false);
 		},
 	};
 
 	async function cleanupPending(): Promise<void> {
-		for await (const path of backend.list("pending/")) {
+		for await (const path of backend.list("events/pending/")) {
 			const filename = extractFilename(path);
 			const parsed = parseFilename(filename);
 			if (!parsed) {
@@ -121,7 +121,7 @@ function createPersistence(
 			const existing = pendingIndex.get(parsed.eventId);
 			if (existing) {
 				// Files are sorted by counter (ascending), so existing has lower counter — archive it
-				await backend.move(existing.path, `archive/${existing.filename}`);
+				await backend.move(existing.path, `events/archive/${existing.filename}`);
 			}
 			pendingIndex.set(parsed.eventId, { path, filename, counter: parsed.counter });
 		}

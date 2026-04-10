@@ -19,11 +19,11 @@ interface EventSource {
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled event creation + emission logic
 function createEventSource(
-	schemas: Record<string, Schema>,
+	schemaSource: { readonly events: Record<string, Schema> },
 	bus: EventBus,
 ): EventSource {
 	function validate(type: string, payload: unknown): unknown {
-		const schema = schemas[type];
+		const schema = schemaSource.events[type];
 		if (!schema) {
 			throw new PayloadValidationError(type, []);
 		}

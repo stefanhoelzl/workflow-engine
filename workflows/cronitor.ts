@@ -1,6 +1,6 @@
 import { createWorkflow, z, http, env } from "@workflow-engine/sdk";
 
-const workflow = createWorkflow()
+const workflow = createWorkflow("cronitor")
 	.trigger("webhook.cronitor", http({
 		path: "cronitor",
 		body: z.object({
