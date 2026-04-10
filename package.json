@@ -17,6 +17,7 @@
 		"validate": "pnpm lint && pnpm format:check && pnpm check && pnpm test && tofu fmt -check -recursive infrastructure/ && tofu -chdir=infrastructure/dev validate",
 		"start": "pnpm --filter workflows build && PERSISTENCE_PATH=$PWD/.persistence pnpm --filter @workflow-engine/runtime start",
 		"dev": "vite build --watch",
+		"postinstall": "tofu -chdir=infrastructure/dev init",
 		"infra:init": "tofu -chdir=infrastructure/dev init",
 		"infra:up": "tofu -chdir=infrastructure/dev apply",
 		"infra:up:build": "podman build -t localhost/workflow-engine:dev -f infrastructure/Dockerfile . && pnpm infra:up",

@@ -17,7 +17,6 @@
 
 Prerequisites: OpenTofu >= 1.11, Podman
 
-- `pnpm infra:init` — install providers (first time only)
 - `pnpm infra:up` — create/update dev environment
 - `pnpm infra:up:build` — rebuild app image + create/update dev environment
 - `pnpm infra:destroy` — tear down dev environment
