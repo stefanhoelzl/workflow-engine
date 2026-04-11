@@ -18,6 +18,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.8"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
 
   backend "local" {}
@@ -80,6 +84,7 @@ module "cluster" {
   cluster_name = "workflow-engine-dev"
   https_port   = var.https_port
   image_name   = module.image.image_name
+  image_hash   = module.image.image_hash
 }
 
 provider "kubernetes" {
@@ -111,6 +116,7 @@ module "workflow_engine" {
 
   image             = module.image.image_name
   image_pull_policy = "Never"
+  image_hash        = module.image.image_hash
 
   s3 = {
     endpoint   = module.s2.endpoint

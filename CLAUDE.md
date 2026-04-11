@@ -17,8 +17,7 @@
 
 Prerequisites: OpenTofu >= 1.11, Podman
 
-- `pnpm infra:up` — create/update dev environment
-- `pnpm infra:up:build` — rebuild app image + create/update dev environment
+- `pnpm infra:up` — build app image + create/update dev environment
 - `pnpm infra:destroy` — tear down dev environment
 
 Dev stack: kind K8s cluster, Traefik (Helm), S2 (local S3), oauth2-proxy, workflow-engine app.

@@ -9,6 +9,11 @@ variable "image_pull_policy" {
   default     = "IfNotPresent"
 }
 
+variable "image_hash" {
+  type        = string
+  description = "Content hash of the container image, used to trigger pod rollouts"
+}
+
 variable "s3" {
   type = object({
     endpoint   = string
@@ -44,6 +49,7 @@ module "app" {
 
   image             = var.image
   image_pull_policy = var.image_pull_policy
+  image_hash        = var.image_hash
   s3                = var.s3
 }
 

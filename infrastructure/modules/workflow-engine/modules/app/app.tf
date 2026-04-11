@@ -9,6 +9,11 @@ variable "image_pull_policy" {
   default     = "IfNotPresent"
 }
 
+variable "image_hash" {
+  type        = string
+  description = "Content hash of the container image, used to trigger pod rollouts"
+}
+
 variable "s3" {
   type = object({
     endpoint   = string
@@ -59,6 +64,7 @@ resource "kubernetes_deployment_v1" "app" {
         }
         annotations = {
           "sha256/app-s3-credentials" = sha256(jsonencode(kubernetes_secret_v1.s3.data))
+          "sha256/image"              = var.image_hash
         }
       }
 
