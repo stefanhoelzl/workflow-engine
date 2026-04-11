@@ -8,6 +8,7 @@ interface HttpTriggerDefinition {
 	name: string;
 	path: string;
 	method?: string | undefined;
+	params?: string[] | undefined;
 	response?:
 		| {
 				status?: number | undefined;
@@ -26,17 +27,34 @@ interface HttpTriggerResolved {
 	};
 }
 
+interface HttpTriggerMatch extends HttpTriggerResolved {
+	params: Record<string, string>;
+}
+
 const DEFAULT_METHOD = "POST";
 const DEFAULT_RESPONSE_STATUS = 200 as ContentfulStatusCode;
 const DEFAULT_RESPONSE_BODY = "";
 
+const PARAM_SEGMENT_RE = /[:*]/;
+
+function toUrlPatternPath(path: string): string {
+	return path.replace(/\*(\w+)/g, ":$1+");
+}
+
+interface RegisteredTrigger {
+	resolved: HttpTriggerResolved;
+	pattern: URLPattern;
+	isStatic: boolean;
+}
+
 class HttpTriggerRegistry {
-	readonly #triggers: HttpTriggerResolved[] = [];
+	readonly #triggers: RegisteredTrigger[] = [];
 
 	register(definition: HttpTriggerDefinition): void {
 		const method = definition.method ?? DEFAULT_METHOD;
 		const existing = this.#triggers.findIndex(
-			(t) => t.path === definition.path && t.method === method,
+			(t) =>
+				t.resolved.path === definition.path && t.resolved.method === method,
 		);
 		const resolved: HttpTriggerResolved = {
 			name: definition.name,
@@ -48,10 +66,17 @@ class HttpTriggerRegistry {
 				body: definition.response?.body ?? DEFAULT_RESPONSE_BODY,
 			},
 		};
+		const entry: RegisteredTrigger = {
+			resolved,
+			pattern: new URLPattern({
+				pathname: `/${toUrlPatternPath(definition.path)}`,
+			}),
+			isStatic: !PARAM_SEGMENT_RE.test(definition.path),
+		};
 		if (existing === -1) {
-			this.#triggers.push(resolved);
+			this.#triggers.push(entry);
 		} else {
-			this.#triggers[existing] = resolved;
+			this.#triggers[existing] = entry;
 		}
 	}
 
@@ -59,10 +84,41 @@ class HttpTriggerRegistry {
 		return this.#triggers.length;
 	}
 
-	lookup(path: string, method: string): HttpTriggerResolved | null {
+	lookup(path: string, method: string): HttpTriggerMatch | null {
+		const pathname = `/${path}`;
+		// Static triggers take priority over parameterized
 		return (
-			this.#triggers.find((t) => t.path === path && t.method === method) ?? null
+			this.#matchTrigger(pathname, method, true) ??
+			this.#matchTrigger(pathname, method, false)
 		);
+	}
+
+	#matchTrigger(
+		pathname: string,
+		method: string,
+		isStatic: boolean,
+	): HttpTriggerMatch | null {
+		for (const trigger of this.#triggers) {
+			if (trigger.isStatic !== isStatic) {
+				continue;
+			}
+			if (trigger.resolved.method !== method) {
+				continue;
+			}
+			const result = trigger.pattern.exec({ pathname });
+			if (!result) {
+				continue;
+			}
+			const groups = result.pathname.groups as Record<string, string>;
+			const params: Record<string, string> = {};
+			for (const [key, value] of Object.entries(groups)) {
+				if (value !== undefined) {
+					params[key] = value;
+				}
+			}
+			return { ...trigger.resolved, params };
+		}
+		return null;
 	}
 }
 
@@ -114,6 +170,7 @@ function httpTriggerMiddleware(
 				headers: Object.fromEntries(c.req.raw.headers),
 				url: c.req.url,
 				method: c.req.method,
+				params: definition.params,
 			};
 
 			try {
@@ -139,6 +196,7 @@ function httpTriggerMiddleware(
 
 export {
 	type HttpTriggerDefinition,
+	type HttpTriggerMatch,
 	HttpTriggerRegistry,
 	type HttpTriggerResolved,
 	httpTriggerMiddleware,
