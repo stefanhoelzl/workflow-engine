@@ -48,7 +48,7 @@ variable "oauth2_client_secret" {
   description = "GitHub OAuth App client secret"
 }
 
-variable "oauth2_github_user" {
+variable "oauth2_github_users" {
   type        = string
   description = "Allowed GitHub username"
 }
@@ -129,12 +129,17 @@ module "workflow_engine" {
   oauth2 = {
     client_id     = var.oauth2_client_id
     client_secret = var.oauth2_client_secret
-    github_user   = var.oauth2_github_user
+    github_users  = var.oauth2_github_users
   }
 
   network = {
     domain     = var.domain
     https_port = var.https_port
+  }
+
+  oauth2_templates = {
+    "sign_in.html" = file("${path.module}/../templates/sign_in.html")
+    "error.html"   = file("${path.module}/../templates/error.html")
   }
 }
 

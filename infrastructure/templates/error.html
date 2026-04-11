@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="error" content="{{.StatusCode}} {{.Message}}">
+  <script>
+    "use strict";
+    const msg = document.querySelector('meta[name=error]').content;
+    location.replace(`{{.ProxyPrefix}}/sign_in?error=${encodeURIComponent(msg)}`);
+  </script>
+</head>
+<body></body>
+</html>

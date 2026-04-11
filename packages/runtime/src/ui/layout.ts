@@ -37,7 +37,7 @@ function renderLayout(options: LayoutOptions, content: string): string {
 		? `<div class="topbar-user">
       <div class="topbar-user-line">
         <span class="topbar-username">${escapeHtml(user)}</span>
-        <a class="topbar-signout" href="/oauth2/sign_out">Sign out</a>
+        <a class="topbar-signout" href="/oauth2/sign_out?rd=%2Foauth2%2Fsign_in%3Finfo%3DSigned%2Bout">Sign out</a>
       </div>
       ${email ? `<div class="topbar-email">${escapeHtml(email)}</div>` : ""}
     </div>`
