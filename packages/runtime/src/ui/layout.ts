@@ -76,5 +76,5 @@ ${head ?? ""}
 </html>`;
 }
 
-export { renderLayout };
 export type { LayoutOptions };
+export { renderLayout };

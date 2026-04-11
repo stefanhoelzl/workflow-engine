@@ -34,9 +34,7 @@ function triggerMiddleware(
 	app.get("/", (c) => {
 		const user = c.req.header("X-Auth-Request-User") ?? "";
 		const email = c.req.header("X-Auth-Request-Email") ?? "";
-		return c.html(
-			renderTriggerPage(schemaSource.jsonSchemas, user, email),
-		);
+		return c.html(renderTriggerPage(schemaSource.jsonSchemas, user, email));
 	});
 
 	app.post("/:eventType", async (c) => {

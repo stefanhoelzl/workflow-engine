@@ -1,10 +1,9 @@
-import { Hono } from "hono";
 import { extname } from "node:path";
-import type { Middleware } from "../../triggers/http.js";
-
 import alpineJs from "alpinejs/dist/cdn.min.js?raw";
+import { Hono } from "hono";
 import htmxJs from "htmx.org/dist/htmx.min.js?raw";
 import jedisonJs from "jedison/browser?raw";
+import type { Middleware } from "../../triggers/http.js";
 
 const vendorFiles: Record<string, string> = {
 	"alpine.js": alpineJs,

@@ -206,4 +206,4 @@ function renderTriggerPage(
 	);
 }
 
-export { renderTriggerPage, prepareSchema };
+export { prepareSchema, renderTriggerPage };
