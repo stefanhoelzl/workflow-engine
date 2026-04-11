@@ -19,7 +19,7 @@
 			"label": "dev",
 			"type": "shell",
 			"command": "pnpm",
-			"args": ["dev"],
+			"args": ["dev", "--", "--random-port"],
 			"dependsOn": ["bootstrap"],
 			"isBackground": true,
 			"problemMatcher": [],
