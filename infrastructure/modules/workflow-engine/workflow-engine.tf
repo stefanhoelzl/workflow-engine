@@ -66,17 +66,97 @@ module "oauth2_proxy" {
   templates = var.oauth2_templates
 }
 
-module "routing" {
-  source = "./modules/routing"
-
-  network        = var.network
-  app_service    = module.app.service_name
-  app_port       = module.app.service_port
-  oauth2_service = module.oauth2_proxy.service_name
-  oauth2_port    = module.oauth2_proxy.service_port
-}
-
-output "url" {
-  value       = module.routing.url
-  description = "URL where the application is accessible"
+output "traefik_extra_objects" {
+  value = [
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata = {
+        name      = "oauth2-forward-auth"
+        namespace = "default"
+      }
+      spec = {
+        forwardAuth = {
+          address             = "http://${module.oauth2_proxy.service_name}:${module.oauth2_proxy.service_port}/oauth2/auth"
+          trustForwardHeader  = true
+          authResponseHeaders = ["X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Redirect"]
+        }
+      }
+    },
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata = {
+        name      = "oauth2-errors"
+        namespace = "default"
+      }
+      spec = {
+        errors = {
+          status = ["401-403"]
+          service = {
+            name = module.oauth2_proxy.service_name
+            port = module.oauth2_proxy.service_port
+          }
+          query = "/oauth2/sign_in?rd={url}"
+        }
+      }
+    },
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata = {
+        name      = "redirect-root"
+        namespace = "default"
+      }
+      spec = {
+        redirectRegex = {
+          regex       = "^https?://[^/]+/$"
+          replacement = "/trigger"
+          permanent   = false
+        }
+      }
+    },
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "IngressRoute"
+      metadata = {
+        name      = "workflow-engine"
+        namespace = "default"
+      }
+      spec = {
+        entryPoints = ["websecure"]
+        routes = [
+          {
+            match       = "Host(`${var.network.domain}`) && Path(`/`)"
+            kind        = "Rule"
+            middlewares = [{ name = "redirect-root" }]
+            services    = [{ name = module.app.service_name, port = module.app.service_port }]
+          },
+          {
+            match    = "Host(`${var.network.domain}`) && PathPrefix(`/oauth2`)"
+            kind     = "Rule"
+            services = [{ name = module.oauth2_proxy.service_name, port = module.oauth2_proxy.service_port }]
+          },
+          {
+            match    = "Host(`${var.network.domain}`) && PathPrefix(`/webhooks`)"
+            kind     = "Rule"
+            services = [{ name = module.app.service_name, port = module.app.service_port }]
+          },
+          {
+            match       = "Host(`${var.network.domain}`) && PathPrefix(`/dashboard`)"
+            kind        = "Rule"
+            middlewares = [{ name = "oauth2-errors" }, { name = "oauth2-forward-auth" }]
+            services    = [{ name = module.app.service_name, port = module.app.service_port }]
+          },
+          {
+            match       = "Host(`${var.network.domain}`) && PathPrefix(`/trigger`)"
+            kind        = "Rule"
+            middlewares = [{ name = "oauth2-errors" }, { name = "oauth2-forward-auth" }]
+            services    = [{ name = module.app.service_name, port = module.app.service_port }]
+          },
+        ]
+      }
+    },
+  ]
+  description = "Traefik CRD objects (Middlewares + IngressRoute) for the routing module"
 }

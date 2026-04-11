@@ -29,7 +29,7 @@ terraform {
 
 variable "domain" {
   type        = string
-  description = "Domain for the dev environment"
+  description = "Domain for the local environment"
 }
 
 variable "https_port" {
@@ -143,7 +143,31 @@ module "workflow_engine" {
   }
 }
 
+module "routing" {
+  source = "../modules/routing"
+
+  traefik_extra_objects = module.workflow_engine.traefik_extra_objects
+  traefik_helm_sets = [
+    {
+      name  = "ports.websecure.expose.default"
+      value = "true"
+    },
+    {
+      name  = "ports.websecure.exposedPort"
+      value = "443"
+    },
+    {
+      name  = "service.type"
+      value = "NodePort"
+    },
+    {
+      name  = "ports.websecure.nodePort"
+      value = "30443"
+    },
+  ]
+}
+
 output "url" {
-  value       = module.workflow_engine.url
-  description = "URL where the dev environment is accessible"
+  value       = var.https_port == 443 ? "https://${var.domain}" : "https://${var.domain}:${var.https_port}"
+  description = "URL where the local environment is accessible"
 }

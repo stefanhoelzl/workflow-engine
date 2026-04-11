@@ -17,13 +17,14 @@
 
 Prerequisites: OpenTofu >= 1.11, Podman
 
-- `pnpm infra:up` — build app image + create/update dev environment
-- `pnpm infra:destroy` — tear down dev environment
+- `pnpm infra:up` — create/update local environment
+- `pnpm infra:up:build` — rebuild app image + create/update local environment
+- `pnpm infra:destroy` — tear down local environment
 
-Dev stack: kind K8s cluster, Traefik (Helm), S2 (local S3), oauth2-proxy, workflow-engine app.
+Local stack: kind K8s cluster, Traefik (Helm), S2 (local S3), oauth2-proxy, workflow-engine app.
 Accessible at `https://localhost:8443` (self-signed cert).
 
-Secrets: copy `infrastructure/dev/dev.secrets.auto.tfvars.example` to `dev.secrets.auto.tfvars` and fill in OAuth2 credentials.
+Secrets: copy `infrastructure/local/local.secrets.auto.tfvars.example` to `local.secrets.auto.tfvars` and fill in OAuth2 credentials.
 
 ## Definition of Done
 
