@@ -4,11 +4,9 @@ import { ActionContext } from "../context/index.js";
 import { createEventBus, type RuntimeEvent } from "../event-bus/index.js";
 import { createWorkQueue } from "../event-bus/work-queue.js";
 import { createEventSource } from "../event-source.js";
-import { createLogger } from "../logger.js";
 import type { Sandbox, SandboxResult } from "../sandbox/index.js";
 import { createScheduler } from "./scheduler.js";
 
-const silentLogger = createLogger("scheduler", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
@@ -51,14 +49,7 @@ function createTestSetup() {
 		event: RuntimeEvent,
 		_actionName: string,
 		env: Record<string, string>,
-	): ActionContext =>
-		new ActionContext(
-			event,
-			vi.fn(),
-			vi.fn() as unknown as typeof globalThis.fetch,
-			env,
-			silentLogger,
-		);
+	): ActionContext => new ActionContext(event, vi.fn(), env);
 
 	return { bus, workQueue, emitted, source, stubContextFactory };
 }

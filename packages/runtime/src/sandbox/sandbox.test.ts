@@ -1,15 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ActionContext } from "../context/index.js";
-import { createLogger } from "../logger.js";
 import type { Sandbox, SandboxResult } from "./index.js";
 import { createSandbox } from "./index.js";
-
-const silentLogger = createLogger("test", { level: "silent" });
 
 function makeCtx(
 	overrides: {
 		emit?: ActionContext["emit"];
-		fetch?: typeof globalThis.fetch;
 		env?: Record<string, string>;
 		payload?: unknown;
 	} = {},
@@ -31,9 +27,7 @@ function makeCtx(
 			vi.fn(async () => {
 				/* no-op */
 			}),
-		overrides.fetch ?? (vi.fn() as unknown as typeof globalThis.fetch),
 		overrides.env ?? {},
-		silentLogger,
 	);
 }
 
@@ -166,124 +160,87 @@ describe("ctx bridge", () => {
 		expect(result.ok).toBe(true);
 		expect(emit).toHaveBeenCalledWith("check", { key: "secret123" });
 	});
+});
 
-	it("ctx.fetch returns Response proxy with status and json()", async () => {
-		const mockFetch = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ data: "hello" }), {
-					status: 200,
-					statusText: "OK",
-					headers: { "Content-Type": "application/json" },
-				}),
-		) as unknown as typeof globalThis.fetch;
+describe("__hostFetch bridge", () => {
+	const mockFetch = vi.fn(
+		async () =>
+			new Response(JSON.stringify({ data: "hello" }), {
+				status: 200,
+				statusText: "OK",
+				headers: { "Content-Type": "application/json", "X-Custom": "test" },
+			}),
+	) as unknown as typeof globalThis.fetch;
 
+	it("__hostFetch returns status and body", async () => {
 		const emit = vi.fn(async () => {
 			/* no-op */
 		});
-		const ctx = makeCtx({ emit, fetch: mockFetch });
-
 		const result = await sandbox.spawn(
 			`export default async (ctx) => {
-				const res = await ctx.fetch("https://api.example.com/data");
-				const body = await res.json();
-				await ctx.emit("result", { status: res.status, ok: res.ok, data: body.data });
+				const res = await __hostFetch("GET", "https://api.example.com/data", {}, null);
+				await ctx.emit("result", { status: res.status, statusText: res.statusText, hasBody: typeof res.body === "string" });
 			}`,
-			ctx,
+			makeCtx({ emit }),
+			{ fetch: mockFetch },
 		);
 
 		expect(result.ok).toBe(true);
-		expect(mockFetch).toHaveBeenCalledWith(
-			"https://api.example.com/data",
-			undefined,
-		);
+		expect(mockFetch).toHaveBeenCalled();
 		expect(emit).toHaveBeenCalledWith("result", {
 			status: 200,
-			ok: true,
-			data: "hello",
+			statusText: "OK",
+			hasBody: true,
 		});
 	});
 
-	it("ctx.fetch Response has text() method", async () => {
-		const mockFetch = vi.fn(
-			async () => new Response("plain text body", { status: 200 }),
-		) as unknown as typeof globalThis.fetch;
-
+	it("__hostFetch returns headers as object", async () => {
 		const emit = vi.fn(async () => {
 			/* no-op */
 		});
-		const ctx = makeCtx({ emit, fetch: mockFetch });
-
 		const result = await sandbox.spawn(
 			`export default async (ctx) => {
-				const res = await ctx.fetch("https://example.com");
-				const text = await res.text();
-				await ctx.emit("result", { text });
+				const res = await __hostFetch("GET", "https://api.example.com/data", {}, null);
+				await ctx.emit("result", { ct: res.headers["content-type"], custom: res.headers["x-custom"] });
 			}`,
-			ctx,
-		);
-
-		expect(result.ok).toBe(true);
-		expect(emit).toHaveBeenCalledWith("result", { text: "plain text body" });
-	});
-
-	it("ctx.fetch Response has headers as Map", async () => {
-		const mockFetch = vi.fn(
-			async () =>
-				new Response("", {
-					status: 200,
-					headers: { "X-Custom": "test-value", "Content-Type": "text/plain" },
-				}),
-		) as unknown as typeof globalThis.fetch;
-
-		const emit = vi.fn(async () => {
-			/* no-op */
-		});
-		const ctx = makeCtx({ emit, fetch: mockFetch });
-
-		const result = await sandbox.spawn(
-			`export default async (ctx) => {
-				const res = await ctx.fetch("https://example.com");
-				await ctx.emit("result", {
-					ct: res.headers.get("content-type"),
-					custom: res.headers.get("x-custom"),
-					has: res.headers.has("x-custom"),
-				});
-			}`,
-			ctx,
+			makeCtx({ emit }),
+			{ fetch: mockFetch },
 		);
 
 		expect(result.ok).toBe(true);
 		expect(emit).toHaveBeenCalledWith("result", {
-			ct: "text/plain",
-			custom: "test-value",
-			has: true,
+			ct: "application/json",
+			custom: "test",
 		});
+	});
+
+	it("__hostFetch passes method and headers to host fetch", async () => {
+		const fetchSpy = vi.fn(
+			async () => new Response("{}", { status: 201 }),
+		) as unknown as typeof globalThis.fetch;
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const res = await __hostFetch("POST", "https://api.example.com/items", {"authorization": "Bearer tok"}, '{"name":"test"}');
+				await ctx.emit("result", { status: res.status });
+			}`,
+			makeCtx({ emit }),
+			{ fetch: fetchSpy },
+		);
+
+		expect(result.ok).toBe(true);
+		expect(fetchSpy).toHaveBeenCalledWith("https://api.example.com/items", {
+			method: "POST",
+			headers: { authorization: "Bearer tok" },
+			body: '{"name":"test"}',
+		});
+		expect(emit).toHaveBeenCalledWith("result", { status: 201 });
 	});
 });
 
 describe("globals", () => {
-	it("btoa/atob work", async () => {
-		const emit = vi.fn(async () => {
-			/* no-op */
-		});
-		const ctx = makeCtx({ emit });
-
-		const result = await sandbox.spawn(
-			`export default async (ctx) => {
-				const encoded = btoa("hello");
-				const decoded = atob(encoded);
-				await ctx.emit("result", { encoded, decoded });
-			}`,
-			ctx,
-		);
-
-		expect(result.ok).toBe(true);
-		expect(emit).toHaveBeenCalledWith("result", {
-			encoded: "aGVsbG8=",
-			decoded: "hello",
-		});
-	});
-
 	it("setTimeout fires callback and pumps promises", async () => {
 		const emit = vi.fn(async () => {
 			/* no-op */
@@ -323,35 +280,28 @@ describe("globals", () => {
 });
 
 describe("concurrent async", () => {
-	it("Promise.all with multiple ctx.fetch works", async () => {
+	it("Promise.all with multiple __hostFetch works", async () => {
 		const mockFetch = vi.fn(
-			async (url: string) =>
-				new Response(JSON.stringify({ url }), { status: 200 }),
+			async () => new Response("{}", { status: 200 }),
 		) as unknown as typeof globalThis.fetch;
-
 		const emit = vi.fn(async () => {
 			/* no-op */
 		});
-		const ctx = makeCtx({ emit, fetch: mockFetch });
-
 		const result = await sandbox.spawn(
 			`export default async (ctx) => {
 				const [r1, r2] = await Promise.all([
-					ctx.fetch("https://api1.example.com"),
-					ctx.fetch("https://api2.example.com"),
+					__hostFetch("GET", "https://api1.example.com", {}, null),
+					__hostFetch("GET", "https://api2.example.com", {}, null),
 				]);
-				const d1 = await r1.json();
-				const d2 = await r2.json();
-				await ctx.emit("result", { urls: [d1.url, d2.url] });
+				await ctx.emit("result", { count: 2, ok: r1.status === 200 && r2.status === 200 });
 			}`,
-			ctx,
+			makeCtx({ emit }),
+			{ fetch: mockFetch },
 		);
 
 		expect(result.ok).toBe(true);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
-		expect(emit).toHaveBeenCalledWith("result", {
-			urls: ["https://api1.example.com", "https://api2.example.com"],
-		});
+		expect(emit).toHaveBeenCalledWith("result", { count: 2, ok: true });
 	});
 });
 
@@ -415,42 +365,32 @@ describe("logging", () => {
 		expect(entry?.args).toEqual(["done", {}]);
 	});
 
-	it("ctx.fetch produces log entry", async () => {
+	it("__hostFetch produces log entry with method xhr.send", async () => {
 		const mockFetch = vi.fn(
 			async () => new Response("{}", { status: 200 }),
 		) as unknown as typeof globalThis.fetch;
 		const result = await sandbox.spawn(
 			`export default async (ctx) => {
-				await ctx.fetch("https://api.example.com");
+				await __hostFetch("GET", "https://api.example.com", {}, null);
 			}`,
-			makeCtx({ fetch: mockFetch }),
+			makeCtx(),
+			{ fetch: mockFetch },
 		);
 		expect(result.ok).toBe(true);
-		const entry = findLog(result, "ctx.fetch");
+		const entry = findLog(result, "xhr.send");
 		expect(entry).toBeDefined();
 		expect(entry?.status).toBe("ok");
-		expect(entry?.args?.[0]).toBe("https://api.example.com");
-	});
-
-	it("failed bridge produces log entry with status failed", async () => {
-		const result = await sandbox.spawn(
-			'export default async (ctx) => { atob("!!!invalid!!!"); }',
-			makeCtx(),
-		);
-		expect(result.ok).toBe(false);
-		const entry = findLog(result, "atob");
-		expect(entry).toBeDefined();
-		expect(entry?.status).toBe("failed");
-		expect(entry?.error).toBeDefined();
+		expect(entry?.args?.[0]).toBe("GET");
+		expect(entry?.args?.[1]).toBe("https://api.example.com");
 	});
 
 	it("bridge log entries have timing fields", async () => {
 		const result = await sandbox.spawn(
-			'export default async (ctx) => { btoa("hello"); }',
+			"export default async (ctx) => { crypto.randomUUID(); }",
 			makeCtx(),
 		);
 		expect(result.ok).toBe(true);
-		const entry = findLog(result, "btoa");
+		const entry = findLog(result, "randomUUID");
 		expect(entry).toBeDefined();
 		expect(typeof entry?.ts).toBe("number");
 		expect(typeof entry?.durationMs).toBe("number");

@@ -1,10 +1,18 @@
-# Context Specification
+## REMOVED Requirements
 
-## Purpose
+### Requirement: ActionContext fetch method
 
-Provide context objects that wrap event queue access and metadata propagation, giving triggers and actions a clean interface for emitting events with proper correlation and parent tracking.
+**Reason**: Replaced by global `fetch` polyfill backed by the `__hostFetch` bridge. Actions now call `fetch(url, init)` instead of `ctx.fetch(url, init)`. The Response is constructed natively by whatwg-fetch inside QuickJS, eliminating the need for host-side Response marshalling.
 
-## Requirements
+**Migration**: Change `ctx.fetch(url, init)` to `fetch(url, init)` in action handler code. Response objects are now spec-compliant (real `Headers` instance via `.headers`, standard `.json()`, `.text()` methods).
+
+### Requirement: ActionContext fetch logging
+
+**Reason**: Replaced by bridge factory auto-logging on the `__hostFetch` bridge. Every `__hostFetch` invocation is automatically logged with method, url, headers, body, duration, and status.
+
+**Migration**: Fetch logging now appears in `SandboxResult.logs` as entries with `method: "xhr.send"`. The runtime Logger-based `fetch.start`/`fetch.completed`/`fetch.failed` logging is removed.
+
+## MODIFIED Requirements
 
 ### Requirement: ActionContext
 
@@ -31,23 +39,6 @@ Network access SHALL be provided by the global `fetch` function (a polyfill), no
 - **WHEN** `ctx.emit("order.validated", { valid: true })` is called
 - **THEN** `EventSource.derive()` is called with the parent event, type, and payload
 - **AND** the derived event is automatically emitted to the bus
-
-### Requirement: ActionContext env property
-
-The `ActionContext` SHALL provide an `env` property that gives access to environment variables. The `env` property SHALL be typed as `Record<string, string>` (no `undefined`). The env values SHALL be the per-action resolved values from the workflow manifest, not `process.env`.
-
-#### Scenario: Access environment variable
-
-- **GIVEN** an `ActionContext` created with env `{ "API_KEY": "secret", "BASE_URL": "https://example.com" }`
-- **WHEN** the handler accesses `ctx.env.API_KEY`
-- **THEN** the value is `"secret"`
-
-#### Scenario: Env does not contain undeclared variables
-
-- **GIVEN** an `ActionContext` created with env `{ "API_KEY": "secret" }`
-- **AND** `process.env.OTHER_VAR` is `"other"`
-- **WHEN** the handler accesses `ctx.env`
-- **THEN** `ctx.env` SHALL NOT contain `OTHER_VAR`
 
 ### Requirement: createActionContext factory function
 

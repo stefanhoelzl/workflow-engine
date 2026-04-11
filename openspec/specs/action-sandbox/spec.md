@@ -9,13 +9,6 @@ The system SHALL execute action source code inside a QuickJS WASM sandbox via `q
 - **THEN** a `ReferenceError` is thrown inside QuickJS
 - **AND** the host process is unaffected
 
-#### Scenario: Action code cannot access network directly
-
-- **GIVEN** action source code that attempts to call `fetch("https://example.com")`
-- **WHEN** the action executes in the sandbox
-- **THEN** a `ReferenceError` is thrown (global `fetch` is not exposed)
-- **AND** only `ctx.fetch()` is available for network access
-
 ### Requirement: Sandbox interface
 
 The system SHALL provide a `Sandbox` interface with a `spawn` method:
@@ -89,7 +82,9 @@ The `spawn` method SHALL accept an optional `AbortSignal`. In the initial implem
 
 ### Requirement: Ctx bridging via deferred promises
 
-The system SHALL bridge `ctx.emit()` and `ctx.fetch()` into the QuickJS sandbox using the deferred promise pattern: create a QuickJS promise via `vm.newPromise()`, perform the real async operation on the host, resolve the deferred when done, and call `vm.runtime.executePendingJobs()` to resume QuickJS execution.
+The system SHALL bridge `ctx.emit()` into the QuickJS sandbox using the deferred promise pattern: create a QuickJS promise via `vm.newPromise()`, perform the real async operation on the host, resolve the deferred when done, and call `vm.runtime.executePendingJobs()` to resume QuickJS execution.
+
+Network access SHALL be provided by the global `fetch` polyfill (backed by the `__hostFetch` bridge), not by `ctx.fetch()`.
 
 #### Scenario: ctx.emit bridges to host
 
@@ -98,18 +93,18 @@ The system SHALL bridge `ctx.emit()` and `ctx.fetch()` into the QuickJS sandbox 
 - **THEN** the host-side `ActionContext.emit()` is called with `("order.processed", { id: "123" })`
 - **AND** the QuickJS promise resolves after the host emit completes
 
-#### Scenario: ctx.fetch bridges to host
+#### Scenario: fetch uses global polyfill
 
-- **GIVEN** action source code that calls `await ctx.fetch("https://api.example.com", { method: "POST" })`
+- **GIVEN** action source code that calls `await fetch("https://api.example.com", { method: "POST" })`
 - **WHEN** the action executes in the sandbox
-- **THEN** the host-side `ActionContext.fetch()` is called with the URL and init
-- **AND** the QuickJS promise resolves with a Response proxy
+- **THEN** the whatwg-fetch polyfill creates an XHR which calls `__hostFetch`
+- **AND** the action receives a spec-compliant Response with Headers, .json(), .text()
 
 #### Scenario: Concurrent async operations work
 
-- **GIVEN** action source code that calls `await Promise.all([ctx.fetch(url1), ctx.fetch(url2)])`
+- **GIVEN** action source code that calls `await Promise.all([fetch(url1), fetch(url2)])`
 - **WHEN** the action executes in the sandbox
-- **THEN** both fetches run concurrently on the host
+- **THEN** both requests run concurrently on the host
 - **AND** `Promise.all` resolves when both complete
 
 ### Requirement: ctx.event and ctx.env as serialized data
@@ -128,43 +123,9 @@ The system SHALL serialize `ctx.event` and `ctx.env` as JSON and inject them as 
 - **WHEN** the action accesses `ctx.env.API_KEY`
 - **THEN** the value is `"secret"`
 
-### Requirement: Fetch Response proxy
-
-The `ctx.fetch()` method inside the sandbox SHALL return a Response proxy object with:
-- `status` (number), `statusText` (string), `ok` (boolean), `url` (string) as properties
-- `headers` as a QuickJS `Map` with lowercase-normalized keys
-- `json()` as an async method that bridges to the host to read and parse the response body
-- `text()` as an async method that bridges to the host to read the response body as text
-
-#### Scenario: Action reads response status
-
-- **GIVEN** action code that calls `const res = await ctx.fetch(url)`
-- **WHEN** the host fetch returns status 200
-- **THEN** `res.status` is `200`, `res.ok` is `true`
-
-#### Scenario: Action reads response headers via Map
-
-- **GIVEN** a response with header `Content-Type: application/json`
-- **WHEN** the action accesses `res.headers.get("content-type")`
-- **THEN** the value is `"application/json"`
-
-#### Scenario: Action parses JSON response
-
-- **GIVEN** a response with body `{"key": "value"}`
-- **WHEN** the action calls `await res.json()`
-- **THEN** the result is `{ key: "value" }` inside QuickJS
-
-#### Scenario: Action reads text response
-
-- **GIVEN** a response with body `"hello world"`
-- **WHEN** the action calls `await res.text()`
-- **THEN** the result is `"hello world"` inside QuickJS
-
 ### Requirement: Safe globals
 
 The sandbox SHALL expose the following globals and no others:
-- `btoa(string): string`
-- `atob(string): string`
 - `setTimeout(callback, delay): number` — delegates to Node.js `setTimeout`, returns the real timer ID
 - `clearTimeout(id): void` — delegates to Node.js `clearTimeout`
 - `setInterval(callback, delay): number` — delegates to Node.js `setInterval`, returns the real timer ID
@@ -189,10 +150,14 @@ The sandbox SHALL expose the following globals and no others:
 - `crypto.subtle.wrapKey(format, key, wrappingKey, wrapAlgo): Promise<number[]>`
 - `crypto.subtle.unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgo, unwrappedKeyAlgo, extractable, keyUsages): Promise<CryptoKeyHandle>`
 - `performance.now(): number`
+- `__hostFetch(method, url, headers, body): Promise<{status, statusText, headers, body}>` — internal bridge for XHR polyfill
+
+The following globals SHALL be provided by build-time polyfills (not runtime bridges):
+- `btoa`, `atob`, `fetch`, `Headers`, `Request`, `Response`, `FormData`, `URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `AbortController`, `Blob`, `structuredClone`, `ReadableStream`, `WritableStream`, `TransformStream`, `XMLHttpRequest`, `queueMicrotask`
 
 Timer callbacks SHALL trigger `vm.runtime.executePendingJobs()` after execution to pump any pending QuickJS promises.
 
-#### Scenario: btoa/atob encoding
+#### Scenario: btoa/atob encoding (via polyfill)
 
 - **GIVEN** action code that calls `btoa("hello")`
 - **WHEN** the action executes
@@ -219,18 +184,6 @@ Timer callbacks SHALL trigger `vm.runtime.executePendingJobs()` after execution 
 - **WHEN** the action executes
 - **THEN** `SandboxResult.logs` contains an entry with `method: "console.log"` and `args: ["hello", 42]`
 
-#### Scenario: console.warn captures to logs
-
-- **GIVEN** action code that calls `console.warn("slow query")`
-- **WHEN** the action executes
-- **THEN** `SandboxResult.logs` contains an entry with `method: "console.warn"` and `args: ["slow query"]`
-
-#### Scenario: console.error captures to logs
-
-- **GIVEN** action code that calls `console.error("failed:", { code: 500 })`
-- **WHEN** the action executes
-- **THEN** `SandboxResult.logs` contains an entry with `method: "console.error"` and `args: ["failed:", { code: 500 }]`
-
 #### Scenario: crypto globals are available
 
 - **GIVEN** action code that accesses `crypto.subtle` and `performance`
@@ -242,6 +195,20 @@ Timer callbacks SHALL trigger `vm.runtime.executePendingJobs()` after execution 
 - **GIVEN** action code that calls `performance.now()`
 - **WHEN** the action executes
 - **THEN** the result is a number >= 0
+
+#### Scenario: fetch is a global (not ctx.fetch)
+
+- **GIVEN** action code that calls `await fetch("https://api.example.com")`
+- **WHEN** the action executes
+- **THEN** the request is performed via the XHR polyfill → `__hostFetch` bridge
+- **AND** the action receives a spec-compliant Response object
+
+#### Scenario: Action code cannot access Node.js globals
+
+- **GIVEN** action source code that references `process`, `require`, `fs`, or `globalThis.constructor`
+- **WHEN** the action executes in the sandbox
+- **THEN** a `ReferenceError` is thrown inside QuickJS
+- **AND** the host process is unaffected
 
 ### Requirement: Context disposal
 
@@ -759,3 +726,87 @@ The sandbox `spawn()` method SHALL call `b.dispose()` in its finally block, afte
 - **WHEN** the action fails
 - **THEN** `b.dispose()` is called in the finally block
 - **AND** all opaque references are released
+
+### Requirement: Polyfill virtual module
+
+The vite plugin SHALL provide a virtual module `@workflow-engine/sandbox-globals` that, when imported, assigns Web API polyfills to `globalThis`. The module SHALL set up: `XMLHttpRequest` (via `mock-xmlhttprequest`), `fetch`/`Headers`/`Request`/`Response`/`FormData` (via `whatwg-fetch`), `URL`/`URLSearchParams` (via `url-polyfill`), `TextEncoder`/`TextDecoder` (via `fast-text-encoding`), `AbortController` (via `abort-controller`), `Blob` (via `blob-polyfill`), `btoa`/`atob` (via `abab`), `structuredClone` (via `@ungap/structured-clone`), `ReadableStream`/`WritableStream`/`TransformStream` (via `web-streams-polyfill`), and `queueMicrotask` (via `Promise.resolve().then(cb)`).
+
+#### Scenario: All polyfilled globals are available in the sandbox
+
+- **WHEN** an action executes in the sandbox after the virtual module has been bundled
+- **THEN** `globalThis.URL`, `globalThis.TextEncoder`, `globalThis.TextDecoder`, `globalThis.Headers`, `globalThis.Request`, `globalThis.Response`, `globalThis.FormData`, `globalThis.AbortController`, `globalThis.Blob`, `globalThis.structuredClone`, `globalThis.ReadableStream`, `globalThis.btoa`, `globalThis.atob`, `globalThis.queueMicrotask` SHALL all be defined
+- **AND** `globalThis.fetch` SHALL be a callable function
+
+#### Scenario: URL polyfill works
+
+- **WHEN** action code calls `new URL("https://example.com/path?q=1")`
+- **THEN** `url.pathname` is `"/path"` and `url.searchParams.get("q")` is `"1"`
+
+#### Scenario: TextEncoder/TextDecoder work
+
+- **WHEN** action code calls `new TextEncoder().encode("hello")`
+- **THEN** the result is a `Uint8Array` equivalent to `[104, 101, 108, 108, 111]`
+
+#### Scenario: structuredClone works
+
+- **WHEN** action code calls `structuredClone({ a: 1, b: [2, 3] })`
+- **THEN** the result is a deep copy equal to `{ a: 1, b: [2, 3] }`
+
+### Requirement: XHR onSend wired to __hostFetch
+
+The virtual module SHALL configure `mock-xmlhttprequest`'s `onSend` hook to call the `__hostFetch` bridge function. The `onSend` handler SHALL extract `request.method`, `request.url`, `request.requestHeaders.getHash()`, and `request.body` and pass them to `__hostFetch`. When `__hostFetch` resolves, the handler SHALL call `request.respond(status, headers, body, statusText)` with the returned values.
+
+#### Scenario: fetch calls __hostFetch via XHR
+
+- **WHEN** action code calls `await fetch("https://api.example.com", { method: "POST", body: "data" })`
+- **THEN** `__hostFetch` is called with method `"POST"`, url `"https://api.example.com"`, headers object, and body `"data"`
+- **AND** the response from `__hostFetch` is used to call `request.respond()`
+- **AND** the action receives a spec-compliant Response object with `.status`, `.headers.get()`, `.json()`, `.text()`
+
+#### Scenario: fetch error propagates
+
+- **WHEN** `__hostFetch` rejects with an error
+- **THEN** the fetch promise in the action rejects with the error
+- **AND** the action can catch it or let it propagate as a failed SandboxResult
+
+### Requirement: Polyfill tree-shaking
+
+The polyfill imports SHALL be bundled by Rollup as part of the workflow build. Unused polyfills SHALL be eliminated by tree-shaking. The polyfill module SHALL be injected into every workflow build regardless of whether the action uses the globals.
+
+#### Scenario: Unused polyfills are eliminated
+
+- **WHEN** a workflow action only uses `fetch` and `URL`
+- **THEN** the bundled `actions.js` SHALL NOT contain the full `web-streams-polyfill` or `blob-polyfill` code
+- **AND** the bundle size SHALL be proportional to the polyfills actually referenced
+
+#### Scenario: Polyfills are injected even without explicit use
+
+- **WHEN** a workflow action does not directly reference any polyfilled globals
+- **THEN** the virtual module import SHALL still be present in the entry
+- **AND** libraries imported by the action that reference globals SHALL find them on `globalThis`
+
+### Requirement: __hostFetch async bridge
+
+The sandbox SHALL expose a `__hostFetch(method, url, headers, body)` async bridge on `globalThis`. The bridge SHALL:
+1. Perform a real HTTP request using Node.js `globalThis.fetch(url, { method, headers, body })`
+2. Read the full response body as text
+3. Collect response headers into a plain object
+4. Return `{ status, statusText, headers, body }` as a JSON-marshalled result
+
+#### Scenario: __hostFetch performs GET request
+
+- **WHEN** the polyfill calls `__hostFetch("GET", "https://api.example.com/data", {}, null)`
+- **THEN** Node.js `fetch` is called with `GET` method and the URL
+- **AND** the result contains `status: 200`, `statusText: "OK"`, headers as an object, and body as a string
+
+#### Scenario: __hostFetch performs POST with headers and body
+
+- **WHEN** the polyfill calls `__hostFetch("POST", url, {"content-type": "application/json"}, '{"key":"value"}')`
+- **THEN** Node.js `fetch` is called with `POST`, the headers, and the body
+- **AND** the result reflects the server's response
+
+#### Scenario: __hostFetch error logged
+
+- **WHEN** Node.js `fetch` rejects (e.g., DNS failure)
+- **THEN** the bridge promise rejects
+- **AND** a LogEntry is pushed with `method: "xhr.send"`, `status: "failed"`, and the error message

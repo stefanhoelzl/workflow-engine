@@ -4,8 +4,8 @@ import {
 	type QuickJSHandle,
 } from "quickjs-emscripten";
 import type { ActionContext } from "../context/index.js";
-import { type LogEntry, createBridge } from "./bridge-factory.js";
-import { bridgeCtx } from "./bridge.js";
+import { bridgeCtx, bridgeHostFetch } from "./bridge.js";
+import { createBridge, type LogEntry } from "./bridge-factory.js";
 import { setupGlobals } from "./globals.js";
 
 type SandboxResult =
@@ -16,6 +16,7 @@ interface SpawnOptions {
 	signal?: AbortSignal;
 	filename?: string;
 	exportName?: string;
+	fetch?: typeof globalThis.fetch;
 }
 
 interface Sandbox {
@@ -53,6 +54,7 @@ async function createSandbox(): Promise<Sandbox> {
 			let timerCleanup: ReturnType<typeof setupGlobals> | undefined;
 			try {
 				timerCleanup = setupGlobals(b);
+				bridgeHostFetch(b, options?.fetch ?? globalThis.fetch);
 				bridgeCtx(b, ctx);
 
 				const filename = options?.filename ?? "action.js";

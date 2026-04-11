@@ -57,7 +57,7 @@ export const sendMessage = workflow.action({
 	},
 	handler: async (ctx) => {
 		const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v1/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
-		await ctx.fetch(url, {
+		await fetch(url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",

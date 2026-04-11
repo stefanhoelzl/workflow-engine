@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
 import { createEventSource } from "../event-source.js";
-import { createLogger } from "../logger.js";
 import type { Sandbox } from "../sandbox/index.js";
 import { createScheduler } from "../services/scheduler.js";
 import { createFsStorage } from "../storage/fs.js";
@@ -17,7 +16,6 @@ import type { RecoveryBatch } from "./persistence.js";
 import { createPersistence } from "./persistence.js";
 import { createWorkQueue } from "./work-queue.js";
 
-const silentLogger = createLogger("test", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };
 function createTestSource(bus: ReturnType<typeof createEventBus>) {
 	return createEventSource(
@@ -65,13 +63,7 @@ function stubContextFactory(
 	event: RuntimeEvent,
 	_actionName: string,
 ): ActionContext {
-	return new ActionContext(
-		event,
-		vi.fn(),
-		vi.fn() as unknown as typeof globalThis.fetch,
-		{},
-		silentLogger,
-	);
+	return new ActionContext(event, vi.fn(), {});
 }
 
 describe("recovery", () => {

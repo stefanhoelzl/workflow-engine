@@ -335,5 +335,5 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 	};
 }
 
-export { createBridge };
 export type { Bridge, LogEntry };
+export { createBridge };

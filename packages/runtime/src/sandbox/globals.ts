@@ -7,25 +7,10 @@ interface TimerCleanup {
 }
 
 function setupGlobals(b: Bridge): TimerCleanup {
-	setupBtoaAtob(b);
 	setupConsole(b);
 	setupCrypto(b);
 	setupPerformance(b);
 	return setupTimers(b);
-}
-
-function setupBtoaAtob(b: Bridge): void {
-	b.sync(b.vm.global, "btoa", {
-		args: [b.arg.string],
-		marshal: b.marshal.string,
-		impl: (str) => btoa(str),
-	});
-
-	b.sync(b.vm.global, "atob", {
-		args: [b.arg.string],
-		marshal: b.marshal.string,
-		impl: (str) => atob(str),
-	});
 }
 
 function setupConsole(b: Bridge): void {
