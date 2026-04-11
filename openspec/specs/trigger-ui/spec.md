@@ -18,11 +18,11 @@ The system SHALL provide a `triggerMiddleware` factory function that accepts a J
 - **THEN** `/trigger/*` routes are served from the same Hono server
 
 ### Requirement: Event list page
-The system SHALL serve an HTML page at `GET /trigger/` listing all defined workflow events by name.
+The system SHALL serve an HTML page at `GET /trigger/` listing all defined workflow events by name, rendered with authenticated user identity.
 
-#### Scenario: Page lists all events
-- **WHEN** a browser requests `GET /trigger/`
-- **THEN** the response is an HTML document rendered via the shared layout
+#### Scenario: Page lists all events with user identity
+- **WHEN** a browser requests `GET /trigger/` with `X-Auth-Request-User: stefan` and `X-Auth-Request-Email: stefan@example.com` headers
+- **THEN** the response is an HTML document rendered via the shared layout with user and email
 - **THEN** each event from the JSON Schema map is listed as a `<details>` element with the event name as the `<summary>`
 
 #### Scenario: JSON Schema embedded per event
@@ -31,7 +31,7 @@ The system SHALL serve an HTML page at `GET /trigger/` listing all defined workf
 - **THEN** the schema has been processed by `prepareSchema` which promotes `example` values to `default` and labels `anyOf` variants with type titles
 
 ### Requirement: Lazy form initialization
-The system SHALL initialize a Jedison form instance only when the user first expands an event's `<details>` block.
+The system SHALL provide a global `initForm` function in the external JavaScript file (`/static/trigger-forms.js`) that initializes a Jedison form instance when a `<details>` block is first expanded.
 
 #### Scenario: First expansion creates form
 - **WHEN** a `<details>` block is opened for the first time
@@ -63,22 +63,13 @@ The system SHALL accept `POST /trigger/:eventType` with a JSON body and emit the
 - **THEN** the response is an HTML fragment containing an error banner
 
 ### Requirement: Form submission via fetch
-The system SHALL provide a global `submitEvent` function that reads the Jedison form value and submits it via `fetch()`.
+The system SHALL provide a global `submitEvent` function in an external JavaScript file (`/static/trigger-forms.js`) that reads the Jedison form value and submits it via `fetch()`.
 
 #### Scenario: Submit button triggers fetch call
 - **WHEN** the user clicks the submit button for an event
 - **THEN** `jedison.getValue()` is called on the cached instance
 - **THEN** `fetch('POST', '/trigger/:eventType', ...)` is called with the JSON body
 - **THEN** the response HTML fragment is swapped into the banner target area inside the `<details>` block
-
-### Requirement: Jedison static asset route
-The system SHALL serve the Jedison library at `GET /trigger/jedison.js` vendored from `node_modules`.
-
-#### Scenario: Jedison JS served
-- **WHEN** a browser requests `GET /trigger/jedison.js`
-- **THEN** the response has `Content-Type: application/javascript`
-- **THEN** the response has `Cache-Control: public, max-age=31536000, immutable`
-- **THEN** the response body is the contents of the `jedison` npm package dist file
 
 ### Requirement: Jedison styling
 The system SHALL use Jedison's base theme with custom CSS that uses the shared layout's CSS variables for consistent light/dark mode theming.

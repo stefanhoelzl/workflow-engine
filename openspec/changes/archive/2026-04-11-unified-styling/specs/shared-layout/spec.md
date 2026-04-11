@@ -1,10 +1,4 @@
-# Shared Layout Specification
-
-## Purpose
-
-Provide a shared HTML layout with navigation sidebar reused across dashboard and trigger UI pages.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Shared layout function
 The system SHALL provide a `renderLayout(options, content)` function that returns a complete HTML document with a top bar, navigation sidebar, and content area. The `options` object SHALL include `title`, `activePath`, `user`, `email`, and optional `head` and `bodyAttrs` fields.
@@ -14,14 +8,6 @@ The system SHALL provide a `renderLayout(options, content)` function that return
 - **THEN** the result is a complete HTML document with `<!DOCTYPE html>`, `<head>`, and `<body>`
 - **THEN** the `<title>` contains the provided title
 - **THEN** the content string is injected into the main content area
-
-### Requirement: Navigation sidebar
-The layout SHALL include a sidebar (~200px) with icon and text labels for navigating between pages.
-
-#### Scenario: Sidebar contains navigation links
-- **WHEN** the layout is rendered
-- **THEN** the sidebar contains a link to `/dashboard` labeled "Dashboard"
-- **THEN** the sidebar contains a link to `/trigger` labeled "Trigger"
 
 ### Requirement: Shared CSS variables
 The layout SHALL reference an external CSS file at `/static/workflow-engine.css` via a `<link>` tag instead of inline `<style>`.

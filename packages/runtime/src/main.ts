@@ -21,6 +21,7 @@ import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
+import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { httpTriggerMiddleware } from "./triggers/http.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
@@ -119,6 +120,7 @@ async function init() {
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		httpTriggerMiddleware(registry, source),
+		staticMiddleware(),
 		dashboardMiddleware(eventStore),
 		triggerMiddleware(registry, source),
 		apiMiddleware({ registry, githubUser: config.githubUser }),

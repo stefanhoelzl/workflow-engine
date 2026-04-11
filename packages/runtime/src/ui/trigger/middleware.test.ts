@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prepareSchema } from "./middleware.js";
+import { prepareSchema } from "./page.js";
 
 describe("prepareSchema", () => {
 	it("promotes example to default when no default exists", () => {

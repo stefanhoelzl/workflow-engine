@@ -1,10 +1,4 @@
-# Dashboard Middleware Specification
-
-## Purpose
-
-Provide the middleware factory and route handlers for serving the dashboard UI, including the HTML page shell and integration with the existing Hono server.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Dashboard middleware factory
 The system SHALL provide a `dashboardMiddleware` factory function that accepts an `EventStore` and returns a standard `Middleware` object (`{ match, handler }`).
@@ -29,3 +23,9 @@ The system SHALL serve a complete HTML page at `GET /dashboard` using the shared
 - **WHEN** a browser requests `GET /dashboard` without authentication headers
 - **THEN** the layout is rendered with empty user and email
 - **THEN** the top bar user section is hidden
+
+## REMOVED Requirements
+
+### Requirement: Static JS asset routes
+**Reason**: Static assets (Alpine.js, HTMX) are now served by the static middleware at `/static/*` instead of by the dashboard middleware at `/dashboard/*`.
+**Migration**: Update references from `/dashboard/alpine.js` to `/static/alpine.js` and `/dashboard/htmx.js` to `/static/htmx.js`.

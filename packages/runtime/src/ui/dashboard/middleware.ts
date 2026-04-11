@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { Hono } from "hono";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Middleware } from "../../triggers/http.js";
@@ -20,17 +18,6 @@ import {
 } from "./list.js";
 import { renderTimeline } from "./timeline.js";
 
-const require = createRequire(import.meta.url);
-const alpineJs = readFileSync(
-	require.resolve("alpinejs/dist/cdn.min.js"),
-	"utf-8",
-);
-const htmxJs = readFileSync(
-	require.resolve("htmx.org/dist/htmx.min.js"),
-	"utf-8",
-);
-
-const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 const VALID_STATES = new Set(["pending", "failed", "done"]);
 
 async function handleListFragment(
@@ -61,7 +48,11 @@ async function handleListFragment(
 function dashboardMiddleware(eventStore: EventStore): Middleware {
 	const app = new Hono().basePath("/dashboard");
 
-	app.get("/", (c) => c.html(renderPage()));
+	app.get("/", (c) => {
+		const user = c.req.header("X-Auth-Request-User") ?? "";
+		const email = c.req.header("X-Auth-Request-Email") ?? "";
+		return c.html(renderPage(user, email));
+	});
 
 	app.get(
 		"/list",
@@ -120,24 +111,6 @@ function dashboardMiddleware(eventStore: EventStore): Middleware {
 		const events = await getTimeline(eventStore, correlationId);
 		return c.html(renderTimeline(events));
 	});
-
-	app.get("/alpine.js", (c) =>
-		c.body(alpineJs, {
-			headers: {
-				"content-type": "application/javascript",
-				"cache-control": IMMUTABLE_CACHE,
-			},
-		}),
-	);
-
-	app.get("/htmx.js", (c) =>
-		c.body(htmxJs, {
-			headers: {
-				"content-type": "application/javascript",
-				"cache-control": IMMUTABLE_CACHE,
-			},
-		}),
-	);
 
 	return {
 		match: "/dashboard/*",
