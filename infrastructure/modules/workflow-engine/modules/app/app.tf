@@ -57,6 +57,9 @@ resource "kubernetes_deployment_v1" "app" {
         labels = {
           app = "workflow-engine"
         }
+        annotations = {
+          "sha256/app-s3-credentials" = sha256(jsonencode(kubernetes_secret_v1.s3.data))
+        }
       }
 
       spec {
