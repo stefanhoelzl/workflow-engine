@@ -1,15 +1,8 @@
 import type { CorrelationSummary, HeaderStats } from "./queries.js";
+import { escapeHtml } from "../html.js";
 
 const TIME_SLICE_END = 8;
 const TIME_PATTERN = /\d{2}:\d{2}:\d{2}/;
-
-function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
 
 function formatTime(value: string | Date): string {
 	if (value instanceof Date) {
