@@ -173,12 +173,16 @@ describe("WorkflowRegistry", () => {
 		const manifest1 = {
 			...MANIFEST,
 			name: "foo",
-			triggers: [{ name: "foo.webhook", type: "http", path: "orders" }],
+			triggers: [
+				{ name: "foo.webhook", type: "http", path: "orders", params: [] },
+			],
 		};
 		const manifest2 = {
 			...MANIFEST,
 			name: "bar",
-			triggers: [{ name: "bar.webhook", type: "http", path: "orders" }],
+			triggers: [
+				{ name: "bar.webhook", type: "http", path: "orders", params: [] },
+			],
 		};
 		await registry.register(makeFiles({ manifest: manifest1 }));
 		await registry.register(makeFiles({ manifest: manifest2 }));
@@ -192,15 +196,15 @@ describe("WorkflowRegistry", () => {
 		const manifest1 = {
 			...MANIFEST,
 			triggers: [
-				{ name: "webhook.a", type: "http", path: "a" },
-				{ name: "webhook.b", type: "http", path: "b" },
+				{ name: "webhook.a", type: "http", path: "a", params: [] },
+				{ name: "webhook.b", type: "http", path: "b", params: [] },
 			],
 		};
 		await registry.register(makeFiles({ manifest: manifest1 }));
 
 		const manifest2 = {
 			...MANIFEST,
-			triggers: [{ name: "webhook.c", type: "http", path: "c" }],
+			triggers: [{ name: "webhook.c", type: "http", path: "c", params: [] }],
 		};
 		await registry.register(makeFiles({ manifest: manifest2 }));
 

@@ -20,6 +20,7 @@ interface CompileOutput {
 		type: string;
 		path: string;
 		method?: string;
+		params: string[];
 		response?: { status?: number; body?: unknown };
 	}>;
 	actions: Array<{

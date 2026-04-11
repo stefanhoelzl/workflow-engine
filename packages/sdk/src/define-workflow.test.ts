@@ -96,7 +96,14 @@ describe("type-level: action handler context", () => {
 					const _url: string = ctx.event.payload.url;
 					const _method: string = ctx.event.payload.method;
 					const _headers: Record<string, string> = ctx.event.payload.headers;
-					return [_id, _url, _method, _headers] as unknown as undefined;
+					const _params: Record<string, never> = ctx.event.payload.params;
+					return [
+						_id,
+						_url,
+						_method,
+						_headers,
+						_params,
+					] as unknown as undefined;
 				},
 			});
 	});
@@ -304,6 +311,95 @@ describe("type-level: event references", () => {
 	});
 });
 
+describe("type-level: path params inference", () => {
+	it("single named param is inferred from path", () => {
+		createWorkflow("test")
+			.trigger("webhook.user", http({ path: "users/:userId" }))
+			.action({
+				on: "webhook.user",
+				handler: async (ctx) => {
+					const _userId: string = ctx.event.payload.params.userId;
+					return _userId as unknown as undefined;
+				},
+			});
+	});
+
+	it("multiple named params are inferred from path", () => {
+		createWorkflow("test")
+			.trigger(
+				"webhook.member",
+				http({ path: "orgs/:orgId/members/:memberId" }),
+			)
+			.action({
+				on: "webhook.member",
+				handler: async (ctx) => {
+					const _orgId: string = ctx.event.payload.params.orgId;
+					const _memberId: string = ctx.event.payload.params.memberId;
+					return [_orgId, _memberId] as unknown as undefined;
+				},
+			});
+	});
+
+	it("wildcard param is inferred from path", () => {
+		createWorkflow("test")
+			.trigger("webhook.files", http({ path: "files/*rest" }))
+			.action({
+				on: "webhook.files",
+				handler: async (ctx) => {
+					const _rest: string = ctx.event.payload.params.rest;
+					return _rest as unknown as undefined;
+				},
+			});
+	});
+
+	it("static path params cannot be assigned to a specific key object", () => {
+		createWorkflow("test")
+			.trigger("webhook.order", http({ path: "orders" }))
+			.action({
+				on: "webhook.order",
+				handler: async (ctx) => {
+					// @ts-expect-error params has no 'userId' key for static paths
+					const _typed: { userId: string } = ctx.event.payload.params;
+					return _typed as unknown as undefined;
+				},
+			});
+	});
+
+	it("explicit params schema with matching keys compiles", () => {
+		createWorkflow("test")
+			.trigger(
+				"webhook.user",
+				http({
+					path: "users/:userId",
+					params: z.object({ userId: z.string() }),
+				}),
+			)
+			.action({
+				on: "webhook.user",
+				handler: async (ctx) => {
+					const _userId: string = ctx.event.payload.params.userId;
+					return _userId as unknown as undefined;
+				},
+			});
+	});
+
+	it("explicit params schema with mismatched keys is a compile error", () => {
+		createWorkflow("test")
+			.trigger(
+				"webhook.user",
+				http({
+					path: "users/:userId",
+					// @ts-expect-error 'id' does not match path param ':userId'
+					params: z.object({ id: z.string() }),
+				}),
+			)
+			.action({
+				on: "webhook.user",
+				handler: async () => {},
+			});
+	});
+});
+
 // --- Runtime tests ---
 
 describe("workflow builder runtime behavior", () => {
@@ -489,6 +585,43 @@ describe("workflow builder runtime behavior", () => {
 		expect(properties).toHaveProperty("headers");
 		expect(properties).toHaveProperty("url");
 		expect(properties).toHaveProperty("method");
+		expect(properties).toHaveProperty("params");
+	});
+
+	it("static path produces params: [] in trigger config", () => {
+		const wf = createWorkflow("test").trigger(
+			"webhook.order",
+			http({ path: "orders" }),
+		);
+
+		wf.action({ on: "webhook.order", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.triggers[0]?.params).toEqual([]);
+	});
+
+	it("parameterized path produces correct param names in trigger config", () => {
+		const wf = createWorkflow("test").trigger(
+			"webhook.member",
+			http({ path: "orgs/:orgId/members/:memberId" }),
+		);
+
+		wf.action({ on: "webhook.member", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.triggers[0]?.params).toEqual(["orgId", "memberId"]);
+	});
+
+	it("wildcard path produces correct param name in trigger config", () => {
+		const wf = createWorkflow("test").trigger(
+			"webhook.files",
+			http({ path: "files/*rest" }),
+		);
+
+		wf.action({ on: "webhook.files", handler: async () => {} });
+
+		const compiled = wf.compile();
+		expect(compiled.triggers[0]?.params).toEqual(["rest"]);
 	});
 
 	it("http() without body schema defaults to unknown", () => {

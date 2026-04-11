@@ -20,6 +20,7 @@ describe("HttpTriggerRegistry", () => {
 			name: "webhook.order",
 			path: "order",
 			method: "POST",
+			params: {},
 			response: { status: 202, body: { accepted: true } },
 		});
 	});
@@ -40,6 +41,87 @@ describe("HttpTriggerRegistry", () => {
 		});
 
 		expect(registry.lookup("order", "GET")).toBeNull();
+	});
+
+	it("extracts named params from parameterized path", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.user",
+			path: "users/:userId/status",
+			method: "POST",
+		});
+
+		const result = registry.lookup("users/abc123/status", "POST");
+		expect(result?.params).toEqual({ userId: "abc123" });
+		expect(result?.name).toBe("webhook.user");
+	});
+
+	it("extracts multiple named params", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.member",
+			path: "orgs/:orgId/members/:memberId",
+			method: "POST",
+		});
+
+		const result = registry.lookup("orgs/acme/members/user42", "POST");
+		expect(result?.params).toEqual({ orgId: "acme", memberId: "user42" });
+	});
+
+	it("extracts wildcard catch-all param", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.files",
+			path: "files/*rest",
+			method: "POST",
+		});
+
+		const result = registry.lookup("files/docs/2024/report.pdf", "POST");
+		expect(result?.params).toEqual({ rest: "docs/2024/report.pdf" });
+	});
+
+	it("returns null when parameterized path does not match segment count", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.user",
+			path: "users/:userId/status",
+			method: "POST",
+		});
+
+		expect(registry.lookup("users/abc123", "POST")).toBeNull();
+	});
+
+	it("prefers static path over parameterized when both match", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.user-param",
+			path: "users/:userId",
+			method: "POST",
+		});
+		registry.register({
+			name: "webhook.user-admin",
+			path: "users/admin",
+			method: "POST",
+		});
+
+		const staticResult = registry.lookup("users/admin", "POST");
+		expect(staticResult?.name).toBe("webhook.user-admin");
+		expect(staticResult?.params).toEqual({});
+
+		const paramResult = registry.lookup("users/xyz", "POST");
+		expect(paramResult?.name).toBe("webhook.user-param");
+		expect(paramResult?.params).toEqual({ userId: "xyz" });
+	});
+
+	it("returns empty params for static path", () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+		});
+
+		expect(registry.lookup("order", "POST")?.params).toEqual({});
 	});
 });
 
@@ -105,11 +187,13 @@ describe("httpTriggerMiddleware — matching", () => {
 			headers: Record<string, string>;
 			url: string;
 			method: string;
+			params: Record<string, string>;
 		};
 		expect(p.body).toEqual({ item: "widget" });
 		expect(p.method).toBe("POST");
 		expect(p.headers).toHaveProperty("content-type", "application/json");
 		expect(p.url).toBe("http://localhost/webhooks/order");
+		expect(p.params).toEqual({});
 	});
 
 	it("includes query string in path", async () => {
@@ -162,6 +246,59 @@ describe("httpTriggerMiddleware — matching", () => {
 		];
 		expect(payload.headers["x-signature"]).toBe("sha256=abc");
 		expect(payload.headers.authorization).toBe("Bearer tk_test");
+	});
+});
+
+describe("httpTriggerMiddleware — path params", () => {
+	it("includes extracted params in payload for parameterized trigger", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.user.status",
+			path: "users/:userId/status",
+			method: "POST",
+			response: { status: 200 as const, body: { ok: true } },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		const res = await app.request("/webhooks/users/abc123/status", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ active: true }),
+		});
+
+		expect(res.status).toBe(200);
+		const [eventType, payload] = createSpy.mock.calls[0] as [
+			string,
+			{ body: unknown; params: Record<string, string> },
+		];
+		expect(eventType).toBe("webhook.user.status");
+		expect(payload.body).toEqual({ active: true });
+		expect(payload.params).toEqual({ userId: "abc123" });
+	});
+
+	it("includes empty params for static trigger", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 200 as const },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		await app.request("/webhooks/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [
+			string,
+			{ params: Record<string, string> },
+		];
+		expect(payload.params).toEqual({});
 	});
 });
 

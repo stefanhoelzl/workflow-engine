@@ -11,6 +11,35 @@ interface Event<Payload = unknown> {
 	payload: Payload;
 }
 
+// --- Path param extraction ---
+
+type ExtractParams<T extends string> =
+	T extends `${string}:${infer Param}/${infer Rest}`
+		? Param | ExtractParams<Rest>
+		: T extends `${string}:${infer Param}`
+			? Param
+			: T extends `${string}*${infer Param}`
+				? Param
+				: never;
+
+type ParamsSchemaFor<P extends string> = string extends P
+	? z.ZodRecord<z.ZodString, z.ZodString>
+	: [ExtractParams<P>] extends [never]
+		? z.ZodObject<Record<never, never>>
+		: z.ZodObject<{ [K in ExtractParams<P>]: z.ZodString }>;
+
+function extractParamNames(path: string): string[] {
+	const names: string[] = [];
+	for (const segment of path.split("/")) {
+		if (segment.startsWith(":")) {
+			names.push(segment.slice(1));
+		} else if (segment.startsWith("*")) {
+			names.push(segment.slice(1));
+		}
+	}
+	return names;
+}
+
 // --- Trigger types ---
 
 interface TriggerDef<S extends z.ZodType = z.ZodType> {
@@ -31,6 +60,7 @@ interface TriggerConfig {
 	type: string;
 	path: string;
 	method?: string | undefined;
+	params: string[];
 	response?:
 		| {
 				status?: number | undefined;
@@ -39,38 +69,49 @@ interface TriggerConfig {
 		| undefined;
 }
 
-interface HttpTriggerInput<B extends z.ZodType = z.ZodType> {
-	path: string;
-	method?: string;
-	body?: B;
-	response?: {
-		status?: number;
-		body?: unknown;
-	};
-}
-
-type HttpPayloadSchema<B extends z.ZodType> = z.ZodObject<{
+type HttpPayloadSchema<B extends z.ZodType, P extends z.ZodType> = z.ZodObject<{
 	body: B;
 	headers: z.ZodRecord<z.ZodString, z.ZodString>;
 	url: z.ZodString;
 	method: z.ZodString;
+	params: P;
 }>;
 
-function http<B extends z.ZodType = z.ZodUnknown>(
-	config: HttpTriggerInput<B>,
-): TriggerDef<HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B>> {
+function http<
+	const P extends string,
+	B extends z.ZodType = z.ZodUnknown,
+>(config: {
+	path: P;
+	method?: string;
+	body?: B;
+	params?: z.ZodObject<{ [K in ExtractParams<P>]: z.ZodType }>;
+	response?: {
+		status?: number;
+		body?: unknown;
+	};
+}): TriggerDef<
+	HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B, ParamsSchemaFor<P>>
+> {
 	const bodySchema = (config.body ?? z.unknown()) as B extends undefined
 		? z.ZodUnknown
 		: B;
+	const paramNames = extractParamNames(config.path);
+	const paramsSchema =
+		config.params ??
+		z.object(Object.fromEntries(paramNames.map((n) => [n, z.string()])));
 	const schema = z.object({
 		body: bodySchema,
 		headers: z.record(z.string(), z.string()),
 		url: z.string(),
 		method: z.string(),
+		params: paramsSchema,
 	});
 	return {
 		type: "http",
-		schema: schema as HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B>,
+		schema: schema as HttpPayloadSchema<
+			B extends undefined ? z.ZodUnknown : B,
+			ParamsSchemaFor<P>
+		>,
 		path: config.path,
 		method: config.method,
 		response: config.response,
@@ -167,6 +208,7 @@ const ManifestSchema = z.object({
 			type: z.string(),
 			path: z.string(),
 			method: z.string().optional(),
+			params: z.array(z.string()),
 			response: z
 				.object({
 					status: z.number().optional(),
@@ -356,6 +398,7 @@ class WorkflowBuilderImpl {
 			type: def.type,
 			path: def.path,
 			method: def.method,
+			params: extractParamNames(def.path),
 			response: def.response,
 		});
 		return this;
@@ -429,9 +472,10 @@ export type {
 	EnvRef,
 	Event,
 	EventPhase,
+	ExtractParams,
 	Manifest,
 	TriggerConfig,
 	TriggerDef,
 	TriggerPhase,
 };
-export { createWorkflow, ENV_REF, env, http, ManifestSchema, z };
+export { createWorkflow, ENV_REF, env, extractParamNames, http, ManifestSchema, z };
