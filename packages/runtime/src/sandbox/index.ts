@@ -89,6 +89,7 @@ async function createSandbox(): Promise<Sandbox> {
 				return { ok: true, logs: [...b.logs] };
 			} finally {
 				timerCleanup?.dispose();
+				b.dispose();
 				vm.dispose();
 				runtime.dispose();
 			}
