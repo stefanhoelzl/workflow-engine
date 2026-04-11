@@ -1,11 +1,11 @@
-import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { createGzip } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
+import { tsImport } from "tsx/esm/api";
 import ts from "typescript";
-import type { Plugin, ResolvedConfig } from "vite";
+import { build, type Plugin, type ResolvedConfig } from "vite";
 
 interface WorkflowPluginOptions {
 	workflows: string[];
@@ -32,7 +32,7 @@ interface CompileOutput {
 
 interface ManifestAction {
 	name: string;
-	module: string;
+	export: string;
 	on: string;
 	emits: string[];
 	env: Record<string, string>;
@@ -76,12 +76,16 @@ function typecheckWorkflows(workflows: string[], root: string): void {
 
 function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 	let resolvedConfig: ResolvedConfig;
+	const workflowPaths = new Map<string, string>();
 
 	return {
 		name: "workflow-engine",
 
 		configResolved(config) {
 			resolvedConfig = config;
+			for (const wf of options.workflows) {
+				workflowPaths.set(basename(wf, ".ts"), resolve(config.root, wf));
+			}
 		},
 
 		buildStart() {
@@ -121,82 +125,81 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 
 			for (const [key, chunk] of entryChunks) {
 				// biome-ignore lint/performance/noAwaitInLoops: sequential processing for error reporting
-				await processEntryChunk(chunk, this);
+				await processWorkflow(chunk.name, this, resolvedConfig, workflowPaths);
 				delete bundle[key];
 			}
 		},
 	};
 }
 
-async function processEntryChunk(
-	chunk: { name: string; code: string; exports: string[]; fileName: string },
-	ctx: PluginContext & {
-		emitFile(file: {
-			type: "asset";
-			fileName: string;
-			source: string | Uint8Array;
-		}): void;
-	},
-): Promise<void> {
-	const name = chunk.name;
-	const tmpFile = join(tmpdir(), `wf-${name}-${Date.now()}.mjs`);
+type EmitContext = PluginContext & {
+	emitFile(file: {
+		type: "asset";
+		fileName: string;
+		source: string | Uint8Array;
+	}): void;
+};
 
-	await writeFile(tmpFile, chunk.code);
+async function processWorkflow(
+	name: string,
+	ctx: EmitContext,
+	config: ResolvedConfig,
+	workflowPaths: Map<string, string>,
+): Promise<void> {
+	const workflowPath = workflowPaths.get(name);
+	if (!workflowPath) {
+		ctx.error(`No workflow path found for "${name}"`);
+	}
+
+	const parentUrl = pathToFileURL(`${config.root}/`).href;
 	let mod: Record<string, unknown>;
 	try {
-		mod = (await import(tmpFile)) as Record<string, unknown>;
+		mod = (await tsImport(workflowPath, parentUrl)) as Record<string, unknown>;
 	} catch (error) {
 		ctx.error(
 			`Failed to import workflow "${name}": ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 
-	const { manifest, actionSources } = extractManifest(
-		mod,
-		name,
-		chunk.code,
-		chunk.exports,
-		ctx,
-	);
+	const { manifest, exportMap } = extractManifest(mod, name, ctx);
+	const actionSource = await buildWorkflowModule(workflowPath, config.root);
+
+	const manifestJson = JSON.stringify(manifest, null, 2);
 
 	ctx.emitFile({
 		type: "asset",
 		fileName: `${name}/manifest.json`,
-		source: JSON.stringify(manifest, null, 2),
+		source: manifestJson,
 	});
 
-	// Emit one file per action with default export
-	for (const [actionName, source] of Object.entries(actionSources)) {
-		ctx.emitFile({
-			type: "asset",
-			fileName: `${name}/actions/${actionName}.js`,
-			source,
-		});
-	}
+	ctx.emitFile({
+		type: "asset",
+		fileName: `${name}/actions.js`,
+		source: actionSource,
+	});
 
-	// Emit tar.gz bundle for upload
 	const bundleFiles: Record<string, string> = {
-		"manifest.json": JSON.stringify(manifest, null, 2),
+		"manifest.json": manifestJson,
+		"actions.js": actionSource,
 	};
-	for (const [actionName, source] of Object.entries(actionSources)) {
-		bundleFiles[`actions/${actionName}.js`] = source;
-	}
 	const bundle = await createTarGzBundle(bundleFiles);
 	ctx.emitFile({
 		type: "asset",
 		fileName: `${name}/bundle.tar.gz`,
 		source: bundle,
 	});
+
+	// biome-ignore lint/suspicious/noConsole: intentional build output
+	console.log(
+		`Workflow "${name}": ${Object.keys(exportMap).length} actions bundled`,
+	);
 }
 
-// biome-ignore lint/complexity/useMaxParams: all parameters are distinct required inputs
 function extractManifest(
 	mod: Record<string, unknown>,
 	name: string,
-	code: string,
-	_exports: string[],
 	ctx: PluginContext,
-): { manifest: object; actionSources: Record<string, string> } {
+): { manifest: object; exportMap: Record<string, string> } {
 	const defaultExport = mod.default as
 		| { compile?: () => CompileOutput }
 		| undefined;
@@ -217,7 +220,7 @@ function extractManifest(
 
 	const namedExports = Object.entries(mod).filter(([key]) => key !== "default");
 	const actions: ManifestAction[] = [];
-	const actionSources: Record<string, string> = {};
+	const exportMap: Record<string, string> = {};
 
 	for (const action of compiled.actions) {
 		const match = namedExports.find(([, fn]) => fn === action.handler);
@@ -231,85 +234,103 @@ function extractManifest(
 		const actionName = action.name ?? exportName;
 		actions.push({
 			name: actionName,
-			module: `actions/${actionName}.js`,
+			export: exportName,
 			on: action.on,
 			emits: action.emits,
 			env: action.env,
 		});
 
-		// Extract handler source and wrap as default export
-		const handlerSource = extractHandlerSource(code, exportName);
-		actionSources[actionName] = handlerSource
-			? `export default ${handlerSource};\n`
-			: `export default ${action.handler.toString()};\n`;
+		exportMap[actionName] = exportName;
 	}
 
 	return {
 		manifest: {
 			name: compiled.name,
+			module: "actions.js",
 			events: compiled.events,
 			triggers: compiled.triggers,
 			actions,
 		},
-		actionSources,
+		exportMap,
 	};
 }
 
-const ACTION_CALL_RE = /var\s+(\w+)\s*=\s*\w+\.action\(\{/g;
-const HANDLER_KEY_RE = /handler:\s*/;
+const SDK_STUB = `
+const noop = () => {};
+const handler = { get: () => selfProxy, apply: () => selfProxy };
+const selfProxy = new Proxy(noop, handler);
 
-function extractHandlerSource(
-	code: string,
-	exportName: string,
-): string | undefined {
-	const pattern = new RegExp(ACTION_CALL_RE.source, "g");
-	let match: RegExpExecArray | null = pattern.exec(code);
-
-	while (match !== null) {
-		const varName = match[1];
-		if (varName !== exportName) {
-			match = pattern.exec(code);
-			continue;
-		}
-
-		const afterAction = code.slice(match.index + match[0].length);
-		const handlerMatch = HANDLER_KEY_RE.exec(afterAction);
-		if (!handlerMatch) {
-			match = pattern.exec(code);
-			continue;
-		}
-
-		const handlerStart =
-			match.index +
-			match[0].length +
-			handlerMatch.index +
-			handlerMatch[0].length;
-		const braceStart = code.indexOf("{", handlerStart);
-		if (braceStart === -1) {
-			match = pattern.exec(code);
-			continue;
-		}
-
-		const handlerBodyEnd = findMatchingBrace(code, braceStart);
-		return code.slice(handlerStart, handlerBodyEnd + 1);
-	}
-
-	return;
+export const z = selfProxy;
+export function http() { return selfProxy; }
+export function env() { return ""; }
+export function createWorkflow() {
+  const b = {
+    trigger: () => b,
+    event: () => b,
+    action: (config) => config.handler,
+    compile: noop,
+  };
+  return b;
 }
+export const ENV_REF = Symbol("env");
+export const ManifestSchema = selfProxy;
+`;
 
-function findMatchingBrace(code: string, openPos: number): number {
-	let depth = 0;
-	for (let i = openPos; i < code.length; i++) {
-		if (code[i] === "{") {
-			depth++;
-		} else if (code[i] === "}") {
-			depth--;
-			if (depth === 0) {
-				return i;
-			}
-		}
+async function buildWorkflowModule(
+	workflowPath: string,
+	root: string,
+): Promise<string> {
+	const stubId = "\0sdk-stub";
+	const sdkPackage = "@workflow-engine/sdk";
+
+	const result = await build({
+		configFile: false,
+		logLevel: "silent",
+		root,
+		plugins: [
+			{
+				name: "sdk-stub",
+				enforce: "pre",
+				resolveId(id) {
+					if (id === sdkPackage) {
+						return stubId;
+					}
+				},
+				load(id) {
+					if (id === stubId) {
+						return SDK_STUB;
+					}
+				},
+			},
+		],
+		build: {
+			write: false,
+			minify: false,
+			ssr: true,
+			rollupOptions: {
+				input: workflowPath,
+				output: { format: "es" },
+			},
+		},
+		ssr: {
+			target: "node",
+			noExternal: true,
+		},
+	});
+
+	const output = Array.isArray(result) ? result[0] : result;
+	if (!(output && "output" in output)) {
+		throw new Error(`Unexpected build result for workflow "${workflowPath}"`);
 	}
-	return code.length - 1;
+	const chunk = output.output.find(
+		(item) => item.type === "chunk" && item.isEntry,
+	);
+	if (!chunk || chunk.type !== "chunk") {
+		throw new Error(
+			`No entry chunk in build output for workflow "${workflowPath}"`,
+		);
+	}
+	return chunk.code;
 }
 
 async function createTarGzBundle(

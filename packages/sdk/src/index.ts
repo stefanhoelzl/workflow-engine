@@ -155,6 +155,7 @@ const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) =>
 
 const ManifestSchema = z.object({
 	name: z.string(),
+	module: z.string(),
 	events: z.array(
 		z.object({
 			name: z.string(),
@@ -178,7 +179,7 @@ const ManifestSchema = z.object({
 	actions: z.array(
 		z.object({
 			name: z.string(),
-			module: z.string(),
+			export: z.string(),
 			on: z.string(),
 			emits: z.array(z.string()),
 			env: z.record(z.string(), z.string()),

@@ -1,11 +1,4 @@
-### Requirement: Plugin accepts explicit workflow list
-
-The Vite plugin SHALL accept a configuration object with a `workflows` field listing the workflow source file paths. The plugin SHALL NOT scan directories for workflow files.
-
-#### Scenario: Explicit workflow list
-- **WHEN** the plugin is configured with `workflows: ["./cronitor.ts"]`
-- **THEN** it SHALL process only `cronitor.ts`
-- **AND** it SHALL NOT discover or process other `.ts` files in the directory
+## MODIFIED Requirements
 
 ### Requirement: Two-pass build per workflow
 
@@ -55,20 +48,10 @@ The plugin SHALL output each workflow's artifacts into a subdirectory of the out
 - **THEN** it SHALL produce `dist/cronitor/manifest.json` and `dist/cronitor/actions.js`
 - **AND** `actions.js` SHALL export both `handleCronitorEvent` and `sendMessage` as named exports
 
-### Requirement: Build failure on validation errors
+## REMOVED Requirements
 
-The plugin SHALL fail the Vite build if a workflow has validation errors during `.compile()` or if TypeScript type checking detects errors in workflow files during production builds.
+### Requirement: Action name resolution via export matching
 
-#### Scenario: Action references undefined event
-- **WHEN** a workflow's `.compile()` throws because an action references an event not defined via `.event()`
-- **THEN** the Vite build SHALL fail with an error message identifying the workflow and the error
+**Reason**: Export matching by reference equality is still used during metadata extraction, but has moved to the manifest extraction phase (not a separate requirement). The matching logic is unchanged — it is part of the "Two-pass build per workflow" requirement.
+**Migration**: No code migration needed. The matching logic remains identical; it is just no longer a standalone spec requirement.
 
-#### Scenario: Unmatched handler export
-- **WHEN** `.compile()` returns an action whose handler reference does not match any named export
-- **THEN** the Vite build SHALL fail with an error identifying the unmatched action
-
-#### Scenario: TypeScript type error in workflow
-- **WHEN** a workflow file contains a TypeScript type error
-- **AND** the build is not in watch mode
-- **THEN** the Vite build SHALL fail during `buildStart` with formatted type error diagnostics
-- **AND** the error SHALL be reported before any bundling occurs

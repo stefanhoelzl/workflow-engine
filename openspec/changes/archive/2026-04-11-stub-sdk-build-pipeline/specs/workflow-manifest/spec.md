@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Manifest JSON format
 
 The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: name, module, events (with JSON Schema), triggers, and actions. The manifest SHALL NOT contain executable code or function references.
@@ -67,11 +69,3 @@ The SDK SHALL export a `ManifestSchema` Zod object for validating `manifest.json
 - **THEN** parsing through `ManifestSchema` SHALL still succeed (extra fields are ignored by default)
 - **AND** the `module` field SHALL NOT be present on the parsed action type
 
-### Requirement: Manifest type exported from SDK
-
-The SDK SHALL export a `Manifest` TypeScript type derived from `ManifestSchema` for consumers that need to work with manifest data.
-
-#### Scenario: Manifest type matches schema
-- **WHEN** a consumer imports `Manifest` from the SDK
-- **THEN** the type SHALL match the shape validated by `ManifestSchema`
-- **AND** `Manifest["actions"][number]["env"]` SHALL be `Record<string, string>`
