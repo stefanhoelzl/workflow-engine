@@ -7,7 +7,7 @@ import type { EventSource } from "../event-source.js";
 interface HttpTriggerDefinition {
 	name: string;
 	path: string;
-	method?: string | undefined;
+	method: string;
 	params?: string[] | undefined;
 	response?:
 		| {
@@ -31,7 +31,6 @@ interface HttpTriggerMatch extends HttpTriggerResolved {
 	params: Record<string, string>;
 }
 
-const DEFAULT_METHOD = "POST";
 const DEFAULT_RESPONSE_STATUS = 200 as ContentfulStatusCode;
 const DEFAULT_RESPONSE_BODY = "";
 
@@ -51,7 +50,7 @@ class HttpTriggerRegistry {
 	readonly #triggers: RegisteredTrigger[] = [];
 
 	register(definition: HttpTriggerDefinition): void {
-		const method = definition.method ?? DEFAULT_METHOD;
+		const method = definition.method;
 		const existing = this.#triggers.findIndex(
 			(t) =>
 				t.resolved.path === definition.path && t.resolved.method === method,

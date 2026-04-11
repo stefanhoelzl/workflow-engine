@@ -46,7 +46,7 @@ interface TriggerDef<S extends z.ZodType = z.ZodType> {
 	type: string;
 	schema: S;
 	path: string;
-	method?: string | undefined;
+	method: string;
 	response?:
 		| {
 				status?: number | undefined;
@@ -59,7 +59,7 @@ interface TriggerConfig {
 	name: string;
 	type: string;
 	path: string;
-	method?: string | undefined;
+	method: string;
 	params: string[];
 	response?:
 		| {
@@ -73,7 +73,7 @@ type HttpPayloadSchema<B extends z.ZodType, P extends z.ZodType> = z.ZodObject<{
 	body: B;
 	headers: z.ZodRecord<z.ZodString, z.ZodString>;
 	url: z.ZodString;
-	method: z.ZodString;
+	method: z.ZodDefault<z.ZodString>;
 	params: P;
 }>;
 
@@ -99,11 +99,12 @@ function http<
 	const paramsSchema =
 		config.params ??
 		z.object(Object.fromEntries(paramNames.map((n) => [n, z.string()])));
+	const method = config.method ?? "POST";
 	const schema = z.object({
 		body: bodySchema,
 		headers: z.record(z.string(), z.string()),
-		url: z.string(),
-		method: z.string(),
+		url: z.string().meta({ example: "https://example.com" }),
+		method: z.string().default(method),
 		params: paramsSchema,
 	});
 	return {
@@ -113,7 +114,7 @@ function http<
 			ParamsSchemaFor<P>
 		>,
 		path: config.path,
-		method: config.method,
+		method,
 		response: config.response,
 	};
 }
@@ -207,7 +208,7 @@ const ManifestSchema = z.object({
 			name: z.string(),
 			type: z.string(),
 			path: z.string(),
-			method: z.string().optional(),
+			method: z.string().default("POST"),
 			params: z.array(z.string()),
 			response: z
 				.object({
