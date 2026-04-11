@@ -81,6 +81,22 @@
 			}
 		},
 		{
+			"includes": ["scripts/**/*.ts"],
+			"linter": {
+				"rules": {
+					"performance": {
+						"noAwaitInLoops": "off"
+					},
+					"suspicious": {
+						"noConsole": "off"
+					},
+					"style": {
+						"noProcessEnv": "off"
+					}
+				}
+			}
+		},
+		{
 			"includes": [".claude/commands/**/*.ts"],
 			"linter": {
 				"rules": {
