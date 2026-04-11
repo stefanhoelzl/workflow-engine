@@ -664,9 +664,9 @@ describe("crypto", () => {
 				);
 				const frozen = Object.isFrozen(key);
 				const keys = Object.keys(key).sort();
-				key.__opaqueId = 999;
-				const idUnchanged = key.__opaqueId !== 999;
-				await ctx.emit("result", { frozen, keys, idUnchanged, type: key.type });
+				let threw = false;
+				try { key.__opaqueId = 999; } catch { threw = true; }
+				await ctx.emit("result", { frozen, keys, threw, type: key.type });
 			}`,
 			makeCtx({ emit }),
 		);
@@ -674,7 +674,7 @@ describe("crypto", () => {
 		expect(emit).toHaveBeenCalledWith("result", {
 			frozen: true,
 			keys: ["__opaqueId", "algorithm", "extractable", "type", "usages"],
-			idUnchanged: true,
+			threw: true,
 			type: "secret",
 		});
 	});
