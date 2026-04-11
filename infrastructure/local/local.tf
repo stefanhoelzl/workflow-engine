@@ -147,6 +147,7 @@ module "routing" {
   source = "../modules/routing"
 
   traefik_extra_objects = module.workflow_engine.traefik_extra_objects
+  traefik_helm_values   = module.workflow_engine.traefik_helm_values
   traefik_helm_sets = [
     {
       name  = "ports.websecure.expose.default"

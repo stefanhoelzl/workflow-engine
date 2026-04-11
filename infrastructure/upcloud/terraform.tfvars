@@ -1,0 +1,7 @@
+domain             = "workflow-engine.webredirect.org"
+zone               = "de-fra1"
+oauth2_github_users = "stefanhoelzl"
+oauth2_client_id   = "Iv23liMeOypwg5pM0vUU"
+kubernetes_version = "1.34"
+node_plan          = "DEV-1xCPU-2GB"
+acme_email         = "stefanh+acme@posteo.de"

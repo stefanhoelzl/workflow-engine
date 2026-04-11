@@ -20,6 +20,18 @@ variable "traefik_helm_sets" {
   description = "Helm set values for Traefik"
 }
 
+variable "traefik_helm_values" {
+  type        = map(any)
+  default     = {}
+  description = "Additional Helm values merged with extraObjects (e.g. experimental.plugins)"
+}
+
+variable "wait" {
+  type        = bool
+  default     = false
+  description = "Wait for Helm release to be ready"
+}
+
 resource "helm_release" "traefik" {
   name             = "traefik"
   repository       = "https://traefik.github.io/charts"
@@ -27,11 +39,12 @@ resource "helm_release" "traefik" {
   version          = "39.0.7"
   namespace        = "default"
   create_namespace = false
-  wait             = false
+  wait             = var.wait
 
   set = var.traefik_helm_sets
 
-  values = [yamlencode({
-    extraObjects = var.traefik_extra_objects
-  })]
+  values = [yamlencode(merge(
+    { extraObjects = var.traefik_extra_objects },
+    var.traefik_helm_values,
+  ))]
 }
