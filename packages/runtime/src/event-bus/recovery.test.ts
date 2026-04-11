@@ -8,14 +8,14 @@ import { createEventSource } from "../event-source.js";
 import { createLogger } from "../logger.js";
 import type { Sandbox } from "../sandbox/index.js";
 import { createScheduler } from "../services/scheduler.js";
+import { createFsStorage } from "../storage/fs.js";
+import type { StorageBackend } from "../storage/index.js";
 import { createEventStore, sql } from "./event-store.js";
 import type { RuntimeEvent } from "./index.js";
 import { createEventBus } from "./index.js";
 import type { RecoveryBatch } from "./persistence.js";
 import { createPersistence } from "./persistence.js";
 import { createWorkQueue } from "./work-queue.js";
-import { createFsStorage } from "../storage/fs.js";
-import type { StorageBackend } from "../storage/index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 const passthroughSchema = { parse: (d: unknown) => d };

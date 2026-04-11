@@ -1,6 +1,6 @@
 import { Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { type Logger, createLogger } from "./logger.js";
+import { createLogger, type Logger } from "./logger.js";
 
 function createTestLogger(
 	name: string,

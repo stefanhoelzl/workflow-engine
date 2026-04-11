@@ -94,5 +94,5 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 	};
 }
 
-export { createS3Storage };
 export type { S3StorageOptions };
+export { createS3Storage };

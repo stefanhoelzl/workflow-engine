@@ -1,7 +1,7 @@
 import {
+	getQuickJS,
 	type QuickJSContext,
 	type QuickJSHandle,
-	getQuickJS,
 } from "quickjs-emscripten";
 import type { ActionContext } from "../context/index.js";
 import { bridgeCtx } from "./bridge.js";
@@ -92,5 +92,5 @@ async function createSandbox(): Promise<Sandbox> {
 const EXPORT_DEFAULT_RE = /export\s+default\s+/;
 const TRAILING_SEMICOLON_RE = /;\s*$/;
 
-export { createSandbox };
 export type { Sandbox, SandboxResult, SpawnOptions };
+export { createSandbox };

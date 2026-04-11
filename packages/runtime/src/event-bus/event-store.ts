@@ -1,6 +1,6 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDbDialect } from "@oorabona/kysely-duckdb";
-import { Kysely, CompiledQuery, type SelectQueryBuilder } from "kysely";
+import { CompiledQuery, Kysely, type SelectQueryBuilder } from "kysely";
 import type { BusConsumer, RuntimeEvent } from "./index.js";
 
 interface EventsTable {
@@ -161,7 +161,7 @@ async function createEventStore(
 	};
 }
 
-export { createEventStore };
 // biome-ignore lint/performance/noBarrelFile: intentional re-export — consumers must not import kysely directly
 export { sql } from "kysely";
-export type { EventStore, CteChain, CteCallback, Database, EventsTable };
+export type { CteCallback, CteChain, Database, EventStore, EventsTable };
+export { createEventStore };

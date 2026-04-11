@@ -81,5 +81,5 @@ function createEventBus(consumers: BusConsumer[]): EventBus {
 	};
 }
 
-export { RuntimeEventSchema, createEventBus };
 export type { BusConsumer, EventBus, RuntimeEvent };
+export { createEventBus, RuntimeEventSchema };

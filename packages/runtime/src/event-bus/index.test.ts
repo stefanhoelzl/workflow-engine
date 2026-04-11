@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	type BusConsumer,
-	type RuntimeEvent,
 	createEventBus,
+	type RuntimeEvent,
 } from "./index.js";
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {

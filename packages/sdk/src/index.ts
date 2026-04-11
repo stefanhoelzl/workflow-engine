@@ -1,6 +1,6 @@
+import Ajv2020 from "ajv/dist/2020.js";
 // biome-ignore lint/style/noExportedImports: z is re-exported for workflow authors alongside locally defined exports
 import { z } from "zod";
-import Ajv2020 from "ajv/dist/2020.js";
 
 // --- Event types ---
 
@@ -421,17 +421,17 @@ function createWorkflow(
 	) as unknown as TriggerPhase<{}, never>;
 }
 
-export { z, createWorkflow, http, env, ENV_REF, ManifestSchema };
 export type {
-	Event,
-	EnvRef,
-	Manifest,
-	CompileOutput,
+	ActionContext,
+	ActionPhase,
 	CompiledAction,
+	CompileOutput,
+	EnvRef,
+	Event,
+	EventPhase,
+	Manifest,
 	TriggerConfig,
 	TriggerDef,
 	TriggerPhase,
-	EventPhase,
-	ActionPhase,
-	ActionContext,
 };
+export { createWorkflow, ENV_REF, env, http, ManifestSchema, z };

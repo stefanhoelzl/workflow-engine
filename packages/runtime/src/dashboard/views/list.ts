@@ -109,7 +109,7 @@ function renderEventTypeCheckboxes(
 
 export {
 	renderEntryList,
+	renderEventTypeCheckboxes,
 	renderHeaderStats,
 	renderTypeFilter,
-	renderEventTypeCheckboxes,
 };

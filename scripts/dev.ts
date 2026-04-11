@@ -1,6 +1,6 @@
 import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { watch } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { build as viteBuild } from "vite";

@@ -1,5 +1,5 @@
-import type { BusConsumer, RuntimeEvent } from "./index.js";
 import type { Logger } from "../logger.js";
+import type { BusConsumer, RuntimeEvent } from "./index.js";
 
 function createLoggingConsumer(logger: Logger): BusConsumer {
 	return {

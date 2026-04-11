@@ -93,4 +93,4 @@ function createHttpLogger(
 	return { match: "*", handler: pinoLogger({ pino: instance }) };
 }
 
-export { createHttpLogger, createLogger, type LogLevel, type Logger };
+export { createHttpLogger, createLogger, type Logger, type LogLevel };

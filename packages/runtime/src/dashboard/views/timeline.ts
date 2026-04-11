@@ -315,5 +315,5 @@ function renderTimeline(events: TimelineEvent[]): string {
 </svg>`;
 }
 
-export { renderTimeline, buildTree, assignPositions };
 export type { LayoutNode };
+export { assignPositions, buildTree, renderTimeline };

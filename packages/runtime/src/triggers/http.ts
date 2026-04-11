@@ -1,8 +1,8 @@
 import { constants } from "node:http2";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { EventSource } from "../event-source.js";
 import { PayloadValidationError } from "../context/errors.js";
+import type { EventSource } from "../event-source.js";
 
 interface HttpTriggerDefinition {
 	name: string;
@@ -139,8 +139,8 @@ function httpTriggerMiddleware(
 
 export {
 	type HttpTriggerDefinition,
-	type HttpTriggerResolved,
 	HttpTriggerRegistry,
+	type HttpTriggerResolved,
 	httpTriggerMiddleware,
 	type Middleware,
 };

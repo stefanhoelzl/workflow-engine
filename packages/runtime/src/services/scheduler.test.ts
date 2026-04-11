@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
-import { type RuntimeEvent, createEventBus } from "../event-bus/index.js";
+import { createEventBus, type RuntimeEvent } from "../event-bus/index.js";
 import { createWorkQueue } from "../event-bus/work-queue.js";
 import { createEventSource } from "../event-source.js";
 import { createLogger } from "../logger.js";

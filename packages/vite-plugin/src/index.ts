@@ -329,5 +329,5 @@ async function createTarGzBundle(
 	return Buffer.concat(chunks);
 }
 
-export { typecheckWorkflows, workflowPlugin };
 export type { WorkflowPluginOptions };
+export { typecheckWorkflows, workflowPlugin };

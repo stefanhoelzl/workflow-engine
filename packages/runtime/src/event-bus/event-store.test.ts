@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventStore, type EventStore, sql } from "./event-store.js";
 import type { RuntimeEvent } from "./index.js";
-import { type EventStore, createEventStore, sql } from "./event-store.js";
 
 function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
 	return {

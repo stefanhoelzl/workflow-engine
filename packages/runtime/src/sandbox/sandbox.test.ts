@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ActionContext } from "../context/index.js";
 import { createLogger } from "../logger.js";
-import { createSandbox } from "./index.js";
 import type { Sandbox } from "./index.js";
+import { createSandbox } from "./index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 

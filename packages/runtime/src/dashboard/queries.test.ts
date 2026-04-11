@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { createEventStore, type EventStore } from "../event-bus/event-store.js";
 import type { RuntimeEvent } from "../event-bus/index.js";
-import { type EventStore, createEventStore } from "../event-bus/event-store.js";
 import {
-	listCorrelations,
-	getTimeline,
 	getDistinctEventTypes,
 	getHeaderStats,
+	getTimeline,
+	listCorrelations,
 } from "./queries.js";
 
 let seq = 0;

@@ -68,5 +68,5 @@ function createWorkQueue(): WorkQueue {
 	};
 }
 
-export { createWorkQueue };
 export type { WorkQueue };
+export { createWorkQueue };

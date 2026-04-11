@@ -2,8 +2,8 @@ import { constants } from "node:http2";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { PayloadValidationError } from "../context/errors.js";
-import type { EventSource } from "../event-source.js";
 import type { RuntimeEvent } from "../event-bus/index.js";
+import type { EventSource } from "../event-source.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./http.js";
 
 describe("HttpTriggerRegistry", () => {

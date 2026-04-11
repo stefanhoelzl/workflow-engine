@@ -24,5 +24,5 @@ function apiMiddleware(options: ApiOptions): Middleware {
 	};
 }
 
-export { apiMiddleware };
 export type { ApiOptions };
+export { apiMiddleware };
