@@ -1,4 +1,4 @@
-import { renderLayout } from "../../views/layout.js";
+import { renderLayout } from "../layout.js";
 
 function renderPage(): string {
 	const head = `  <style>

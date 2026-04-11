@@ -1,4 +1,4 @@
-import type { TimelineEvent } from "../queries.js";
+import type { TimelineEvent } from "./queries.js";
 
 interface LayoutNode {
 	event: TimelineEvent;

@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Hono } from "hono";
-import { PayloadValidationError } from "../context/errors.js";
-import type { EventSource } from "../event-source.js";
-import type { Middleware } from "../triggers/http.js";
-import { renderLayout } from "../views/layout.js";
+import { PayloadValidationError } from "../../context/errors.js";
+import type { EventSource } from "../../event-source.js";
+import type { Middleware } from "../../triggers/http.js";
+import { renderLayout } from "../layout.js";
 
 const require = createRequire(import.meta.url);
 const jedisonJs = readFileSync(require.resolve("jedison/browser"), "utf-8");

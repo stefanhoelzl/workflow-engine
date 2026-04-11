@@ -1,5 +1,5 @@
-import type { EventStore } from "../event-bus/event-store.js";
-import { sql } from "../event-bus/event-store.js";
+import type { EventStore } from "../../event-bus/event-store.js";
+import { sql } from "../../event-bus/event-store.js";
 
 type AggregateState = "pending" | "failed" | "done";
 

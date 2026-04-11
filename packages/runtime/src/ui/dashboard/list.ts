@@ -1,4 +1,4 @@
-import type { CorrelationSummary, HeaderStats } from "../queries.js";
+import type { CorrelationSummary, HeaderStats } from "./queries.js";
 
 const TIME_SLICE_END = 8;
 const TIME_PATTERN = /\d{2}:\d{2}:\d{2}/;
