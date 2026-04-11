@@ -13,12 +13,13 @@
 		"lint": "biome check --error-on-warnings .",
 		"format": "biome check --write . && tofu fmt -recursive infrastructure/",
 		"test": "vitest run",
-		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/dev validate\"",
+		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/local validate\"",
 		"dev": "tsx scripts/dev.ts",
-		"postinstall": "tofu -chdir=infrastructure/dev init || echo 'tofu init failed'",
-		"infra:init": "tofu -chdir=infrastructure/dev init",
-		"infra:up": "tofu -chdir=infrastructure/dev apply",
-		"infra:destroy": "tofu -chdir=infrastructure/dev destroy"
+		"postinstall": "tofu -chdir=infrastructure/local init || echo 'tofu init failed'",
+		"infra:init": "tofu -chdir=infrastructure/local init",
+		"infra:up": "tofu -chdir=infrastructure/local apply",
+		"infra:up:build": "podman build -t localhost/workflow-engine:dev -f infrastructure/Dockerfile . && pnpm infra:up",
+		"infra:destroy": "tofu -chdir=infrastructure/local destroy"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.10",

@@ -1,5 +1,5 @@
 <!-- ═══════════════════════════════════════════════════════ -->
-<!-- Dev Stack (infrastructure/dev/)                        -->
+<!-- Local Stack (infrastructure/local/)                    -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
 ### Requirement: OpenTofu version constraint
@@ -37,30 +37,30 @@ The dev root SHALL use `backend "local" {}`. The state file SHALL be gitignored.
 
 ### Requirement: Module wiring
 
-The dev root SHALL instantiate four modules: `kubernetes/kind`, `image/local`, `s3/s2`, and `workflow-engine`. The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs.
+The local root SHALL instantiate five modules: `kubernetes/kind`, `image/local`, `s3/s2`, `workflow-engine`, and `routing`. The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The routing module SHALL receive `traefik_extra_objects` from the workflow-engine module and `traefik_helm_sets` from the root config.
 
 #### Scenario: Single apply creates everything
 
 - **WHEN** `tofu apply` is run on a clean state
 - **THEN** a kind cluster SHALL be created
 - **AND** the app image SHALL be built and loaded
-- **AND** S2, app, oauth2-proxy, and Traefik SHALL be deployed
-- **AND** IngressRoute CRDs SHALL be created
+- **AND** S2, app, and oauth2-proxy SHALL be deployed
+- **AND** the Traefik Helm release SHALL be deployed with IngressRoute and Middleware CRDs
 
 ### Requirement: Non-secret variables in terraform.tfvars
 
-The dev root SHALL load non-secret configuration from `terraform.tfvars` (committed): `domain`, `https_port`, `oauth2_github_users`, `s2_access_key`, `s2_secret_key`, `s2_bucket`. The `oauth2_github_users` variable SHALL be a string containing a comma-separated list of GitHub logins and SHALL feed both the oauth2-proxy allow-list and the app's `GITHUB_USER` environment variable so a single source of truth governs who may access the workflow engine.
+The local root SHALL load non-secret configuration from `terraform.tfvars` (committed): `domain`, `https_port`, `oauth2_github_users`, `s2_access_key`, `s2_secret_key`, `s2_bucket`. The `oauth2_github_users` variable SHALL be a string containing a comma-separated list of GitHub logins and SHALL feed both the oauth2-proxy allow-list and the app's `GITHUB_USER` environment variable so a single source of truth governs who may access the workflow engine.
 
-#### Scenario: Default dev values
+#### Scenario: Default local values
 
 - **WHEN** `terraform.tfvars` is read
 - **THEN** `domain` SHALL be `"localhost"`
 - **AND** `https_port` SHALL be `8443`
 - **AND** `oauth2_github_users` SHALL be a comma-separated list of allowed GitHub logins (default `"stefanhoelzl"`)
 
-### Requirement: Secret variables in dev.secrets.auto.tfvars
+### Requirement: Secret variables in local.secrets.auto.tfvars
 
-The dev root SHALL load secrets from `dev.secrets.auto.tfvars` (gitignored): `oauth2_client_id`, `oauth2_client_secret`. These SHALL be declared as `sensitive = true` variables.
+The local root SHALL load secrets from `local.secrets.auto.tfvars` (gitignored): `oauth2_client_id`, `oauth2_client_secret`. These SHALL be declared as `sensitive = true` variables.
 
 #### Scenario: Secrets gitignored
 
@@ -69,17 +69,22 @@ The dev root SHALL load secrets from `dev.secrets.auto.tfvars` (gitignored): `oa
 
 #### Scenario: Missing secrets file fails
 
-- **WHEN** `tofu apply` is run without `dev.secrets.auto.tfvars`
+- **WHEN** `tofu apply` is run without `local.secrets.auto.tfvars`
 - **THEN** it SHALL fail requesting values for `oauth2_client_id` and `oauth2_client_secret`
 
 ### Requirement: URL output
 
-The dev root SHALL output the `url` from the `workflow-engine` module.
+The local root SHALL output `url` computed directly from `domain` and `https_port` variables.
 
-#### Scenario: Dev URL output
+#### Scenario: Local URL output
 
-- **WHEN** `tofu apply` completes
+- **WHEN** `tofu apply` completes with `domain = "localhost"` and `https_port = 8443`
 - **THEN** the output SHALL include `url = "https://localhost:8443"`
+
+#### Scenario: Standard HTTPS port
+
+- **WHEN** `tofu apply` completes with `domain = "example.com"` and `https_port = 443`
+- **THEN** the output SHALL include `url = "https://example.com"`
 
 ### Requirement: Lock file committed
 
@@ -97,7 +102,7 @@ The `infrastructure/.gitignore` SHALL ignore `*.secrets.auto.tfvars`, `.terrafor
 #### Scenario: Sensitive files ignored
 
 - **WHEN** `git status` is checked
-- **THEN** `dev.secrets.auto.tfvars`, `.terraform/`, and `*.tfstate` files SHALL not appear as untracked
+- **THEN** `local.secrets.auto.tfvars`, `.terraform/`, and `*.tfstate` files SHALL not appear as untracked
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- modules/kubernetes/kind/                               -->
@@ -251,28 +256,21 @@ The module SHALL output `endpoint`, `bucket`, `access_key`, `secret_key` (sensit
 
 ### Requirement: Workflow-engine module composes sub-modules
 
-The `workflow-engine` module SHALL instantiate three sub-modules: `app`, `oauth2-proxy`, and `routing`. It SHALL pass through inputs to each sub-module and wire internal outputs (service names and ports) from `app` and `oauth2-proxy` into the `routing` module.
+The `workflow-engine` module SHALL instantiate two sub-modules: `app` and `oauth2-proxy`. It SHALL output `traefik_extra_objects` containing the Middleware and IngressRoute CRD definitions, constructed from `app` and `oauth2-proxy` service names/ports and `var.network`.
 
 #### Scenario: All sub-modules created
 
 - **WHEN** `tofu apply` completes with valid inputs
 - **THEN** the app Deployment and Service SHALL exist
 - **AND** the oauth2-proxy Deployment and Service SHALL exist
-- **AND** the Traefik Helm release and IngressRoute CRDs SHALL exist
 
-### Requirement: Workflow-engine URL output
+#### Scenario: Extra objects output contains CRDs
 
-The module SHALL output a `url` string constructed by the routing sub-module.
-
-#### Scenario: Non-standard port
-
-- **WHEN** the module is applied with `domain = "localhost"` and `https_port = 8443`
-- **THEN** `url` SHALL be `"https://localhost:8443"`
-
-#### Scenario: Standard HTTPS port
-
-- **WHEN** the module is applied with `domain = "example.com"` and `https_port = 443`
-- **THEN** `url` SHALL be `"https://example.com"`
+- **WHEN** the module is applied
+- **THEN** `traefik_extra_objects` SHALL contain an `oauth2-forward-auth` Middleware
+- **AND** `traefik_extra_objects` SHALL contain an `oauth2-errors` Middleware
+- **AND** `traefik_extra_objects` SHALL contain a `redirect-root` Middleware
+- **AND** `traefik_extra_objects` SHALL contain a `workflow-engine` IngressRoute
 
 ### Requirement: Workflow-engine module threads oauth2 allow-list to app
 
@@ -430,19 +428,19 @@ The module SHALL create a `kubernetes_service_v1` exposing oauth2-proxy on port 
 - **THEN** it SHALL be routed to the oauth2-proxy container on port 4180
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<!-- modules/workflow-engine/modules/routing/                -->
+<!-- modules/routing/                                       -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
 ### Requirement: Traefik Helm release
 
-The module SHALL create a `helm_release` installing the `traefik/traefik` chart version `39.0.7`. The Helm release SHALL configure Traefik with a `NodePort` service on port 30443 for the websecure entrypoint. The Helm release SHALL also enable the `web` entrypoint (HTTP port 80) without NodePort exposure — this entrypoint is used only for internal loopback error page serving. The Helm release SHALL install the `traefik_inline_response` plugin (`github.com/tuxgal/traefik_inline_response`). The IngressRoute, ForwardAuth Middleware, Errors Middleware, and Plugin Middleware SHALL be deployed via the Helm chart's `extraObjects` feature (not as separate `kubernetes_manifest` resources) to avoid CRD timing issues during first apply.
+The routing module SHALL create a `helm_release` installing the `traefik/traefik` chart version `39.0.7`. The Helm release SHALL use `traefik_helm_sets` for environment-specific Helm `set` values and `traefik_extra_objects` for CRD objects deployed via the chart's `extraObjects` feature.
 
-#### Scenario: Traefik installed via Helm
+#### Scenario: Traefik installed via Helm with parameterized config
 
 - **WHEN** `tofu apply` completes
 - **THEN** Traefik SHALL be running in the cluster
-- **AND** the Traefik CRDs (IngressRoute, Middleware, MiddlewarePlugin) SHALL be registered
-- **AND** the IngressRoute and Middleware objects SHALL be deployed as part of the Helm release
+- **AND** the Helm `set` values SHALL match the provided `traefik_helm_sets`
+- **AND** the Helm `extraObjects` SHALL contain the provided `traefik_extra_objects`
 
 #### Scenario: Web entrypoint enabled internally
 
@@ -592,20 +590,6 @@ The Helm release `extraObjects` SHALL include a Traefik `IngressRoute` CRD on th
 - **WHEN** an HTTP request is made to Traefik port 80 at `/error`
 - **THEN** the `traefik_inline_response` middleware SHALL return the inline 5xx HTML page
 - **AND** the response content type SHALL be detected as `text/html`
-
-### Requirement: Routing URL output
-
-The module SHALL output a `url` string. When `https_port` is 443, the URL SHALL be `https://<domain>`. Otherwise, it SHALL be `https://<domain>:<https_port>`.
-
-#### Scenario: Non-standard port
-
-- **WHEN** `domain = "localhost"` and `https_port = 8443`
-- **THEN** `url` SHALL be `"https://localhost:8443"`
-
-#### Scenario: Standard HTTPS port
-
-- **WHEN** `domain = "example.com"` and `https_port = 443`
-- **THEN** `url` SHALL be `"https://example.com"`
 
 ### Requirement: Security context
 
