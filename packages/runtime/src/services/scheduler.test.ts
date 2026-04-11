@@ -67,7 +67,7 @@ function createMockSandbox(
 	handler?: (source: string, ctx: ActionContext) => Promise<SandboxResult>,
 ): Sandbox {
 	return {
-		spawn: handler ?? (async () => ({ ok: true as const })),
+		spawn: handler ?? (async () => ({ ok: true as const, logs: [] })),
 	};
 }
 
@@ -76,7 +76,7 @@ describe("createScheduler", () => {
 		it("executes matching action and emits done", async () => {
 			const { bus, workQueue, emitted, source, stubContextFactory } =
 				createTestSetup();
-			const spawnSpy = vi.fn(async () => ({ ok: true as const }));
+			const spawnSpy = vi.fn(async () => ({ ok: true as const, logs: [] }));
 			const sandbox = createMockSandbox(spawnSpy);
 			const action: Action = {
 				name: "parseOrder",
@@ -115,6 +115,7 @@ describe("createScheduler", () => {
 			const sandbox = createMockSandbox(async () => ({
 				ok: false as const,
 				error: { message: "boom", stack: "at test:1" },
+				logs: [],
 			}));
 			const action: Action = {
 				name: "parseOrder",
@@ -184,7 +185,7 @@ describe("createScheduler", () => {
 			let receivedCtx: ActionContext | undefined;
 			const sandbox = createMockSandbox(async (_source, ctx) => {
 				receivedCtx = ctx;
-				return { ok: true as const };
+				return { ok: true as const, logs: [] };
 			});
 			const action: Action = {
 				name: "parseOrder",
@@ -220,7 +221,7 @@ describe("createScheduler", () => {
 		it("creates targeted copies for each matching action", async () => {
 			const { bus, workQueue, emitted, source, stubContextFactory } =
 				createTestSetup();
-			const spawnSpy = vi.fn(async () => ({ ok: true as const }));
+			const spawnSpy = vi.fn(async () => ({ ok: true as const, logs: [] }));
 			const sandbox = createMockSandbox(spawnSpy);
 			const actions: Action[] = [
 				{
@@ -337,7 +338,10 @@ describe("createScheduler", () => {
 
 		it("only fans out to actions matching the event type", async () => {
 			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
-			const matchingSpawn = vi.fn(async () => ({ ok: true as const }));
+			const matchingSpawn = vi.fn(async () => ({
+				ok: true as const,
+				logs: [],
+			}));
 			const sandbox = createMockSandbox(matchingSpawn);
 			const actions: Action[] = [
 				{
@@ -376,7 +380,7 @@ describe("createScheduler", () => {
 	describe("start and stop", () => {
 		it("start and stop control the loop", async () => {
 			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
-			const spawnSpy = vi.fn(async () => ({ ok: true as const }));
+			const spawnSpy = vi.fn(async () => ({ ok: true as const, logs: [] }));
 			const sandbox = createMockSandbox(spawnSpy);
 			const action: Action = {
 				name: "parseOrder",

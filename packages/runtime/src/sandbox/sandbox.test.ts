@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ActionContext } from "../context/index.js";
 import { createLogger } from "../logger.js";
-import type { Sandbox } from "./index.js";
+import type { Sandbox, SandboxResult } from "./index.js";
 import { createSandbox } from "./index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
@@ -94,7 +94,7 @@ describe("sandbox results", () => {
 			"export default async (ctx) => { }",
 			makeCtx(),
 		);
-		expect(result).toEqual({ ok: true });
+		expect(result.ok).toBe(true);
 	});
 
 	it("thrown error returns ok: false with message and stack", async () => {
@@ -352,5 +352,107 @@ describe("concurrent async", () => {
 		expect(emit).toHaveBeenCalledWith("result", {
 			urls: ["https://api1.example.com", "https://api2.example.com"],
 		});
+	});
+});
+
+function findLog(result: SandboxResult, method: string) {
+	return result.logs.find((l) => l.method === method);
+}
+
+describe("logging", () => {
+	it("result.logs is an array on success", async () => {
+		const result = await sandbox.spawn(
+			"export default async (ctx) => { }",
+			makeCtx(),
+		);
+		expect(result.ok).toBe(true);
+		expect(Array.isArray(result.logs)).toBe(true);
+	});
+
+	it("result.logs is an array on error", async () => {
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { throw new Error("fail"); }',
+			makeCtx(),
+		);
+		expect(result.ok).toBe(false);
+		expect(Array.isArray(result.logs)).toBe(true);
+	});
+
+	it("console.log produces log entry", async () => {
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { console.log("hello"); }',
+			makeCtx(),
+		);
+		expect(result.ok).toBe(true);
+		const entry = findLog(result, "console.log");
+		expect(entry).toBeDefined();
+		expect(entry?.args).toEqual(["hello"]);
+		expect(entry?.status).toBe("ok");
+	});
+
+	it("console.warn and console.error produce correct method names", async () => {
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { console.warn("slow"); console.error("bad"); }',
+			makeCtx(),
+		);
+		expect(result.ok).toBe(true);
+		expect(findLog(result, "console.warn")).toBeDefined();
+		expect(findLog(result, "console.error")).toBeDefined();
+	});
+
+	it("ctx.emit produces log entry", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { await ctx.emit("done", {}); }',
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		const entry = findLog(result, "ctx.emit");
+		expect(entry).toBeDefined();
+		expect(entry?.status).toBe("ok");
+		expect(entry?.args).toEqual(["done", {}]);
+	});
+
+	it("ctx.fetch produces log entry", async () => {
+		const mockFetch = vi.fn(
+			async () => new Response("{}", { status: 200 }),
+		) as unknown as typeof globalThis.fetch;
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				await ctx.fetch("https://api.example.com");
+			}`,
+			makeCtx({ fetch: mockFetch }),
+		);
+		expect(result.ok).toBe(true);
+		const entry = findLog(result, "ctx.fetch");
+		expect(entry).toBeDefined();
+		expect(entry?.status).toBe("ok");
+		expect(entry?.args?.[0]).toBe("https://api.example.com");
+	});
+
+	it("failed bridge produces log entry with status failed", async () => {
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { atob("!!!invalid!!!"); }',
+			makeCtx(),
+		);
+		expect(result.ok).toBe(false);
+		const entry = findLog(result, "atob");
+		expect(entry).toBeDefined();
+		expect(entry?.status).toBe("failed");
+		expect(entry?.error).toBeDefined();
+	});
+
+	it("bridge log entries have timing fields", async () => {
+		const result = await sandbox.spawn(
+			'export default async (ctx) => { btoa("hello"); }',
+			makeCtx(),
+		);
+		expect(result.ok).toBe(true);
+		const entry = findLog(result, "btoa");
+		expect(entry).toBeDefined();
+		expect(typeof entry?.ts).toBe("number");
+		expect(typeof entry?.durationMs).toBe("number");
 	});
 });

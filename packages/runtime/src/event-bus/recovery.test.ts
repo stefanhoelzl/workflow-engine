@@ -329,7 +329,7 @@ describe("full startup/recovery integration", () => {
 			await bus.bootstrap(events, { pending });
 		}
 
-		const spawnSpy = vi.fn(async () => ({ ok: true as const }));
+		const spawnSpy = vi.fn(async () => ({ ok: true as const, logs: [] }));
 		const sandbox: Sandbox = { spawn: spawnSpy };
 		const action: Action = {
 			name: "processOrder",

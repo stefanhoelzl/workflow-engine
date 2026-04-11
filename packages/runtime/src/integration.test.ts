@@ -48,7 +48,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 				if (actionSource.includes("validateOrder")) {
 					await ctx.emit("order.validated", ctx.event.payload);
 				}
-				return { ok: true };
+				return { ok: true, logs: [] };
 			},
 		};
 
@@ -153,7 +153,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const sandbox: Sandbox = {
 			async spawn(actionSource, ctx) {
 				spawnCalls.push({ source: actionSource, ctx });
-				return { ok: true };
+				return { ok: true, logs: [] };
 			},
 		};
 
