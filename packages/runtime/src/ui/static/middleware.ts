@@ -20,6 +20,7 @@ const projectFiles = import.meta.glob("./*", {
 
 const CONTENT_TYPES: Record<string, string> = {
 	".css": "text/css",
+	".html": "text/html",
 	".js": "application/javascript",
 };
 
