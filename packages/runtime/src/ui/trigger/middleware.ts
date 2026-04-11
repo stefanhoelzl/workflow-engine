@@ -1,28 +1,26 @@
 import { Hono } from "hono";
+import { html } from "hono/html";
 import { PayloadValidationError } from "../../context/errors.js";
 import type { EventSource } from "../../event-source.js";
 import type { Middleware } from "../../triggers/http.js";
-import { escapeHtml } from "../html.js";
 import { renderTriggerPage } from "./page.js";
 
-function renderSuccessBanner(): string {
-	return `<div class="banner success">Event emitted</div>`;
+function renderSuccessBanner() {
+	return html`<div class="banner success">Event emitted</div>`;
 }
 
 function renderErrorBanner(
 	eventType: string,
 	issues: { path: string; message: string }[],
-): string {
+) {
 	const issueList =
 		issues.length > 0
-			? issues
-					.map(
-						(i) =>
-							`<li><strong>${escapeHtml(i.path || "(root)")}</strong>: ${escapeHtml(i.message)}</li>`,
-					)
-					.join("")
-			: `<li>Invalid payload for event <strong>${escapeHtml(eventType)}</strong></li>`;
-	return `<div class="banner error"><ul>${issueList}</ul></div>`;
+			? issues.map(
+					(i) =>
+						html`<li><strong>${i.path || "(root)"}</strong>: ${i.message}</li>`,
+				)
+			: html`<li>Invalid payload for event <strong>${eventType}</strong></li>`;
+	return html`<div class="banner error"><ul>${issueList}</ul></div>`;
 }
 
 function triggerMiddleware(
