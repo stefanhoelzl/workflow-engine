@@ -1,3 +1,4 @@
+import { Hono } from "hono";
 import type { Middleware } from "../triggers/http.js";
 import type { WorkflowRegistry } from "../workflow-registry.js";
 import { githubAuthMiddleware } from "./auth.js";
@@ -8,22 +9,19 @@ interface ApiOptions {
 	githubUser?: string | undefined;
 }
 
-function apiMiddleware(options: ApiOptions): Middleware[] {
-	const middlewares: Middleware[] = [];
+function apiMiddleware(options: ApiOptions): Middleware {
+	const app = new Hono().basePath("/api");
 
 	if (options.githubUser) {
-		middlewares.push({
-			match: "/api/*",
-			handler: githubAuthMiddleware({ githubUser: options.githubUser }),
-		});
+		app.use("/*", githubAuthMiddleware({ githubUser: options.githubUser }));
 	}
 
-	middlewares.push({
-		match: "/api/workflows",
-		handler: createUploadHandler(options.registry),
-	});
+	app.post("/workflows", createUploadHandler(options.registry));
 
-	return middlewares;
+	return {
+		match: "/api/*",
+		handler: async (c) => app.fetch(c.req.raw),
+	};
 }
 
 export { apiMiddleware };
