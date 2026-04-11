@@ -67,7 +67,6 @@ async function init() {
 
 	const runtimeLogger = createLogger("runtime", { level: config.logLevel });
 	const httpLogger = createHttpLogger("http", { level: config.logLevel });
-	const contextLogger = createLogger("context", { level: config.logLevel });
 	const eventLogger = createLogger("events", { level: config.logLevel });
 
 	runtimeLogger.info("initialize", { config });
@@ -104,11 +103,7 @@ async function init() {
 
 	// Wire up event source and scheduler using registry getters
 	const source = createEventSource(registry, eventBus);
-	const createContext = createActionContext(
-		source,
-		globalThis.fetch,
-		contextLogger,
-	);
+	const createContext = createActionContext(source);
 	const sandbox = await createSandbox();
 
 	const scheduler = createScheduler(

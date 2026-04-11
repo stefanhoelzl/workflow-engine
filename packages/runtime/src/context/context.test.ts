@@ -1,4 +1,3 @@
-import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type BusConsumer,
@@ -7,40 +6,10 @@ import {
 	type RuntimeEvent,
 } from "../event-bus/index.js";
 import { createEventSource, type EventSource } from "../event-source.js";
-import { createLogger, type Logger } from "../logger.js";
 import { PayloadValidationError } from "./errors.js";
 import { ActionContext, createActionContext } from "./index.js";
 
-const silentLogger = createLogger("test", { level: "silent" });
-
-function createTestLogger(level = "info"): {
-	logger: Logger;
-	lines: () => Record<string, unknown>[];
-} {
-	const chunks: Buffer[] = [];
-	const stream = new Writable({
-		write(chunk, _encoding, callback) {
-			chunks.push(chunk);
-			callback();
-		},
-	});
-	return {
-		logger: createLogger("context", {
-			level: level as "info",
-			destination: stream,
-		}),
-		lines: () =>
-			chunks
-				.map((c) => c.toString())
-				.join("")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line)),
-	};
-}
-
 const EVT_PREFIX = /^evt_/;
-const mockFetch = vi.fn() as unknown as typeof globalThis.fetch;
 const mockEnv: Record<string, string> = { API_KEY: "secret" };
 
 const passthroughSchema = { parse: (d: unknown) => d };
@@ -67,9 +36,7 @@ function createCollectorBus(): { bus: EventBus; emitted: RuntimeEvent[] } {
 function createTestSetup(overrides?: {
 	bus?: EventBus;
 	schemas?: Record<string, { parse(data: unknown): unknown }>;
-	fetch?: typeof globalThis.fetch;
 	env?: Record<string, string>;
-	logger?: Logger;
 }): {
 	createContext: (
 		event: RuntimeEvent,
@@ -85,11 +52,7 @@ function createTestSetup(overrides?: {
 	const schemas = overrides?.schemas ?? defaultSchemas;
 	const source = createEventSource({ events: schemas }, bus);
 	const defaultEnv = overrides?.env ?? mockEnv;
-	const factory = createActionContext(
-		source,
-		overrides?.fetch ?? mockFetch,
-		overrides?.logger ?? silentLogger,
-	);
+	const factory = createActionContext(source);
 	const createContext = (
 		event: RuntimeEvent,
 		actionName: string,
@@ -123,6 +86,13 @@ describe("createActionContext", () => {
 
 			expect(ctx).toBeInstanceOf(ActionContext);
 			expect(ctx.event).toBe(event);
+		});
+
+		it("ctx does not have a fetch property", () => {
+			const { createContext } = createTestSetup();
+			const ctx = createContext(makeEvent(), "test-action");
+
+			expect("fetch" in ctx).toBe(false);
 		});
 
 		it("emit creates child RuntimeEvent inheriting correlationId and setting parentEventId", async () => {
@@ -174,57 +144,6 @@ describe("createActionContext", () => {
 		});
 	});
 
-	describe("action fetch", () => {
-		it("delegates GET request to injected fetch", async () => {
-			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-			});
-			const ctx = createContext(makeEvent(), "test-action");
-
-			const res = await ctx.fetch("https://api.example.com/orders/123");
-
-			expect(fetchSpy).toHaveBeenCalledWith(
-				"https://api.example.com/orders/123",
-				undefined,
-			);
-			expect(await res.text()).toBe("ok");
-		});
-
-		it("delegates POST request with options to injected fetch", async () => {
-			const fetchSpy = vi.fn().mockResolvedValue(Response.json({ id: "123" }));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-			});
-			const ctx = createContext(makeEvent(), "test-action");
-
-			const init = {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id: "123" }),
-			};
-			const res = await ctx.fetch("https://api.example.com/orders", init);
-
-			expect(fetchSpy).toHaveBeenCalledWith(
-				"https://api.example.com/orders",
-				init,
-			);
-			expect(res).toBeInstanceOf(Response);
-		});
-
-		it("propagates fetch errors to the caller", async () => {
-			const fetchSpy = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-			});
-			const ctx = createContext(makeEvent(), "test-action");
-
-			await expect(
-				ctx.fetch("https://unreachable.example.com"),
-			).rejects.toThrow("fetch failed");
-		});
-	});
-
 	describe("action env", () => {
 		it("exposes injected env record on ctx.env", () => {
 			const { createContext } = createTestSetup({
@@ -240,81 +159,6 @@ describe("createActionContext", () => {
 			const ctx = createContext(makeEvent(), "test-action");
 
 			expect(Object.keys(ctx.env)).toEqual(["FOO"]);
-		});
-	});
-
-	describe("fetch logging", () => {
-		it("logs fetch.start and fetch.completed on success", async () => {
-			const { logger, lines } = createTestLogger();
-			const fetchSpy = vi
-				.fn()
-				.mockResolvedValue(new Response("ok", { status: 200 }));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-				logger,
-			});
-			const ctx = createContext(
-				makeEvent({ correlationId: "corr_fetch" }),
-				"test-action",
-			);
-
-			await ctx.fetch("https://api.example.com/orders/123");
-
-			const output = lines();
-			const start = output.find((l) => l.msg === "fetch.start");
-			const completed = output.find((l) => l.msg === "fetch.completed");
-
-			expect(start).toBeDefined();
-			expect(start?.url).toBe("https://api.example.com/orders/123");
-			expect(start?.method).toBe("GET");
-			expect(start?.correlationId).toBe("corr_fetch");
-
-			expect(completed).toBeDefined();
-			expect(completed?.status).toBe(200);
-			expect(completed?.durationMs).toBeTypeOf("number");
-		});
-
-		it("logs fetch.request.body at trace level", async () => {
-			const { logger, lines } = createTestLogger("trace");
-			const fetchSpy = vi.fn().mockResolvedValue(new Response("ok"));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-				logger,
-			});
-			const ctx = createContext(makeEvent(), "test-action");
-
-			await ctx.fetch("https://api.example.com/orders", {
-				method: "POST",
-				body: JSON.stringify({ id: "123" }),
-			});
-
-			const output = lines();
-			const body = output.find((l) => l.msg === "fetch.request.body");
-			expect(body).toBeDefined();
-			expect(body?.body).toBe(JSON.stringify({ id: "123" }));
-		});
-
-		it("logs fetch.failed on error", async () => {
-			const { logger, lines } = createTestLogger();
-			const fetchSpy = vi
-				.fn()
-				.mockRejectedValue(new TypeError("network error"));
-			const { createContext } = createTestSetup({
-				fetch: fetchSpy as typeof globalThis.fetch,
-				logger,
-			});
-			const ctx = createContext(makeEvent(), "test-action");
-
-			await expect(
-				ctx.fetch("https://unreachable.example.com"),
-			).rejects.toThrow("network error");
-
-			const output = lines();
-			const failed = output.find((l) => l.msg === "fetch.failed");
-			expect(failed).toBeDefined();
-			expect(failed?.error).toBe("network error");
-			expect(failed?.durationMs).toBeTypeOf("number");
-			expect(failed?.level).toBe(50);
 		});
 	});
 
@@ -394,7 +238,7 @@ describe("createActionContext", () => {
 				{ events: { "order.received": schema } },
 				fakeBus,
 			);
-			const factory = createActionContext(source, mockFetch, silentLogger);
+			const factory = createActionContext(source);
 			const ctx = factory(makeEvent(), "test-action", {});
 
 			await expect(ctx.emit("order.received", {})).rejects.toThrow();

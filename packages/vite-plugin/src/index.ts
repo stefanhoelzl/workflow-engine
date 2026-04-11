@@ -1,6 +1,7 @@
-import { basename, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createGzip } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { tsImport } from "tsx/esm/api";
@@ -255,50 +256,61 @@ function extractManifest(
 	};
 }
 
-const SDK_STUB = `
-const noop = () => {};
-const handler = { get: () => selfProxy, apply: () => selfProxy };
-const selfProxy = new Proxy(noop, handler);
+const pluginDir = dirname(fileURLToPath(import.meta.url));
 
-export const z = selfProxy;
-export function http() { return selfProxy; }
-export function env() { return ""; }
-export function createWorkflow() {
-  const b = {
-    trigger: () => b,
-    event: () => b,
-    action: (config) => config.handler,
-    compile: noop,
-  };
-  return b;
-}
-export const ENV_REF = Symbol("env");
-export const ManifestSchema = selfProxy;
-`;
+const sdkPackage = "@workflow-engine/sdk";
+const globalsPackage = "@workflow-engine/sandbox-globals";
+const globalsSetupPackage = "@workflow-engine/sandbox-globals-setup";
+
+const polyfillPackages = new Set([
+	"mock-xmlhttprequest",
+	"whatwg-fetch",
+	"url-polyfill",
+	"fast-text-encoding",
+	"abort-controller",
+	"blob-polyfill",
+	"abab",
+	"@ungap/structured-clone",
+	"web-streams-polyfill",
+]);
+
+const pluginRequire = createRequire(import.meta.url);
+
+const virtualPackages: Record<string, string> = {
+	[sdkPackage]: join(pluginDir, "sdk-stub.js"),
+	[globalsPackage]: join(pluginDir, "sandbox-globals.js"),
+	[globalsSetupPackage]: join(pluginDir, "sandbox-globals-setup.js"),
+};
 
 async function buildWorkflowModule(
 	workflowPath: string,
 	root: string,
 ): Promise<string> {
-	const stubId = "\0sdk-stub";
-	const sdkPackage = "@workflow-engine/sdk";
-
 	const result = await build({
 		configFile: false,
 		logLevel: "silent",
 		root,
 		plugins: [
 			{
-				name: "sdk-stub",
+				name: "sandbox-build",
 				enforce: "pre",
 				resolveId(id) {
-					if (id === sdkPackage) {
-						return stubId;
+					if (id in virtualPackages) {
+						return virtualPackages[id];
+					}
+					if (polyfillPackages.has(id)) {
+						return pluginRequire.resolve(id);
+					}
+					const pkgName = id.startsWith("@")
+						? id.split("/").slice(0, 2).join("/")
+						: id.split("/")[0];
+					if (pkgName && polyfillPackages.has(pkgName) && pkgName !== id) {
+						return pluginRequire.resolve(id);
 					}
 				},
-				load(id) {
-					if (id === stubId) {
-						return SDK_STUB;
+				transform(code, id) {
+					if (id === workflowPath) {
+						return `import "${globalsPackage}";\n${code}`;
 					}
 				},
 			},

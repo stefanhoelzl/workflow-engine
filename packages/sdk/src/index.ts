@@ -94,7 +94,6 @@ interface ActionContext<
 		payload: Events[K],
 	) => Promise<void>;
 	env: Readonly<Record<Env, string>>;
-	fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
 }
 
 // --- EnvRef ---

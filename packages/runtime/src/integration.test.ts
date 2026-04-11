@@ -4,13 +4,10 @@ import { type ActionContext, createActionContext } from "./context/index.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
-import { createLogger } from "./logger.js";
 import type { Sandbox } from "./sandbox/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
-
-const silentLogger = createLogger("test", { level: "silent" });
 
 const passthroughSchema = { parse: (d: unknown) => d };
 const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
@@ -34,11 +31,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(
-			source,
-			globalThis.fetch,
-			silentLogger,
-		);
+		const createContext = createActionContext(source);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
 		const sandbox: Sandbox = {
@@ -146,11 +139,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(
-			source,
-			globalThis.fetch,
-			silentLogger,
-		);
+		const createContext = createActionContext(source);
 
 		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
 		const sandbox: Sandbox = {
