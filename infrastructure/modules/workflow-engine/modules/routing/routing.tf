@@ -135,6 +135,11 @@ resource "helm_release" "traefik" {
               services = [{ name = var.oauth2_service, port = var.oauth2_port }]
             },
             {
+              match    = "Host(`${var.network.domain}`) && PathPrefix(`/static`)"
+              kind     = "Rule"
+              services = [{ name = var.app_service, port = var.app_port }]
+            },
+            {
               match    = "Host(`${var.network.domain}`) && PathPrefix(`/webhooks`)"
               kind     = "Rule"
               services = [{ name = var.app_service, port = var.app_port }]

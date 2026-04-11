@@ -30,7 +30,7 @@ variable "oauth2" {
   type = object({
     client_id     = string
     client_secret = string
-    github_user   = string
+    github_users  = string
   })
   sensitive   = true
   description = "GitHub OAuth2 configuration"
@@ -42,6 +42,11 @@ variable "network" {
     https_port = number
   })
   description = "Network configuration"
+}
+
+variable "oauth2_templates" {
+  type        = map(string)
+  description = "Custom oauth2-proxy HTML template contents keyed by filename"
 }
 
 module "app" {
@@ -56,8 +61,9 @@ module "app" {
 module "oauth2_proxy" {
   source = "./modules/oauth2-proxy"
 
-  oauth2  = var.oauth2
-  network = var.network
+  oauth2    = var.oauth2
+  network   = var.network
+  templates = var.oauth2_templates
 }
 
 module "routing" {

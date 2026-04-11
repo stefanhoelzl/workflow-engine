@@ -11,7 +11,7 @@ variable "oauth2" {
   type = object({
     client_id     = string
     client_secret = string
-    github_user   = string
+    github_users  = string
   })
   sensitive   = true
   description = "GitHub OAuth2 configuration"
@@ -23,6 +23,11 @@ variable "network" {
     https_port = number
   })
   description = "Network configuration"
+}
+
+variable "templates" {
+  type        = map(string)
+  description = "Custom HTML template contents keyed by filename"
 }
 
 locals {
@@ -45,6 +50,14 @@ resource "kubernetes_secret_v1" "oauth2_proxy" {
     client-secret = var.oauth2.client_secret
     cookie-secret = random_password.cookie_secret.result
   }
+}
+
+resource "kubernetes_config_map_v1" "oauth2_templates" {
+  metadata {
+    name = "oauth2-proxy-templates"
+  }
+
+  data = var.templates
 }
 
 resource "kubernetes_deployment_v1" "oauth2_proxy" {
@@ -71,6 +84,7 @@ resource "kubernetes_deployment_v1" "oauth2_proxy" {
         }
         annotations = {
           "sha256/oauth2-proxy-credentials" = sha256(jsonencode(kubernetes_secret_v1.oauth2_proxy.data))
+          "sha256/oauth2-proxy-templates"   = sha256(jsonencode(kubernetes_config_map_v1.oauth2_templates.data))
         }
       }
 
@@ -119,8 +133,8 @@ resource "kubernetes_deployment_v1" "oauth2_proxy" {
           }
 
           env {
-            name  = "OAUTH2_PROXY_GITHUB_USER"
-            value = var.oauth2.github_user
+            name  = "OAUTH2_PROXY_GITHUB_USERS"
+            value = var.oauth2.github_users
           }
 
           env {
@@ -164,8 +178,14 @@ resource "kubernetes_deployment_v1" "oauth2_proxy" {
           }
 
           env {
-            name  = "OAUTH2_PROXY_LOGOUT_REDIRECT_URL"
-            value = "/oauth2/sign_in"
+            name  = "OAUTH2_PROXY_CUSTOM_TEMPLATES_DIR"
+            value = "/templates"
+          }
+
+          volume_mount {
+            name       = "templates"
+            mount_path = "/templates"
+            read_only  = true
           }
 
           liveness_probe {
@@ -174,6 +194,13 @@ resource "kubernetes_deployment_v1" "oauth2_proxy" {
               port = 4180
             }
             period_seconds = 5
+          }
+        }
+
+        volume {
+          name = "templates"
+          config_map {
+            name = kubernetes_config_map_v1.oauth2_templates.metadata[0].name
           }
         }
       }
