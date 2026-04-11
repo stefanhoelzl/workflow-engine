@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Hono } from "hono";
-import type { EventStore } from "../event-bus/event-store.js";
-import type { Middleware } from "../triggers/http.js";
+import type { EventStore } from "../../event-bus/event-store.js";
+import type { Middleware } from "../../triggers/http.js";
 import {
 	type AggregateState,
 	getAllEventTypes,
@@ -11,14 +11,14 @@ import {
 	getTimeline,
 	listCorrelations,
 } from "./queries.js";
+import { renderPage } from "./page.js";
 import {
 	renderEntryList,
 	renderEventTypeCheckboxes,
 	renderHeaderStats,
 	renderTypeFilter,
-} from "./views/list.js";
-import { renderPage } from "./views/page.js";
-import { renderTimeline } from "./views/timeline.js";
+} from "./list.js";
+import { renderTimeline } from "./timeline.js";
 
 const require = createRequire(import.meta.url);
 const alpineJs = readFileSync(

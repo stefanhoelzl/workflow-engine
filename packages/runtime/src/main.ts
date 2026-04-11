@@ -1,7 +1,7 @@
 import { apiMiddleware } from "./api/index.js";
 import { createConfig } from "./config.js";
 import { createActionContext } from "./context/index.js";
-import { dashboardMiddleware } from "./dashboard/middleware.js";
+import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { createEventStore } from "./event-bus/event-store.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -21,7 +21,7 @@ import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
-import { triggerMiddleware } from "./trigger/middleware.js";
+import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { httpTriggerMiddleware } from "./triggers/http.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
 
