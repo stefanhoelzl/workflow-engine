@@ -126,7 +126,7 @@ async function init() {
 		httpTriggerMiddleware(registry, source),
 		dashboardMiddleware(eventStore),
 		triggerMiddleware(registry, source),
-		...apiMiddleware({ registry, githubUser: config.githubUser }),
+		apiMiddleware({ registry, githubUser: config.githubUser }),
 	);
 
 	return { runtimeLogger, scheduler, server };
