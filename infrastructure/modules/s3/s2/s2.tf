@@ -48,6 +48,9 @@ resource "kubernetes_deployment_v1" "s2" {
         labels = {
           app = "s2"
         }
+        annotations = {
+          "sha256/s2-credentials" = sha256(jsonencode(kubernetes_secret_v1.s2.data))
+        }
       }
 
       spec {

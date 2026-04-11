@@ -69,6 +69,9 @@ resource "kubernetes_deployment_v1" "oauth2_proxy" {
         labels = {
           app = "oauth2-proxy"
         }
+        annotations = {
+          "sha256/oauth2-proxy-credentials" = sha256(jsonencode(kubernetes_secret_v1.oauth2_proxy.data))
+        }
       }
 
       spec {
