@@ -18,7 +18,6 @@
 		"postinstall": "tofu -chdir=infrastructure/dev init || echo 'tofu init failed'",
 		"infra:init": "tofu -chdir=infrastructure/dev init",
 		"infra:up": "tofu -chdir=infrastructure/dev apply",
-		"infra:up:build": "podman build -t localhost/workflow-engine:dev -f infrastructure/Dockerfile . && pnpm infra:up",
 		"infra:destroy": "tofu -chdir=infrastructure/dev destroy"
 	},
 	"devDependencies": {

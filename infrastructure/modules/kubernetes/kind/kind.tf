@@ -22,6 +22,11 @@ variable "image_name" {
   description = "Container image to load into the kind cluster"
 }
 
+variable "image_hash" {
+  type        = string
+  description = "Content hash of the container image, used to trigger re-loading"
+}
+
 resource "kind_cluster" "this" {
   name            = var.cluster_name
   wait_for_ready  = true
@@ -48,7 +53,7 @@ resource "kind_cluster" "this" {
 }
 
 resource "terraform_data" "load_image" {
-  triggers_replace = var.image_name
+  triggers_replace = var.image_hash
 
   provisioner "local-exec" {
     command     = <<-EOT
