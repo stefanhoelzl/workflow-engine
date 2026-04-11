@@ -84,6 +84,7 @@ function createScheduler(
 		const ctx = createContext(event, action.name, action.env);
 		const result = await sandbox.spawn(action.source, ctx, {
 			filename: `${action.name}.js`,
+			exportName: action.exportName,
 		});
 		if (result.ok) {
 			await source.transition(event, { state: "done", result: "succeeded" });

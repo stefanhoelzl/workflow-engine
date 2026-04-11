@@ -47,21 +47,23 @@ function buildLoadedWorkflow(
 		jsonSchemas[event.name] = event.schema;
 	}
 
+	const source = files.get(manifest.module);
+	if (source === undefined) {
+		return {
+			ok: false,
+			name: manifest.name,
+			error: `missing action module: ${manifest.module}`,
+		};
+	}
+
 	const actions: Action[] = [];
 	for (const actionDef of manifest.actions) {
-		const source = files.get(actionDef.module);
-		if (source === undefined) {
-			return {
-				ok: false,
-				name: manifest.name,
-				error: `missing action source: ${actionDef.module}`,
-			};
-		}
 		actions.push({
 			name: actionDef.name,
 			on: actionDef.on,
 			env: actionDef.env,
 			source,
+			exportName: actionDef.export,
 		});
 	}
 

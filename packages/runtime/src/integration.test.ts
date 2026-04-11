@@ -58,18 +58,21 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 				on: "webhook.order",
 				env: {},
 				source: "export default async (ctx) => { /* validateOrder */ }",
+				exportName: "default",
 			},
 			{
 				name: "fulfillOrder",
 				on: "order.validated",
 				env: {},
 				source: "export default async (ctx) => { /* fulfillOrder */ }",
+				exportName: "default",
 			},
 			{
 				name: "notifyCustomer",
 				on: "order.validated",
 				env: {},
 				source: "export default async (ctx) => { /* notifyCustomer */ }",
+				exportName: "default",
 			},
 		];
 
@@ -163,6 +166,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 				on: "webhook.order",
 				env: {},
 				source: "export default async (ctx) => { /* handleOrder */ }",
+				exportName: "default",
 			},
 		];
 

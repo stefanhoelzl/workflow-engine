@@ -17,6 +17,7 @@ const logger = {
 
 const MANIFEST = {
 	name: "test-workflow",
+	module: "actions.js",
 	events: [
 		{
 			name: "test.event",
@@ -27,7 +28,7 @@ const MANIFEST = {
 	actions: [
 		{
 			name: "handle",
-			module: "actions/handle.js",
+			export: "handle",
 			on: "test.event",
 			emits: [],
 			env: {},
@@ -63,12 +64,12 @@ describe("extractTarGz", () => {
 	it("extracts files from tar.gz buffer", async () => {
 		const blob = await createGzipTar({
 			"manifest.json": '{"name":"test"}',
-			"actions/handle.js": "code",
+			"actions.js": "code",
 		});
 		const files = await extractTarGz(await blob.arrayBuffer());
 		expect(files.size).toBe(2);
 		expect(files.get("manifest.json")).toBe('{"name":"test"}');
-		expect(files.get("actions/handle.js")).toBe("code");
+		expect(files.get("actions.js")).toBe("code");
 	});
 });
 
@@ -77,7 +78,7 @@ describe("upload handler", () => {
 		const { app, registry } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": JSON.stringify(MANIFEST),
-			"actions/handle.js": ACTION_SOURCE,
+			"actions.js": ACTION_SOURCE,
 		});
 
 		const res = await app.request("/api/workflows", {
@@ -104,7 +105,7 @@ describe("upload handler", () => {
 	it("returns 422 when manifest.json is missing", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
-			"actions/handle.js": ACTION_SOURCE,
+			"actions.js": ACTION_SOURCE,
 		});
 
 		const res = await app.request("/api/workflows", {
@@ -149,7 +150,7 @@ describe("upload handler", () => {
 		const upload = async (source: string) => {
 			const body = await createGzipTar({
 				"manifest.json": JSON.stringify(MANIFEST),
-				"actions/handle.js": source,
+				"actions.js": source,
 			});
 			return app.request("/api/workflows", { method: "POST", body });
 		};

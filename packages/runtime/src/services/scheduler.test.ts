@@ -83,6 +83,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -122,6 +123,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => { throw new Error('boom') }",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -158,6 +160,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -192,6 +195,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -229,12 +233,14 @@ describe("createScheduler", () => {
 					on: "order.received",
 					env: {},
 					source: "export default async (ctx) => {}",
+					exportName: "default",
 				},
 				{
 					name: "sendEmail",
 					on: "order.received",
 					env: {},
 					source: "export default async (ctx) => {}",
+					exportName: "default",
 				},
 			];
 			const scheduler = createScheduler(
@@ -280,6 +286,7 @@ describe("createScheduler", () => {
 				on: "order.validated",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -313,6 +320,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,
@@ -349,12 +357,14 @@ describe("createScheduler", () => {
 					on: "order.received",
 					env: {},
 					source: "export default async (ctx) => {}",
+					exportName: "default",
 				},
 				{
 					name: "updateInventory",
 					on: "order.shipped",
 					env: {},
 					source: "export default async (ctx) => {}",
+					exportName: "default",
 				},
 			];
 			const scheduler = createScheduler(
@@ -387,6 +397,7 @@ describe("createScheduler", () => {
 				on: "order.received",
 				env: {},
 				source: "export default async (ctx) => {}",
+				exportName: "default",
 			};
 			const scheduler = createScheduler(
 				workQueue,

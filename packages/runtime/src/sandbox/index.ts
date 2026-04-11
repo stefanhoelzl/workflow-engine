@@ -15,6 +15,7 @@ type SandboxResult =
 interface SpawnOptions {
 	signal?: AbortSignal;
 	filename?: string;
+	exportName?: string;
 }
 
 interface Sandbox {
@@ -54,24 +55,22 @@ async function createSandbox(): Promise<Sandbox> {
 				timerCleanup = setupGlobals(b);
 				bridgeCtx(b, ctx);
 
-				const handlerSource = source
-					.replace(EXPORT_DEFAULT_RE, "")
-					.replace(TRAILING_SEMICOLON_RE, "");
 				const filename = options?.filename ?? "action.js";
+				const exportName = options?.exportName ?? "default";
 
-				const fnResult = vm.evalCode(`(${handlerSource})`, filename);
-				if (fnResult.error) {
-					return dumpError(vm, fnResult.error, b.logs);
+				const moduleResult = vm.evalCode(source, filename, {
+					type: "module",
+				});
+				if (moduleResult.error) {
+					return dumpError(vm, moduleResult.error, b.logs);
 				}
+				const fnHandle = vm.getProp(moduleResult.value, exportName);
+				moduleResult.value.dispose();
 
 				const ctxHandle = vm.getProp(vm.global, "ctx");
-				const callResult = vm.callFunction(
-					fnResult.value,
-					vm.undefined,
-					ctxHandle,
-				);
+				const callResult = vm.callFunction(fnHandle, vm.undefined, ctxHandle);
 				ctxHandle.dispose();
-				fnResult.value.dispose();
+				fnHandle.dispose();
 				if (callResult.error) {
 					return dumpError(vm, callResult.error, b.logs);
 				}
@@ -96,9 +95,6 @@ async function createSandbox(): Promise<Sandbox> {
 		},
 	};
 }
-
-const EXPORT_DEFAULT_RE = /export\s+default\s+/;
-const TRAILING_SEMICOLON_RE = /;\s*$/;
 
 export type { LogEntry } from "./bridge-factory.js";
 export type { Sandbox, SandboxResult, SpawnOptions };

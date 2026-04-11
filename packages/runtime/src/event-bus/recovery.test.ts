@@ -336,6 +336,7 @@ describe("full startup/recovery integration", () => {
 			on: "order.received",
 			env: {},
 			source: "export default async (ctx) => {}",
+			exportName: "default",
 		};
 
 		const source = createTestSource(bus);
