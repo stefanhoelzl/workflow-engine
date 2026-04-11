@@ -96,7 +96,11 @@ interface Bridge {
 			method?: string;
 		},
 	): void;
+	storeOpaque(value: unknown): number;
+	derefOpaque<T>(ref: unknown): T;
+	opaqueRef: (value: unknown) => QuickJSHandle;
 	pushLog(entry: LogEntry): void;
+	dispose(): void;
 }
 
 // --- Extractor construction ---
@@ -152,6 +156,8 @@ function errorMessage(err: unknown): string {
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: sync/async bridge closures share vm, runtime, and logs state
 function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 	const logs: LogEntry[] = [];
+	const opaqueStore = new Map<number, unknown>();
+	let opaqueNextId = 1;
 
 	const marshal = {
 		string: (value: string) => vm.newString(value),
@@ -286,6 +292,27 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 		fn.dispose();
 	}
 
+	function storeOpaque(value: unknown): number {
+		const id = opaqueNextId++;
+		opaqueStore.set(id, value);
+		return id;
+	}
+
+	function derefOpaque<T>(ref: unknown): T {
+		const id =
+			typeof ref === "number"
+				? ref
+				: (ref as { __opaqueId: number } | null)?.__opaqueId;
+		if (typeof id !== "number") {
+			throw new Error("Invalid opaque reference");
+		}
+		const stored = opaqueStore.get(id);
+		if (stored === undefined) {
+			throw new Error(`Opaque reference ${id} not found`);
+		}
+		return stored as T;
+	}
+
 	return {
 		vm,
 		runtime,
@@ -296,8 +323,14 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 		marshal,
 		sync,
 		async: asyncBridge,
+		storeOpaque,
+		derefOpaque,
+		opaqueRef: (value: unknown) => vm.newNumber(storeOpaque(value)),
 		pushLog(entry: LogEntry) {
 			logs.push(entry);
+		},
+		dispose() {
+			opaqueStore.clear();
 		},
 	};
 }

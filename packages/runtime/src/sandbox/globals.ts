@@ -1,5 +1,6 @@
 import type { QuickJSHandle } from "quickjs-emscripten";
 import type { Bridge } from "./bridge-factory.js";
+import { setupCrypto } from "./crypto.js";
 
 interface TimerCleanup {
 	dispose(): void;
@@ -8,6 +9,8 @@ interface TimerCleanup {
 function setupGlobals(b: Bridge): TimerCleanup {
 	setupBtoaAtob(b);
 	setupConsole(b);
+	setupCrypto(b);
+	setupPerformance(b);
 	return setupTimers(b);
 }
 
@@ -39,6 +42,19 @@ function setupConsole(b: Bridge): void {
 	}
 	b.vm.setProp(b.vm.global, "console", consoleObj);
 	consoleObj.dispose();
+}
+
+function setupPerformance(b: Bridge): void {
+	const origin = performance.now();
+	const perfObj = b.vm.newObject();
+	b.sync(perfObj, "now", {
+		method: "performance.now",
+		args: [],
+		marshal: b.marshal.number,
+		impl: () => performance.now() - origin,
+	});
+	b.vm.setProp(b.vm.global, "performance", perfObj);
+	perfObj.dispose();
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: registering all timer globals together is clearer than splitting

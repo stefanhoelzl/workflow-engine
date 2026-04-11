@@ -456,3 +456,277 @@ describe("logging", () => {
 		expect(typeof entry?.durationMs).toBe("number");
 	});
 });
+
+describe("crypto", () => {
+	it("crypto.randomUUID returns valid UUID format", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const uuid = crypto.randomUUID();
+				const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid);
+				await ctx.emit("result", { valid });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { valid: true });
+	});
+
+	it("crypto.getRandomValues returns filled array of correct length", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const arr = crypto.getRandomValues(new Array(16).fill(0));
+				await ctx.emit("result", { len: arr.length, allZero: arr.every(v => v === 0) });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { len: 16, allZero: false });
+	});
+
+	it("crypto.subtle.digest computes correct SHA-256 hash", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const data = [104, 101, 108, 108, 111];
+				const hash = await crypto.subtle.digest("SHA-256", data);
+				await ctx.emit("result", { len: hash.length, first: hash[0], second: hash[1] });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", {
+			len: 32,
+			first: 0x2c,
+			second: 0xf2,
+		});
+	});
+
+	it("crypto.subtle.importKey + sign + verify round-trip (HMAC)", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const keyBytes = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];
+				const key = await crypto.subtle.importKey(
+					"raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]
+				);
+				const data = [104, 101, 108, 108, 111];
+				const sig = await crypto.subtle.sign("HMAC", key, data);
+				const valid = await crypto.subtle.verify("HMAC", key, sig, data);
+				await ctx.emit("result", { valid, sigLen: sig.length });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { valid: true, sigLen: 32 });
+	});
+
+	it("crypto.subtle.verify returns false for tampered data", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const keyBytes = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];
+				const key = await crypto.subtle.importKey(
+					"raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]
+				);
+				const data = [104, 101, 108, 108, 111];
+				const sig = await crypto.subtle.sign("HMAC", key, data);
+				const wrong = [0, 0, 0, 0, 0];
+				const valid = await crypto.subtle.verify("HMAC", key, sig, wrong);
+				await ctx.emit("result", { valid });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { valid: false });
+	});
+
+	it("crypto.subtle.generateKey returns single key (AES-GCM)", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const key = await crypto.subtle.generateKey(
+					{ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
+				);
+				await ctx.emit("result", {
+					type: key.type,
+					hasId: typeof key.__opaqueId === "number",
+					algo: key.algorithm.name,
+				});
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", {
+			type: "secret",
+			hasId: true,
+			algo: "AES-GCM",
+		});
+	});
+
+	it("crypto.subtle.generateKey returns key pair (ECDSA)", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const pair = await crypto.subtle.generateKey(
+					{ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]
+				);
+				await ctx.emit("result", {
+					pubType: pair.publicKey.type,
+					privType: pair.privateKey.type,
+					pubHasId: typeof pair.publicKey.__opaqueId === "number",
+					privHasId: typeof pair.privateKey.__opaqueId === "number",
+				});
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", {
+			pubType: "public",
+			privType: "private",
+			pubHasId: true,
+			privHasId: true,
+		});
+	});
+
+	it("crypto.subtle.encrypt + decrypt AES-GCM round-trip", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const key = await crypto.subtle.generateKey(
+					{ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
+				);
+				const iv = crypto.getRandomValues(new Array(12).fill(0));
+				const plaintext = [72, 101, 108, 108, 111];
+				const ciphertext = await crypto.subtle.encrypt(
+					{ name: "AES-GCM", iv }, key, plaintext
+				);
+				const decrypted = await crypto.subtle.decrypt(
+					{ name: "AES-GCM", iv }, key, ciphertext
+				);
+				await ctx.emit("result", { match: JSON.stringify(decrypted) === JSON.stringify(plaintext) });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { match: true });
+	});
+
+	it("crypto.subtle.exportKey matches original imported bytes", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const keyBytes = Array.from({ length: 32 }, (_, i) => i);
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const keyBytes = ${JSON.stringify(keyBytes)};
+				const key = await crypto.subtle.importKey(
+					"raw", keyBytes, { name: "AES-GCM", length: 256 }, true, ["encrypt"]
+				);
+				const exported = await crypto.subtle.exportKey("raw", key);
+				await ctx.emit("result", { match: JSON.stringify(exported) === JSON.stringify(keyBytes) });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { match: true });
+	});
+
+	it("CryptoKey handle is frozen object with metadata", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const key = await crypto.subtle.importKey(
+					"raw",
+					[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],
+					{ name: "HMAC", hash: "SHA-256" },
+					true,
+					["sign", "verify"]
+				);
+				const frozen = Object.isFrozen(key);
+				const keys = Object.keys(key).sort();
+				key.__opaqueId = 999;
+				const idUnchanged = key.__opaqueId !== 999;
+				await ctx.emit("result", { frozen, keys, idUnchanged, type: key.type });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", {
+			frozen: true,
+			keys: ["__opaqueId", "algorithm", "extractable", "type", "usages"],
+			idUnchanged: true,
+			type: "secret",
+		});
+	});
+
+	it("invalid opaque reference produces failed log entry", async () => {
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				await crypto.subtle.sign("HMAC", { __opaqueId: 999 }, [1, 2, 3]);
+			}`,
+			makeCtx(),
+		);
+		expect(result.ok).toBe(false);
+		const entry = findLog(result, "crypto.subtle.sign");
+		expect(entry).toBeDefined();
+		expect(entry?.status).toBe("failed");
+		expect(entry?.error).toContain("999");
+	});
+});
+
+describe("performance", () => {
+	it("performance.now returns number >= 0", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const t = performance.now();
+				await ctx.emit("result", { isNumber: typeof t === "number", nonNeg: t >= 0 });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", {
+			isNumber: true,
+			nonNeg: true,
+		});
+	});
+
+	it("performance.now increases over time", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`export default async (ctx) => {
+				const t1 = performance.now();
+				await new Promise(resolve => setTimeout(resolve, 50));
+				const t2 = performance.now();
+				await ctx.emit("result", { increased: t2 > t1 });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { increased: true });
+	});
+});
