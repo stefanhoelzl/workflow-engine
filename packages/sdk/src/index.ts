@@ -69,28 +69,76 @@ interface TriggerConfig {
 		| undefined;
 }
 
-type HttpPayloadSchema<B extends z.ZodType, P extends z.ZodType> = z.ZodObject<{
+type HttpPayloadSchema<
+	B extends z.ZodType,
+	P extends z.ZodType,
+	Q extends z.ZodType = z.ZodObject<Record<never, never>>,
+> = z.ZodObject<{
 	body: B;
 	headers: z.ZodRecord<z.ZodString, z.ZodString>;
 	url: z.ZodString;
 	method: z.ZodDefault<z.ZodString>;
 	params: P;
+	query: Q;
 }>;
+
+function detectArrayFields(
+	querySchema: z.ZodObject<z.ZodRawShape>,
+): Set<string> {
+	const jsonSchema = z.toJSONSchema(querySchema, {}) as {
+		properties?: Record<string, { type?: string }>;
+	};
+	const arrayFields = new Set<string>();
+	if (jsonSchema.properties) {
+		for (const [key, prop] of Object.entries(jsonSchema.properties)) {
+			if (prop.type === "array") {
+				arrayFields.add(key);
+			}
+		}
+	}
+	return arrayFields;
+}
+
+function coerceQuery(
+	raw: unknown,
+	arrayFields: Set<string>,
+): Record<string, unknown> {
+	if (typeof raw !== "object" || raw === null) {
+		return {};
+	}
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (arrayFields.has(key)) {
+			result[key] = Array.isArray(value) ? value : [value];
+		} else if (Array.isArray(value)) {
+			result[key] = value.at(-1);
+		} else {
+			result[key] = value;
+		}
+	}
+	return result;
+}
 
 function http<
 	const P extends string,
 	B extends z.ZodType = z.ZodUnknown,
+	Q extends z.ZodObject<z.ZodRawShape> = z.ZodObject<Record<never, never>>,
 >(config: {
 	path: P;
 	method?: string;
 	body?: B;
+	query?: Q;
 	params?: z.ZodObject<{ [K in ExtractParams<P>]: z.ZodType }>;
 	response?: {
 		status?: number;
 		body?: unknown;
 	};
 }): TriggerDef<
-	HttpPayloadSchema<B extends undefined ? z.ZodUnknown : B, ParamsSchemaFor<P>>
+	HttpPayloadSchema<
+		B extends undefined ? z.ZodUnknown : B,
+		ParamsSchemaFor<P>,
+		Q
+	>
 > {
 	const bodySchema = (config.body ?? z.unknown()) as B extends undefined
 		? z.ZodUnknown
@@ -100,18 +148,30 @@ function http<
 		config.params ??
 		z.object(Object.fromEntries(paramNames.map((n) => [n, z.string()])));
 	const method = config.method ?? "POST";
+
+	const querySchema = config.query ?? z.object({});
+	const arrayFields = detectArrayFields(
+		querySchema as z.ZodObject<z.ZodRawShape>,
+	);
+	const coercedQuerySchema = z.preprocess(
+		(raw) => coerceQuery(raw, arrayFields),
+		querySchema,
+	);
+
 	const schema = z.object({
 		body: bodySchema,
 		headers: z.record(z.string(), z.string()),
 		url: z.string().meta({ example: "https://example.com" }),
 		method: z.string().default(method),
 		params: paramsSchema,
+		query: coercedQuerySchema,
 	});
 	return {
 		type: "http",
-		schema: schema as HttpPayloadSchema<
+		schema: schema as unknown as HttpPayloadSchema<
 			B extends undefined ? z.ZodUnknown : B,
-			ParamsSchemaFor<P>
+			ParamsSchemaFor<P>,
+			Q
 		>,
 		path: config.path,
 		method,
@@ -479,4 +539,12 @@ export type {
 	TriggerDef,
 	TriggerPhase,
 };
-export { createWorkflow, ENV_REF, env, extractParamNames, http, ManifestSchema, z };
+export {
+	createWorkflow,
+	ENV_REF,
+	env,
+	extractParamNames,
+	http,
+	ManifestSchema,
+	z,
+};

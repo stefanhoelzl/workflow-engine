@@ -188,15 +188,17 @@ describe("httpTriggerMiddleware — matching", () => {
 			url: string;
 			method: string;
 			params: Record<string, string>;
+			query: Record<string, string[]>;
 		};
 		expect(p.body).toEqual({ item: "widget" });
 		expect(p.method).toBe("POST");
 		expect(p.headers).toHaveProperty("content-type", "application/json");
 		expect(p.url).toBe("http://localhost/webhooks/order");
 		expect(p.params).toEqual({});
+		expect(p.query).toEqual({});
 	});
 
-	it("includes query string in path", async () => {
+	it("includes query string in url field", async () => {
 		const registry = new HttpTriggerRegistry();
 		registry.register({
 			name: "webhook.order",
@@ -299,6 +301,83 @@ describe("httpTriggerMiddleware — path params", () => {
 			{ params: Record<string, string> },
 		];
 		expect(payload.params).toEqual({});
+	});
+});
+
+describe("httpTriggerMiddleware — query params", () => {
+	it("extracts query params as arrays in payload", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 200 as const },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		await app.request("/webhooks/order?source=shopify&ref=abc", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [
+			string,
+			{ query: Record<string, string[]> },
+		];
+		expect(payload.query).toEqual({
+			source: ["shopify"],
+			ref: ["abc"],
+		});
+	});
+
+	it("collects repeated query params into array", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.filter",
+			path: "filter",
+			method: "POST",
+			response: { status: 200 as const },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		await app.request("/webhooks/filter?tag=a&tag=b&tag=c", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [
+			string,
+			{ query: Record<string, string[]> },
+		];
+		expect(payload.query).toEqual({ tag: ["a", "b", "c"] });
+	});
+
+	it("produces empty query object when no query params", async () => {
+		const registry = new HttpTriggerRegistry();
+		registry.register({
+			name: "webhook.order",
+			path: "order",
+			method: "POST",
+			response: { status: 200 as const },
+		});
+		const { source, createSpy } = stubEventSource();
+		const app = createApp(registry, source);
+
+		await app.request("/webhooks/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+
+		const [, payload] = createSpy.mock.calls[0] as [
+			string,
+			{ query: Record<string, string[]> },
+		];
+		expect(payload.query).toEqual({});
 	});
 });
 

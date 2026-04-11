@@ -128,6 +128,15 @@ interface Middleware {
 
 const WEBHOOKS_PREFIX = "/webhooks/";
 
+function extractQueryParams(url: string): Record<string, string[]> {
+	const parsed = new URL(url);
+	const query: Record<string, string[]> = {};
+	for (const key of parsed.searchParams.keys()) {
+		query[key] = parsed.searchParams.getAll(key);
+	}
+	return query;
+}
+
 function httpTriggerMiddleware(
 	triggerSource: { readonly triggerRegistry: HttpTriggerRegistry },
 	source: EventSource,
@@ -170,6 +179,7 @@ function httpTriggerMiddleware(
 				url: c.req.url,
 				method: c.req.method,
 				params: definition.params,
+				query: extractQueryParams(c.req.url),
 			};
 
 			try {

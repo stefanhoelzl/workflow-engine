@@ -97,12 +97,14 @@ describe("type-level: action handler context", () => {
 					const _method: string = ctx.event.payload.method;
 					const _headers: Record<string, string> = ctx.event.payload.headers;
 					const _params: Record<string, never> = ctx.event.payload.params;
+					const _query: Record<string, never> = ctx.event.payload.query;
 					return [
 						_id,
 						_url,
 						_method,
 						_headers,
 						_params,
+						_query,
 					] as unknown as undefined;
 				},
 			});
@@ -400,6 +402,57 @@ describe("type-level: path params inference", () => {
 	});
 });
 
+describe("type-level: query params", () => {
+	it("query schema types are inferred in action context", () => {
+		createWorkflow("test")
+			.trigger(
+				"webhook.search",
+				http({
+					path: "search",
+					query: z.object({ q: z.string() }),
+				}),
+			)
+			.action({
+				on: "webhook.search",
+				handler: async (ctx) => {
+					const _q: string = ctx.event.payload.query.q;
+					return _q as unknown as undefined;
+				},
+			});
+	});
+
+	it("array query param types are inferred", () => {
+		createWorkflow("test")
+			.trigger(
+				"webhook.filter",
+				http({
+					path: "filter",
+					query: z.object({ tags: z.array(z.string()) }),
+				}),
+			)
+			.action({
+				on: "webhook.filter",
+				handler: async (ctx) => {
+					const _tags: string[] = ctx.event.payload.query.tags;
+					return _tags as unknown as undefined;
+				},
+			});
+	});
+
+	it("no query schema produces empty query type", () => {
+		createWorkflow("test")
+			.trigger("webhook.ping", http({ path: "ping" }))
+			.action({
+				on: "webhook.ping",
+				handler: async (ctx) => {
+					// @ts-expect-error query has no 'q' key when no query schema
+					const _typed: { q: string } = ctx.event.payload.query;
+					return _typed as unknown as undefined;
+				},
+			});
+	});
+});
+
 // --- Runtime tests ---
 
 describe("workflow builder runtime behavior", () => {
@@ -586,6 +639,7 @@ describe("workflow builder runtime behavior", () => {
 		expect(properties).toHaveProperty("url");
 		expect(properties).toHaveProperty("method");
 		expect(properties).toHaveProperty("params");
+		expect(properties).toHaveProperty("query");
 	});
 
 	it("static path produces params: [] in trigger config", () => {
@@ -798,5 +852,106 @@ describe("workflow env resolution", () => {
 
 		const compiled = wf.compile();
 		expect(compiled.actions[0]?.env).toEqual({});
+	});
+});
+
+describe("http() query param coercion", () => {
+	function parsePayload(
+		triggerDef: { schema: { parse: (data: unknown) => unknown } },
+		payload: unknown,
+	): unknown {
+		return triggerDef.schema.parse(payload);
+	}
+
+	const basePayload = {
+		body: {},
+		headers: {},
+		url: "https://example.com",
+		method: "POST",
+		params: {},
+	};
+
+	it("string field takes last value from array", () => {
+		const trigger = http({
+			path: "test",
+			query: z.object({ source: z.string() }),
+		});
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: { source: ["a", "b"] },
+		});
+		expect(result).toHaveProperty("query", { source: "b" });
+	});
+
+	it("string field passes through plain string", () => {
+		const trigger = http({
+			path: "test",
+			query: z.object({ source: z.string() }),
+		});
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: { source: "direct" },
+		});
+		expect(result).toHaveProperty("query", { source: "direct" });
+	});
+
+	it("array field keeps array as-is", () => {
+		const trigger = http({
+			path: "test",
+			query: z.object({ tags: z.array(z.string()) }),
+		});
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: { tags: ["a", "b"] },
+		});
+		expect(result).toHaveProperty("query", { tags: ["a", "b"] });
+	});
+
+	it("array field coerces single value to array", () => {
+		const trigger = http({
+			path: "test",
+			query: z.object({ tags: z.array(z.string()) }),
+		});
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: { tags: "solo" },
+		});
+		expect(result).toHaveProperty("query", { tags: ["solo"] });
+	});
+
+	it("empty query defaults to empty object", () => {
+		const trigger = http({ path: "test" });
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: {},
+		});
+		expect(result).toHaveProperty("query", {});
+	});
+
+	it("mixed string and array fields coerce correctly", () => {
+		const trigger = http({
+			path: "test",
+			query: z.object({
+				source: z.string(),
+				tags: z.array(z.string()),
+			}),
+		});
+
+		const result = parsePayload(trigger, {
+			...basePayload,
+			query: {
+				source: ["shopify", "stripe"],
+				tags: ["urgent"],
+			},
+		});
+		expect(result).toHaveProperty("query", {
+			source: "stripe",
+			tags: ["urgent"],
+		});
 	});
 });
