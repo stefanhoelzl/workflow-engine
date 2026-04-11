@@ -1,5 +1,5 @@
-import type { EventBus, RuntimeEvent } from "./event-bus/index.js";
 import { PayloadValidationError } from "./context/errors.js";
+import type { EventBus, RuntimeEvent } from "./event-bus/index.js";
 
 interface Schema {
 	parse(data: unknown): unknown;
@@ -144,5 +144,5 @@ function createEventSource(
 	};
 }
 
-export { createEventSource };
 export type { EventSource, TransitionOpts };
+export { createEventSource };

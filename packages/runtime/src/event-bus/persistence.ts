@@ -1,6 +1,6 @@
+import type { StorageBackend } from "../storage/index.js";
 import type { BusConsumer, RuntimeEvent } from "./index.js";
 import { RuntimeEventSchema } from "./index.js";
-import type { StorageBackend } from "../storage/index.js";
 
 const FILE_PATTERN = /^(\d+)_evt_(.+)\.json$/;
 const EVT_PREFIX_PATTERN = /^evt_/;
@@ -222,5 +222,5 @@ function toAsyncIterator<T>(
 	return { next: async () => iter.next() };
 }
 
-export { createPersistence };
 export type { PersistenceConsumer, RecoveryBatch };
+export { createPersistence };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createWorkflow, http, env, ENV_REF } from "./index.js";
+import { createWorkflow, ENV_REF, env, http } from "./index.js";
 
 // --- Type-level tests ---
 // These verify compile-time type inference. If any @ts-expect-error

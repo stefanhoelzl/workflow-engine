@@ -1,4 +1,4 @@
-import { serve, type ServerType } from "@hono/node-server";
+import { type ServerType, serve } from "@hono/node-server";
 import { Hono } from "hono";
 import type { Middleware } from "../triggers/http.js";
 import type { Service } from "./index.js";

@@ -1,4 +1,4 @@
-import { ManifestSchema, type Manifest, z } from "@workflow-engine/sdk";
+import { type Manifest, ManifestSchema, z } from "@workflow-engine/sdk";
 import type { Action } from "./actions/index.js";
 import type { Logger } from "./logger.js";
 import type { StorageBackend } from "./storage/index.js";
@@ -227,5 +227,5 @@ function createWorkflowRegistry(
 	};
 }
 
+export type { LoadedWorkflow, Schema, WorkflowRegistry };
 export { createWorkflowRegistry, parseWorkflowNames };
-export type { WorkflowRegistry, LoadedWorkflow, Schema };

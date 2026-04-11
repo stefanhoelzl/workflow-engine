@@ -213,18 +213,18 @@ async function getAllEventTypes(eventStore: EventStore): Promise<string[]> {
 	return (rows as any[]).map((r: any) => r.type as string);
 }
 
-export {
-	listCorrelations,
-	getTimeline,
-	getDistinctEventTypes,
-	getAllEventTypes,
-	getHeaderStats,
-};
 export type {
 	AggregateState,
-	CorrelationSummary,
 	CorrelationListOptions,
 	CorrelationListResult,
-	TimelineEvent,
+	CorrelationSummary,
 	HeaderStats,
+	TimelineEvent,
+};
+export {
+	getAllEventTypes,
+	getDistinctEventTypes,
+	getHeaderStats,
+	getTimeline,
+	listCorrelations,
 };

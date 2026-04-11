@@ -4,20 +4,20 @@ import { Hono } from "hono";
 import type { EventStore } from "../event-bus/event-store.js";
 import type { Middleware } from "../triggers/http.js";
 import {
-	listCorrelations,
-	getTimeline,
-	getHeaderStats,
-	getDistinctEventTypes,
-	getAllEventTypes,
 	type AggregateState,
+	getAllEventTypes,
+	getDistinctEventTypes,
+	getHeaderStats,
+	getTimeline,
+	listCorrelations,
 } from "./queries.js";
-import { renderPage } from "./views/page.js";
 import {
 	renderEntryList,
+	renderEventTypeCheckboxes,
 	renderHeaderStats,
 	renderTypeFilter,
-	renderEventTypeCheckboxes,
 } from "./views/list.js";
+import { renderPage } from "./views/page.js";
 import { renderTimeline } from "./views/timeline.js";
 
 const require = createRequire(import.meta.url);

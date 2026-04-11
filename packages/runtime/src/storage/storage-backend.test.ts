@@ -1,7 +1,7 @@
+import { mkdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdir, rm } from "node:fs/promises";
 import {
 	afterAll,
 	afterEach,
@@ -11,8 +11,8 @@ import {
 	expect,
 	it,
 } from "vitest";
-import type { StorageBackend } from "./index.js";
 import { createFsStorage } from "./fs.js";
+import type { StorageBackend } from "./index.js";
 import { createS3Storage } from "./s3.js";
 
 function storageBackendTests(

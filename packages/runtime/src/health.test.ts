@@ -2,13 +2,13 @@ import { constants } from "node:http2";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { EventStore } from "./event-bus/event-store.js";
-import type { StorageBackend } from "./storage/index.js";
 import {
-	healthMiddleware,
+	type CheckResult,
 	type HealthDeps,
 	type HealthResponse,
-	type CheckResult,
+	healthMiddleware,
 } from "./health.js";
+import type { StorageBackend } from "./storage/index.js";
 
 const CONTENT_TYPE = "application/health+json";
 

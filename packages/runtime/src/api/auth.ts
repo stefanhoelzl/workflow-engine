@@ -50,5 +50,5 @@ function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
 	};
 }
 
-export { githubAuthMiddleware };
 export type { GitHubAuthOptions };
+export { githubAuthMiddleware };

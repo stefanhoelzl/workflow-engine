@@ -308,5 +308,5 @@ function healthMiddleware(deps: HealthDeps): Middleware {
 	};
 }
 
+export type { CheckResult, HealthDeps, HealthResponse };
 export { healthMiddleware };
-export type { HealthDeps, HealthResponse, CheckResult };

@@ -1,12 +1,11 @@
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, rm } from "node:fs/promises";
-import type { RuntimeEvent } from "./index.js";
-import { createPersistence } from "./persistence.js";
 import { createFsStorage } from "../storage/fs.js";
 import type { StorageBackend } from "../storage/index.js";
+import type { RuntimeEvent } from "./index.js";
+import { createPersistence } from "./persistence.js";
 
 let testDir: string;
 let backend: StorageBackend;

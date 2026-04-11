@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TimelineEvent } from "../queries.js";
-import { buildTree, assignPositions, type LayoutNode } from "./timeline.js";
+import { assignPositions, buildTree, type LayoutNode } from "./timeline.js";
 
 function makeTimelineEvent(
 	overrides: Partial<TimelineEvent> = {},

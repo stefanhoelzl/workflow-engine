@@ -2,12 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createFsStorage } from "./storage/fs.js";
+import type { StorageBackend } from "./storage/index.js";
 import {
 	createWorkflowRegistry,
 	parseWorkflowNames,
 } from "./workflow-registry.js";
-import { createFsStorage } from "./storage/fs.js";
-import type { StorageBackend } from "./storage/index.js";
 
 const logger = {
 	info: vi.fn(),

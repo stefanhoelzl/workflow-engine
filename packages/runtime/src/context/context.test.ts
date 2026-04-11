@@ -2,14 +2,14 @@ import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type BusConsumer,
+	createEventBus,
 	type EventBus,
 	type RuntimeEvent,
-	createEventBus,
 } from "../event-bus/index.js";
 import { createEventSource, type EventSource } from "../event-source.js";
-import { type Logger, createLogger } from "../logger.js";
-import { ActionContext, createActionContext } from "./index.js";
+import { createLogger, type Logger } from "../logger.js";
 import { PayloadValidationError } from "./errors.js";
+import { ActionContext, createActionContext } from "./index.js";
 
 const silentLogger = createLogger("test", { level: "silent" });
 
