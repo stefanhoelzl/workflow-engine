@@ -1,67 +1,73 @@
-import type {
-	QuickJSContext,
-	QuickJSHandle,
-	QuickJSRuntime,
-} from "quickjs-emscripten";
+import type { QuickJSHandle } from "quickjs-emscripten";
+import type { Bridge } from "./bridge-factory.js";
 
 interface TimerCleanup {
 	dispose(): void;
 }
 
-function setupGlobals(
-	vm: QuickJSContext,
-	runtime: QuickJSRuntime,
-): TimerCleanup {
-	setupBtoaAtob(vm);
-	return setupTimers(vm, runtime);
+function setupGlobals(b: Bridge): TimerCleanup {
+	setupBtoaAtob(b);
+	setupConsole(b);
+	return setupTimers(b);
 }
 
-function setupBtoaAtob(vm: QuickJSContext): void {
-	const btoaFn = vm.newFunction("btoa", (strHandle) => {
-		const str = vm.getString(strHandle);
-		return vm.newString(btoa(str));
+function setupBtoaAtob(b: Bridge): void {
+	b.sync(b.vm.global, "btoa", {
+		args: [b.arg.string],
+		marshal: b.marshal.string,
+		impl: (str) => btoa(str),
 	});
-	vm.setProp(vm.global, "btoa", btoaFn);
-	btoaFn.dispose();
 
-	const atobFn = vm.newFunction("atob", (strHandle) => {
-		const str = vm.getString(strHandle);
-		return vm.newString(atob(str));
+	b.sync(b.vm.global, "atob", {
+		args: [b.arg.string],
+		marshal: b.marshal.string,
+		impl: (str) => atob(str),
 	});
-	vm.setProp(vm.global, "atob", atobFn);
-	atobFn.dispose();
+}
+
+function setupConsole(b: Bridge): void {
+	const consoleObj = b.vm.newObject();
+	for (const name of ["log", "info", "warn", "error", "debug"] as const) {
+		b.sync(consoleObj, name, {
+			method: `console.${name}`,
+			args: [b.arg.json.rest],
+			marshal: b.marshal.void,
+			impl: () => {
+				/* no-op: auto-log captures method + args */
+			},
+		});
+	}
+	b.vm.setProp(b.vm.global, "console", consoleObj);
+	consoleObj.dispose();
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: registering all timer globals together is clearer than splitting
-function setupTimers(
-	vm: QuickJSContext,
-	runtime: QuickJSRuntime,
-): TimerCleanup {
+function setupTimers(b: Bridge): TimerCleanup {
 	const pendingCallbacks = new Map<number, QuickJSHandle>();
 
-	const setTimeoutFn = vm.newFunction(
+	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
 		(callbackHandle, delayHandle) => {
-			const delay = vm.getNumber(delayHandle);
+			const delay = b.vm.getNumber(delayHandle);
 			const cb = callbackHandle.dup();
 
 			const id = setTimeout(() => {
 				pendingCallbacks.delete(id as unknown as number);
-				vm.callFunction(cb, vm.undefined);
+				b.vm.callFunction(cb, b.vm.undefined);
 				cb.dispose();
-				runtime.executePendingJobs();
+				b.runtime.executePendingJobs();
 			}, delay);
 
 			const numId = id as unknown as number;
 			pendingCallbacks.set(numId, cb);
-			return vm.newNumber(numId);
+			return b.vm.newNumber(numId);
 		},
 	);
-	vm.setProp(vm.global, "setTimeout", setTimeoutFn);
+	b.vm.setProp(b.vm.global, "setTimeout", setTimeoutFn);
 	setTimeoutFn.dispose();
 
-	const clearTimeoutFn = vm.newFunction("clearTimeout", (idHandle) => {
-		const id = vm.getNumber(idHandle);
+	const clearTimeoutFn = b.vm.newFunction("clearTimeout", (idHandle) => {
+		const id = b.vm.getNumber(idHandle);
 		clearTimeout(id);
 		const cb = pendingCallbacks.get(id);
 		if (cb) {
@@ -69,30 +75,30 @@ function setupTimers(
 			pendingCallbacks.delete(id);
 		}
 	});
-	vm.setProp(vm.global, "clearTimeout", clearTimeoutFn);
+	b.vm.setProp(b.vm.global, "clearTimeout", clearTimeoutFn);
 	clearTimeoutFn.dispose();
 
-	const setIntervalFn = vm.newFunction(
+	const setIntervalFn = b.vm.newFunction(
 		"setInterval",
 		(callbackHandle, delayHandle) => {
-			const delay = vm.getNumber(delayHandle);
+			const delay = b.vm.getNumber(delayHandle);
 			const cb = callbackHandle.dup();
 
 			const id = setInterval(() => {
-				vm.callFunction(cb, vm.undefined);
-				runtime.executePendingJobs();
+				b.vm.callFunction(cb, b.vm.undefined);
+				b.runtime.executePendingJobs();
 			}, delay);
 
 			const numId = id as unknown as number;
 			pendingCallbacks.set(numId, cb);
-			return vm.newNumber(numId);
+			return b.vm.newNumber(numId);
 		},
 	);
-	vm.setProp(vm.global, "setInterval", setIntervalFn);
+	b.vm.setProp(b.vm.global, "setInterval", setIntervalFn);
 	setIntervalFn.dispose();
 
-	const clearIntervalFn = vm.newFunction("clearInterval", (idHandle) => {
-		const id = vm.getNumber(idHandle);
+	const clearIntervalFn = b.vm.newFunction("clearInterval", (idHandle) => {
+		const id = b.vm.getNumber(idHandle);
 		clearInterval(id);
 		const cb = pendingCallbacks.get(id);
 		if (cb) {
@@ -100,7 +106,7 @@ function setupTimers(
 			pendingCallbacks.delete(id);
 		}
 	});
-	vm.setProp(vm.global, "clearInterval", clearIntervalFn);
+	b.vm.setProp(b.vm.global, "clearInterval", clearIntervalFn);
 	clearIntervalFn.dispose();
 
 	return {
