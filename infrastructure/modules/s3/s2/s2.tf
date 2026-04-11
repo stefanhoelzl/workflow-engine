@@ -1,18 +1,11 @@
-variable "access_key" {
-  type        = string
-  sensitive   = true
-  description = "S2 access key (S2_SERVER_USER)"
-}
-
-variable "secret_key" {
-  type        = string
-  sensitive   = true
-  description = "S2 secret key (S2_SERVER_PASSWORD)"
-}
-
 variable "buckets" {
   type        = string
   description = "Comma-separated list of buckets to auto-create (S2_SERVER_BUCKETS)"
+}
+
+locals {
+  access_key = "minioadmin"
+  secret_key = "minioadmin"
 }
 
 resource "kubernetes_secret_v1" "s2" {
@@ -21,8 +14,8 @@ resource "kubernetes_secret_v1" "s2" {
   }
 
   data = {
-    S2_SERVER_USER     = var.access_key
-    S2_SERVER_PASSWORD = var.secret_key
+    S2_SERVER_USER     = local.access_key
+    S2_SERVER_PASSWORD = local.secret_key
   }
 }
 
@@ -124,13 +117,13 @@ output "bucket" {
 }
 
 output "access_key" {
-  value       = var.access_key
+  value       = local.access_key
   sensitive   = true
   description = "S3 access key ID"
 }
 
 output "secret_key" {
-  value       = var.secret_key
+  value       = local.secret_key
   sensitive   = true
   description = "S3 secret access key"
 }

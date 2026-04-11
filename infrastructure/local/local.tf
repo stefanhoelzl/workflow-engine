@@ -53,18 +53,6 @@ variable "oauth2_github_users" {
   description = "Allowed GitHub username"
 }
 
-variable "s2_access_key" {
-  type        = string
-  sensitive   = true
-  description = "S2 access key"
-}
-
-variable "s2_secret_key" {
-  type        = string
-  sensitive   = true
-  description = "S2 secret key"
-}
-
 variable "s2_bucket" {
   type        = string
   description = "S2 bucket name"
@@ -106,9 +94,7 @@ provider "helm" {
 module "s2" {
   source = "../modules/s3/s2"
 
-  access_key = var.s2_access_key
-  secret_key = var.s2_secret_key
-  buckets    = var.s2_bucket
+  buckets = var.s2_bucket
 }
 
 module "workflow_engine" {
@@ -147,6 +133,7 @@ module "routing" {
   source = "../modules/routing"
 
   traefik_extra_objects = module.workflow_engine.traefik_extra_objects
+  traefik_helm_values   = module.workflow_engine.traefik_helm_values
   traefik_helm_sets = [
     {
       name  = "ports.websecure.expose.default"
