@@ -1,5 +1,5 @@
-import type { TimelineEvent } from "./queries.js";
 import { escapeHtml } from "../html.js";
+import type { TimelineEvent } from "./queries.js";
 
 interface LayoutNode {
 	event: TimelineEvent;

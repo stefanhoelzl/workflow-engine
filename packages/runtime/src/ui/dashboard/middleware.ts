@@ -2,6 +2,13 @@ import { Hono } from "hono";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Middleware } from "../../triggers/http.js";
 import {
+	renderEntryList,
+	renderEventTypeCheckboxes,
+	renderHeaderStats,
+	renderTypeFilter,
+} from "./list.js";
+import { renderPage } from "./page.js";
+import {
 	type AggregateState,
 	getAllEventTypes,
 	getDistinctEventTypes,
@@ -9,13 +16,6 @@ import {
 	getTimeline,
 	listCorrelations,
 } from "./queries.js";
-import { renderPage } from "./page.js";
-import {
-	renderEntryList,
-	renderEventTypeCheckboxes,
-	renderHeaderStats,
-	renderTypeFilter,
-} from "./list.js";
 import { renderTimeline } from "./timeline.js";
 
 const VALID_STATES = new Set(["pending", "failed", "done"]);
