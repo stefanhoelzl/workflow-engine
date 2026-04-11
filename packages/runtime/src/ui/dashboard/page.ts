@@ -1,7 +1,8 @@
+import { html } from "hono/html";
 import { renderLayout } from "../layout.js";
 
-function renderPage(user: string, email: string): string {
-	const head = `  <style>
+function renderPage(user: string, email: string) {
+	const head = html`  <style>
     .stats {
       display: flex;
       gap: 16px;
@@ -87,7 +88,7 @@ function renderPage(user: string, email: string): string {
 
 	const bodyAttrs = `x-data="{ tip: null, tipX: 0, tipY: 0, _tipTimer: null, _copied: false }"`;
 
-	const content = `
+	const content = html`
   <div class="tooltip"
        x-show="tip"
        x-transition.opacity.duration.150ms

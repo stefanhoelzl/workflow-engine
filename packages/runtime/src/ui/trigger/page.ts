@@ -1,4 +1,4 @@
-import { escapeHtml } from "../html.js";
+import { html, raw } from "hono/html";
 import { renderLayout } from "../layout.js";
 
 function prepareSchema(schema: unknown): unknown {
@@ -37,18 +37,18 @@ function prepareSchema(schema: unknown): unknown {
 	return result;
 }
 
-function renderEventDetails(name: string, schema: object): string {
+function renderEventDetails(name: string, schema: object) {
 	const schemaJson = JSON.stringify(prepareSchema(schema));
-	return `<details class="event-details" ontoggle="initForm(this)">
+	return html`<details class="event-details" ontoggle="initForm(this)">
       <summary class="event-summary">
-        <span class="event-name">${escapeHtml(name)}</span>
+        <span class="event-name">${name}</span>
       </summary>
       <div class="event-body">
         <div class="form-container"></div>
         <div class="banner-target"></div>
-        <button type="button" class="submit-btn" onclick="submitEvent(this, '${escapeHtml(name)}')">Submit</button>
+        <button type="button" class="submit-btn" onclick="submitEvent(this, '${name}')">Submit</button>
       </div>
-      <script type="application/json">${schemaJson}</script>
+      <script type="application/json">${raw(schemaJson)}</script>
     </details>`;
 }
 
@@ -56,13 +56,12 @@ function renderTriggerPage(
 	schemas: Record<string, object>,
 	user: string,
 	email: string,
-): string {
+) {
 	const events = Object.entries(schemas)
 		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([name, schema]) => renderEventDetails(name, schema))
-		.join("\n    ");
+		.map(([name, schema]) => renderEventDetails(name, schema));
 
-	const head = `  <script src="/static/jedison.js"></script>
+	const head = html`  <script src="/static/jedison.js"></script>
   <script src="/static/trigger-forms.js"></script>
   <style>
     .trigger-content {
@@ -191,13 +190,13 @@ function renderTriggerPage(
     }
   </style>`;
 
-	const content = `
+	const content = html`
   <div class="page-header">
     <h1>Trigger Events</h1>
   </div>
 
   <div class="trigger-content">
-    ${events || '<div class="empty-state">No events defined</div>'}
+    ${events.length > 0 ? events : html`<div class="empty-state">No events defined</div>`}
   </div>`;
 
 	return renderLayout(

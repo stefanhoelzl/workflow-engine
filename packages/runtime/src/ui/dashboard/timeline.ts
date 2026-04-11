@@ -1,4 +1,4 @@
-import { escapeHtml } from "../html.js";
+import { html, raw } from "hono/html";
 import type { TimelineEvent } from "./queries.js";
 
 interface LayoutNode {
@@ -147,10 +147,10 @@ function stateColorName(state: string): string {
 	}
 }
 
-function renderEdge(parent: LayoutNode, child: LayoutNode): string {
+function renderEdge(parent: LayoutNode, child: LayoutNode) {
 	const dx = child.x - parent.x;
 	const cp = dx * EDGE_CONTROL_POINT_RATIO;
-	return `<path d="M ${parent.x} ${parent.y} C ${parent.x + cp} ${parent.y}, ${child.x - cp} ${child.y}, ${child.x} ${child.y}" class="edge-line"/>`;
+	return html`<path d="M ${parent.x} ${parent.y} C ${parent.x + cp} ${parent.y}, ${child.x - cp} ${child.y}, ${child.x} ${child.y}" class="edge-line"/>`;
 }
 
 function formatTimestamp(value: string | Date): string {
@@ -188,21 +188,15 @@ function buildTipJson(e: TimelineEvent, colorName: string, ds: string): string {
 				? e.error
 				: JSON.parse(JSON.stringify(e.error));
 	}
-	return escapeHtml(
-		JSON.stringify({
-			type: e.type,
-			state: ds,
-			color: colorName,
-			event: JSON.stringify(fullEvent, null, 2),
-		}),
-	);
+	return JSON.stringify({
+		type: e.type,
+		state: ds,
+		color: colorName,
+		event: JSON.stringify(fullEvent, null, 2),
+	});
 }
 
-function renderEventNode(
-	node: LayoutNode,
-	tipJson: string,
-	ds: string,
-): string {
+function renderEventNode(node: LayoutNode, tipJson: string, ds: string) {
 	const e = node.event;
 	const fill = stateColor(ds);
 	const isSkipped = ds === "skipped";
@@ -211,20 +205,16 @@ function renderEventNode(
 		? `fill="none" stroke="var(--grey)" stroke-width="2"`
 		: `fill="${fill}"`;
 
-	return `<g class="node"
+	return html`<g class="node"
      data-tip="${tipJson}"
      @mouseenter="clearTimeout(_tipTimer); let r = $el.getBoundingClientRect(); tip = JSON.parse($el.getAttribute('data-tip')); tipX = r.left + r.width/2 - 140; tipY = r.bottom + 8"
      @mouseleave="_tipTimer = setTimeout(() => tip = null, 100)">
-    <circle cx="${node.x}" cy="${node.y}" r="${EVENT_RADIUS}" ${circleAttrs} class="node-circle"/>
-    <text x="${node.x}" y="${node.y + LABEL_OFFSET_Y}" text-anchor="middle" class="node-label">${escapeHtml(e.type)}</text>
+    <circle cx="${node.x}" cy="${node.y}" r="${EVENT_RADIUS}" ${raw(circleAttrs)} class="node-circle"/>
+    <text x="${node.x}" y="${node.y + LABEL_OFFSET_Y}" text-anchor="middle" class="node-label">${e.type}</text>
   </g>`;
 }
 
-function renderActionNode(
-	node: LayoutNode,
-	tipJson: string,
-	ds: string,
-): string {
+function renderActionNode(node: LayoutNode, tipJson: string, ds: string) {
 	const e = node.event;
 	const actionName = e.targetAction ?? "";
 	const displayName = truncate(actionName, MAX_ACTION_CHARS);
@@ -254,17 +244,17 @@ function renderActionNode(
 		? `stroke="var(--grey)" stroke-width="1" stroke-dasharray="4"`
 		: `stroke="${border}" stroke-width="1.5"`;
 
-	return `<g class="node"
+	return html`<g class="node"
      data-tip="${tipJson}"
      @mouseenter="clearTimeout(_tipTimer); let r = $el.getBoundingClientRect(); tip = JSON.parse($el.getAttribute('data-tip')); tipX = r.left + r.width/2 - 140; tipY = r.bottom + 8"
      @mouseleave="_tipTimer = setTimeout(() => tip = null, 100)">
-    <rect x="${pillX}" y="${pillY}" width="${pillWidth}" height="${PILL_HEIGHT}" rx="${PILL_HEIGHT / 2}" fill="var(--bg-surface)" ${rectStroke}/>
-    <circle cx="${dotCx}" cy="${node.y}" r="${PILL_DOT_RADIUS}" ${dotAttrs}/>
-    <text x="${textX}" y="${node.y + TEXT_VERTICAL_OFFSET}" text-anchor="start" class="node-action">${escapeHtml(displayName)}</text>
+    <rect x="${pillX}" y="${pillY}" width="${pillWidth}" height="${PILL_HEIGHT}" rx="${PILL_HEIGHT / 2}" fill="var(--bg-surface)" ${raw(rectStroke)}/>
+    <circle cx="${dotCx}" cy="${node.y}" r="${PILL_DOT_RADIUS}" ${raw(dotAttrs)}/>
+    <text x="${textX}" y="${node.y + TEXT_VERTICAL_OFFSET}" text-anchor="start" class="node-action">${displayName}</text>
   </g>`;
 }
 
-function renderNode(node: LayoutNode): string {
+function renderNode(node: LayoutNode) {
 	const e = node.event;
 	const ds = displayState(e);
 	const colorName = stateColorName(ds);
@@ -284,27 +274,19 @@ function collectNodes(node: LayoutNode): LayoutNode[] {
 	return result;
 }
 
-function renderTimeline(events: TimelineEvent[]): string {
+function renderTimeline(events: TimelineEvent[]) {
 	if (events.length === 0) {
-		return `<div class="empty-state">No events found.</div>`;
+		return html`<div class="empty-state">No events found.</div>`;
 	}
 
 	const roots = buildTree(events);
 	const { width, height } = assignPositions(roots);
 
 	const allNodes = roots.flatMap(collectNodes);
-	const edges: string[] = [];
-	for (const node of allNodes) {
-		for (const child of node.children) {
-			edges.push(renderEdge(node, child));
-		}
-	}
 
-	const nodesSvg = allNodes.map(renderNode);
-
-	return `<svg class="timeline-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Event timeline">
-  ${edges.join("\n  ")}
-  ${nodesSvg.join("\n  ")}
+	return html`<svg class="timeline-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Event timeline">
+  ${allNodes.flatMap((node) => node.children.map((child) => renderEdge(node, child)))}
+  ${allNodes.map(renderNode)}
 </svg>`;
 }
 
