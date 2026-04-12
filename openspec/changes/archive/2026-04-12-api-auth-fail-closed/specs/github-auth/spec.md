@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: GitHub token authentication middleware
 
 The runtime SHALL provide a Hono middleware that authenticates requests on `/api/*` routes using a GitHub token. The middleware SHALL extract the token from the `Authorization: Bearer <token>` header, call `GET https://api.github.com/user` with the token, and compare the response `login` field against the configured allow-list of GitHub usernames (`githubAuth.users`, an array of logins).
@@ -47,6 +49,8 @@ All negative outcomes (missing header, malformed header, GitHub rejection, netwo
 - **WHEN** any request reaches `/api/*` and `githubAuth.mode` is `open`
 - **THEN** the middleware SHALL NOT be installed
 - **AND** the request SHALL proceed to the handler without authentication
+
+## ADDED Requirements
 
 ### Requirement: Multi-user allow-list membership
 

@@ -1,27 +1,31 @@
 import { constants } from "node:http2";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const HTTP_UNAUTHORIZED =
 	constants.HTTP_STATUS_UNAUTHORIZED as ContentfulStatusCode;
-const HTTP_FORBIDDEN = constants.HTTP_STATUS_FORBIDDEN as ContentfulStatusCode;
+
+function unauthorized(c: Context) {
+	return c.json({ error: "Unauthorized" }, HTTP_UNAUTHORIZED);
+}
+
+function rejectAllMiddleware(): MiddlewareHandler {
+	return async (c) => unauthorized(c);
+}
 
 interface GitHubAuthOptions {
-	githubUser: string;
+	githubUsers: string[];
 	fetchFn?: typeof globalThis.fetch;
 }
 
 function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
-	const { githubUser } = options;
+	const { githubUsers } = options;
 	const fetchFn = options.fetchFn ?? globalThis.fetch;
 
 	return async (c, next) => {
 		const authHeader = c.req.header("authorization");
 		if (!authHeader?.startsWith("Bearer ")) {
-			return c.json(
-				{ error: "Missing or invalid Authorization header" },
-				HTTP_UNAUTHORIZED,
-			);
+			return unauthorized(c);
 		}
 
 		const token = authHeader.slice("Bearer ".length);
@@ -34,16 +38,16 @@ function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
 				},
 			});
 			if (!response.ok) {
-				return c.json({ error: "Invalid token" }, HTTP_UNAUTHORIZED);
+				return unauthorized(c);
 			}
 			const body = (await response.json()) as { login: string };
 			login = body.login;
 		} catch {
-			return c.json({ error: "Invalid token" }, HTTP_UNAUTHORIZED);
+			return unauthorized(c);
 		}
 
-		if (login !== githubUser) {
-			return c.json({ error: "Forbidden" }, HTTP_FORBIDDEN);
+		if (!githubUsers.includes(login)) {
+			return unauthorized(c);
 		}
 
 		await next();
@@ -51,4 +55,4 @@ function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
 }
 
 export type { GitHubAuthOptions };
-export { githubAuthMiddleware };
+export { githubAuthMiddleware, rejectAllMiddleware };
