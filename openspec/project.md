@@ -72,15 +72,7 @@ The graph is defined declaratively in `workflow.ts` using a TypeScript DSL. At b
 
 ### Security Model
 
-The service runs untrusted user code. Anyone can create an account. The sandbox must assume hostile input:
-- `quickjs-emscripten` provides WASM-level isolation (separate memory space, no shared prototype chain).
-- Each invocation gets a fresh QuickJS context. All handles are disposed after execution.
-- Only `ctx.event` and `ctx.env` (read, serialized as JSON) and `ctx.emit()` and `ctx.fetch()` (write, bridged via deferred promises) cross the boundary.
-- No access to fs, net, process, require, child_process, or any Node.js API.
-- Safe globals only: `btoa`, `atob`, `setTimeout`, `clearTimeout`, `setInterval`, `clearInterval`.
-- Event metadata is never exposed to action code. Actions receive `{ name, payload }`, not `RuntimeEvent`.
-- Build-time metadata extraction is static — `.compile()` produces serializable metadata without executing action code.
-- Memory limits and execution timeouts are deferred in v1 (QuickJS supports both, not yet wired).
+See `/SECURITY.md` for the authoritative threat model.
 
 ### Event Pipeline
 

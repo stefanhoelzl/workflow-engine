@@ -36,3 +36,15 @@ Secrets: copy `infrastructure/dev/dev.secrets.auto.tfvars.example` to `dev.secre
 - Factory functions over classes. Closures for private state.
 - Named exports only. Separate `export type {}` from value exports.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
+
+## Security Invariants
+
+Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive code.
+
+- **NEVER** add a global, host-bridge API, or Node.js surface to the QuickJS sandbox (§2).
+- **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
+- **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
+- **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
+- **NEVER** trust `X-Auth-Request-*` or `X-Forwarded-*` headers as authoritative while a K8s `NetworkPolicy` is absent (§4 / §5).
+- **NEVER** hardcode or commit a secret; route all secrets through K8s Secrets injected via `envFrom.secretRef` (§5).
+- **NEVER** log, emit, or store the `Authorization` header, session cookies, or OAuth secrets (§4).
