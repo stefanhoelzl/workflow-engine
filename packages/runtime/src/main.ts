@@ -72,6 +72,12 @@ async function init() {
 
 	runtimeLogger.info("initialize", { config });
 
+	if (config.githubAuth.mode === "disabled") {
+		runtimeLogger.warn("api-auth.disabled");
+	} else if (config.githubAuth.mode === "open") {
+		runtimeLogger.warn("api-auth.open");
+	}
+
 	// 1. Init storage backend
 	const storageBackend = createStorageBackend(config);
 	if (storageBackend) {
@@ -123,7 +129,7 @@ async function init() {
 		staticMiddleware(),
 		dashboardMiddleware(eventStore),
 		triggerMiddleware(registry, source),
-		apiMiddleware({ registry, githubUser: config.githubUser }),
+		apiMiddleware({ registry, githubAuth: config.githubAuth }),
 	);
 
 	return { runtimeLogger, scheduler, server };

@@ -56,6 +56,7 @@ module "app" {
   image_pull_policy = var.image_pull_policy
   image_hash        = var.image_hash
   s3                = var.s3
+  github_users      = var.oauth2.github_users
 }
 
 module "oauth2_proxy" {

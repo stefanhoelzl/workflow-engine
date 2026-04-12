@@ -26,6 +26,11 @@ variable "s3" {
   description = "S3 storage configuration"
 }
 
+variable "github_users" {
+  type        = string
+  description = "Comma-separated list of GitHub logins allowed to call /api. Passed as GITHUB_USER env var."
+}
+
 resource "kubernetes_secret_v1" "s3" {
   metadata {
     name = "app-s3-credentials"
@@ -82,6 +87,11 @@ resource "kubernetes_deployment_v1" "app" {
             secret_ref {
               name = kubernetes_secret_v1.s3.metadata[0].name
             }
+          }
+
+          env {
+            name  = "GITHUB_USER"
+            value = var.github_users
           }
 
           liveness_probe {

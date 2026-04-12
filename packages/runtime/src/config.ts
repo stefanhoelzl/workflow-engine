@@ -1,5 +1,22 @@
 import { z } from "@workflow-engine/sdk";
 
+const DISABLE_AUTH_SENTINEL = "__DISABLE_AUTH__";
+
+type GitHubAuth =
+	| { mode: "disabled" }
+	| { mode: "open" }
+	| { mode: "restricted"; users: string[] };
+
+function parseGitHubAuth(raw: string | undefined): GitHubAuth {
+	if (raw === undefined) {
+		return { mode: "disabled" };
+	}
+	if (raw === DISABLE_AUTH_SENTINEL) {
+		return { mode: "open" };
+	}
+	return { mode: "restricted", users: raw.split(",") };
+}
+
 const schema = z
 	.object({
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -28,6 +45,19 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		BASE_URL: z.string().optional(),
 	})
+	.refine(
+		(env) => {
+			const raw = env.GITHUB_USER;
+			if (raw === undefined || raw === DISABLE_AUTH_SENTINEL) {
+				return true;
+			}
+			return !raw.split(",").includes(DISABLE_AUTH_SENTINEL);
+		},
+		{
+			message: `GITHUB_USER sentinel "${DISABLE_AUTH_SENTINEL}" must be the only value`,
+			path: ["GITHUB_USER"],
+		},
+	)
 	.refine((env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET), {
 		message:
 			"PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET are mutually exclusive",
@@ -46,7 +76,7 @@ const schema = z
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
 		fileIoConcurrency: env.FILE_IO_CONCURRENCY,
-		githubUser: env.GITHUB_USER,
+		githubAuth: parseGitHubAuth(env.GITHUB_USER),
 		persistencePath: env.PERSISTENCE_PATH,
 		persistenceS3Bucket: env.PERSISTENCE_S3_BUCKET,
 		persistenceS3AccessKeyId: env.PERSISTENCE_S3_ACCESS_KEY_ID,
@@ -55,6 +85,9 @@ const schema = z
 		persistenceS3Region: env.PERSISTENCE_S3_REGION,
 		baseUrl: env.BASE_URL,
 	}));
+
+export type { GitHubAuth };
+export { DISABLE_AUTH_SENTINEL };
 
 export function createConfig(env: Record<string, string | undefined>) {
 	return schema.parse(env);
