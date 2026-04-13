@@ -83,3 +83,4 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 - **NEVER** trust `X-Auth-Request-*` or `X-Forwarded-*` headers as authoritative while a K8s `NetworkPolicy` is absent (§4 / §5).
 - **NEVER** hardcode or commit a secret; route all secrets through K8s Secrets injected via `envFrom.secretRef` (§5).
 - **NEVER** log, emit, or store the `Authorization` header, session cookies, or OAuth secrets (§4).
+- **NEVER** add a K8s workload with `automountServiceAccountToken` enabled unless it has a dedicated `ServiceAccount` with scoped RBAC and a documented justification in `SECURITY.md` §5 / I11.

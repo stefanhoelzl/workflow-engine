@@ -526,6 +526,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | I8 | Self-signed dev cert used in production by mistake | Spoofing |
 | I9 | S3 bucket policy permits unintended readers (production deployment) | Information disclosure |
 | I10 | Events stored to S3 / filesystem in plaintext, containing secrets that leaked via action env vars | Information disclosure |
+| I11 | Default ServiceAccount token auto-mounted into a pod becomes a latent `kube-apiserver` bearer credential. A sandbox escape, RCE, or future RoleBinding to `default` converts it into active cluster access. Amplified by R-I1 (no NetworkPolicy blocks pod → apiserver) and §2 R-S4 (no `__hostFetch` URL allowlist). | EoP / Information disclosure |
 
 ### Mitigations (current)
 
@@ -548,6 +549,12 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   entrypoint.
 - **Build-time image versioning** — S2 uses a pinned minor tag
   (`0.4.1`); the app image is built from source.
+- **`automountServiceAccountToken: false` on `app` and `oauth2-proxy`
+  pods** — neither workload talks to the K8s API, so the projected
+  `default` SA token is suppressed at the pod spec (authoritative over
+  SA-level defaults). Mitigates **I11**.
+  (`infrastructure/modules/workflow-engine/modules/app/app.tf`;
+  `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`)
 
 ### Residual risks
 
@@ -561,6 +568,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
 | R-I9 | **No egress restrictions** from the app pod. Combined with the absence of URL filtering in `__hostFetch`, the pod can reach cloud metadata, internal RFC1918 ranges, and the wider Internet. | I3 (amplifies §2 R-S4) | **High priority** — couple with R-S4 remediation |
+| R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
 
 ### Production deployment notes
 
@@ -611,6 +619,12 @@ following as **must-have** before exposing to real traffic:
    cluster-local".
 8. **When adding infrastructure for production deployment**, consult
    the "Production deployment notes" checklist above.
+9. **When adding a new K8s workload**, set
+   `automountServiceAccountToken: false` at the pod spec. If the
+   workload genuinely needs the K8s API, create a dedicated
+   `ServiceAccount` with the narrowest possible `Role` /
+   `ClusterRole`, justify it in the PR, and add it to this section as
+   a named exception (I11).
 
 ### File references
 
