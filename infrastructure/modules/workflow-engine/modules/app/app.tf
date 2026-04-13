@@ -74,6 +74,8 @@ resource "kubernetes_deployment_v1" "app" {
       }
 
       spec {
+        automount_service_account_token = false
+
         container {
           name              = "workflow-engine"
           image             = var.image
