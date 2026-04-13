@@ -10,4 +10,9 @@ export default defineConfig({
 		noExternal: true,
 		external: ["@duckdb/node-bindings", "@jitl/quickjs-wasmfile-release-sync"],
 	},
+	server: {
+		watch: {
+			ignored: ["**/node_modules/**", "**/dist/**"],
+		},
+	},
 });

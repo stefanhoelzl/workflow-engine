@@ -192,6 +192,8 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
 		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
 		BASE_URL: `http://localhost:${String(port)}`,
+		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
+		GITHUB_USER: "__DISABLE_AUTH__",
 	};
 }
 
