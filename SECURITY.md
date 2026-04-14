@@ -179,8 +179,8 @@ exists. Each item should be tracked as a follow-up security task.
 | R-S1 | No QuickJS `setMemoryLimit()` wired | S2 unmitigated | v1 limitation |
 | R-S2 | No QuickJS interrupt handler / execution timeout | S3 unmitigated | v1 limitation |
 | R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap | S4 unmitigated | v1 limitation |
-| R-S4 | `__hostFetch` has **no URL allowlist/denylist** — any URL reachable from the pod is reachable from action code | S5 unmitigated | **High priority** |
-| R-S5 | No K8s `NetworkPolicy` on the runtime pod — actions can reach any in-cluster service | S5 amplified | See §5 |
+| R-S4 | `__hostFetch` has **no URL allowlist/denylist** at the app layer — the sandbox can reach any public URL the pod can reach. Infrastructure half (RFC1918 + cloud metadata) closed by K8s NetworkPolicy (§5). Public URL allowlist is a pending app-layer control. | S5 partial | **High priority** (app-layer half) |
+| R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress | S5 in-cluster / metadata half mitigated | **Resolved** (see §5 R-I1 / R-I9) |
 | R-S6 | Action `env` is resolved at build time; secrets baked into the action's declared env appear in event logs if emitted back out via `ctx.emit` | S7 partial | Behavioural; document per-action |
 
 ### Rules for AI agents
@@ -438,8 +438,8 @@ and any future authenticated UI prefix.
 |----|-----|--------|--------|
 | R-A1 | The `__DISABLE_AUTH__` sentinel exists for local development; a production deployment that sets it puts `/api/*` into `open` mode. The `warn`-level startup log is the only guard against accidental production use. | A5 | Mitigated by operational discipline and startup logs; consider refusing `open` mode when a production marker is set |
 | R-A2 | No caching of GitHub token validation — every `/api/*` request makes a live GitHub API call. Exposes the application to GitHub availability and rate limits (A7, A8). | High | Design follow-up |
-| R-A3 | No K8s `NetworkPolicy` — any pod in the cluster can reach the app pod's `:8080` directly, bypassing Traefik (A3). Forged `X-Auth-Request-User` would be trusted. | High | See §5 |
-| R-A4 | Forwarded-header trust is implicit — the application does not verify requests came via Traefik / oauth2-proxy; it just reads `X-Auth-Request-User`. | Medium | Depends on R-A3 |
+| R-A3 | K8s `NetworkPolicy` restricts app-pod ingress on `:8080` to Traefik pods only (`app.kubernetes.io/name=traefik`) plus the UpCloud node CIDR for kubelet probes. Forged `X-Auth-Request-User` from a neighbouring pod is no longer possible. | High | **Resolved** (see §5 R-I1) |
+| R-A4 | Forwarded-header trust is implicit — the application does not verify requests came via Traefik / oauth2-proxy; it just reads `X-Auth-Request-User`. Now load-bearing on the NetworkPolicy from R-A3 to ensure only Traefik is a legitimate source. | Medium | Accepted given R-A3 resolution |
 | R-A5 | No logout-on-allowlist-removal — removing a user from `OAUTH2_PROXY_GITHUB_USERS` does not invalidate existing sessions until cookie expiry. | Low-Medium | Accept or add session store |
 | R-A6 | No explicit request / response logging policy for `Authorization` headers — nothing guarantees tokens are redacted from pino logs. | Medium | Verify logger config |
 | R-A7 | GitHub OAuth is the only identity provider — no local fallback, no MFA enforcement beyond what GitHub offers. | Accepted | By design |
@@ -454,10 +454,13 @@ and any future authenticated UI prefix.
 2. **NEVER add a route under `/api/` without the `githubAuthMiddleware`
    in front of it.**
 3. **NEVER trust `X-Auth-Request-User`, `X-Auth-Request-Email`, or any
-   `X-Forwarded-*` header as authoritative while the app is reachable
-   outside Traefik.** The fix requires a `NetworkPolicy` (see §5);
-   until then, document the assumption in any feature that relies on
-   the identity signal.
+   `X-Forwarded-*` header as authoritative outside the current
+   NetworkPolicy assumption.** The §5 `NetworkPolicy` restricts ingress
+   on app `:8080` and oauth2-proxy `:4180` to Traefik pods only (plus
+   the node CIDR for kubelet probes). Any change that weakens the
+   NetworkPolicy selectors — e.g. relaxing the Traefik pod-label
+   `app.kubernetes.io/name=traefik` — collapses this trust and MUST be
+   flagged in the same review.
 4. **NEVER log, emit, or store** the `Authorization` header, a session
    cookie, or an OAuth client secret. When adding new logging,
    explicitly allowlist which request fields go to logs.
@@ -560,14 +563,14 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-I1 | **No K8s `NetworkPolicy`** — all pods can reach all other pods' ports. The app's `:8080` is reachable without going through Traefik; forged auth headers would be accepted. | I2, I3 critical | **High priority** |
+| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules: app / oauth2-proxy ingress restricted to Traefik (+ node CIDR for probes); Traefik ingress restricted to `0.0.0.0/0:80,443` + node CIDR; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
 | R-I2 | **App pod has no `securityContext`** — no `runAsNonRoot: true`, no `readOnlyRootFilesystem: true`, no `allowPrivilegeEscalation: false`, no dropped capabilities. The image runs as nonroot, but K8s does not enforce it. | I4 | **High priority** |
 | R-I3 | **No resource `requests` / `limits`** on the app, oauth2-proxy, or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
 | R-I4 | **S2 container has no user specified** and no securityContext — runs with container defaults. | I4 | Medium |
 | R-I5 | **TLS cert source not pinned in IaC** — dev uses a self-signed cert; production cert provisioning (cert-manager, external) is not codified. | I7, I8 | To define for production |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
-| R-I9 | **No egress restrictions** from the app pod. Combined with the absence of URL filtering in `__hostFetch`, the pod can reach cloud metadata, internal RFC1918 ranges, and the wider Internet. | I3 (amplifies §2 R-S4) | **High priority** — couple with R-S4 remediation |
+| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — URL-level scoping of `__hostFetch` (§2 R-S4 app-layer half) is still outstanding. | I3 (infrastructure half of §2 R-S4) | **Resolved** for metadata/RFC1918 (app-layer URL allowlist still pending under §2 R-S4) |
 | R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
 
 ### Production deployment notes
@@ -575,10 +578,13 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 When deploying to the production UpCloud K8s target, treat the
 following as **must-have** before exposing to real traffic:
 
-1. **NetworkPolicy** — default-deny; allow only: Traefik → app:8080,
-   Traefik → oauth2-proxy:4180, app → oauth2-proxy:4180, app →
-   S3-endpoint, app → api.github.com. Resolves R-I1 and R-A3, and
-   reduces the blast radius of §2 R-S4 / R-S5.
+1. **NetworkPolicy** — DONE. Namespace-wide default-deny plus per-workload
+   allow-rules: Traefik → app:8080, Traefik → oauth2-proxy:4180,
+   app → Internet (RFC1918 + IMDS blocked) + CoreDNS,
+   oauth2-proxy → Internet + CoreDNS, Traefik → Internet + CoreDNS.
+   Resolves R-I1, R-A3, and the infrastructure half of R-I9 / §2 R-S4.
+   Note: app does NOT need to reach oauth2-proxy directly — forward-auth
+   is performed by Traefik, not the app.
 2. **Pod `securityContext`** — `runAsNonRoot: true`,
    `runAsUser: <uid>`, `readOnlyRootFilesystem: true`,
    `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`.
@@ -587,9 +593,10 @@ following as **must-have** before exposing to real traffic:
    limits on every pod, sized from observed usage. Resolves R-I3.
 4. **Real TLS** — cert-manager or equivalent; no self-signed cert in
    production. Resolves R-I5 and I8.
-5. **Egress policy** — combine NetworkPolicy egress rules with URL
-   filtering inside `__hostFetch` (§2). Resolves R-I9 together with
-   §2 R-S4.
+5. **Egress policy** — NetworkPolicy half DONE (see item 1). URL
+   filtering inside `__hostFetch` (§2 R-S4 app-layer half) is still
+   outstanding; combined mitigation resolves R-I9 completely once that
+   app-layer control lands.
 6. **Encrypted event storage** — if UpCloud Object Storage is used,
    enable server-side encryption. Document the key custody model.
 7. **Secret rotation procedure** — document how to rotate the

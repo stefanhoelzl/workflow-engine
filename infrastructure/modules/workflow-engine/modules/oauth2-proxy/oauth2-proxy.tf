@@ -236,3 +236,85 @@ output "service_port" {
   value       = 4180
   description = "K8s service port for oauth2-proxy"
 }
+
+# ── NetworkPolicy: oauth2-proxy ingress/egress allow-rules ──
+# See SECURITY.md §5 R-I1.
+resource "kubernetes_network_policy_v1" "oauth2_proxy" {
+  metadata {
+    name      = "oauth2-proxy"
+    namespace = "default"
+  }
+
+  spec {
+    pod_selector {
+      match_labels = { app = "oauth2-proxy" }
+    }
+
+    policy_types = ["Ingress", "Egress"]
+
+    # Egress: github.com (OAuth token exchange) + api.github.com (user
+    # lookup). NetworkPolicy cannot match hostnames; per-hostname scoping
+    # would require CiliumNetworkPolicy FQDN rules.
+    egress {
+      to {
+        ip_block {
+          cidr = "0.0.0.0/0"
+          except = [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+          ]
+        }
+      }
+    }
+
+    egress {
+      to {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = "kube-system" }
+        }
+        pod_selector {
+          match_labels = { "k8s-app" = "coredns" }
+        }
+      }
+
+      ports {
+        protocol = "UDP"
+        port     = "53"
+      }
+      ports {
+        protocol = "TCP"
+        port     = "53"
+      }
+    }
+
+    # Ingress: Traefik forward-auth calls on :4180.
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "traefik" }
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "4180"
+      }
+    }
+
+    # Ingress: kubelet health probes from UpCloud node CIDR.
+    ingress {
+      from {
+        ip_block {
+          cidr = "172.24.1.0/24"
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "4180"
+      }
+    }
+  }
+}

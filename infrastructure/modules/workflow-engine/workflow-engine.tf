@@ -1,3 +1,16 @@
+terraform {
+  required_providers {
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 3.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
+  }
+}
+
 variable "image" {
   type        = string
   description = "Container image for the workflow-engine app"
@@ -73,6 +86,90 @@ module "oauth2_proxy" {
   oauth2    = var.oauth2
   network   = var.network
   templates = var.oauth2_templates
+}
+
+# ── Traefik inline-response plugin: fetch and vendor at apply time ──
+# The Traefik Helm chart's built-in experimental.plugins loader pulls zip
+# archives from github.com on every pod startup. Fetching once at apply time
+# and mounting as a ConfigMap removes that runtime egress dependency.
+#
+# We fetch the repo archive at the tagged commit (not the release assets,
+# which for this repo contain a `makesystem` scaffold bundle without the
+# plugin source). The archive contains `.traefik.yml`, `go.mod`, and the
+# plugin Go source — which is what Traefik's Yaegi loader expects to find
+# at /plugins-local/src/<moduleName>/.
+#
+# We use a `terraform_data` + `local-exec` curl instead of `data.http` to
+# avoid the hashicorp/http provider's unconditional "Response body is not
+# recognized as UTF-8" warning on binary bodies. The small cost is a
+# filesystem-cached tarball under `.plugin-cache/` (gitignored).
+#
+# The `file_presence` trigger replaces the resource if the cache file is
+# missing (e.g. after a fresh clone), forcing a re-fetch without manual
+# taint.
+#
+# Integrity model: the tagged-commit URL `archive/refs/tags/<tag>.tar.gz`
+# is stable for a given tag — if upstream force-pushed the tag, the
+# archive would change. The pinned `plugin_version` is the integrity
+# boundary.
+locals {
+  plugin_version   = "v0.1.2"
+  plugin_url       = "https://github.com/tuxgal/traefik_inline_response/archive/refs/tags/${local.plugin_version}.tar.gz"
+  plugin_cache_dir = "${path.module}/.plugin-cache"
+  plugin_path      = "${local.plugin_cache_dir}/traefik_inline_response-${local.plugin_version}.tar.gz"
+}
+
+resource "terraform_data" "traefik_plugin_fetch" {
+  # Only version drives replacement. We deliberately don't add a
+  # `fileexists()` trigger: it evaluates differently at plan time (before
+  # the provisioner runs) vs refresh (after), causing perpetual drift. If
+  # the cache file is missing (fresh clone, manually cleared),
+  # `data.local_file` will fail at apply time — recover with:
+  #   tofu taint module.workflow_engine.terraform_data.traefik_plugin_fetch
+  #   tofu apply
+  triggers_replace = {
+    version = local.plugin_version
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -eu
+      mkdir -p ${local.plugin_cache_dir}
+      curl -fsSL ${local.plugin_url} -o ${local.plugin_path}
+    EOT
+  }
+}
+
+data "local_file" "traefik_plugin_tarball" {
+  filename   = local.plugin_path
+  depends_on = [terraform_data.traefik_plugin_fetch]
+}
+
+resource "kubernetes_config_map_v1" "traefik_plugin" {
+  metadata {
+    name      = "traefik-plugin-inline-response"
+    namespace = "default"
+  }
+
+  binary_data = {
+    "plugin.tar.gz" = data.local_file.traefik_plugin_tarball.content_base64
+  }
+}
+
+# ── Namespace default-deny NetworkPolicy ──
+# Selects all pods in `default`; no allow rules. Any traffic not permitted
+# by a more-specific NetworkPolicy is dropped. Cilium (production UpCloud
+# UKS) enforces; kindnet (local) creates the object but does not enforce.
+resource "kubernetes_network_policy_v1" "default_deny" {
+  metadata {
+    name      = "default-deny"
+    namespace = "default"
+  }
+
+  spec {
+    pod_selector {}
+    policy_types = ["Ingress", "Egress"]
+  }
 }
 
 locals {
@@ -323,14 +420,71 @@ output "traefik_extra_objects" {
 
 output "traefik_helm_values" {
   value = {
+    # Plugin loaded from a vendored source tree (populated by the
+    # init container from the ConfigMap). Switching from experimental.plugins
+    # (runtime github.com fetch) to experimental.localPlugins (read from
+    # disk) removes Traefik's runtime dependency on github.com.
+    #
+    # Chart v39.x `type: localPath` binds the plugin to a volume declared in
+    # `deployment.additionalVolumes`. The chart auto-mounts that volume at
+    # `mountPath` in the main Traefik container, so no separate
+    # `additionalVolumeMounts` entry is needed for the plugin.
     experimental = {
-      plugins = {
+      localPlugins = {
         inline-response = {
+          type       = "localPath"
           moduleName = "github.com/tuxgal/traefik_inline_response"
-          version    = "v0.1.2"
+          mountPath  = "/plugins-local"
+          volumeName = "plugins-local"
         }
       }
     }
+    # Chart default podSecurityContext has runAsUser/Group=65532 but no
+    # fsGroup, so PVC mounts come up root:root and Traefik (uid 65532)
+    # cannot write /data/acme.json. Setting fsGroup makes kubelet chown
+    # the mount on attach; OnRootMismatch avoids recursive chown on every
+    # pod start once the mount is correctly grouped.
+    podSecurityContext = {
+      runAsGroup          = 65532
+      runAsNonRoot        = true
+      runAsUser           = 65532
+      fsGroup             = 65532
+      fsGroupChangePolicy = "OnRootMismatch"
+      seccompProfile = {
+        type = "RuntimeDefault"
+      }
+    }
+    deployment = {
+      initContainers = [{
+        name    = "load-inline-response-plugin"
+        image   = "busybox:1.36"
+        command = ["/bin/sh", "-c"]
+        args = [<<-EOT
+          set -eu
+          mkdir -p /plugins-local/src/github.com/tuxgal/traefik_inline_response
+          tar -xzf /src/plugin.tar.gz \
+            --strip-components=1 \
+            -C /plugins-local/src/github.com/tuxgal/traefik_inline_response
+        EOT
+        ]
+        volumeMounts = [
+          { name = "plugin-src", mountPath = "/src" },
+          { name = "plugins-local", mountPath = "/plugins-local" },
+        ]
+      }]
+      additionalVolumes = [
+        {
+          name = "plugin-src"
+          configMap = {
+            name = kubernetes_config_map_v1.traefik_plugin.metadata[0].name
+          }
+        },
+        {
+          name     = "plugins-local"
+          emptyDir = {}
+        },
+      ]
+    }
   }
-  description = "Additional Traefik Helm values (e.g. plugins)"
+  description = "Additional Traefik Helm values (plugin vendoring, init container, volumes)"
 }

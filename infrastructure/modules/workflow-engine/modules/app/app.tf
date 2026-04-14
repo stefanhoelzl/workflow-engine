@@ -144,3 +144,86 @@ output "service_port" {
   value       = 8080
   description = "K8s service port for the app"
 }
+
+# ── NetworkPolicy: app ingress/egress allow-rules ──
+# See SECURITY.md §4 R-A3 and §5 R-I1/R-I9.
+resource "kubernetes_network_policy_v1" "app" {
+  metadata {
+    name      = "workflow-engine"
+    namespace = "default"
+  }
+
+  spec {
+    pod_selector {
+      match_labels = { app = "workflow-engine" }
+    }
+
+    policy_types = ["Ingress", "Egress"]
+
+    # Egress: any Internet destination (UpCloud Object Storage, GitHub
+    # API, sandboxed __hostFetch targets) except RFC1918 + link-local
+    # (blocks cluster-internal reach + cloud metadata IMDS).
+    egress {
+      to {
+        ip_block {
+          cidr = "0.0.0.0/0"
+          except = [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+          ]
+        }
+      }
+    }
+
+    # Egress: DNS via CoreDNS (podSelector works post-DNAT in Cilium).
+    egress {
+      to {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = "kube-system" }
+        }
+        pod_selector {
+          match_labels = { "k8s-app" = "coredns" }
+        }
+      }
+
+      ports {
+        protocol = "UDP"
+        port     = "53"
+      }
+      ports {
+        protocol = "TCP"
+        port     = "53"
+      }
+    }
+
+    # Ingress: Traefik pods on :8080 (reverse proxy traffic only).
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "traefik" }
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "8080"
+      }
+    }
+
+    # Ingress: kubelet health probes from UpCloud node CIDR.
+    ingress {
+      from {
+        ip_block {
+          cidr = "172.24.1.0/24"
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "8080"
+      }
+    }
+  }
+}
