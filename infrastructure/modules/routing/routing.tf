@@ -157,6 +157,25 @@ resource "kubernetes_network_policy_v1" "traefik" {
         port     = "4180"
       }
     }
+
+    # Egress: ACME HTTP-01 solver pods on :8089.
+    # Solver pods are dynamically created by cert-manager during cert
+    # issuance/renewal and carry the `acme.cert-manager.io/http01-solver`
+    # label. They exist only for the ~30-60s of a challenge cycle; the
+    # selector matches nothing the rest of the time. Traefik routes the
+    # challenge path to them via a cert-manager-created Ingress.
+    egress {
+      to {
+        pod_selector {
+          match_labels = { "acme.cert-manager.io/http01-solver" = "true" }
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "8089"
+      }
+    }
   }
 }
 

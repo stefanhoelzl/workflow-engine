@@ -64,10 +64,10 @@ variable "oauth2_templates" {
 
 variable "tls" {
   type = object({
-    certResolver = string
+    secretName = string
   })
   default     = null
-  description = "TLS configuration for IngressRoute. Null = no TLS (self-signed)."
+  description = "TLS configuration for IngressRoute. Null = no TLS (Traefik default cert). When set, the IngressRoute reads tls.crt/tls.key from the named Secret. The Secret is expected to be populated by the cert-manager module (via its certificate_requests input, wired from this module's cert_request output)."
 }
 
 module "app" {
@@ -289,6 +289,18 @@ output "traefik_extra_objects" {
         }
       }
     },
+    # ── Middleware: redirect-to-https (port 80 catch-all) ─────
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata   = { name = "redirect-to-https", namespace = "default" }
+      spec = {
+        redirectScheme = {
+          scheme    = "https"
+          permanent = true
+        }
+      }
+    },
     # ── Middleware: not-found (404 → /static/404.html) ────────
     {
       apiVersion = "traefik.io/v1alpha1"
@@ -397,7 +409,7 @@ output "traefik_extra_objects" {
             services    = [{ name = module.app.service_name, port = module.app.service_port }]
           },
         ]
-      }, var.tls != null ? { tls = var.tls } : {})
+      }, var.tls != null ? { tls = { secretName = var.tls.secretName } } : {})
     },
     # ── IngressRoute: web (internal loopback for 5xx page) ───
     {
@@ -410,6 +422,22 @@ output "traefik_extra_objects" {
           match       = "Path(`/error`)"
           kind        = "Rule"
           middlewares = [{ name = "inline-error" }]
+          services    = [{ name = "noop@internal", kind = "TraefikService" }]
+        }]
+      }
+    },
+    # ── IngressRoute: web catch-all (plaintext → HTTPS redirect) ──
+    {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "IngressRoute"
+      metadata   = { name = "redirect-to-https", namespace = "default" }
+      spec = {
+        entryPoints = ["web"]
+        routes = [{
+          match       = "PathPrefix(`/`)"
+          kind        = "Rule"
+          priority    = 1
+          middlewares = [{ name = "redirect-to-https" }]
           services    = [{ name = "noop@internal", kind = "TraefikService" }]
         }]
       }
@@ -487,4 +515,14 @@ output "traefik_helm_values" {
     }
   }
   description = "Additional Traefik Helm values (plugin vendoring, init container, volumes)"
+}
+
+output "cert_request" {
+  value = var.tls != null ? {
+    name       = "workflow-engine"
+    namespace  = "default"
+    secretName = var.tls.secretName
+    dnsNames   = [var.network.domain]
+  } : null
+  description = "Cert-manager Certificate request. Wire into the cert-manager module's certificate_requests input. Null when tls is not set."
 }
