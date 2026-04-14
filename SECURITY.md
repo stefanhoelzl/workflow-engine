@@ -569,6 +569,18 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   SA-level defaults). Mitigates **I11**.
   (`infrastructure/modules/workflow-engine/modules/app/app.tf`;
   `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`)
+- **`Secret` wrapper for K8s-Secret-sourced config fields** — the
+  runtime config schema wraps S3 credentials (and any future
+  Secret-sourced field) in a `Secret` value. `toJSON`, `toString`, and
+  `util.inspect` all return `"[redacted]"`; `reveal()` is the single
+  exit, called only at the AWS SDK boundary in `main.ts`. Prevents
+  cleartext credentials from reaching pino log sinks. Mitigates **I1**
+  for the S3 credentials specifically.
+  (`packages/runtime/src/config.ts` — `createSecret`)
+- **JSON-serializer `toJSON()` contract**: the `Secret` wrapper
+  depends on the in-use JSON serializer honoring `toJSON()`. Verified
+  for pino (current logger) as of 2026-04-14. Any future change to the
+  log transport must re-verify redaction before merging.
 
 ### Residual risks
 
@@ -584,6 +596,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
 | R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — URL-level scoping of `__hostFetch` (§2 R-S4 app-layer half) is still outstanding. | I3 (infrastructure half of §2 R-S4) | **Resolved** for metadata/RFC1918 (app-layer URL allowlist still pending under §2 R-S4) |
 | R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
+| R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
 
 ### Production deployment notes
 
@@ -633,7 +646,11 @@ following as **must-have** before exposing to real traffic:
    and plan for a NetworkPolicy.
 6. **When adding a new environment variable that holds a secret**,
    route it through a K8s Secret. Mark the Terraform variable
-   `sensitive = true`. Do not log it.
+   `sensitive = true`. Do not log it. In the runtime config schema,
+   wrap the field with `createSecret()` at the zod field level so the
+   resulting `Secret` value self-redacts on `JSON.stringify`,
+   `String()`, and `util.inspect`. Reveal only at the boundary that
+   hands the cleartext to the receiving client (e.g. AWS SDK).
 7. **Assume "internal" is not a perimeter.** Any new component must
    justify its own auth / isolation story, not rely on "it's only
    cluster-local".

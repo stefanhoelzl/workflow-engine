@@ -32,8 +32,8 @@ function createStorageBackend(
 	if (config.persistenceS3Bucket) {
 		return createS3Storage({
 			bucket: config.persistenceS3Bucket,
-			accessKeyId: config.persistenceS3AccessKeyId ?? "",
-			secretAccessKey: config.persistenceS3SecretAccessKey ?? "",
+			accessKeyId: config.persistenceS3AccessKeyId?.reveal() ?? "",
+			secretAccessKey: config.persistenceS3SecretAccessKey?.reveal() ?? "",
 			...(config.persistenceS3Endpoint
 				? { endpoint: config.persistenceS3Endpoint }
 				: {}),
