@@ -4,9 +4,9 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    local = {
-      source  = "hashicorp/local"
-      version = "~> 2.5"
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
     }
   }
 }
@@ -99,19 +99,26 @@ module "oauth2_proxy" {
 # plugin Go source — which is what Traefik's Yaegi loader expects to find
 # at /plugins-local/src/<moduleName>/.
 #
-# We use a `terraform_data` + `local-exec` curl instead of `data.http` to
-# avoid the hashicorp/http provider's unconditional "Response body is not
-# recognized as UTF-8" warning on binary bodies. The small cost is a
-# filesystem-cached tarball under `.plugin-cache/` (gitignored).
+# We use `data.external` (not `data.http`) to avoid the hashicorp/http
+# provider's unconditional "Response body is not recognized as UTF-8"
+# warning on binary bodies — `response_body_base64` does not suppress it.
+# `data.external` returns JSON, so the binary payload is base64-wrapped
+# inside the response string and the provider never attempts UTF-8 decode.
 #
-# The `file_presence` trigger replaces the resource if the cache file is
-# missing (e.g. after a fresh clone), forcing a re-fetch without manual
-# taint.
+# The fetched bytes are persisted in state via `terraform_data.input` with
+# `ignore_changes = [input]`. The ConfigMap reads from the resource's
+# `output`, which is the base64 captured at create/replace time. State is
+# the source of truth; the `.plugin-cache/` directory is a script-internal
+# speedup that lets the `data.external` program skip curl when the tarball
+# for the current version is already on disk. If the cache is missing (fresh
+# clone), the script re-curls — ignore_changes suppresses any resulting
+# diff, so no manual `tofu taint` is ever needed.
 #
 # Integrity model: the tagged-commit URL `archive/refs/tags/<tag>.tar.gz`
 # is stable for a given tag — if upstream force-pushed the tag, the
 # archive would change. The pinned `plugin_version` is the integrity
-# boundary.
+# boundary (it drives `triggers_replace` so a version bump forces a
+# re-fetch and re-capture into state).
 locals {
   plugin_version   = "v0.1.2"
   plugin_url       = "https://github.com/tuxgal/traefik_inline_response/archive/refs/tags/${local.plugin_version}.tar.gz"
@@ -119,30 +126,26 @@ locals {
   plugin_path      = "${local.plugin_cache_dir}/traefik_inline_response-${local.plugin_version}.tar.gz"
 }
 
-resource "terraform_data" "traefik_plugin_fetch" {
-  # Only version drives replacement. We deliberately don't add a
-  # `fileexists()` trigger: it evaluates differently at plan time (before
-  # the provisioner runs) vs refresh (after), causing perpetual drift. If
-  # the cache file is missing (fresh clone, manually cleared),
-  # `data.local_file` will fail at apply time — recover with:
-  #   tofu taint module.workflow_engine.terraform_data.traefik_plugin_fetch
-  #   tofu apply
+data "external" "traefik_plugin" {
+  program = ["bash", "-c", <<-EOT
+    set -eu
+    if [ ! -f "${local.plugin_path}" ]; then
+      mkdir -p "${local.plugin_cache_dir}"
+      curl -fsSL "${local.plugin_url}" -o "${local.plugin_path}"
+    fi
+    printf '{"content":"%s"}' "$(base64 -w0 < "${local.plugin_path}")"
+  EOT
+  ]
+}
+
+resource "terraform_data" "traefik_plugin_content" {
   triggers_replace = {
     version = local.plugin_version
   }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      set -eu
-      mkdir -p ${local.plugin_cache_dir}
-      curl -fsSL ${local.plugin_url} -o ${local.plugin_path}
-    EOT
+  input = data.external.traefik_plugin.result.content
+  lifecycle {
+    ignore_changes = [input]
   }
-}
-
-data "local_file" "traefik_plugin_tarball" {
-  filename   = local.plugin_path
-  depends_on = [terraform_data.traefik_plugin_fetch]
 }
 
 resource "kubernetes_config_map_v1" "traefik_plugin" {
@@ -152,7 +155,7 @@ resource "kubernetes_config_map_v1" "traefik_plugin" {
   }
 
   binary_data = {
-    "plugin.tar.gz" = data.local_file.traefik_plugin_tarball.content_base64
+    "plugin.tar.gz" = terraform_data.traefik_plugin_content.output
   }
 }
 

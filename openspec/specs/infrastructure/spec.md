@@ -589,26 +589,35 @@ The Traefik plugin `traefik_inline_response` SHALL be loaded from a vendored loc
 
 The workflow-engine umbrella module SHALL fetch the `traefik_inline_response` plugin source tarball from the GitHub tagged-commit archive URL at `tofu apply` time. The tarball SHALL be:
 
-1. Fetched via a `terraform_data` resource with a `local-exec` `curl` provisioner, writing to `${path.module}/.plugin-cache/traefik_inline_response-<version>.tar.gz`. The `triggers_replace` SHALL include the pinned version only (not a `fileexists()`-derived token, which causes perpetual drift: the value differs between plan-time evaluation before the provisioner runs and refresh after). If the cache file is missing (fresh clone, manually cleared), the operator SHALL recover with `tofu taint module.workflow_engine.terraform_data.traefik_plugin_fetch` followed by `tofu apply`.
-2. Read by a `data "local_file"` data source (with `depends_on = [terraform_data...]` so it reads at apply time after the curl completes).
-3. Stored in a Kubernetes `ConfigMap` via `binary_data` using `content_base64` from the data source.
+1. Fetched via a `data "external"` program (bash script) that base64-encodes the archive and returns it as a JSON string. The program SHALL check for a cached copy at `${path.module}/.plugin-cache/traefik_inline_response-<version>.tar.gz` first and skip the `curl` when the file is already present, so the network call happens at most once per worktree per version.
+2. Captured in a `terraform_data` resource whose `input` is the base64 content from the `data.external` result. `triggers_replace` SHALL include the pinned version so that bumping `local.plugin_version` destroys and recreates the resource, capturing new bytes. The resource SHALL declare `lifecycle { ignore_changes = [input] }` so the state-stored bytes remain stable across subsequent plans even if the script re-reads the disk cache.
+3. Stored in a Kubernetes `ConfigMap` via `binary_data` by reading from the `terraform_data` resource's `output` attribute (not from a `data "local_file"`). State — not the filesystem — is the source of truth for the ConfigMap payload.
 4. Mounted into the Traefik pod via the Helm chart's `deployment.additionalVolumes` + the chart's own `experimental.localPlugins.inline-response` (type `localPath`) mechanism.
 
 The plugin version SHALL be declared in a `locals` block (`plugin_version`) so that bumping the version is an explicit, reviewable change. Integrity relies on the stability of the GitHub tagged-commit URL at `archive/refs/tags/<tag>.tar.gz`; no separate sha256 verification is performed (OpenTofu cannot ergonomically hash binary HTTP responses in-memory — see design.md D6a).
 
-The rationale for the filesystem-cache approach (vs the simpler `data "http"` pattern) is to avoid the `hashicorp/http` provider's unconditional "Response body is not recognized as UTF-8" warning for binary responses. `data "http"`'s `response_body_base64` is correct for binary but the provider emits the warning regardless of which attribute the caller reads. The cache directory `.plugin-cache/` is gitignored; the `file_presence` trigger makes missing-cache-after-clone self-healing.
+The rationale for `data "external"` (vs the simpler `data "http"` pattern) is to avoid the `hashicorp/http` provider's unconditional "Response body is not recognized as UTF-8" warning for binary responses: `response_body_base64` is correct for binary but the provider emits the warning regardless of which attribute the caller reads. The rationale for state-captured bytes (vs reading the cache file via `data "local_file"`) is that remote/shared state and local filesystem will diverge on fresh clones — reading bytes from state avoids the drift entirely, eliminating the need for manual `tofu taint` recovery. The cache directory `.plugin-cache/` is gitignored and is only a speedup layer.
 
 #### Scenario: Plugin tarball fetched from pinned archive URL
 
-- **WHEN** `tofu apply` runs in an environment with Internet access
-- **THEN** the `terraform_data` resource's `local-exec` provisioner SHALL `curl` the archive from the URL computed from `local.plugin_version`
-- **AND** the `ConfigMap` `binary_data` SHALL contain the tarball as base64
+- **WHEN** `tofu apply` runs in an environment with Internet access and `.plugin-cache/` is empty
+- **THEN** the `data "external"` program SHALL `curl` the archive from the URL computed from `local.plugin_version` and cache it under `.plugin-cache/`
+- **AND** the base64 content SHALL be stored in `terraform_data.traefik_plugin_content.input`
+- **AND** the `ConfigMap` `binary_data` SHALL contain the tarball as base64 read from the `terraform_data` resource's `output`
 
-#### Scenario: Cache file regenerated after manual taint
+#### Scenario: Fresh clone with populated remote state
 
-- **WHEN** the cache file is missing (fresh clone, manually cleared) and the operator runs `tofu taint module.workflow_engine.terraform_data.traefik_plugin_fetch && tofu apply`
-- **THEN** the `terraform_data` resource SHALL be replaced
-- **AND** the `local-exec` provisioner SHALL re-fetch the tarball to the cache path
+- **WHEN** `tofu plan` runs in a worktree where `.plugin-cache/` is absent but the remote state already contains `terraform_data.traefik_plugin_content`
+- **THEN** the `data "external"` program SHALL re-fetch the tarball to repopulate the cache
+- **AND** `lifecycle.ignore_changes = [input]` SHALL suppress any diff on the `terraform_data` resource
+- **AND** no `tofu taint` recovery SHALL be required
+
+#### Scenario: Plugin version bump replaces state-captured bytes
+
+- **WHEN** `local.plugin_version` changes
+- **THEN** the `triggers_replace` comparison SHALL force replacement of `terraform_data.traefik_plugin_content`
+- **AND** the new `input` SHALL be the base64 of the archive at the new tag
+- **AND** the `ConfigMap` `binary_data` SHALL reflect the new version on the next apply
 
 #### Scenario: Plugin source available to Traefik at runtime
 
