@@ -1,5 +1,6 @@
+import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
-import { createConfig } from "./config.js";
+import { createConfig, createSecret } from "./config.js";
 
 const REQUIRED = {};
 
@@ -85,10 +86,23 @@ describe("createConfig", () => {
 			PERSISTENCE_S3_REGION: "eu-central-1",
 		});
 		expect(config.persistenceS3Bucket).toBe("my-bucket");
-		expect(config.persistenceS3AccessKeyId).toBe("key");
-		expect(config.persistenceS3SecretAccessKey).toBe("secret");
+		expect(config.persistenceS3AccessKeyId?.reveal()).toBe("key");
+		expect(config.persistenceS3SecretAccessKey?.reveal()).toBe("secret");
 		expect(config.persistenceS3Endpoint).toBe("http://minio:9000");
 		expect(config.persistenceS3Region).toBe("eu-central-1");
+	});
+
+	it("redacts S3 credentials when the config is JSON-serialized", () => {
+		const config = createConfig({
+			...REQUIRED,
+			PERSISTENCE_S3_BUCKET: "my-bucket",
+			PERSISTENCE_S3_ACCESS_KEY_ID: "id123",
+			PERSISTENCE_S3_SECRET_ACCESS_KEY: "supersecret",
+		});
+		const serialized = JSON.stringify(config);
+		expect(serialized).not.toContain("id123");
+		expect(serialized).not.toContain("supersecret");
+		expect(serialized).toContain("[redacted]");
 	});
 
 	it("S3 fields are undefined when not provided", () => {
@@ -116,5 +130,32 @@ describe("createConfig", () => {
 				PERSISTENCE_S3_BUCKET: "my-bucket",
 			}),
 		).toThrow("mutually exclusive");
+	});
+});
+
+describe("createSecret", () => {
+	it("reveals the captured value", () => {
+		expect(createSecret("abc").reveal()).toBe("abc");
+	});
+
+	it("redacts via JSON.stringify", () => {
+		expect(JSON.stringify(createSecret("abc"))).toBe('"[redacted]"');
+	});
+
+	it("redacts via String()", () => {
+		expect(String(createSecret("abc"))).toBe("[redacted]");
+	});
+
+	it("redacts via template-literal interpolation", () => {
+		expect(`${createSecret("abc")}`).toBe("[redacted]");
+	});
+
+	it("redacts via util.inspect", () => {
+		expect(inspect(createSecret("abc"))).toBe("[redacted]");
+	});
+
+	it("does not leak the value when nested in a parent object", () => {
+		const nested = { credential: createSecret("abc") };
+		expect(JSON.stringify(nested)).toBe('{"credential":"[redacted]"}');
 	});
 });

@@ -1,6 +1,26 @@
 import { z } from "@workflow-engine/sdk";
 
 const DISABLE_AUTH_SENTINEL = "__DISABLE_AUTH__";
+const INSPECT_CUSTOM = Symbol.for("nodejs.util.inspect.custom");
+
+interface Secret {
+	reveal(): string;
+	// biome-ignore lint/style/useNamingConvention: JSON.stringify serialization hook
+	toJSON(): string;
+	toString(): string;
+}
+
+function createSecret(value: string): Secret {
+	const redact = () => "[redacted]";
+	const secret = {
+		reveal: () => value,
+		// biome-ignore lint/style/useNamingConvention: JSON.stringify serialization hook
+		toJSON: redact,
+		toString: redact,
+		[INSPECT_CUSTOM]: redact,
+	};
+	return secret;
+}
 
 type GitHubAuth =
 	| { mode: "disabled" }
@@ -35,9 +55,12 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_S3_BUCKET: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_ACCESS_KEY_ID: z.string().optional(),
+		PERSISTENCE_S3_ACCESS_KEY_ID: z.string().transform(createSecret).optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_SECRET_ACCESS_KEY: z.string().optional(),
+		PERSISTENCE_S3_SECRET_ACCESS_KEY: z
+			.string()
+			.transform(createSecret)
+			.optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_S3_ENDPOINT: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -64,9 +87,9 @@ const schema = z
 	})
 	.refine(
 		(env) =>
-			!env.PERSISTENCE_S3_BUCKET ||
-			(env.PERSISTENCE_S3_ACCESS_KEY_ID &&
-				env.PERSISTENCE_S3_SECRET_ACCESS_KEY),
+			env.PERSISTENCE_S3_BUCKET === undefined ||
+			(env.PERSISTENCE_S3_ACCESS_KEY_ID !== undefined &&
+				env.PERSISTENCE_S3_SECRET_ACCESS_KEY !== undefined),
 		{
 			message:
 				"PERSISTENCE_S3_BUCKET requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY",
@@ -86,8 +109,8 @@ const schema = z
 		baseUrl: env.BASE_URL,
 	}));
 
-export type { GitHubAuth };
-export { DISABLE_AUTH_SENTINEL };
+export type { GitHubAuth, Secret };
+export { createSecret, DISABLE_AUTH_SENTINEL };
 
 export function createConfig(env: Record<string, string | undefined>) {
 	return schema.parse(env);
