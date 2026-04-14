@@ -31,6 +31,12 @@ variable "github_users" {
   description = "Comma-separated list of GitHub logins allowed to call /api. Passed as GITHUB_USER env var."
 }
 
+variable "local_deployment" {
+  type        = bool
+  default     = false
+  description = "When true, sets LOCAL_DEPLOYMENT=1 on the pod so the runtime skips HSTS. Only set by the local kind stack."
+}
+
 resource "kubernetes_secret_v1" "s3" {
   metadata {
     name = "app-s3-credentials"
@@ -94,6 +100,14 @@ resource "kubernetes_deployment_v1" "app" {
           env {
             name  = "GITHUB_USER"
             value = var.github_users
+          }
+
+          dynamic "env" {
+            for_each = var.local_deployment ? [1] : []
+            content {
+              name  = "LOCAL_DEPLOYMENT"
+              value = "1"
+            }
           }
 
           liveness_probe {
