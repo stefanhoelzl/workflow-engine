@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -323,49 +323,56 @@ describe("globals", () => {
 	// a promise .then callback, becomes an unhandled rejection, and the fetch
 	// Promise never settles — manifesting as an indefinite hang. The 5s
 	// racer catches that case.
-	it("real bundled workflow with fetch() completes without hanging", async () => {
-		const bundledPath = join(
-			dirname(fileURLToPath(import.meta.url)),
-			"../../../../workflows/dist/cronitor/actions.js",
-		);
-		const source = readFileSync(bundledPath, "utf8");
-		const mockFetch = vi.fn(
-			async () => new Response('{"ok":1}', { status: 200 }),
-		) as unknown as typeof globalThis.fetch;
-		const ctx = new ActionContext(
-			{
-				id: "evt_x",
-				type: "notify.message",
-				payload: { message: "hello" },
-				correlationId: "corr_x",
-				createdAt: new Date(),
-				emittedAt: new Date(),
-				state: "processing",
-				sourceType: "trigger",
-				sourceName: "test",
-			},
-			vi.fn(async () => {}),
-			{
-				NEXTCLOUD_URL: "https://example.com",
-				NEXTCLOUD_TALK_ROOM: "room1",
-				NEXTCLOUD_USERNAME: "u",
-				NEXTCLOUD_APP_PASSWORD: "p",
-			},
-		);
+	// Requires a prior `pnpm build` to have produced the bundle. Skipped
+	// otherwise (e.g. in CI jobs that don't build workflows before testing);
+	// the contract test in packages/vite-plugin/src/sandbox-globals.test.ts
+	// covers the underlying missing-globalThis-assignment failure mode.
+	const bundledPath = join(
+		dirname(fileURLToPath(import.meta.url)),
+		"../../../../workflows/dist/cronitor/actions.js",
+	);
+	it.skipIf(!existsSync(bundledPath))(
+		"real bundled workflow with fetch() completes without hanging",
+		async () => {
+			const source = readFileSync(bundledPath, "utf8");
+			const mockFetch = vi.fn(
+				async () => new Response('{"ok":1}', { status: 200 }),
+			) as unknown as typeof globalThis.fetch;
+			const ctx = new ActionContext(
+				{
+					id: "evt_x",
+					type: "notify.message",
+					payload: { message: "hello" },
+					correlationId: "corr_x",
+					createdAt: new Date(),
+					emittedAt: new Date(),
+					state: "processing",
+					sourceType: "trigger",
+					sourceName: "test",
+				},
+				vi.fn(async () => {}),
+				{
+					NEXTCLOUD_URL: "https://example.com",
+					NEXTCLOUD_TALK_ROOM: "room1",
+					NEXTCLOUD_USERNAME: "u",
+					NEXTCLOUD_APP_PASSWORD: "p",
+				},
+			);
 
-		const result = await Promise.race([
-			sandbox.spawn(source, ctx, {
-				fetch: mockFetch,
-				exportName: "sendMessage",
-			}),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error("bundled action hung")), 5000),
-			),
-		]);
+			const result = await Promise.race([
+				sandbox.spawn(source, ctx, {
+					fetch: mockFetch,
+					exportName: "sendMessage",
+				}),
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("bundled action hung")), 5000),
+				),
+			]);
 
-		expect(result.ok).toBe(true);
-		expect(mockFetch).toHaveBeenCalledTimes(1);
-	});
+			expect(result.ok).toBe(true);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+		},
+	);
 });
 
 describe("concurrent async", () => {
