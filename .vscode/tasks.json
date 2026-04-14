@@ -14,22 +14,6 @@
 				"reveal": "silent",
 				"close": true
 			}
-		},
-		{
-			"label": "dev",
-			"type": "shell",
-			"command": "pnpm",
-			"args": ["dev", "--random-port"],
-			"dependsOn": ["bootstrap"],
-			"isBackground": true,
-			"problemMatcher": [],
-			"runOptions": {
-				"runOn": "folderOpen"
-			},
-			"presentation": {
-				"reveal": "silent",
-				"close": true
-			}
 		}
 	]
 }
