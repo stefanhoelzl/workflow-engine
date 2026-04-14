@@ -4,7 +4,11 @@ import { fetch, Headers, Request, Response } from "whatwg-fetch";
 import "url-polyfill";
 import "fast-text-encoding";
 import "abort-controller/polyfill";
-import "blob-polyfill";
+// blob-polyfill's UMD wrapper detects the CommonJS `exports` object created by
+// our bundler and installs Blob/File onto that private exports rather than
+// onto the IIFE's `global` argument — so a plain side-effect import leaves
+// globalThis.Blob undefined. Import the names explicitly and re-export them.
+import { Blob, File } from "blob-polyfill";
 import { atob, btoa } from "abab";
 import structuredClone from "@ungap/structured-clone";
 import { ReadableStream, WritableStream, TransformStream } from "web-streams-polyfill";
@@ -26,6 +30,10 @@ globalThis.fetch = fetch;
 globalThis.Headers = Headers;
 globalThis.Request = Request;
 globalThis.Response = Response;
+globalThis.atob = atob;
+globalThis.btoa = btoa;
+globalThis.Blob = Blob;
+globalThis.File = File;
 globalThis.structuredClone = structuredClone;
 globalThis.ReadableStream = ReadableStream;
 globalThis.WritableStream = WritableStream;

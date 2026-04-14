@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ActionContext } from "../context/index.js";
 import type { Sandbox, SandboxResult } from "./index.js";
@@ -276,6 +279,92 @@ describe("globals", () => {
 
 		expect(result.ok).toBe(true);
 		expect(emit).toHaveBeenCalledWith("done", {});
+	});
+
+	// Mirrors the whatwg-fetch polyfill path: __hostFetch resolves, and in its
+	// .then continuation the callback schedules setTimeout(0, resolveFn), where
+	// resolveFn resolves the user-visible outer promise. This chains two bridge
+	// boundaries and reproduces the hang seen with real `fetch(...)` calls.
+	it("setTimeout inside __hostFetch .then resolves outer promise", async () => {
+		const mockFetch = vi.fn(
+			async () => new Response("{}", { status: 200 }),
+		) as unknown as typeof globalThis.fetch;
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+
+		const result = await Promise.race([
+			sandbox.spawn(
+				`export default async (ctx) => {
+					const value = await new Promise((resolve) => {
+						__hostFetch("GET", "https://api.example.com", {}, null).then(() => {
+							setTimeout(() => resolve("done"), 0);
+						});
+					});
+					await ctx.emit("r", { value });
+				}`,
+				makeCtx({ emit }),
+				{ fetch: mockFetch },
+			),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("sandbox hung")), 2000),
+			),
+		]);
+
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("r", { value: "done" });
+	});
+
+	// End-to-end regression: spawn the real built workflow bundle and run
+	// `fetch(...)` through the full polyfill chain (whatwg-fetch → MockXhr →
+	// __hostFetch → respond → xhr.onload → setTimeout(0, resolve)).
+	// mock-xmlhttprequest's respond() reads `typeof Blob` to size the body;
+	// if the Blob polyfill is missing from globalThis the call throws inside
+	// a promise .then callback, becomes an unhandled rejection, and the fetch
+	// Promise never settles — manifesting as an indefinite hang. The 5s
+	// racer catches that case.
+	it("real bundled workflow with fetch() completes without hanging", async () => {
+		const bundledPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"../../../../workflows/dist/cronitor/actions.js",
+		);
+		const source = readFileSync(bundledPath, "utf8");
+		const mockFetch = vi.fn(
+			async () => new Response('{"ok":1}', { status: 200 }),
+		) as unknown as typeof globalThis.fetch;
+		const ctx = new ActionContext(
+			{
+				id: "evt_x",
+				type: "notify.message",
+				payload: { message: "hello" },
+				correlationId: "corr_x",
+				createdAt: new Date(),
+				emittedAt: new Date(),
+				state: "processing",
+				sourceType: "trigger",
+				sourceName: "test",
+			},
+			vi.fn(async () => {}),
+			{
+				NEXTCLOUD_URL: "https://example.com",
+				NEXTCLOUD_TALK_ROOM: "room1",
+				NEXTCLOUD_USERNAME: "u",
+				NEXTCLOUD_APP_PASSWORD: "p",
+			},
+		);
+
+		const result = await Promise.race([
+			sandbox.spawn(source, ctx, {
+				fetch: mockFetch,
+				exportName: "sendMessage",
+			}),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("bundled action hung")), 5000),
+			),
+		]);
+
+		expect(result.ok).toBe(true);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -668,5 +757,101 @@ describe("performance", () => {
 		);
 		expect(result.ok).toBe(true);
 		expect(emit).toHaveBeenCalledWith("result", { increased: true });
+	});
+});
+
+describe("polyfill scope detection", () => {
+	// Side-effect polyfills pick their install target via UMD-style scope
+	// detection. QuickJS module top-level has no window/global/this, so
+	// `@workflow-engine/sandbox-globals-setup` aliases `self` and `global` to
+	// globalThis. This verifies every bundled polyfill's detection lands on
+	// globalThis — fast-text-encoding is the one that forced adding `global`
+	// because it's the only polyfill that doesn't fall through to `self`.
+	// Read the real setup file so removing an alias from it breaks the test.
+	const setupPath = join(
+		dirname(fileURLToPath(import.meta.url)),
+		"../../../vite-plugin/src/sandbox-globals-setup.js",
+	);
+	const setup = readFileSync(setupPath, "utf8");
+
+	it("url-polyfill (global→window→self→this) resolves to globalThis", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`${setup}
+			(function(scope) { scope.__urlPolyfill = scope; })(
+				(typeof global !== 'undefined') ? global
+					: ((typeof window !== 'undefined') ? window
+					: ((typeof self !== 'undefined') ? self : this))
+			);
+			export default async (ctx) => {
+				await ctx.emit("result", { installed: globalThis.__urlPolyfill === globalThis });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { installed: true });
+	});
+
+	it("abort-controller/polyfill (self→window→global) resolves to globalThis", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`${setup}
+			const g =
+				typeof self !== "undefined" ? self :
+				typeof window !== "undefined" ? window :
+				typeof global !== "undefined" ? global :
+				undefined;
+			if (g) g.__abortPolyfill = g;
+			export default async (ctx) => {
+				await ctx.emit("result", { installed: globalThis.__abortPolyfill === globalThis });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { installed: true });
+	});
+
+	it("blob-polyfill (self→window→global→this) resolves to globalThis", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`${setup}
+			(function(scope) { scope.__blobPolyfill = scope; })(
+				typeof self !== "undefined" && self ||
+					typeof window !== "undefined" && window ||
+					typeof global !== "undefined" && global ||
+					this
+			);
+			export default async (ctx) => {
+				await ctx.emit("result", { installed: globalThis.__blobPolyfill === globalThis });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { installed: true });
+	});
+
+	it("fast-text-encoding (window→global→this) resolves to globalThis", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await sandbox.spawn(
+			`${setup}
+			(function(scope) { scope.__textEncodingPolyfill = scope; })(
+				typeof window !== 'undefined' ? window
+					: (typeof global !== 'undefined' ? global : this)
+			);
+			export default async (ctx) => {
+				await ctx.emit("result", { installed: globalThis.__textEncodingPolyfill === globalThis });
+			}`,
+			makeCtx({ emit }),
+		);
+		expect(result.ok).toBe(true);
+		expect(emit).toHaveBeenCalledWith("result", { installed: true });
 	});
 });
