@@ -1,5 +1,19 @@
 import { z } from "@workflow-engine/sdk";
 
+// Each sandbox bridge call (console.*, fetch/xhr.send, crypto.*, ctx.emit,
+// timers) produces one of these entries. Populated on action events when the
+// scheduler transitions them to `done`, so the timeline UI can show what the
+// action did while it ran.
+const LogEntrySchema = z.object({
+	method: z.string(),
+	args: z.array(z.unknown()),
+	status: z.enum(["ok", "failed"]),
+	result: z.unknown().optional(),
+	error: z.string().optional(),
+	ts: z.number(),
+	durationMs: z.number().optional(),
+});
+
 const baseFields = {
 	id: z.string(),
 	type: z.string(),
@@ -7,6 +21,7 @@ const baseFields = {
 	targetAction: z.exactOptional(z.string()),
 	correlationId: z.string(),
 	parentEventId: z.exactOptional(z.string()),
+	logs: z.array(LogEntrySchema).optional(),
 	createdAt: z.coerce.date(),
 	sourceType: z.enum(["trigger", "action"]),
 	sourceName: z.string(),

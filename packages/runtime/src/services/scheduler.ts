@@ -87,12 +87,17 @@ function createScheduler(
 			exportName: action.exportName,
 		});
 		if (result.ok) {
-			await source.transition(event, { state: "done", result: "succeeded" });
+			await source.transition(event, {
+				state: "done",
+				result: "succeeded",
+				logs: result.logs,
+			});
 		} else {
 			await source.transition(event, {
 				state: "done",
 				result: "failed",
 				error: result.error,
+				logs: result.logs,
 			});
 		}
 	}

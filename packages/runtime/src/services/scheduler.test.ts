@@ -408,4 +408,99 @@ describe("createScheduler", () => {
 			expect(spawnSpy).not.toHaveBeenCalled();
 		});
 	});
+
+	describe("bridge logs on action events", () => {
+		it("attaches sandbox logs to the done transition", async () => {
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
+			const logs = [
+				{
+					method: "console.log" as const,
+					args: ["hello"],
+					status: "ok" as const,
+					ts: 1,
+				},
+				{
+					method: "xhr.send" as const,
+					args: ["GET", "https://example.com"],
+					status: "ok" as const,
+					ts: 2,
+					durationMs: 5,
+				},
+			];
+			const sandbox = createMockSandbox(async () => ({
+				ok: true as const,
+				logs,
+			}));
+			const action: Action = {
+				name: "parseOrder",
+				on: "order.received",
+				env: {},
+				source: "export default async (ctx) => {}",
+				exportName: "default",
+			};
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
+
+			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
+			const started = scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			await scheduler.stop();
+			await started;
+
+			const done = emitted.find(
+				(e) => e.state === "done" && e.result === "succeeded",
+			);
+			expect(done).toBeDefined();
+			expect(done?.logs).toEqual(logs);
+		});
+
+		it("attaches logs even when the action fails", async () => {
+			const { bus, workQueue, emitted, source, stubContextFactory } =
+				createTestSetup();
+			const logs = [
+				{
+					method: "console.error" as const,
+					args: ["boom"],
+					status: "ok" as const,
+					ts: 1,
+				},
+			];
+			const sandbox = createMockSandbox(async () => ({
+				ok: false as const,
+				error: { message: "boom", stack: "at x:1" },
+				logs,
+			}));
+			const action: Action = {
+				name: "parseOrder",
+				on: "order.received",
+				env: {},
+				source: "export default async (ctx) => { throw new Error('boom') }",
+				exportName: "default",
+			};
+			const scheduler = createScheduler(
+				workQueue,
+				source,
+				{ actions: [action] },
+				stubContextFactory,
+				sandbox,
+			);
+
+			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
+			const started = scheduler.start();
+			await new Promise((r) => setTimeout(r, 10));
+			await scheduler.stop();
+			await started;
+
+			const failed = emitted.find(
+				(e) => e.state === "done" && e.result === "failed",
+			);
+			expect(failed?.logs).toEqual(logs);
+		});
+	});
 });

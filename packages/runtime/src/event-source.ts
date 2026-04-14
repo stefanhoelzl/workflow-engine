@@ -1,5 +1,6 @@
 import { PayloadValidationError } from "./context/errors.js";
 import type { EventBus, RuntimeEvent } from "./event-bus/index.js";
+import type { LogEntry } from "./sandbox/index.js";
 
 interface Schema {
 	parse(data: unknown): unknown;
@@ -7,11 +8,12 @@ interface Schema {
 
 type TransitionOpts =
 	| { state: "processing" }
-	| { state: "done"; result: "succeeded" | "skipped" }
+	| { state: "done"; result: "succeeded" | "skipped"; logs?: LogEntry[] }
 	| {
 			state: "done";
 			result: "failed";
 			error: { message: string; stack: string };
+			logs?: LogEntry[];
 	  };
 
 interface EventSource {

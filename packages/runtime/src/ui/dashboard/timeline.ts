@@ -188,6 +188,9 @@ function buildTipJson(e: TimelineEvent, colorName: string, ds: string): string {
 				? e.error
 				: JSON.parse(JSON.stringify(e.error));
 	}
+	if (e.logs) {
+		fullEvent.logs = typeof e.logs === "string" ? JSON.parse(e.logs) : e.logs;
+	}
 	return JSON.stringify({
 		type: e.type,
 		state: ds,
