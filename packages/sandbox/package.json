@@ -1,0 +1,13 @@
+{
+	"name": "@workflow-engine/sandbox",
+	"type": "module",
+	"version": "0.0.0",
+	"private": true,
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
+		"quickjs-emscripten": "^0.32.0"
+	}
+}

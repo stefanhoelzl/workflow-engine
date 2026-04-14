@@ -1,5 +1,9 @@
-## ADDED Requirements
+# Monorepo Structure Specification
 
+## Purpose
+
+Establish the pnpm workspace layout and per-package conventions for the workflow-engine monorepo.
+## Requirements
 ### Requirement: pnpm workspace configuration
 The project SHALL use a `pnpm-workspace.yaml` at the repository root that declares `packages/*` as the workspace glob.
 
@@ -12,15 +16,31 @@ The project SHALL use a `pnpm-workspace.yaml` at the repository root that declar
 - **THEN** pnpm SHALL resolve it to the local workspace package
 
 ### Requirement: Runtime package layout
-The monorepo SHALL contain `packages/runtime` as the initial package. Additional packages (`sdk`, `vite-plugin`) will be added in later changes.
+
+The monorepo SHALL contain the following packages under `packages/`:
+- `packages/runtime` — the workflow engine runtime (`@workflow-engine/runtime`)
+- `packages/sdk` — the workflow-author-facing types and factories (`@workflow-engine/sdk`)
+- `packages/vite-plugin` — the workflow build plugin (`@workflow-engine/vite-plugin`)
+- `packages/sandbox` — the QuickJS WASM sandbox (`@workflow-engine/sandbox`)
+
+Each package SHALL have a valid `package.json` and follow the conventions established by this capability (ESM, scoped npm name under `@workflow-engine/`, TypeScript source as entry point where applicable).
 
 #### Scenario: Runtime package directory exists
+
 - **WHEN** the repository is cloned and `pnpm install` is run
 - **THEN** the directory `packages/runtime` SHALL exist with a valid `package.json`
 
 #### Scenario: Runtime package has a source entry point
+
 - **WHEN** a developer opens the runtime package
 - **THEN** it SHALL contain a `src/index.ts` file as the entry point
+
+#### Scenario: Sandbox package exists
+
+- **WHEN** the repository is cloned and `pnpm install` is run
+- **THEN** the directory `packages/sandbox` SHALL exist with a valid `package.json`
+- **AND** its `name` field SHALL be `@workflow-engine/sandbox`
+- **AND** it SHALL ship TypeScript source directly (no build step)
 
 ### Requirement: Package naming convention
 Each package SHALL use a scoped npm name under `@workflow-engine/`.
@@ -71,3 +91,4 @@ The `workflows/package.json` SHALL use an unscoped package name (e.g., `workflow
 #### Scenario: Workflows package name
 - **WHEN** inspecting `workflows/package.json`
 - **THEN** the `name` field SHALL NOT start with `@workflow-engine/`
+

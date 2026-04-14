@@ -1,10 +1,4 @@
-# Sandbox Specification
-
-## Purpose
-
-Execute workflow action code inside an isolated QuickJS WASM context with a minimal, auditable host-bridge surface. This capability is the single strongest isolation boundary in the system (see `/SECURITY.md §2`).
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Sandbox package
 
@@ -379,4 +373,3 @@ This is a known v1 limitation, tracked as residual risk R-S7 in `/SECURITY.md §
 - **GIVEN** the sandbox spec
 - **WHEN** reviewing residual risks
 - **THEN** R-S7 "opaque store grows unboundedly per sandbox lifetime" SHALL be listed
-

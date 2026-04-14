@@ -1,11 +1,11 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MethodMap, Sandbox } from "@workflow-engine/sandbox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
 import { createEventSource } from "../event-source.js";
-import type { Sandbox } from "../sandbox/index.js";
 import { createScheduler } from "../services/scheduler.js";
 import { createFsStorage } from "../storage/fs.js";
 import type { StorageBackend } from "../storage/index.js";
@@ -63,7 +63,7 @@ function stubContextFactory(
 	event: RuntimeEvent,
 	_actionName: string,
 ): ActionContext {
-	return new ActionContext(event, vi.fn(), {});
+	return new ActionContext(event, {});
 }
 
 describe("recovery", () => {
@@ -321,8 +321,20 @@ describe("full startup/recovery integration", () => {
 			await bus.bootstrap(events, { pending });
 		}
 
-		const spawnSpy = vi.fn(async () => ({ ok: true as const, logs: [] }));
-		const sandbox: Sandbox = { spawn: spawnSpy };
+		const runSpy = vi.fn(async () => ({
+			ok: true as const,
+			result: undefined,
+			logs: [],
+		}));
+		const sandboxFactory = async (
+			_src: string,
+			_methods: MethodMap,
+		): Promise<Sandbox> => ({
+			run: runSpy,
+			dispose: () => {
+				/* no-op */
+			},
+		});
 		const action: Action = {
 			name: "processOrder",
 			on: "order.received",
@@ -337,7 +349,7 @@ describe("full startup/recovery integration", () => {
 			source,
 			{ actions: [action] },
 			stubContextFactory,
-			sandbox,
+			{ sandboxFactory },
 		);
 
 		const started = scheduler.start();
@@ -345,8 +357,14 @@ describe("full startup/recovery integration", () => {
 		await scheduler.stop();
 		await started;
 
-		expect(spawnSpy).toHaveBeenCalledTimes(1);
-		expect(spawnSpy.mock.calls.at(0)?.at(1)).toBeInstanceOf(ActionContext);
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		const receivedCtx = runSpy.mock.calls.at(0)?.at(1) as
+			| {
+					event: { name: string; payload: unknown };
+					env: Record<string, string>;
+			  }
+			| undefined;
+		expect(receivedCtx?.event.name).toBe("order.received");
 	});
 
 	it("recovery populates EventStore with all events from both directories", async () => {

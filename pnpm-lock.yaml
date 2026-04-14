@@ -51,12 +51,12 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.12
         version: 1.19.12(hono@4.12.10)
-      '@jitl/quickjs-wasmfile-release-sync':
-        specifier: ^0.32.0
-        version: 0.32.0
       '@oorabona/kysely-duckdb':
         specifier: ^0.5.1
         version: 0.5.1(@duckdb/node-api@1.5.1-r.1)(kysely@0.28.15)(typescript@6.0.2)
+      '@workflow-engine/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@workflow-engine/sdk':
         specifier: workspace:*
         version: link:../sdk
@@ -81,9 +81,6 @@ importers:
       pino:
         specifier: ^10.3.1
         version: 10.3.1
-      quickjs-emscripten:
-        specifier: ^0.32.0
-        version: 0.32.0
       tar-stream:
         specifier: ^3.1.8
         version: 3.1.8
@@ -100,6 +97,15 @@ importers:
       vite-node:
         specifier: ^6.0.0
         version: 6.0.0(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/sandbox:
+    dependencies:
+      '@jitl/quickjs-wasmfile-release-sync':
+        specifier: ^0.32.0
+        version: 0.32.0
+      quickjs-emscripten:
+        specifier: ^0.32.0
+        version: 0.32.0
 
   packages/sdk:
     dependencies:

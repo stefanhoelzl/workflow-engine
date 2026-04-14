@@ -1,33 +1,4 @@
-# SDK Specification
-
-## Purpose
-
-Provide the TypeScript API for defining events, wiring workflows, and typing action handlers. The SDK is a build-time-only dependency — no SDK code ships in the bundled action files.
-## Requirements
-### Requirement: Zod v4 dependency
-
-The SDK SHALL depend on `zod@^4.0.0` and import the Zod API from `"zod"`. The `z` namespace SHALL be re-exported for workflow authors.
-
-#### Scenario: Workflow authors use Zod v4 API
-
-- **GIVEN** a workflow file that imports `z` from `@workflow-engine/sdk`
-- **WHEN** the author uses `z.object()`, `z.string()`, `z.enum()`, `z.nullable()`
-- **THEN** these SHALL be Zod v4 functions
-
-### Requirement: createWorkflow requires a name argument
-
-The `createWorkflow()` function SHALL accept a required first argument: the workflow name as a `string`. This name SHALL be included in the compiled manifest's `name` field.
-
-#### Scenario: Workflow created with name
-
-- **WHEN** `createWorkflow("cronitor")` is called
-- **THEN** the workflow builder SHALL store the name "cronitor"
-- **AND** the compiled manifest SHALL contain `name: "cronitor"`
-
-#### Scenario: Workflow created without name
-
-- **WHEN** `createWorkflow()` is called without a name argument
-- **THEN** it SHALL fail with a TypeScript type error at compile time
+## MODIFIED Requirements
 
 ### Requirement: ActionContext type in SDK
 
@@ -48,7 +19,15 @@ interface ActionContext<Payload, Events, Env> {
 
 `ctx.emit` is injected onto ctx at runtime by a wrapper installed in the SDK's `workflow.action({...})` builder. The wrapper closes over the per-run `emit` global that the runtime installs via `Sandbox.run(name, ctx, extraMethods)`. The wrapper performs a lazy check: if `globalThis.emit` is not a function when `ctx.emit` is called, it throws `Error("emit is not installed; the runtime must register it as an extraMethod")`.
 
-`ctx.emit` is the single workflow-author-facing path for emitting events. The SDK does NOT declare an ambient global `emit` — authors must emit via `ctx.emit` so the per-action narrowing applies.
+The SDK SHALL also declare an ambient global `emit` function as an escape hatch with a wider, untyped signature:
+
+```ts
+declare global {
+  function emit(type: string, payload: unknown): Promise<void>;
+}
+```
+
+The two paths coexist: `ctx.emit` is the narrow, type-checked path for action handlers; `emit` as a bare global is wider and available anywhere inside workflow source. Workflow authors SHOULD prefer `ctx.emit` for type safety.
 
 Network access is provided by the global `fetch` function (a polyfill), not by a method on the context.
 
@@ -76,12 +55,12 @@ Network access is provided by the global `fetch` function (a polyfill), not by a
 - **WHEN** the handler calls `ctx.emit("order.parsed", { orderId: "abc" })`
 - **THEN** TypeScript SHALL report a type error on the payload argument
 
-#### Scenario: bare emit global is not declared by the SDK
+#### Scenario: emit is also available as an ambient global
 
 - **GIVEN** a workflow TypeScript file importing from `@workflow-engine/sdk`
-- **WHEN** the file references a bare `emit(...)` call at module scope
-- **THEN** TypeScript SHALL report a "Cannot find name 'emit'" error
-- **AND** authors SHALL use `ctx.emit(...)` inside action handlers instead
+- **WHEN** the file calls `emit("order.done", { id: 1 })` at the top level or inside an action handler
+- **THEN** TypeScript SHALL resolve `emit` via the SDK's ambient declaration
+- **AND** the return type SHALL be `Promise<void>`
 
 #### Scenario: ActionContext type has event and env
 
@@ -95,4 +74,3 @@ Network access is provided by the global `fetch` function (a polyfill), not by a
 - **WHEN** the wrapped handler calls `ctx.emit(...)`
 - **THEN** the wrapper SHALL throw `Error("emit is not installed; the runtime must register it as an extraMethod")`
 - **AND** the error SHALL surface as a failed `RunResult`
-

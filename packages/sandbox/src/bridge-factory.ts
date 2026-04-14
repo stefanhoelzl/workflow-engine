@@ -100,6 +100,7 @@ interface Bridge {
 	derefOpaque<T>(ref: unknown): T;
 	opaqueRef: (value: unknown) => QuickJSHandle;
 	pushLog(entry: LogEntry): void;
+	resetLogs(): void;
 	dispose(): void;
 }
 
@@ -328,6 +329,9 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 		opaqueRef: (value: unknown) => vm.newNumber(storeOpaque(value)),
 		pushLog(entry: LogEntry) {
 			logs.push(entry);
+		},
+		resetLogs() {
+			logs.length = 0;
 		},
 		dispose() {
 			opaqueStore.clear();

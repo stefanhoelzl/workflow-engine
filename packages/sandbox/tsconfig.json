@@ -3,9 +3,9 @@
 	"compilerOptions": {
 		"composite": true,
 		"declaration": true,
+		"noEmit": false,
 		"outDir": "dist",
-		"types": ["node", "vite/client"]
+		"types": ["node"]
 	},
-	"include": ["src/**/*"],
-	"references": [{ "path": "../sdk" }, { "path": "../sandbox" }]
+	"include": ["src/**/*"]
 }

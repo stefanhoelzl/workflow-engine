@@ -1,6 +1,6 @@
+import type { LogEntry } from "@workflow-engine/sandbox";
 import { PayloadValidationError } from "./context/errors.js";
 import type { EventBus, RuntimeEvent } from "./event-bus/index.js";
-import type { LogEntry } from "./sandbox/index.js";
 
 interface Schema {
 	parse(data: unknown): unknown;

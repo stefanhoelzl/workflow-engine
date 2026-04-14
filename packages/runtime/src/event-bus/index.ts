@@ -1,6 +1,6 @@
 import { z } from "@workflow-engine/sdk";
 
-// Each sandbox bridge call (console.*, fetch/xhr.send, crypto.*, ctx.emit,
+// Each sandbox bridge call (console.*, fetch/xhr.send, crypto.*, emit,
 // timers) produces one of these entries. Populated on action events when the
 // scheduler transitions them to `done`, so the timeline UI can show what the
 // action did while it ran.
