@@ -34,6 +34,7 @@ interface TimelineEvent {
 	targetAction: string | null;
 	payload: unknown;
 	error: unknown;
+	logs: unknown;
 	createdAt: string;
 	emittedAt: string;
 	startedAt: string | null;

@@ -13,6 +13,7 @@ interface EventsTable {
 	result: string | null;
 	payload: unknown;
 	error: unknown;
+	logs: unknown;
 	createdAt: string;
 	sourceType: string;
 	sourceName: string;
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS events (
 	result TEXT,
 	payload JSON,
 	error JSON,
+	logs JSON,
 	createdAt TIMESTAMPTZ NOT NULL,
 	sourceType TEXT NOT NULL,
 	sourceName TEXT NOT NULL,
@@ -109,6 +111,8 @@ async function createEventStore(
 				event.state === "done" && event.result === "failed"
 					? JSON.stringify(event.error)
 					: null,
+			logs:
+				event.logs && event.logs.length > 0 ? JSON.stringify(event.logs) : null,
 			createdAt: event.createdAt.toISOString(),
 			sourceType: event.sourceType,
 			sourceName: event.sourceName,

@@ -50,10 +50,10 @@ export const handleCronitorEvent = workflow.action({
 export const sendMessage = workflow.action({
 	on: "notify.message",
 	env: {
-		NEXTCLOUD_URL: env({ default: "" }),
-		NEXTCLOUD_TALK_ROOM: env({ default: "" }),
-		NEXTCLOUD_USERNAME: env({ default: "" }),
-		NEXTCLOUD_APP_PASSWORD: env({ default: "" }),
+		NEXTCLOUD_URL: env({ default: "https://nextcloud.com" }),
+		NEXTCLOUD_TALK_ROOM: env({ default: "abc123" }),
+		NEXTCLOUD_USERNAME: env({ default: "max.mustermann" }),
+		NEXTCLOUD_APP_PASSWORD: env({ default: "very strong" }),
 	},
 	handler: async (ctx) => {
 		const url = `${ctx.env.NEXTCLOUD_URL}/ocs/v2.php/apps/spreed/api/v1/chat/${ctx.env.NEXTCLOUD_TALK_ROOM}`;
