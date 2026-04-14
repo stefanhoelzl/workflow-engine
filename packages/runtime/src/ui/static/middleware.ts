@@ -1,5 +1,5 @@
 import { extname } from "node:path";
-import alpineJs from "alpinejs/dist/cdn.min.js?raw";
+import alpineJs from "@alpinejs/csp/dist/cdn.min.js?raw";
 import { Hono } from "hono";
 import htmxJs from "htmx.org/dist/htmx.min.js?raw";
 import jedisonJs from "jedison/browser?raw";

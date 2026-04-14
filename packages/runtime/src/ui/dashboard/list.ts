@@ -23,8 +23,8 @@ function renderEntryRow(item: CorrelationSummary) {
 	const state = item.aggregateState;
 	const time = formatTime(item.lastEventAt as string | Date);
 
-	return html`<div class="entry" id="entry-${item.correlationId}" x-data="{ expanded: false }" :class="{ expanded: expanded }">
-  <div class="entry-header" @click="expanded = !expanded">
+	return html`<div class="entry" id="entry-${item.correlationId}" x-data="listItemExpander" :class="{ expanded: expanded }">
+  <div class="entry-header" @click="toggle()">
     <span class="state-dot ${state}"></span>
     <span class="entry-type">${item.initialEventType}</span>
     <div class="entry-meta">
@@ -68,9 +68,9 @@ function renderEntryList(
 
 function renderHeaderStats(stats: HeaderStats) {
 	return html`<div id="header-stats">
-<span class="stat"><span class="stat-dot" style="background:var(--yellow)"></span> ${stats.pending} pending</span>
-<span class="stat"><span class="stat-dot" style="background:var(--red)"></span> ${stats.failed} failed</span>
-<span class="stat"><span class="stat-dot" style="background:var(--green)"></span> ${stats.done} done</span>
+<span class="stat"><span class="stat-dot" data-color="yellow"></span> ${stats.pending} pending</span>
+<span class="stat"><span class="stat-dot" data-color="red"></span> ${stats.failed} failed</span>
+<span class="stat"><span class="stat-dot" data-color="green"></span> ${stats.done} done</span>
 </div>`;
 }
 
@@ -84,7 +84,7 @@ function renderEventTypeCheckboxes(types: string[], selected: string[]) {
 	return html`${types.map(
 		(t) =>
 			html`<label class="event-type-option">
-  <input type="checkbox" value="${t}"${selectedSet.has(t) ? " checked" : ""} @change="toggleEventType('${t}')" />
+  <input type="checkbox" value="${t}" data-event-type="${t}"${selectedSet.has(t) ? " checked" : ""} @change="toggleEventType($el.dataset.eventType)" />
   ${t}
 </label>`,
 	)}`;
