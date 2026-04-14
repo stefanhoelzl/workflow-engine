@@ -70,6 +70,12 @@ variable "tls" {
   description = "TLS configuration for IngressRoute. Null = no TLS (Traefik default cert). When set, the IngressRoute reads tls.crt/tls.key from the named Secret. The Secret is expected to be populated by the cert-manager module (via its certificate_requests input, wired from this module's cert_request output)."
 }
 
+variable "local_deployment" {
+  type        = bool
+  default     = false
+  description = "When true, sets LOCAL_DEPLOYMENT=1 on the pod so the runtime skips HSTS. Only set by the local kind stack."
+}
+
 module "app" {
   source = "./modules/app"
 
@@ -78,6 +84,7 @@ module "app" {
   image_hash        = var.image_hash
   s3                = var.s3
   github_users      = var.oauth2.github_users
+  local_deployment  = var.local_deployment
 }
 
 module "oauth2_proxy" {

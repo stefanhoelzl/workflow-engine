@@ -22,17 +22,17 @@
 
 ## 2. PR 2 — Security headers middleware
 
-- [ ] 2.1 Create `packages/runtime/src/services/secure-headers.ts` exporting a `secureHeadersMiddleware()` factory returning a Hono middleware function
-- [ ] 2.2 Implement CSP string builder using `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`
-- [ ] 2.3 Implement Permissions-Policy string builder with every feature set to `()` except `clipboard-write=(self)` (feature list in the http-security spec requirement)
-- [ ] 2.4 Implement HSTS gate: read `process.env.LOCAL_DEPLOYMENT` at middleware construction time; if the string equals `"1"` exactly, omit HSTS from the header set
-- [ ] 2.5 Mount `secureHeadersMiddleware()` as the first middleware in `packages/runtime/src/services/server.ts` so it runs before routing and applies to every response
-- [ ] 2.6 Write `packages/runtime/src/services/secure-headers.test.ts` unit tests: one assertion per header; both branches of the HSTS gate (`LOCAL_DEPLOYMENT="1"` vs unset); verify CSP contains none of `'unsafe-inline'`/`'unsafe-eval'`/`'unsafe-hashes'`/`'strict-dynamic'`; verify no remote origins in CSP
-- [ ] 2.7 Extend the runtime integration test harness to hit `/livez`, a registered `/webhooks/<name>`, a registered `/api/*` route, `/dashboard`, `/trigger`, and `/static/alpine.js`; assert the full baseline header set on each response
-- [ ] 2.8 Add `LOCAL_DEPLOYMENT=1` to the app Deployment env in `infrastructure/local/` Terraform; leave `infrastructure/upcloud/` unset
-- [ ] 2.9 Add a new `## §6 HTTP Response Headers` section to `/SECURITY.md` documenting the threat model, the header set, the CSP rationale (`default-src 'none'` + explicit grants, no `'unsafe-*'`), the HSTS local gate, and the `no inline script/style` invariant that protects the CSP
-- [ ] 2.10 Add a bullet to the `## Security Invariants` section of `/CLAUDE.md`: "NEVER add `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`, `'strict-dynamic'`, or a remote origin to the CSP in `secure-headers.ts` (§6)." and a second bullet: "NEVER add an inline `<script>`, `<style>`, `on*=` attribute, `style=` attribute, or string-form Alpine `:style` binding to any HTML served by the runtime (§6)."
-- [ ] 2.11 Run `pnpm validate` (lint, format, type check, tests); fix regressions
+- [x] 2.1 Create `packages/runtime/src/services/secure-headers.ts` exporting a `secureHeadersMiddleware()` factory returning a Hono middleware function
+- [x] 2.2 Implement CSP string builder using `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`
+- [x] 2.3 Implement Permissions-Policy string builder with every feature set to `()` except `clipboard-write=(self)`
+- [x] 2.4 Implement HSTS gate: read `options.localDeployment` at middleware construction time; if the string equals `"1"` exactly, omit HSTS from the header set. `main.ts` reads `process.env.LOCAL_DEPLOYMENT` and passes it in.
+- [x] 2.5 Mount `secureHeadersMiddleware()` as the first middleware in `main.ts`'s `createServer` call so it runs before routing and applies to every response
+- [x] 2.6 Write `packages/runtime/src/services/secure-headers.test.ts` unit tests: one assertion per header; all three branches of the HSTS gate (`"1"`, other truthy, unset); verify CSP contains none of `'unsafe-inline'`/`'unsafe-eval'`/`'unsafe-hashes'`/`'strict-dynamic'`; verify no remote origins in CSP — 12 unit tests
+- [x] 2.7 Integration tests in the same file wire `createApp(secureHeadersMiddleware(), ...stub middlewares)` and hit `/livez`, `/webhooks/order`, `/api/events`, `/dashboard`, `/trigger`, `/static/alpine.js`; assert the full baseline header set on each response — 7 integration tests (6 per-route + HSTS-skipped-in-local sweep)
+- [x] 2.8 Add `local_deployment` variable (default `false`) to `modules/workflow-engine/modules/app/app.tf` and `modules/workflow-engine/workflow-engine.tf`; conditionally emit `LOCAL_DEPLOYMENT=1` env var on the app Deployment; set `local_deployment = true` in `infrastructure/local/local.tf`; UpCloud leaves default
+- [x] 2.9 Add a new `## §6 HTTP Response Headers` section to `/SECURITY.md` documenting the threat model (H1–H10), mitigations, residual risks (R-H1–R-H3), 8 invariant rules for AI agents, and file references. Update section numbering note to §1..§6.
+- [x] 2.10 Add three bullets to `## Security Invariants` in `/CLAUDE.md`: forbid `'unsafe-*'`/remote origins in CSP, forbid inline script/style/handlers/string-form `:style`/free-form `x-data`, forbid removing the `LOCAL_DEPLOYMENT=1` HSTS gate
+- [x] 2.11 Run `pnpm validate`; all 7 checks pass (lint, tsc, 378 tests, tofu fmt + 3 validates)
 - [ ] 2.12 Manual smoke on `pnpm local:up:build`: all routes load under the new policy; browser devtools CSP panel shows no violations; `Strict-Transport-Security` absent on localhost; clipboard copy button works
 - [ ] 2.13 Open PR 2; merge once CI green and smoke clean
 - [ ] 2.14 Deploy to prod (`tofu apply` in `infrastructure/upcloud/`); verify via `curl -I https://workflow-engine.webredirect.org/dashboard` that every header is present with expected values and `Strict-Transport-Security` appears

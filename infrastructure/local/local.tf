@@ -135,6 +135,8 @@ module "workflow_engine" {
   tls = {
     secretName = "workflow-engine-tls"
   }
+
+  local_deployment = true
 }
 
 module "cert_manager" {

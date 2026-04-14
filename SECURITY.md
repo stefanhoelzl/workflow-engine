@@ -20,6 +20,8 @@ consult the relevant section:
   Authentication
 - **Changing container, network, or secret configuration** → §5
   Infrastructure and Deployment
+- **Adding or modifying HTTP response headers, CSP, or any HTML rendered
+  by the runtime** → §6 HTTP Response Headers
 
 Each section below follows the same structure:
 
@@ -35,8 +37,8 @@ Each section below follows the same structure:
 Compact invariants also appear in `CLAUDE.md`. `SECURITY.md` is the full
 reference.
 
-Section numbering (§1..§5) is stable. Future edits that introduce new
-sections must append (§6 and onward), not renumber.
+Section numbering (§1..§6) is stable. Future edits that introduce new
+sections must append (§7 and onward), not renumber.
 
 ## §1 Trust boundaries overview
 
@@ -671,3 +673,142 @@ following as **must-have** before exposing to real traffic:
 - S2 storage: `infrastructure/modules/s3/s2/s2.tf`
 - Dockerfile: `infrastructure/Dockerfile`
 - OpenSpec spec: `openspec/specs/infrastructure/spec.md`
+
+## §6 HTTP Response Headers
+
+### Trust level
+
+**Defense-in-depth layer.** Response headers do not authenticate or
+authorise — §4 does. They reduce the blast radius of an upstream bug:
+if an XSS or template-injection slips past input validation, the CSP
+prevents remote-script execution and inline-handler triggers; HSTS
+forces HTTPS even when an attacker tries to strip it; X-Frame-Options
+blocks clickjacking; Referrer-Policy caps data leaking to third
+parties; Permissions-Policy denies the page access to browser
+capabilities it does not need.
+
+### Entry points
+
+- Every HTTP response served by `packages/runtime` passes through
+  `secureHeadersMiddleware` (mounted first in `main.ts`).
+- Headers are uniform across route families: `/livez`, `/webhooks/*`,
+  `/api/*`, `/dashboard*`, `/trigger*`, `/static/*`.
+- `/oauth2/*` responses are served by the oauth2-proxy sidecar and do
+  not receive these headers. Accepted gap — same-origin, minimal
+  scripting surface.
+
+### Threats
+
+| ID | Threat | Category |
+|----|--------|----------|
+| H1 | Remote-script injection runs arbitrary JS via `<script src="evil.com">` | Elevation of privilege |
+| H2 | Inline-handler injection runs arbitrary JS via `onclick=`, `ontoggle=`, etc. | Elevation of privilege |
+| H3 | Eval-based injection runs arbitrary JS via `eval()` or `new Function()` in a library | Elevation of privilege |
+| H4 | Inline-style injection leaks data via `@import` or URL in a `style` attribute | Information disclosure |
+| H5 | HTTPS stripped by an on-path attacker (public Wi-Fi, rogue DNS) | Confidentiality |
+| H6 | Dashboard embedded in a hostile iframe for clickjacking | UI redressing |
+| H7 | Cross-origin opener abuses `window.opener` to navigate our tab | Elevation of privilege |
+| H8 | Our responses embedded cross-origin to exfiltrate or fingerprint | Information disclosure |
+| H9 | Referer header leaks correlation IDs or event IDs to third parties | Information disclosure |
+| H10 | Browser capability (clipboard read, geolocation, camera, USB, etc.) abused by injected script | Information disclosure / privacy |
+
+### Mitigations (current)
+
+- **Strict CSP.** `default-src 'none'`, plus explicit grants for
+  `script-src 'self'`, `style-src 'self'`, `img-src 'self' data:`,
+  `connect-src 'self'`, `form-action 'self'`, `frame-ancestors 'none'`,
+  `base-uri 'none'`. No `'unsafe-inline'`, `'unsafe-eval'`,
+  `'unsafe-hashes'`, `'strict-dynamic'`, or remote origins. Mitigates
+  H1–H4.
+- **Alpine CSP build.** `@alpinejs/csp` replaces the standard build so
+  Alpine's expression evaluator never reaches `new Function()`. All
+  components are pre-registered via `Alpine.data(...)` in
+  `packages/runtime/src/ui/static/dashboard-alpine.js`. Alpine `:style`
+  bindings use object form exclusively (Alpine sets styles via
+  `el.style.setProperty`; string form sets the inline `style`
+  attribute and is blocked by `style-src 'self'`).
+- **No inline handlers, scripts, or styles in rendered HTML.** All
+  behaviour lives in `/static/*.js` files bound via `addEventListener`
+  or `Alpine.data`. `html-invariants.test.ts` asserts this at build
+  time across every HTML surface.
+- **HSTS.** `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains` on every response in production. Gated off in
+  local via `LOCAL_DEPLOYMENT=1` to prevent developer browsers from
+  pinning HSTS on `localhost` (a self-signed kind cert would then
+  cause unrecoverable `NET::ERR_CERT_AUTHORITY_INVALID` on any
+  localhost service for a year).
+- **X-Content-Type-Options: nosniff.** Prevents MIME sniffing.
+- **X-Frame-Options: DENY** and **CSP `frame-ancestors 'none'`.** Two
+  layers against clickjacking (H6).
+- **Cross-Origin-Opener-Policy: same-origin.** No cross-origin window
+  handle (H7). Safe because GitHub OAuth is redirect-based, not
+  popup-based.
+- **Cross-Origin-Resource-Policy: same-origin.** No other origin may
+  embed our responses (H8).
+- **Referrer-Policy: strict-origin-when-cross-origin.** Full URL
+  same-origin; origin only on cross-origin HTTPS→HTTPS; nothing on
+  downgrade. Protects IDs in query strings (H9).
+- **Permissions-Policy.** Every browser capability locked to `()` —
+  camera, microphone, geolocation, USB, MIDI, payment, clipboard-read,
+  fullscreen, etc. — with `clipboard-write=(self)` the sole exception
+  (needed for the copy-event button on the dashboard). Mitigates H10.
+
+### Residual risks
+
+| ID | Gap | Impact | Status |
+|----|-----|--------|--------|
+| R-H1 | `/oauth2/*` pages served by the sidecar do not carry our headers | Same-origin pages without our CSP | Accepted — minimal scripting surface, maintained upstream |
+| R-H2 | No CSP `report-to` / `report-uri` + ingestion endpoint | Violations surface only in browser devtools | Accepted — add only if repeated regressions motivate it |
+| R-H3 | Not on HSTS preload list | Browsers not pre-seeded with HTTPS-only must see one response first | Accepted — keeps a path to back out within a year |
+
+### Rules for AI agents
+
+1. **NEVER add `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`,
+   or `'strict-dynamic'` to the CSP.** These tokens defeat the
+   protections in H1–H3.
+2. **NEVER add a remote origin (`https:`, `http:`, a wildcard host, or
+   a specific third-party domain) to any CSP directive.** If a library
+   must be loaded, bundle it and serve from `/static`.
+3. **NEVER add an inline `<script>` element with executable content,
+   an inline event handler attribute (`onclick=`, `ontoggle=`,
+   `onchange=`, `onload=`, `onsubmit=`, `onerror=`, `onfocus=`,
+   `onblur=`, or any other `on*=` attribute), an inline `<style>`
+   element, or an inline `style="..."` attribute to HTML served by
+   the runtime.** All behaviour goes into a file under
+   `/static/*.js`; all styling into `/static/*.css`.
+4. **NEVER use a string-form Alpine `:style` binding.** Only object
+   form is permitted (Alpine sets object-form styles via
+   `el.style.setProperty`, which is CSP-safe; string form sets the
+   inline `style` attribute and is blocked).
+5. **NEVER add an `x-data` attribute with an inline object literal or
+   method body.** Register the component via
+   `Alpine.data('<name>', () => ({...}))` in
+   `packages/runtime/src/ui/static/dashboard-alpine.js` and reference
+   it by bare identifier: `x-data="myComponent"`.
+6. **NEVER replace `@alpinejs/csp` with the standard `alpinejs` CDN
+   build.** The standard build uses `new Function()` and requires
+   `'unsafe-eval'` in CSP.
+7. **NEVER remove the HSTS local gate (`LOCAL_DEPLOYMENT=1` check).**
+   A developer who hits `https://localhost:8443` with a self-signed
+   cert will have HSTS pinned for `localhost` (host-level, not
+   port-level) for a year. Every other local dev service on
+   `localhost` then fails with `NET::ERR_CERT_AUTHORITY_INVALID` and
+   no "Proceed anyway" option.
+8. **NEVER weaken `Permissions-Policy` to `*` or `self` without
+   concrete justification.** Every feature currently locked to `()`
+   stays `()` unless a new UI feature genuinely requires it, and the
+   grant MUST be as narrow as possible (`(self)`, not `*`).
+
+### File references
+
+- Middleware: `packages/runtime/src/services/secure-headers.ts`
+- Unit + integration tests:
+  `packages/runtime/src/services/secure-headers.test.ts`
+- HTML invariants test: `packages/runtime/src/ui/html-invariants.test.ts`
+- Alpine component registrations:
+  `packages/runtime/src/ui/static/dashboard-alpine.js`
+- Local deployment gate:
+  `infrastructure/modules/workflow-engine/modules/app/app.tf`
+  (`local_deployment` variable), set to `true` in
+  `infrastructure/local/local.tf`
+- OpenSpec spec: `openspec/specs/http-security/spec.md`

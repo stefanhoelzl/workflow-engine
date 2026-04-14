@@ -16,6 +16,7 @@ import { createHttpLogger, createLogger } from "./logger.js";
 import { createSandbox } from "./sandbox/index.js";
 import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
+import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
@@ -123,6 +124,10 @@ async function init() {
 
 	const server = createServer(
 		config.port,
+		secureHeadersMiddleware({
+			// biome-ignore lint/style/noProcessEnv: entry-point config read
+			localDeployment: process.env.LOCAL_DEPLOYMENT,
+		}),
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		httpTriggerMiddleware(registry, source),

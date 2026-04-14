@@ -1,0 +1,83 @@
+import type { Middleware } from "../triggers/http.js";
+
+const CSP_DIRECTIVES: ReadonlyArray<readonly [string, string]> = [
+	["default-src", "'none'"],
+	["script-src", "'self'"],
+	["style-src", "'self'"],
+	["img-src", "'self' data:"],
+	["connect-src", "'self'"],
+	["form-action", "'self'"],
+	["frame-ancestors", "'none'"],
+	["base-uri", "'none'"],
+];
+
+const PERMISSIONS_DISABLED_FEATURES: readonly string[] = [
+	"accelerometer",
+	"ambient-light-sensor",
+	"autoplay",
+	"battery",
+	"camera",
+	"display-capture",
+	"document-domain",
+	"encrypted-media",
+	"fullscreen",
+	"geolocation",
+	"gyroscope",
+	"hid",
+	"idle-detection",
+	"magnetometer",
+	"microphone",
+	"midi",
+	"payment",
+	"picture-in-picture",
+	"publickey-credentials-get",
+	"screen-wake-lock",
+	"serial",
+	"usb",
+	"web-share",
+	"xr-spatial-tracking",
+	"clipboard-read",
+];
+
+const HSTS_VALUE = "max-age=31536000; includeSubDomains";
+const LOCAL_DEPLOYMENT_FLAG = "1";
+
+function buildCsp(): string {
+	return CSP_DIRECTIVES.map(([name, value]) => `${name} ${value}`).join("; ");
+}
+
+function buildPermissionsPolicy(): string {
+	const disabled = PERMISSIONS_DISABLED_FEATURES.map((f) => `${f}=()`);
+	return [...disabled, "clipboard-write=(self)"].join(", ");
+}
+
+interface SecureHeadersOptions {
+	localDeployment?: string | undefined;
+}
+
+function secureHeadersMiddleware(
+	options: SecureHeadersOptions = {},
+): Middleware {
+	const isLocal = options.localDeployment === LOCAL_DEPLOYMENT_FLAG;
+	const csp = buildCsp();
+	const permissionsPolicy = buildPermissionsPolicy();
+
+	return {
+		match: "*",
+		handler: async (c, next) => {
+			c.header("Content-Security-Policy", csp);
+			c.header("X-Content-Type-Options", "nosniff");
+			c.header("X-Frame-Options", "DENY");
+			c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+			c.header("Cross-Origin-Opener-Policy", "same-origin");
+			c.header("Cross-Origin-Resource-Policy", "same-origin");
+			c.header("Permissions-Policy", permissionsPolicy);
+			if (!isLocal) {
+				c.header("Strict-Transport-Security", HSTS_VALUE);
+			}
+			await next();
+		},
+	};
+}
+
+export { buildCsp, buildPermissionsPolicy, secureHeadersMiddleware };
