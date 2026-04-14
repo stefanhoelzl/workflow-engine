@@ -90,12 +90,6 @@ variable "image_tag" {
   description = "Container image tag from ghcr.io"
 }
 
-variable "letsencrypt_staging" {
-  type        = bool
-  default     = true
-  description = "Use Let's Encrypt staging server"
-}
-
 variable "acme_email" {
   type        = string
   description = "Email for Let's Encrypt certificate notifications"
@@ -200,29 +194,19 @@ module "workflow_engine" {
   }
 
   tls = {
-    certResolver = "letsencrypt"
+    secretName = "workflow-engine-tls"
   }
 }
 
-# --- Traefik cert storage ---
+# --- Cert manager ---
 
-resource "kubernetes_persistent_volume_claim_v1" "traefik_certs" {
-  wait_until_bound = false
+module "cert_manager" {
+  source = "../modules/cert-manager"
 
-  metadata {
-    name      = "traefik-certs"
-    namespace = "default"
-  }
-
-  spec {
-    access_modes       = ["ReadWriteOnce"]
-    storage_class_name = "upcloud-block-storage-standard"
-    resources {
-      requests = {
-        storage = "1Gi"
-      }
-    }
-  }
+  enable_acme          = true
+  enable_selfsigned_ca = false
+  acme_email           = var.acme_email
+  certificate_requests = module.workflow_engine.cert_request != null ? [module.workflow_engine.cert_request] : []
 }
 
 # --- Routing ---
@@ -259,30 +243,6 @@ module "routing" {
     {
       name  = "ports.websecure.exposedPort"
       value = "443"
-    },
-    {
-      name  = "certificatesResolvers.letsencrypt.acme.email"
-      value = var.acme_email
-    },
-    {
-      name  = "certificatesResolvers.letsencrypt.acme.storage"
-      value = "/data/acme.json"
-    },
-    {
-      name  = "certificatesResolvers.letsencrypt.acme.tlsChallenge"
-      value = "true"
-    },
-    {
-      name  = "certificatesResolvers.letsencrypt.acme.caServer"
-      value = var.letsencrypt_staging ? "https://acme-staging-v02.api.letsencrypt.org/directory" : "https://acme-v02.api.letsencrypt.org/directory"
-    },
-    {
-      name  = "persistence.enabled"
-      value = "true"
-    },
-    {
-      name  = "persistence.existingClaim"
-      value = kubernetes_persistent_volume_claim_v1.traefik_certs.metadata[0].name
     },
   ]
 }

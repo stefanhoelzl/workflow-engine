@@ -127,6 +127,18 @@ module "workflow_engine" {
     "sign_in.html" = file("${path.module}/../templates/sign_in.html")
     "error.html"   = file("${path.module}/../templates/error.html")
   }
+
+  tls = {
+    secretName = "workflow-engine-tls"
+  }
+}
+
+module "cert_manager" {
+  source = "../modules/cert-manager"
+
+  enable_acme          = false
+  enable_selfsigned_ca = true
+  certificate_requests = module.workflow_engine.cert_request != null ? [module.workflow_engine.cert_request] : []
 }
 
 module "routing" {

@@ -508,12 +508,15 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 | Component | Exposure | Port | Who can reach it |
 |---|---|---|---|
-| Traefik Ingress | Public (NodePort 30443 → 443) | 443 | Internet |
+| Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | Internet |
+| Traefik Ingress (HTTP) | Public (LB → 80) | 80 | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
 | oauth2-proxy | In-cluster Service | 4180 | Traefik (forward-auth) |
 | App (runtime) | In-cluster Service | 8080 | Traefik; **any pod** (no NetworkPolicy) |
 | S2 (S3-compatible storage) | In-cluster Service | 9000 | App pod; **any pod** (no NetworkPolicy) |
+| cert-manager controllers | In-cluster Service (webhook) | 9402 | kube-apiserver (admission webhooks) |
 | DuckDB | Process-local | — | App process only (in-memory) |
 | GitHub API | External egress | 443 | App pod (auth validation) |
+| Let's Encrypt ACME (egress) | External egress | 443 | cert-manager (prod only, issuance + renewal) |
 
 ### Threats
 
@@ -549,7 +552,15 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 - **Internal-only services** — oauth2-proxy, S2, and the app's
   business-logic port are not published via NodePort; only Traefik is.
 - **TLS at Traefik** — public traffic is HTTPS-only via the `websecure`
-  entrypoint.
+  entrypoint. Port 80 serves only cert-manager ACME HTTP-01 challenges
+  and a catch-all 301 redirect to HTTPS; no app traffic flows on
+  plaintext.
+- **cert-manager-managed TLS** — production TLS certificates are issued
+  by Let's Encrypt via the `letsencrypt-prod` ClusterIssuer (HTTP-01
+  challenge, `ingressClassName: traefik`) and stored as K8s Secrets.
+  Local uses a cluster-internal self-signed CA chain
+  (`selfsigned-bootstrap` → `selfsigned-ca`). Chart version is pinned
+  in `infrastructure/modules/cert-manager/cert-manager.tf`.
 - **Build-time image versioning** — S2 uses a pinned minor tag
   (`0.4.1`); the app image is built from source.
 - **`automountServiceAccountToken: false` on `app` and `oauth2-proxy`
@@ -567,7 +578,8 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I2 | **App pod has no `securityContext`** — no `runAsNonRoot: true`, no `readOnlyRootFilesystem: true`, no `allowPrivilegeEscalation: false`, no dropped capabilities. The image runs as nonroot, but K8s does not enforce it. | I4 | **High priority** |
 | R-I3 | **No resource `requests` / `limits`** on the app, oauth2-proxy, or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
 | R-I4 | **S2 container has no user specified** and no securityContext — runs with container defaults. | I4 | Medium |
-| R-I5 | **TLS cert source not pinned in IaC** — dev uses a self-signed cert; production cert provisioning (cert-manager, external) is not codified. | I7, I8 | To define for production |
+| R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: cert-manager codified in `infrastructure/modules/cert-manager/`; prod uses Let's Encrypt (HTTP-01), local uses a cluster-internal self-signed CA chain. Chart version is pinned. | I7, I8 | Resolved |
+| R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
 | R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — URL-level scoping of `__hostFetch` (§2 R-S4 app-layer half) is still outstanding. | I3 (infrastructure half of §2 R-S4) | **Resolved** for metadata/RFC1918 (app-layer URL allowlist still pending under §2 R-S4) |
@@ -591,8 +603,9 @@ following as **must-have** before exposing to real traffic:
    Resolves R-I2.
 3. **Resource requests / limits** — at minimum `cpu` and `memory`
    limits on every pod, sized from observed usage. Resolves R-I3.
-4. **Real TLS** — cert-manager or equivalent; no self-signed cert in
-   production. Resolves R-I5 and I8.
+4. **Real TLS** — cert-manager with the `letsencrypt-prod` ClusterIssuer
+   and HTTP-01 challenge is wired in (`infrastructure/upcloud/upcloud.tf`,
+   `infrastructure/modules/cert-manager/`). Resolves R-I5 and I8.
 5. **Egress policy** — NetworkPolicy half DONE (see item 1). URL
    filtering inside `__hostFetch` (§2 R-S4 app-layer half) is still
    outstanding; combined mitigation resolves R-I9 completely once that

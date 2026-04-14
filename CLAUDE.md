@@ -21,8 +21,8 @@ Prerequisites: OpenTofu >= 1.11, Podman
 - `pnpm infra:up:build` — rebuild app image + create/update local environment
 - `pnpm infra:destroy` — tear down local environment
 
-Local stack: kind K8s cluster, Traefik (Helm), S2 (local S3), oauth2-proxy, workflow-engine app.
-Accessible at `https://localhost:8443` (self-signed cert).
+Local stack: kind K8s cluster, Traefik (Helm), cert-manager (Helm, self-signed CA), S2 (local S3), oauth2-proxy, workflow-engine app.
+Accessible at `https://localhost:8443` (self-signed cert issued by an in-cluster CA; browser warns because the CA is not in the host trust store).
 
 Secrets: copy `infrastructure/local/local.secrets.auto.tfvars.example` to `local.secrets.auto.tfvars` and fill in OAuth2 credentials.
 
@@ -56,9 +56,25 @@ One-time setup:
 
 Deploy:
 1. `cd infrastructure/upcloud/persistence && tofu init && tofu apply` — creates app bucket + scoped user
-2. `cd infrastructure/upcloud && tofu init && tofu apply` — creates K8s cluster + deploys app + sets DNS
+2. `cd infrastructure/upcloud && tofu init && tofu apply` — creates K8s cluster + installs cert-manager + deploys app + issues Let's Encrypt cert + sets DNS
 
-Accessible at `https://workflow-engine.webredirect.org` (Let's Encrypt TLS).
+`tofu apply` returns once the cert-manager Helm release is Ready. Cert issuance happens asynchronously over the next 30-90s (ACME HTTP-01). To block until the cert is actually served, run this after apply:
+
+```
+kubectl wait --for=condition=Ready certificate/workflow-engine -n default --timeout=5m
+```
+
+Failure of that wait means DNS, port 80 reachability, CAA records, or another prerequisite is misconfigured — inspect via `kubectl describe certificate workflow-engine -n default`.
+
+**cert-manager chart upgrades**: `installCRDs=true` installs CRDs only on first release install, not on subsequent Helm upgrades. When bumping the cert-manager chart version in `infrastructure/modules/cert-manager/cert-manager.tf`, first apply the new CRDs manually:
+
+```
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/<new-version>/cert-manager.crds.yaml
+```
+
+then run `tofu apply` to upgrade the Helm release.
+
+Accessible at `https://workflow-engine.webredirect.org` (Let's Encrypt TLS, cert-manager-managed).
 
 ## Definition of Done
 
