@@ -17,9 +17,9 @@
 
 Prerequisites: OpenTofu >= 1.11, Podman
 
-- `pnpm infra:up` — create/update local environment
-- `pnpm infra:up:build` — rebuild app image + create/update local environment
-- `pnpm infra:destroy` — tear down local environment
+- `pnpm local:up` — create/update local environment
+- `pnpm local:up:build` — rebuild app image + create/update local environment
+- `pnpmlocal:destroy` — tear down local environment
 
 Local stack: kind K8s cluster, Traefik (Helm), cert-manager (Helm, self-signed CA), S2 (local S3), oauth2-proxy, workflow-engine app.
 Accessible at `https://localhost:8443` (self-signed cert issued by an in-cluster CA; browser warns because the CA is not in the host trust store).

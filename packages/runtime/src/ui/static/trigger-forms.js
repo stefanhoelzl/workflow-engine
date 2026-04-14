@@ -53,7 +53,6 @@ class EditorInlineMultiple extends Jedison.EditorMultiple {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: called from HTML onclick/ontoggle attributes
 function initForm(details) {
 	if (!details.open || details._jedison) {
 		return;
@@ -78,7 +77,6 @@ function initForm(details) {
 	}
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: called from HTML onclick attributes
 function submitEvent(btn, eventType) {
 	const details = btn.closest(".event-details");
 	const jedison = details._jedison;
@@ -96,3 +94,16 @@ function submitEvent(btn, eventType) {
 			target.innerHTML = html;
 		});
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+	for (const details of document.querySelectorAll(".event-details")) {
+		details.addEventListener("toggle", () => {
+			initForm(details);
+		});
+	}
+	for (const btn of document.querySelectorAll(".submit-btn[data-event-type]")) {
+		btn.addEventListener("click", () => {
+			submitEvent(btn, btn.dataset.eventType);
+		});
+	}
+});

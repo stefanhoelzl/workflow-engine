@@ -9,6 +9,7 @@
 		"start": "vite-node src/main.ts"
 	},
 	"dependencies": {
+		"@alpinejs/csp": "3.15.11",
 		"@aws-sdk/client-s3": "^3.1026.0",
 		"@duckdb/node-api": "1.5.1-r.1",
 		"@hono/node-server": "^1.19.12",

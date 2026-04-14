@@ -171,7 +171,7 @@ function truncate(s: string, max: number): string {
 	return s.length > max ? `${s.slice(0, max - 1)}\u2026` : s;
 }
 
-function buildTipJson(e: TimelineEvent, colorName: string, ds: string): string {
+function buildFullEventJson(e: TimelineEvent, ds: string): string {
 	const fullEvent: Record<string, unknown> = {
 		id: e.id,
 		type: e.type,
@@ -191,15 +191,15 @@ function buildTipJson(e: TimelineEvent, colorName: string, ds: string): string {
 	if (e.logs) {
 		fullEvent.logs = typeof e.logs === "string" ? JSON.parse(e.logs) : e.logs;
 	}
-	return JSON.stringify({
-		type: e.type,
-		state: ds,
-		color: colorName,
-		event: JSON.stringify(fullEvent, null, 2),
-	});
+	return JSON.stringify(fullEvent, null, 2);
 }
 
-function renderEventNode(node: LayoutNode, tipJson: string, ds: string) {
+function renderEventNode(
+	node: LayoutNode,
+	colorName: string,
+	ds: string,
+	eventJson: string,
+) {
 	const e = node.event;
 	const fill = stateColor(ds);
 	const isSkipped = ds === "skipped";
@@ -209,15 +209,23 @@ function renderEventNode(node: LayoutNode, tipJson: string, ds: string) {
 		: `fill="${fill}"`;
 
 	return html`<g class="node"
-     data-tip="${tipJson}"
-     @mouseenter="clearTimeout(_tipTimer); let r = $el.getBoundingClientRect(); tip = JSON.parse($el.getAttribute('data-tip')); tipX = r.left + r.width/2 - 140; tipY = r.bottom + 8"
-     @mouseleave="_tipTimer = setTimeout(() => tip = null, 100)">
+     data-type="${e.type}"
+     data-state="${ds}"
+     data-color="${colorName}"
+     data-event="${eventJson}"
+     @mouseenter="showTip($el)"
+     @mouseleave="scheduleHide()">
     <circle cx="${node.x}" cy="${node.y}" r="${EVENT_RADIUS}" ${raw(circleAttrs)} class="node-circle"/>
     <text x="${node.x}" y="${node.y + LABEL_OFFSET_Y}" text-anchor="middle" class="node-label">${e.type}</text>
   </g>`;
 }
 
-function renderActionNode(node: LayoutNode, tipJson: string, ds: string) {
+function renderActionNode(
+	node: LayoutNode,
+	colorName: string,
+	ds: string,
+	eventJson: string,
+) {
 	const e = node.event;
 	const actionName = e.targetAction ?? "";
 	const displayName = truncate(actionName, MAX_ACTION_CHARS);
@@ -248,9 +256,12 @@ function renderActionNode(node: LayoutNode, tipJson: string, ds: string) {
 		: `stroke="${border}" stroke-width="1.5"`;
 
 	return html`<g class="node"
-     data-tip="${tipJson}"
-     @mouseenter="clearTimeout(_tipTimer); let r = $el.getBoundingClientRect(); tip = JSON.parse($el.getAttribute('data-tip')); tipX = r.left + r.width/2 - 140; tipY = r.bottom + 8"
-     @mouseleave="_tipTimer = setTimeout(() => tip = null, 100)">
+     data-type="${e.type}"
+     data-state="${ds}"
+     data-color="${colorName}"
+     data-event="${eventJson}"
+     @mouseenter="showTip($el)"
+     @mouseleave="scheduleHide()">
     <rect x="${pillX}" y="${pillY}" width="${pillWidth}" height="${PILL_HEIGHT}" rx="${PILL_HEIGHT / 2}" fill="var(--bg-surface)" ${raw(rectStroke)}/>
     <circle cx="${dotCx}" cy="${node.y}" r="${PILL_DOT_RADIUS}" ${raw(dotAttrs)}/>
     <text x="${textX}" y="${node.y + TEXT_VERTICAL_OFFSET}" text-anchor="start" class="node-action">${displayName}</text>
@@ -261,12 +272,12 @@ function renderNode(node: LayoutNode) {
 	const e = node.event;
 	const ds = displayState(e);
 	const colorName = stateColorName(ds);
-	const tipJson = buildTipJson(e, colorName, ds);
+	const eventJson = buildFullEventJson(e, ds);
 
 	if (e.targetAction) {
-		return renderActionNode(node, tipJson, ds);
+		return renderActionNode(node, colorName, ds, eventJson);
 	}
-	return renderEventNode(node, tipJson, ds);
+	return renderEventNode(node, colorName, ds, eventJson);
 }
 
 function collectNodes(node: LayoutNode): LayoutNode[] {

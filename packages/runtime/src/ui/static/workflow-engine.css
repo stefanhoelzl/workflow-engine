@@ -544,3 +544,136 @@ body {
 	color: var(--text-muted);
 	font-size: 14px;
 }
+
+/* Dashboard page — header stats */
+.stats {
+	display: flex;
+	gap: 16px;
+	font-size: 13px;
+	color: var(--text-secondary);
+}
+
+.stat {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.stat-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.stat-dot[data-color="yellow"] {
+	background: var(--yellow);
+}
+.stat-dot[data-color="red"] {
+	background: var(--red);
+}
+.stat-dot[data-color="green"] {
+	background: var(--green);
+}
+
+/* Dashboard page — event-type multiselect dropdown */
+.event-type-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.event-type-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border-radius: var(--radius-sm);
+	font-size: 12px;
+	font-family: var(--font-mono);
+	color: var(--text-secondary);
+	cursor: pointer;
+}
+
+.event-type-option:hover {
+	background: var(--bg-hover, var(--bg-surface));
+}
+
+.event-type-option input[type="checkbox"] {
+	accent-color: var(--accent);
+}
+
+.filter-btn-caret {
+	margin-left: 4px;
+	font-size: 10px;
+}
+
+/* Dashboard page — entries */
+.entry-type {
+	font-weight: 600;
+	font-size: 14px;
+	font-family: var(--font-mono);
+	flex: 1;
+}
+
+.entry-meta {
+	display: flex;
+	gap: 16px;
+	font-size: 12px;
+	color: var(--text-muted);
+	align-items: center;
+}
+
+.entry-meta span {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.timeline-container {
+	border-top: 1px solid var(--border);
+	background: var(--bg-surface);
+	padding: 24px;
+	display: none;
+	max-height: 50vh;
+	overflow: auto;
+}
+
+.entry.expanded .timeline-container {
+	display: block;
+}
+
+/* Dashboard page — tooltip internals */
+.tooltip-title .badge {
+	margin-left: auto;
+}
+
+/* Dashboard page — timeline SVG */
+.timeline-svg {
+	overflow: visible;
+}
+
+.node {
+	cursor: pointer;
+}
+.node .node-circle {
+	transition: r 0.15s ease;
+}
+.node:hover .node-circle {
+	r: 10;
+}
+.node .node-label {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	fill: var(--text);
+}
+.node .node-action {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	fill: var(--text-secondary);
+	font-weight: 600;
+}
+.edge-line {
+	stroke: var(--border);
+	stroke-width: 2;
+	fill: none;
+}
