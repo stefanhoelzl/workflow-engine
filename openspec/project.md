@@ -8,7 +8,7 @@ A lightweight, event-driven workflow automation service. Users author workflows 
 
 - **Runtime**: Node.js (LTS)
 - **Language**: TypeScript (strict mode)
-- **Sandbox**: `quickjs-emscripten` — QuickJS WASM with fresh context per invocation
+- **Sandbox**: `quickjs-emscripten` via `@workflow-engine/sandbox` — QuickJS WASM. One sandbox per workflow module load; reused across events for that workflow; disposed on workflow unload.
 - **HTTP**: Hono with `@hono/node-server`
 - **Build**: Vite with Rolldown, custom plugin for per-action bundling and manifest generation
 - **Schema/Types**: Zod v4 for event schemas (compile-time type inference via `z.infer<>`, runtime payload validation)
@@ -24,8 +24,8 @@ A lightweight, event-driven workflow automation service. Users author workflows 
 - **Single source of truth**: `workflow.ts` defines all wiring. Actions are plain handler functions with no embedded metadata.
 - **Uniform async**: Every trigger is async. HTTP triggers return a static response immediately and emit events through the bus. No synchronous execution path.
 - **Fan-out**: When an event has multiple subscribers, the scheduler creates a targeted copy for each via `EventSource.fork()`. Subscribers run independently. One failure does not block others.
-- **Stateless actions**: Each invocation is independent. Fresh QuickJS context per invocation, JSON in / JSON out, no shared state.
-- **Controlled host API**: Actions can read `ctx.event` and `ctx.env`, and call `ctx.emit()` and `ctx.fetch()`. No direct fs, net, process, or require access.
+- **Workflow-scoped isolation**: One QuickJS context per loaded workflow; reused across run() calls. Module-level state may persist across runs within the same workflow. Cross-workflow isolation is preserved by per-workflow sandbox instances.
+- **Controlled host API**: Actions can read `ctx.event` and `ctx.env`, and call the global `emit(type, payload)` and global `fetch()`. No direct fs, net, process, or require access. All host/sandbox method calls marshal arguments and return values via JSON.
 - **Append-only persistence**: Event state files are never modified. Each state transition writes a new file. Done events are archived. Files are independently useful for auditing.
 - **Interface-first**: Persistence is abstracted behind `StorageBackend` (FS and S3 implementations). Event distribution is abstracted behind `BusConsumer`. New backends can be added without changing the runtime.
 
@@ -108,14 +108,16 @@ Infrastructure lives in `infrastructure/` with `modules/` (shared) and `dev/` (e
 packages/
 ├── sdk/              # @workflow-engine/sdk
 ├── vite-plugin/      # @workflow-engine/vite-plugin
+├── sandbox/          # @workflow-engine/sandbox
 └── runtime/          # @workflow-engine/runtime
 workflows/            # User-defined workflows (build target, not a package)
 infrastructure/       # OpenTofu IaC (modules + dev environment)
 ```
 
-- **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, `ManifestSchema`, Zod re-exports.
-- **vite-plugin**: Vite plugin that imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file, enforces TypeScript type checking on production builds.
-- **runtime**: HTTP server (Hono), scheduler, QuickJS WASM sandbox, EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
+- **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, ambient `emit()` global declaration, `ManifestSchema`, Zod re-exports.
+- **vite-plugin**: Vite plugin that imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file with npm polyfills via `@workflow-engine/sandbox-globals`, enforces TypeScript type checking on production builds.
+- **sandbox**: QuickJS WASM VM lifecycle, host-bridged globals (console, timers, performance, crypto, `__hostFetch`), `sandbox(source, methods, options) → { run(name, ctx, extraMethods), dispose() }` public API. JSON-only host/sandbox boundary.
+- **runtime**: HTTP server (Hono), scheduler (owns per-workflow sandbox map), EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
 - **workflows**: Workspace member containing user-authored `.ts` workflow files. Built by the vite-plugin into `workflows/dist/<name>/manifest.json` + per-action `.js` files.
 
 ## Important Constraints

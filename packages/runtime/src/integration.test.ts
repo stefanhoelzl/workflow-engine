@@ -1,10 +1,15 @@
+import type {
+	MethodMap,
+	RunResult,
+	Sandbox,
+	SandboxOptions,
+} from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import type { Action } from "./actions/index.js";
-import { type ActionContext, createActionContext } from "./context/index.js";
-import { createEventBus } from "./event-bus/index.js";
+import { createActionContext } from "./context/index.js";
+import { createEventBus, type RuntimeEvent } from "./event-bus/index.js";
 import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
-import type { Sandbox } from "./sandbox/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { createApp } from "./services/server.js";
 import { HttpTriggerRegistry, httpTriggerMiddleware } from "./triggers/http.js";
@@ -18,6 +23,16 @@ const defaultSchemas: Record<string, { parse(data: unknown): unknown }> = {
 
 const CORR_PREFIX = /^corr_/;
 
+interface RunCall {
+	source: string;
+	name: string;
+	ctx: {
+		event: { name: string; payload: unknown };
+		env: Record<string, string>;
+	};
+	extras?: MethodMap;
+}
+
 describe("integration: HTTP → trigger → fan-out → action → emit → fan-out", () => {
 	it("processes a full chaining pipeline with fan-out after emit", async () => {
 		const registry = new HttpTriggerRegistry();
@@ -29,21 +44,49 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		});
 
 		const workQueue = createWorkQueue();
-		const bus = createEventBus([workQueue]);
-		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(source);
-
-		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
-		const sandbox: Sandbox = {
-			async spawn(actionSource, ctx) {
-				spawnCalls.push({ source: actionSource, ctx });
-				// Simulate the validateOrder action emitting
-				if (actionSource.includes("validateOrder")) {
-					await ctx.emit("order.validated", ctx.event.payload);
-				}
-				return { ok: true, logs: [] };
+		const emitted: RuntimeEvent[] = [];
+		const collector = {
+			async handle(event: RuntimeEvent) {
+				emitted.push(event);
+			},
+			async bootstrap() {
+				/* no-op */
 			},
 		};
+		const bus = createEventBus([workQueue, collector]);
+		const source = createEventSource({ events: defaultSchemas }, bus);
+		const createContext = createActionContext();
+
+		const runCalls: RunCall[] = [];
+		const sandboxFactory = async (
+			actionSource: string,
+			_methods: MethodMap,
+			_opts?: SandboxOptions,
+		): Promise<Sandbox> => ({
+			run: async (name, ctx, extras) => {
+				const call: RunCall = {
+					source: actionSource,
+					name,
+					ctx: ctx as RunCall["ctx"],
+				};
+				if (extras) {
+					call.extras = extras;
+				}
+				runCalls.push(call);
+				// Simulate the validateOrder action emitting — invoke the per-run
+				// emit host method installed by the scheduler.
+				if (actionSource.includes("validateOrder") && extras?.emit) {
+					await extras.emit(
+						"order.validated",
+						(ctx as RunCall["ctx"]).event.payload,
+					);
+				}
+				return { ok: true, result: undefined, logs: [] } satisfies RunResult;
+			},
+			dispose: () => {
+				/* no-op */
+			},
+		});
 
 		const actions: Action[] = [
 			{
@@ -74,7 +117,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			source,
 			{ actions },
 			createContext,
-			sandbox,
+			{ sandboxFactory },
 		);
 		scheduler.start();
 
@@ -96,26 +139,23 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		await scheduler.stop();
 
 		// validateOrder + fulfillOrder + notifyCustomer
-		expect(spawnCalls).toHaveLength(3);
+		expect(runCalls).toHaveLength(3);
 
-		const fulfillCall = spawnCalls.find((c) =>
-			c.source.includes("fulfillOrder"),
-		);
-		const notifyCall = spawnCalls.find((c) =>
+		const fulfillCall = runCalls.find((c) => c.source.includes("fulfillOrder"));
+		const notifyCall = runCalls.find((c) =>
 			c.source.includes("notifyCustomer"),
 		);
 		expect(fulfillCall).toBeDefined();
 		expect(notifyCall).toBeDefined();
 
-		// biome-ignore lint/style/noNonNullAssertion: test assertions guarantee elements exist
+		// Guest ctx includes event name + payload; correlation IS NOT on guest ctx.
+		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 		const fulfill = fulfillCall!;
-		// biome-ignore lint/style/noNonNullAssertion: test assertions guarantee elements exist
+		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
 		const notify = notifyCall!;
 
-		expect(fulfill.ctx.event.correlationId).toBe(
-			notify.ctx.event.correlationId,
-		);
-		expect(fulfill.ctx.event.correlationId).toMatch(CORR_PREFIX);
+		expect(fulfill.ctx.event.name).toBe("order.validated");
+		expect(notify.ctx.event.name).toBe("order.validated");
 
 		// Payload includes the full HTTP context shape
 		expect(fulfill.ctx.event.payload).toHaveProperty("body");
@@ -123,8 +163,18 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		expect(fulfill.ctx.event.payload).toHaveProperty("url");
 		expect(fulfill.ctx.event.payload).toHaveProperty("method");
 
-		expect(fulfill.ctx.event.parentEventId).toBeDefined();
-		expect(notify.ctx.event.parentEventId).toBeDefined();
+		// Correlation + parentEventId are tracked on the RuntimeEvents, not the
+		// guest ctx. Pull fulfill/notify from the emitted stream.
+		const validated = emitted.filter(
+			(e) => e.type === "order.validated" && e.targetAction !== undefined,
+		);
+		expect(validated.length).toBeGreaterThanOrEqual(2);
+		const corr = validated.at(0)?.correlationId;
+		expect(corr).toMatch(CORR_PREFIX);
+		for (const ev of validated) {
+			expect(ev.correlationId).toBe(corr);
+			expect(ev.parentEventId).toBeDefined();
+		}
 	});
 
 	it("propagates headers and url through the full pipeline", async () => {
@@ -139,15 +189,22 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const workQueue = createWorkQueue();
 		const bus = createEventBus([workQueue]);
 		const source = createEventSource({ events: defaultSchemas }, bus);
-		const createContext = createActionContext(source);
+		const createContext = createActionContext();
 
-		const spawnCalls: { source: string; ctx: ActionContext }[] = [];
-		const sandbox: Sandbox = {
-			async spawn(actionSource, ctx) {
-				spawnCalls.push({ source: actionSource, ctx });
-				return { ok: true, logs: [] };
+		const runCalls: RunCall[] = [];
+		const sandboxFactory = async (actionSource: string): Promise<Sandbox> => ({
+			run: async (name, ctx) => {
+				runCalls.push({
+					source: actionSource,
+					name,
+					ctx: ctx as RunCall["ctx"],
+				});
+				return { ok: true, result: undefined, logs: [] } satisfies RunResult;
 			},
-		};
+			dispose: () => {
+				/* no-op */
+			},
+		});
 
 		const actions: Action[] = [
 			{
@@ -164,7 +221,7 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 			source,
 			{ actions },
 			createContext,
-			sandbox,
+			{ sandboxFactory },
 		);
 		scheduler.start();
 
@@ -184,9 +241,9 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		await new Promise((r) => setTimeout(r, 100));
 		await scheduler.stop();
 
-		expect(spawnCalls).toHaveLength(1);
+		expect(runCalls).toHaveLength(1);
 		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-		const ctx = spawnCalls[0]!.ctx;
+		const ctx = runCalls[0]!.ctx;
 		const payload = ctx.event.payload as {
 			body: { orderId: string };
 			headers: Record<string, string>;

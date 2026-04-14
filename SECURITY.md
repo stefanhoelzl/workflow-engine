@@ -112,7 +112,7 @@ sections must append (§7 and onward), not renumber.
 
 ### Trust level
 
-**UNTRUSTED.** All code inside `sandbox.spawn(source, ctx)` is
+**UNTRUSTED.** All code inside `sandbox(source, methods).run(name, ctx, extraMethods)` is
 user-authored action code. Treat it as hostile: it may attempt to read
 host state, reach network services it shouldn't, run indefinitely, or
 exfiltrate secrets through any channel available to it.
@@ -123,12 +123,31 @@ new capability across the sandbox boundary?*
 
 ### Entry points
 
-- `sandbox.spawn(source, ctx)` — executes action source in a fresh
-  QuickJS WASM context with a bridged `ctx` object.
+- `sandbox(source, methods, options)` — constructs a QuickJS WASM
+  context, installs host-bridged globals and host methods, and
+  evaluates the workflow module source once.
+- `Sandbox.run(name, ctx, extraMethods)` — invokes a named export from
+  the workflow module with a JSON-shaped `ctx` argument. Host-provided
+  methods in `methods` (construction-time) and `extraMethods` (per-run)
+  are installed as top-level globals inside the sandbox.
+- All arguments and return values crossing the host/sandbox boundary
+  via consumer-provided methods are JSON-serializable. Host object
+  references, closures, and proxies never cross.
 - Globals exposed inside the sandbox: `console.*`, `performance.now`,
   `crypto.*` (full WebCrypto), `setTimeout` / `setInterval` /
-  `clearTimeout` / `clearInterval`, `ctx.event`, `ctx.env`, `ctx.emit`,
-  `fetch` (via `__hostFetch` bridge).
+  `clearTimeout` / `clearInterval`, `__hostFetch` (for the workflow
+  bundle's fetch polyfill chain), plus the host methods registered via
+  `methods` and `extraMethods` (the runtime installs `emit` as a
+  per-run extra method that closes over the currently-dispatched
+  event).
+- `ctx` is the runtime's JSON-composed view of event and env:
+  `{ event: { name, payload }, env }`. It is a snapshot passed as the
+  first argument to the exported handler. The SDK's
+  `workflow.action({...})` builder wraps each handler at authoring
+  time to inject a typed `ctx.emit` method that closes over the per-run
+  `emit` global. `ctx.emit` is the single workflow-author-facing path
+  for emitting events; payload validation happens host-side via
+  `EventSource.derive` (see the Mitigations section).
 - No other globals are present. `process`, `require`, `fs`, and Node
   APIs are absent.
 
@@ -148,25 +167,40 @@ new capability across the sandbox boundary?*
 
 ### Mitigations (current)
 
-- **Fresh context per invocation.** `newRuntime()` + `newContext()` are
-  called on every `spawn`; `vm` and `runtime` are disposed in a
-  `finally` block. No state survives across actions.
-  (`packages/runtime/src/sandbox/index.ts`)
+- **Fresh context per workflow module load.** `newRuntime()` +
+  `newContext()` are called once when the scheduler first dispatches an
+  event to a workflow. The context is reused across all subsequent
+  `run()` calls for that workflow. Module-level state and the internal
+  opaque-reference store persist across runs within the same workflow.
+  Disposal happens on workflow reload/unload via `Sandbox.dispose()`.
+  (`packages/sandbox/src/index.ts`, `packages/runtime/src/services/scheduler.ts`)
+- **Cross-workflow isolation preserved.** Each workflow gets its own
+  `Sandbox` instance with its own QuickJS context. State leaking within
+  a workflow is self-leakage (same trust domain — one author, one
+  manifest, one deploy). Cross-workflow leakage is physically
+  impossible: separate VMs, separate opaque stores.
 - **No Node.js surface.** QuickJS WASM has no built-in `process`,
   `require`, `fs`, `child_process`, or network APIs. Only the explicit
-  globals set in `packages/runtime/src/sandbox/globals.ts` are present.
-- **Allowlist of globals.** Adding a global requires editing `globals.ts`
-  explicitly — there is no dynamic extension path.
-- **Event and env are JSON-serialized.** `ctx.event` and `ctx.env` are
-  injected via `vm.evalCode` with `JSON.stringify`. The sandbox receives
-  a copy; mutations inside do not leak out.
-  (`packages/runtime/src/sandbox/bridge.ts` lines 16–47)
+  globals set in `packages/sandbox/src/globals.ts` and the construction-time
+  + per-run host methods are present.
+- **Allowlist of globals.** Adding a built-in bridge requires editing
+  `globals.ts` explicitly. Consumer-provided methods are declared as a
+  plain `Record<string, async fn>` — the Bridge primitive
+  (`sync`/`async`/`arg`/`marshal`/`opaque-ref`) is fully internal to the
+  sandbox package and cannot be reached by consumers.
+- **JSON-only host/sandbox boundary.** Arguments and return values of
+  host-provided methods are JSON-marshalled. Host object references,
+  closures, and proxies cannot cross. `ctx.event` and `ctx.env` are
+  JSON values composed by the runtime (see
+  `packages/runtime/src/services/scheduler.ts`).
 - **Per-action env scoping.** `ctx.env` exposes only the keys declared by
   that action's `env` record. Other workflows' env vars are not reachable
   (mitigates S6 at the host side).
-- **Emit payload validation.** `ctx.emit(type, payload)` is validated
-  against the declared Zod schema in the host before the event is
-  published (limits S7 to schema-shaped data).
+- **Emit payload validation.** The runtime's `emit` extra-method closes
+  over the current event and calls `EventSource.derive(event, type,
+  payload, actionName)`, which validates the payload against the
+  declared Zod schema before the event is published (limits S7 to
+  schema-shaped data).
   (`packages/runtime/src/event-source.ts`)
 - **Static analysis.** TypeScript strict mode and Biome `all` rules are
   enabled to catch unsafe bridge patterns early.
@@ -184,6 +218,7 @@ exists. Each item should be tracked as a follow-up security task.
 | R-S4 | `__hostFetch` has **no URL allowlist/denylist** at the app layer — the sandbox can reach any public URL the pod can reach. Infrastructure half (RFC1918 + cloud metadata) closed by K8s NetworkPolicy (§5). Public URL allowlist is a pending app-layer control. | S5 partial | **High priority** (app-layer half) |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress | S5 in-cluster / metadata half mitigated | **Resolved** (see §5 R-I1 / R-I9) |
 | R-S6 | Action `env` is resolved at build time; secrets baked into the action's declared env appear in event logs if emitted back out via `ctx.emit` | S7 partial | Behavioural; document per-action |
+| R-S7 | Per-workflow opaque-reference store grows unboundedly over sandbox lifetime (crypto-heavy workflows generating many `CryptoKey` values) | Memory growth | v1 limitation; monitor in production |
 
 ### Rules for AI agents
 
@@ -196,29 +231,43 @@ exists. Each item should be tracked as a follow-up security task.
    number and validate it with Zod on the host side before acting on it.
 3. **NEVER expose Node.js APIs, `process`, `require`, or filesystem
    access to sandbox code** — directly or through a bridge wrapper.
-4. **NEVER reuse a sandbox context across invocations.** Fresh
-   `newRuntime()` + `newContext()` per `spawn`; always dispose in a
-   `finally` block.
+4. **NEVER reuse a sandbox context across workflows.** Each loaded
+   workflow SHALL have its own `Sandbox` instance. Within a single
+   workflow, reuse is permitted and expected — module-level state
+   persists across `run()` calls for the same workflow. Disposal happens
+   on workflow reload/unload; always call `Sandbox.dispose()` when
+   evicting from the scheduler's sandbox map.
 5. **NEVER return a host `Promise`'s original reference to the sandbox.**
-   Use the existing `bridge-factory` deferred-promise pattern, which
-   translates host results through `vm.newPromise()`.
-6. **When adding an outbound capability (fetch, emit, etc.), explicitly
+   The sandbox-internal Bridge primitive handles deferred-promise
+   translation via `vm.newPromise()`; consumers provide plain async
+   functions and let the sandbox marshal.
+6. **NEVER expose the Bridge primitive through the public API.**
+   `sync`/`async`/`arg`/`marshal`/`storeOpaque`/`derefOpaque`/`opaqueRef`
+   are sandbox-internal implementation details. Consumers register host
+   methods only via `methods` (construction-time) and `extraMethods`
+   (per-run). All arguments and return values on the public boundary
+   are JSON.
+7. **When adding an outbound capability (fetch, emit, etc.), explicitly
    consider SSRF and exfiltration.** If there is no URL allowlist today,
    say so in the change proposal; do not claim the sandbox "prevents"
    the action from reaching an internal service.
-7. **Sandbox-related changes MUST include security tests** (per
+8. **Sandbox-related changes MUST include security tests** (per
    `openspec/config.yaml` task rules) covering: escape attempts, global
-   visibility, context disposal, and any new bridge API's failure modes.
+   visibility, sandbox disposal, cross-sandbox opaque-ref isolation,
+   extraMethods collision rejection, and any new bridge API's failure
+   modes.
 
 ### File references
 
-- Sandbox factory: `packages/runtime/src/sandbox/index.ts`
-- Host bridge (ctx): `packages/runtime/src/sandbox/bridge.ts`
-- Bridge factory (promise / host-function plumbing): `packages/runtime/src/sandbox/bridge-factory.ts`
-- Globals allowlist: `packages/runtime/src/sandbox/globals.ts`
-- WebCrypto bridge: `packages/runtime/src/sandbox/crypto.ts`
+- Sandbox factory + `run()`: `packages/sandbox/src/index.ts`
+- Host fetch bridge: `packages/sandbox/src/bridge.ts`
+- Bridge primitive (internal; promise / host-function plumbing): `packages/sandbox/src/bridge-factory.ts`
+- Host-method installer (internal): `packages/sandbox/src/install-host-methods.ts`
+- Globals allowlist: `packages/sandbox/src/globals.ts`
+- WebCrypto bridge: `packages/sandbox/src/crypto.ts`
+- Scheduler (owns per-workflow sandbox map + installs per-run `emit`): `packages/runtime/src/services/scheduler.ts`
 - Payload validation: `packages/runtime/src/event-source.ts`
-- OpenSpec spec: `openspec/specs/action-sandbox/spec.md`
+- OpenSpec spec: `openspec/specs/sandbox/spec.md`
 - OpenSpec spec: `openspec/specs/context/spec.md`
 
 ## §3 Webhook Ingress

@@ -1,4 +1,8 @@
 {
 	"files": [],
-	"references": [{ "path": "packages/runtime" }, { "path": "workflows" }]
+	"references": [
+		{ "path": "packages/sandbox" },
+		{ "path": "packages/runtime" },
+		{ "path": "workflows" }
+	]
 }

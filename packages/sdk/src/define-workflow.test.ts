@@ -133,7 +133,7 @@ describe("type-level: action handler context", () => {
 				on: "webhook.order",
 				emits: ["order.parsed"],
 				handler: async (ctx) => {
-					ctx.emit("order.parsed", { total: 42 });
+					await ctx.emit("order.parsed", { total: 42 });
 				},
 			});
 	});
@@ -150,7 +150,7 @@ describe("type-level: action handler context", () => {
 				emits: ["order.parsed"],
 				handler: async (ctx) => {
 					// @ts-expect-error 'webhook.order' is a trigger event, not in emits
-					ctx.emit("webhook.order", {});
+					await ctx.emit("webhook.order", {});
 				},
 			});
 	});
@@ -168,7 +168,7 @@ describe("type-level: action handler context", () => {
 				emits: ["order.parsed"],
 				handler: async (ctx) => {
 					// @ts-expect-error 'order.shipped' not in emits
-					ctx.emit("order.shipped", {});
+					await ctx.emit("order.shipped", {});
 				},
 			});
 	});
@@ -185,7 +185,7 @@ describe("type-level: action handler context", () => {
 				emits: ["order.parsed"],
 				handler: async (ctx) => {
 					// @ts-expect-error 'order.typo' is not a valid event
-					ctx.emit("order.typo", {});
+					await ctx.emit("order.typo", {});
 				},
 			});
 	});
@@ -202,7 +202,7 @@ describe("type-level: action handler context", () => {
 				emits: ["order.parsed"],
 				handler: async (ctx) => {
 					// @ts-expect-error wrong payload type
-					ctx.emit("order.parsed", { orderId: "abc" });
+					await ctx.emit("order.parsed", { orderId: "abc" });
 				},
 			});
 	});
@@ -218,7 +218,7 @@ describe("type-level: action handler context", () => {
 				on: "webhook.order",
 				handler: async (ctx) => {
 					// @ts-expect-error no emits declared
-					ctx.emit("order.parsed", { total: 1 });
+					await ctx.emit("order.parsed", { total: 1 });
 				},
 			});
 	});
@@ -516,7 +516,7 @@ describe("workflow builder runtime behavior", () => {
 		expect(compiled.triggers[0]).not.toHaveProperty("event");
 	});
 
-	it("action() returns the handler function directly (reference equality)", () => {
+	it("action() returns a wrapped handler whose reference matches compile output", () => {
 		const wf = createWorkflow("test").trigger(
 			"webhook.test",
 			http({ path: "test" }),
@@ -525,7 +525,11 @@ describe("workflow builder runtime behavior", () => {
 		const handler = async () => {};
 		const returned = wf.action({ on: "webhook.test", handler });
 
-		expect(returned).toBe(handler);
+		// The wrapper (which injects ctx.emit) is what authors export and what
+		// vite-plugin identifies via reference equality against compile output.
+		expect(returned).not.toBe(handler);
+		const compiled = wf.compile();
+		expect(compiled.actions[0]?.handler).toBe(returned);
 	});
 
 	it("preserves action emits and env", () => {

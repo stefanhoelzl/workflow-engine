@@ -13,7 +13,6 @@ import { createWorkQueue } from "./event-bus/work-queue.js";
 import { createEventSource } from "./event-source.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
-import { createSandbox } from "./sandbox/index.js";
 import type { Service } from "./services/index.js";
 import { createScheduler } from "./services/scheduler.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
@@ -111,16 +110,9 @@ async function init() {
 
 	// Wire up event source and scheduler using registry getters
 	const source = createEventSource(registry, eventBus);
-	const createContext = createActionContext(source);
-	const sandbox = await createSandbox();
+	const createContext = createActionContext();
 
-	const scheduler = createScheduler(
-		workQueue,
-		source,
-		registry,
-		createContext,
-		sandbox,
-	);
+	const scheduler = createScheduler(workQueue, source, registry, createContext);
 
 	const server = createServer(
 		config.port,

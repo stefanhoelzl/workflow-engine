@@ -191,11 +191,11 @@ interface ActionContext<
 	Env extends string = never,
 > {
 	event: Event<Payload>;
+	env: Readonly<Record<Env, string>>;
 	emit: <K extends keyof Events & string>(
 		type: K,
 		payload: Events[K],
 	) => Promise<void>;
-	env: Readonly<Record<Env, string>>;
 }
 
 // --- EnvRef ---
@@ -472,14 +472,36 @@ class WorkflowBuilderImpl {
 		env?: Record<string, string | EnvRef>;
 		handler: (...args: unknown[]) => Promise<void>;
 	}): (...args: unknown[]) => Promise<void> {
+		// Wrap the user handler to inject a typed `emit` onto ctx. The underlying
+		// `emit` global is installed by the runtime as a per-run host method;
+		// wrapping at authoring time lets workflow authors call `ctx.emit(type,
+		// payload)` with per-action narrowing from the ActionContext generics.
+		const { handler } = config;
+		const wrapped = (ctx: unknown) => {
+			const boundCtx = {
+				...(ctx as object),
+				emit: (type: string, payload: unknown): Promise<void> => {
+					const g = globalThis as {
+						emit?: (type: string, payload: unknown) => Promise<void>;
+					};
+					if (typeof g.emit !== "function") {
+						throw new Error(
+							"emit is not installed; the runtime must register it as an extraMethod",
+						);
+					}
+					return g.emit(type, payload);
+				},
+			};
+			return handler(boundCtx);
+		};
 		this.#actions.push({
 			name: config.name,
 			on: config.on,
 			emits: config.emits ? [...config.emits] : [],
 			env: config.env ? resolveEnvRecord(config.env, this.#envSource) : {},
-			handler: config.handler,
+			handler: wrapped,
 		});
-		return config.handler;
+		return wrapped;
 	}
 
 	compile(): CompileOutput {
