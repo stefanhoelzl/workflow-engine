@@ -1,3 +1,4 @@
+import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { apiMiddleware } from "./api/index.js";
 import { createConfig } from "./config.js";
 import { createActionContext } from "./context/index.js";
@@ -112,7 +113,14 @@ async function init() {
 	const source = createEventSource(registry, eventBus);
 	const createContext = createActionContext();
 
-	const scheduler = createScheduler(workQueue, source, registry, createContext);
+	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
+	const scheduler = createScheduler(
+		workQueue,
+		source,
+		registry,
+		createContext,
+		{ sandboxFactory },
+	);
 
 	const server = createServer(
 		config.port,

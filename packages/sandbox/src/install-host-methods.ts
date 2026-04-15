@@ -28,6 +28,22 @@ function installMethods(
 	}
 }
 
+function installRpcMethods(
+	b: Bridge,
+	target: QuickJSHandle,
+	names: readonly string[],
+	sendRequest: (method: string, args: unknown[]) => Promise<unknown>,
+): void {
+	for (const name of names) {
+		b.async(target, name, {
+			method: name,
+			args: [b.arg.json.rest],
+			marshal: b.marshal.json,
+			impl: async (...args) => sendRequest(name, args),
+		});
+	}
+}
+
 function uninstallGlobals(b: Bridge, names: readonly string[]): void {
 	for (const name of names) {
 		b.vm.setProp(b.vm.global, name, b.vm.undefined);
@@ -35,4 +51,9 @@ function uninstallGlobals(b: Bridge, names: readonly string[]): void {
 }
 
 export type { HostMethod, MethodMap };
-export { installHostMethod, installMethods, uninstallGlobals };
+export {
+	installHostMethod,
+	installMethods,
+	installRpcMethods,
+	uninstallGlobals,
+};

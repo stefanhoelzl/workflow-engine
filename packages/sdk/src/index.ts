@@ -472,36 +472,21 @@ class WorkflowBuilderImpl {
 		env?: Record<string, string | EnvRef>;
 		handler: (...args: unknown[]) => Promise<void>;
 	}): (...args: unknown[]) => Promise<void> {
-		// Wrap the user handler to inject a typed `emit` onto ctx. The underlying
-		// `emit` global is installed by the runtime as a per-run host method;
-		// wrapping at authoring time lets workflow authors call `ctx.emit(type,
-		// payload)` with per-action narrowing from the ActionContext generics.
-		const { handler } = config;
-		const wrapped = (ctx: unknown) => {
-			const boundCtx = {
-				...(ctx as object),
-				emit: (type: string, payload: unknown): Promise<void> => {
-					const g = globalThis as {
-						emit?: (type: string, payload: unknown) => Promise<void>;
-					};
-					if (typeof g.emit !== "function") {
-						throw new Error(
-							"emit is not installed; the runtime must register it as an extraMethod",
-						);
-					}
-					return g.emit(type, payload);
-				},
-			};
-			return handler(boundCtx);
-		};
+		// The real SDK is used at authoring time (type checking, IDE completion)
+		// and at manifest-build time (compile()). The ctx.emit runtime shim lives
+		// in vite-plugin/src/sdk-stub.js, which replaces this module when the
+		// action is bundled for sandbox execution. Keeping the runtime wrapping
+		// in a single place avoids the two copies drifting. vite-plugin maps
+		// named exports to actions via reference equality (fn === action.handler),
+		// which still holds here because we register and return the same handler.
 		this.#actions.push({
 			name: config.name,
 			on: config.on,
 			emits: config.emits ? [...config.emits] : [],
 			env: config.env ? resolveEnvRecord(config.env, this.#envSource) : {},
-			handler: wrapped,
+			handler: config.handler,
 		});
-		return wrapped;
+		return config.handler;
 	}
 
 	compile(): CompileOutput {

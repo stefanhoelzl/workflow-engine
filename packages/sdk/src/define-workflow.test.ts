@@ -516,7 +516,7 @@ describe("workflow builder runtime behavior", () => {
 		expect(compiled.triggers[0]).not.toHaveProperty("event");
 	});
 
-	it("action() returns a wrapped handler whose reference matches compile output", () => {
+	it("action() returns the handler whose reference matches compile output", () => {
 		const wf = createWorkflow("test").trigger(
 			"webhook.test",
 			http({ path: "test" }),
@@ -525,11 +525,13 @@ describe("workflow builder runtime behavior", () => {
 		const handler = async () => {};
 		const returned = wf.action({ on: "webhook.test", handler });
 
-		// The wrapper (which injects ctx.emit) is what authors export and what
-		// vite-plugin identifies via reference equality against compile output.
-		expect(returned).not.toBe(handler);
+		// vite-plugin identifies the named export for each action via reference
+		// equality against compile output (`fn === action.handler`). The runtime
+		// ctx.emit wrapping lives in the sdk-stub used at bundle time; the real
+		// SDK just threads the raw handler through.
+		expect(returned).toBe(handler);
 		const compiled = wf.compile();
-		expect(compiled.actions[0]?.handler).toBe(returned);
+		expect(compiled.actions[0]?.handler).toBe(handler);
 	});
 
 	it("preserves action emits and env", () => {

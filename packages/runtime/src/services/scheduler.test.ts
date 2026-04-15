@@ -2,6 +2,7 @@ import type {
 	MethodMap,
 	RunResult,
 	Sandbox,
+	SandboxFactory,
 	SandboxOptions,
 } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
@@ -65,21 +66,33 @@ type RunHandler = (
 	extraMethods?: MethodMap,
 ) => Promise<RunResult>;
 
-function createMockSandboxFactory(
-	handler?: RunHandler,
-): (
-	source: string,
-	methods: MethodMap,
-	opts?: SandboxOptions,
-) => Promise<Sandbox> {
-	return async (): Promise<Sandbox> => ({
+function asSandboxFactory(
+	createFn: (
+		source: string,
+		methods: MethodMap,
+		opts?: SandboxOptions,
+	) => Promise<Sandbox>,
+): SandboxFactory {
+	return {
+		create: (source, opts) => createFn(source, {}, opts),
+		dispose: async () => {
+			/* no-op */
+		},
+	};
+}
+
+function createMockSandboxFactory(handler?: RunHandler): SandboxFactory {
+	return asSandboxFactory(async () => ({
 		run:
 			handler ??
 			(async () => ({ ok: true as const, result: undefined, logs: [] })),
 		dispose: () => {
 			/* no-op */
 		},
-	});
+		onDied: () => {
+			/* no-op */
+		},
+	}));
 }
 
 describe("createScheduler", () => {
@@ -243,18 +256,37 @@ describe("createScheduler", () => {
 	describe("sandbox reuse", () => {
 		it("reuses the same sandbox across multiple events for the same source", async () => {
 			const { bus, workQueue, source, stubContextFactory } = createTestSetup();
-			const factorySpy = vi.fn<
-				(s: string, m: MethodMap, o?: SandboxOptions) => Promise<Sandbox>
-			>(async () => ({
-				run: async () => ({
-					ok: true as const,
-					result: undefined,
-					logs: [],
-				}),
-				dispose: () => {
+			// Track how many unique Sandbox instances are constructed.
+			// The real factory caches by source; this stub mimics that.
+			let constructionCount = 0;
+			const cached = new Map<string, Sandbox>();
+			const sandboxFactory: SandboxFactory = {
+				create: async (source: string): Promise<Sandbox> => {
+					const existing = cached.get(source);
+					if (existing) {
+						return existing;
+					}
+					constructionCount += 1;
+					const sb: Sandbox = {
+						run: async () => ({
+							ok: true as const,
+							result: undefined,
+							logs: [],
+						}),
+						dispose: () => {
+							/* no-op */
+						},
+						onDied: () => {
+							/* no-op */
+						},
+					};
+					cached.set(source, sb);
+					return sb;
+				},
+				dispose: async () => {
 					/* no-op */
 				},
-			}));
+			};
 			const action: Action = {
 				name: "parseOrder",
 				on: "order.received",
@@ -267,7 +299,7 @@ describe("createScheduler", () => {
 				source,
 				{ actions: [action] },
 				stubContextFactory,
-				{ sandboxFactory: factorySpy },
+				{ sandboxFactory },
 			);
 
 			await bus.emit(makeEvent({ targetAction: "parseOrder" }));
@@ -279,7 +311,7 @@ describe("createScheduler", () => {
 			await started;
 
 			// Only one sandbox constructed across two events.
-			expect(factorySpy).toHaveBeenCalledTimes(1);
+			expect(constructionCount).toBe(1);
 		});
 	});
 

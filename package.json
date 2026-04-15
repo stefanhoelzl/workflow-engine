@@ -12,7 +12,7 @@
 		"check": "tsc --build",
 		"lint": "biome check --error-on-warnings .",
 		"format": "biome check --write . && tofu fmt -recursive infrastructure/",
-		"test": "vitest run",
+		"test": "tsc --build && vitest run",
 		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val-local,tofu-val-upcloud,tofu-val-persistence \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/local validate\" \"tofu -chdir=infrastructure/upcloud validate\" \"tofu -chdir=infrastructure/upcloud/persistence validate\"",
 		"dev": "tsx scripts/dev.ts",
 		"postinstall": "(tofu -chdir=infrastructure/local init || true) && (tofu -chdir=infrastructure/upcloud init -backend=false || true) && (tofu -chdir=infrastructure/upcloud/persistence init -backend=false || true)",

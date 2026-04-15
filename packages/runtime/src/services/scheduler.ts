@@ -1,9 +1,4 @@
-import {
-	sandbox as defaultSandbox,
-	type MethodMap,
-	type Sandbox,
-	type SandboxOptions,
-} from "@workflow-engine/sandbox";
+import type { SandboxFactory } from "@workflow-engine/sandbox";
 import type { Action } from "../actions/index.js";
 import type { ActionContext } from "../context/index.js";
 import type { RuntimeEvent } from "../event-bus/index.js";
@@ -17,14 +12,8 @@ type ActionContextFactory = (
 	env: Record<string, string>,
 ) => ActionContext;
 
-type SandboxFactory = (
-	source: string,
-	methods: MethodMap,
-	options?: SandboxOptions,
-) => Promise<Sandbox>;
-
 interface SchedulerOptions {
-	sandboxFactory?: SandboxFactory;
+	sandboxFactory: SandboxFactory;
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled lifecycle logic
@@ -34,14 +23,12 @@ function createScheduler(
 	source: EventSource,
 	actionSource: { readonly actions: Action[] },
 	createContext: ActionContextFactory,
-	options: SchedulerOptions = {},
+	options: SchedulerOptions,
 ): Service {
-	const sandboxFactory: SandboxFactory =
-		options.sandboxFactory ?? defaultSandbox;
+	const { sandboxFactory } = options;
 	let running = false;
 	let loopPromise: Promise<void> | null = null;
 	const ac = new AbortController();
-	const sandboxes = new Map<string, Sandbox>();
 
 	async function loop(): Promise<void> {
 		while (running) {
@@ -95,31 +82,6 @@ function createScheduler(
 		await source.transition(event, { state: "done", result: "succeeded" });
 	}
 
-	function pruneStaleSandboxes(): void {
-		const liveSources = new Set(actionSource.actions.map((a) => a.source));
-		for (const [src, sb] of sandboxes) {
-			if (!liveSources.has(src)) {
-				sb.dispose();
-				sandboxes.delete(src);
-			}
-		}
-	}
-
-	async function getOrCreateSandbox(action: Action): Promise<Sandbox> {
-		const existing = sandboxes.get(action.source);
-		if (existing) {
-			return existing;
-		}
-		pruneStaleSandboxes();
-		const created = await sandboxFactory(
-			action.source,
-			{},
-			{ filename: `${action.name}.js` },
-		);
-		sandboxes.set(action.source, created);
-		return created;
-	}
-
 	async function executeAction(
 		event: RuntimeEvent,
 		action: Action,
@@ -129,7 +91,9 @@ function createScheduler(
 			event: { name: ctx.event.type, payload: ctx.event.payload },
 			env: ctx.env,
 		};
-		const sb = await getOrCreateSandbox(action);
+		const sb = await sandboxFactory.create(action.source, {
+			filename: `${action.name}.js`,
+		});
 		const result = await sb.run(action.exportName, guestCtx, {
 			emit: async (...args: unknown[]) => {
 				const [type, payload] = args as [string, unknown];
@@ -152,13 +116,6 @@ function createScheduler(
 		}
 	}
 
-	function disposeAll(): void {
-		for (const sb of sandboxes.values()) {
-			sb.dispose();
-		}
-		sandboxes.clear();
-	}
-
 	return {
 		start(): Promise<void> {
 			if (running) {
@@ -172,7 +129,6 @@ function createScheduler(
 			running = false;
 			ac.abort();
 			await loopPromise;
-			disposeAll();
 		},
 	};
 }

@@ -2,6 +2,7 @@ import type {
 	MethodMap,
 	RunResult,
 	Sandbox,
+	SandboxFactory,
 	SandboxOptions,
 } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
@@ -58,35 +59,40 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const createContext = createActionContext();
 
 		const runCalls: RunCall[] = [];
-		const sandboxFactory = async (
-			actionSource: string,
-			_methods: MethodMap,
-			_opts?: SandboxOptions,
-		): Promise<Sandbox> => ({
-			run: async (name, ctx, extras) => {
-				const call: RunCall = {
-					source: actionSource,
-					name,
-					ctx: ctx as RunCall["ctx"],
-				};
-				if (extras) {
-					call.extras = extras;
-				}
-				runCalls.push(call);
-				// Simulate the validateOrder action emitting — invoke the per-run
-				// emit host method installed by the scheduler.
-				if (actionSource.includes("validateOrder") && extras?.emit) {
-					await extras.emit(
-						"order.validated",
-						(ctx as RunCall["ctx"]).event.payload,
-					);
-				}
-				return { ok: true, result: undefined, logs: [] } satisfies RunResult;
-			},
-			dispose: () => {
+		const sandboxFactory: SandboxFactory = {
+			create: async (
+				actionSource: string,
+				_opts?: SandboxOptions,
+			): Promise<Sandbox> => ({
+				run: async (name, ctx, extras) => {
+					const call: RunCall = {
+						source: actionSource,
+						name,
+						ctx: ctx as RunCall["ctx"],
+					};
+					if (extras) {
+						call.extras = extras;
+					}
+					runCalls.push(call);
+					if (actionSource.includes("validateOrder") && extras?.emit) {
+						await extras.emit(
+							"order.validated",
+							(ctx as RunCall["ctx"]).event.payload,
+						);
+					}
+					return { ok: true, result: undefined, logs: [] } satisfies RunResult;
+				},
+				dispose: () => {
+					/* no-op */
+				},
+				onDied: () => {
+					/* no-op */
+				},
+			}),
+			dispose: async () => {
 				/* no-op */
 			},
-		});
+		};
 
 		const actions: Action[] = [
 			{
@@ -192,19 +198,27 @@ describe("integration: HTTP → trigger → fan-out → action → emit → fan-
 		const createContext = createActionContext();
 
 		const runCalls: RunCall[] = [];
-		const sandboxFactory = async (actionSource: string): Promise<Sandbox> => ({
-			run: async (name, ctx) => {
-				runCalls.push({
-					source: actionSource,
-					name,
-					ctx: ctx as RunCall["ctx"],
-				});
-				return { ok: true, result: undefined, logs: [] } satisfies RunResult;
-			},
-			dispose: () => {
+		const sandboxFactory: SandboxFactory = {
+			create: async (actionSource: string): Promise<Sandbox> => ({
+				run: async (name, ctx) => {
+					runCalls.push({
+						source: actionSource,
+						name,
+						ctx: ctx as RunCall["ctx"],
+					});
+					return { ok: true, result: undefined, logs: [] } satisfies RunResult;
+				},
+				dispose: () => {
+					/* no-op */
+				},
+				onDied: () => {
+					/* no-op */
+				},
+			}),
+			dispose: async () => {
 				/* no-op */
 			},
-		});
+		};
 
 		const actions: Action[] = [
 			{
