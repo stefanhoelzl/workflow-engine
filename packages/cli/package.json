@@ -1,0 +1,34 @@
+{
+	"name": "@workflow-engine/cli",
+	"description": "CLI (wfe) that builds and uploads workflow-engine workflow bundles to a running runtime.",
+	"version": "0.1.0",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/stefanhoelzl/workflow-engine.git",
+		"directory": "packages/cli"
+	},
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"bin": {
+		"wfe": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"src",
+		"!src/**/*.test.ts"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json && node ./scripts/shebang.mjs"
+	},
+	"dependencies": {
+		"@workflow-engine/vite-plugin": "workspace:*",
+		"citty": "^0.2.2",
+		"vite": "^8.0.8"
+	},
+	"peerDependencies": {
+		"@workflow-engine/sdk": "workspace:*"
+	}
+}

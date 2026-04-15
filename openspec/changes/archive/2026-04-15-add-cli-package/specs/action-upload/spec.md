@@ -1,10 +1,4 @@
-# Action Upload Specification
-
-## Purpose
-
-Expose a single HTTP endpoint (`POST /api/workflows`) that accepts a gzipped tar archive of a workflow bundle, validates it against `ManifestSchema`, registers the workflow with the runtime (hot-reloading live event handling), and returns specific, machine-readable failure reasons on error.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Upload workflow bundle via HTTP
 
@@ -36,32 +30,3 @@ Error responses SHALL include a JSON body. A `415` response SHALL include `{ "er
 - **WHEN** the manifest references an action module `actions/handleFoo.js` but the archive does not contain that file
 - **THEN** the runtime SHALL respond with `422 Unprocessable Entity`
 - **AND** the response body SHALL be `{ "error": "missing action module: actions/handleFoo.js" }` (or an equivalent specific message naming the missing path)
-
-### Requirement: Hot reload after upload
-
-After a successful upload, the WorkflowRegistry SHALL make the workflow available immediately. New events SHALL be matched against the updated action list. Actions already executing SHALL finish with the old code.
-
-#### Scenario: New events match uploaded workflow
-
-- **WHEN** workflow "foo" is uploaded with an action listening on event type "order.created"
-- **AND** an "order.created" event is subsequently triggered
-- **THEN** the scheduler SHALL execute "foo"'s action
-
-#### Scenario: Replaced workflow takes effect immediately
-
-- **WHEN** workflow "foo" is uploaded, replacing a previously uploaded "foo"
-- **AND** an event matching "foo"'s action is triggered
-- **THEN** the scheduler SHALL execute the new version's action code
-
-#### Scenario: In-flight action completes with old code
-
-- **WHEN** workflow "foo" is being replaced while an action from the old "foo" is executing
-- **THEN** the in-flight action SHALL complete using the old code
-- **AND** subsequent events SHALL use the new code
-
-#### Scenario: Invalid upload removes existing workflow
-
-- **WHEN** workflow "foo" exists in the registry
-- **AND** a new upload for "foo" fails validation (e.g., missing action source)
-- **THEN** the existing "foo" SHALL be removed from the registry
-- **AND** the runtime SHALL log the removal with the error reason

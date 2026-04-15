@@ -15,6 +15,8 @@ const logger = {
 	child: vi.fn(),
 };
 
+const INVALID_MANIFEST_PREFIX = /^invalid manifest/;
+
 const MANIFEST = {
 	name: "test-workflow",
 	module: "actions.js",
@@ -91,7 +93,7 @@ describe("upload handler", () => {
 		expect(registry.actions[0]?.name).toBe("handle");
 	});
 
-	it("returns 415 for non-gzip body", async () => {
+	it("returns 415 with error body for non-gzip body", async () => {
 		const { app } = createApp();
 
 		const res = await app.request("/api/workflows", {
@@ -100,9 +102,12 @@ describe("upload handler", () => {
 		});
 
 		expect(res.status).toBe(415);
+		await expect(res.json()).resolves.toEqual({
+			error: "Not a valid gzip/tar archive",
+		});
 	});
 
-	it("returns 422 when manifest.json is missing", async () => {
+	it("returns 422 with specific error when manifest.json is missing", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
 			"actions.js": ACTION_SOURCE,
@@ -114,9 +119,12 @@ describe("upload handler", () => {
 		});
 
 		expect(res.status).toBe(422);
+		await expect(res.json()).resolves.toEqual({
+			error: "missing manifest.json",
+		});
 	});
 
-	it("returns 422 when manifest fails validation", async () => {
+	it("returns 422 with issues when manifest fails validation", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": '{"invalid": true}',
@@ -128,9 +136,16 @@ describe("upload handler", () => {
 		});
 
 		expect(res.status).toBe(422);
+		const json = (await res.json()) as {
+			error: string;
+			issues?: Array<{ path: Array<string | number>; message: string }>;
+		};
+		expect(json.error).toMatch(INVALID_MANIFEST_PREFIX);
+		expect(json.issues).toBeDefined();
+		expect(json.issues?.length ?? 0).toBeGreaterThan(0);
 	});
 
-	it("returns 422 when action source file is missing from archive", async () => {
+	it("returns 422 with specific error when action source file is missing", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": JSON.stringify(MANIFEST),
@@ -142,6 +157,9 @@ describe("upload handler", () => {
 		});
 
 		expect(res.status).toBe(422);
+		await expect(res.json()).resolves.toEqual({
+			error: "missing action module: actions.js",
+		});
 	});
 
 	it("replaces existing workflow on re-upload", async () => {

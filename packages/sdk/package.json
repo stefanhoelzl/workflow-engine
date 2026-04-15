@@ -1,11 +1,21 @@
 {
 	"name": "@workflow-engine/sdk",
+	"description": "SDK for authoring workflow-engine workflows: DSL, triggers, event schemas, Zod re-exports.",
+	"version": "0.1.0",
 	"type": "module",
-	"version": "0.0.0",
-	"private": true,
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/stefanhoelzl/workflow-engine.git",
+		"directory": "packages/sdk"
+	},
 	"exports": {
 		".": "./src/index.ts"
 	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts"
+	],
 	"dependencies": {
 		"zod": "^4.0.0"
 	},

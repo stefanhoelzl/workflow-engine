@@ -1,11 +1,21 @@
 {
 	"name": "@workflow-engine/vite-plugin",
+	"description": "Vite plugin that builds workflow-engine workflow bundles (manifest + sandbox-safe action modules + tar.gz).",
+	"version": "0.1.0",
 	"type": "module",
-	"version": "0.0.0",
-	"private": true,
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/stefanhoelzl/workflow-engine.git",
+		"directory": "packages/vite-plugin"
+	},
 	"exports": {
 		".": "./src/index.ts"
 	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts"
+	],
 	"dependencies": {
 		"@ungap/structured-clone": "^1.3.0",
 		"@workflow-engine/sdk": "workspace:*",
@@ -15,12 +25,13 @@
 		"fast-text-encoding": "^1.0.6",
 		"mock-xmlhttprequest": "^8.4.1",
 		"tar-stream": "^3.1.8",
+		"tsx": "^4.21.0",
+		"typescript": "^6.0.2",
 		"url-polyfill": "^1.1.14",
 		"web-streams-polyfill": "^4.2.0",
 		"whatwg-fetch": "^3.6.20"
 	},
 	"peerDependencies": {
-		"typescript": ">=6.0.0",
 		"vite": ">=6.0.0"
 	},
 	"devDependencies": {

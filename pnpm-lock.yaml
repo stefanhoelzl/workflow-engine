@@ -18,6 +18,9 @@ importers:
       '@types/node':
         specifier: ^25.5.2
         version: 25.5.2
+      '@workflow-engine/cli':
+        specifier: workspace:*
+        version: link:packages/cli
       concurrently:
         specifier: ^9.2.1
         version: 9.2.1
@@ -36,6 +39,21 @@ importers:
       vitest:
         specifier: ^4.1.4
         version: 4.1.4(@opentelemetry/api@1.9.1)(@types/node@25.5.2)(vite@8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3))
+
+  packages/cli:
+    dependencies:
+      '@workflow-engine/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@workflow-engine/vite-plugin':
+        specifier: workspace:*
+        version: link:../vite-plugin
+      citty:
+        specifier: ^0.2.2
+        version: 0.2.2
+      vite:
+        specifier: ^8.0.8
+        version: 8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
 
   packages/runtime:
     dependencies:
@@ -143,8 +161,11 @@ importers:
       tar-stream:
         specifier: ^3.1.8
         version: 3.1.8
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
       typescript:
-        specifier: '>=6.0.0'
+        specifier: ^6.0.2
         version: 6.0.2
       url-polyfill:
         specifier: ^1.1.14
@@ -165,12 +186,12 @@ importers:
 
   workflows:
     dependencies:
+      '@workflow-engine/cli':
+        specifier: workspace:*
+        version: link:../packages/cli
       '@workflow-engine/sdk':
         specifier: workspace:*
         version: link:../packages/sdk
-      '@workflow-engine/vite-plugin':
-        specifier: workspace:*
-        version: link:../packages/vite-plugin
 
 packages:
 
@@ -1328,6 +1349,9 @@ packages:
 
   chardet@2.1.1:
     resolution: {integrity: sha512-PsezH1rqdV9VvyNhxxOW32/d75r01NY7TQCmOqomRo15ZSOKbpTFVsfjghxo6JloQUCGnH4k1LGu0R4yCLlWQQ==}
+
+  citty@0.2.2:
+    resolution: {integrity: sha512-+6vJA3L98yv+IdfKGZHBNiGW5KHn22e/JwID0Strsz8h4S/csAu/OuICwxrg44k5MRiZHWIo8XXuJgQTriRP4w==}
 
   cli-cursor@5.0.0:
     resolution: {integrity: sha512-aCj4O5wKyszjMmDT4tZj93kxyydN/K5zPWSCe6/0AV/AA1pqe5ZBIw0a2ZfPQV7lL5/yb5HsUreJ6UFAF1tEQw==}
@@ -3859,6 +3883,8 @@ snapshots:
   chalk@5.6.2: {}
 
   chardet@2.1.1: {}
+
+  citty@0.2.2: {}
 
   cli-cursor@5.0.0:
     dependencies:

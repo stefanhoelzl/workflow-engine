@@ -51,12 +51,12 @@ function createUploadHandler(registry: WorkflowRegistry) {
 			);
 		}
 
-		const name = await registry.register(files);
-		if (!name) {
-			return c.json(
-				{ error: "Invalid workflow bundle" },
-				HTTP_UNPROCESSABLE_ENTITY,
-			);
+		const result = await registry.register(files);
+		if (!result.ok) {
+			const body = result.issues
+				? { error: result.error, issues: result.issues }
+				: { error: result.error };
+			return c.json(body, HTTP_UNPROCESSABLE_ENTITY);
 		}
 
 		return c.body(null, HTTP_NO_CONTENT);

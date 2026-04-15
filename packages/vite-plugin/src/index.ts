@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -7,10 +8,6 @@ import { pack as tarPack } from "tar-stream";
 import { tsImport } from "tsx/esm/api";
 import ts from "typescript";
 import { build, type Plugin, type ResolvedConfig } from "vite";
-
-interface WorkflowPluginOptions {
-	workflows: string[];
-}
 
 interface CompileOutput {
 	name: string;
@@ -76,31 +73,38 @@ function typecheckWorkflows(workflows: string[], root: string): void {
 	}
 }
 
-function workflowPlugin(options: WorkflowPluginOptions): Plugin {
+async function discoverWorkflows(root: string): Promise<string[]> {
+	const srcDir = join(root, "src");
+	let entries: string[];
+	try {
+		entries = await readdir(srcDir, { withFileTypes: true }).then((list) =>
+			list
+				.filter((e) => e.isFile() && e.name.endsWith(".ts"))
+				.map((e) => e.name),
+		);
+	} catch {
+		throw new Error(`no workflows found: ${srcDir} does not exist`);
+	}
+	if (entries.length === 0) {
+		throw new Error(`no workflows found in ${srcDir}`);
+	}
+	return entries.sort();
+}
+
+function workflowPlugin(): Plugin {
 	let resolvedConfig: ResolvedConfig;
 	const workflowPaths = new Map<string, string>();
+	let entryRelPaths: string[] = [];
 
 	return {
 		name: "workflow-engine",
 
-		configResolved(config) {
-			resolvedConfig = config;
-			for (const wf of options.workflows) {
-				workflowPaths.set(basename(wf, ".ts"), resolve(config.root, wf));
-			}
-		},
-
-		buildStart() {
-			if (!resolvedConfig.build.watch) {
-				typecheckWorkflows(options.workflows, resolvedConfig.root);
-				// biome-ignore lint/suspicious/noConsole: intentional build output
-				console.log("TypeScript check passed");
-			}
-		},
-
-		config() {
+		async config(userConfig) {
+			const root = resolve(userConfig.root ?? process.cwd());
+			const files = await discoverWorkflows(root);
+			entryRelPaths = files.map((f) => `./src/${f}`);
 			const entries = Object.fromEntries(
-				options.workflows.map((wf) => [basename(wf, ".ts"), wf]),
+				entryRelPaths.map((rel) => [basename(rel, ".ts"), rel]),
 			);
 
 			return {
@@ -117,6 +121,21 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 					noExternal: true,
 				},
 			};
+		},
+
+		configResolved(config) {
+			resolvedConfig = config;
+			for (const rel of entryRelPaths) {
+				workflowPaths.set(basename(rel, ".ts"), resolve(config.root, rel));
+			}
+		},
+
+		buildStart() {
+			if (!resolvedConfig.build.watch) {
+				typecheckWorkflows(entryRelPaths, resolvedConfig.root);
+				// biome-ignore lint/suspicious/noConsole: intentional build output
+				console.log("TypeScript check passed");
+			}
 		},
 
 		async generateBundle(_options, bundle) {
@@ -363,5 +382,4 @@ async function createTarGzBundle(
 	return Buffer.concat(chunks);
 }
 
-export type { WorkflowPluginOptions };
-export { typecheckWorkflows, workflowPlugin };
+export { discoverWorkflows, typecheckWorkflows, workflowPlugin };

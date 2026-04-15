@@ -106,8 +106,9 @@ Infrastructure lives in `infrastructure/` with `modules/` (shared) and `dev/` (e
 
 ```
 packages/
-├── sdk/              # @workflow-engine/sdk
-├── vite-plugin/      # @workflow-engine/vite-plugin
+├── sdk/              # @workflow-engine/sdk          (published)
+├── vite-plugin/      # @workflow-engine/vite-plugin  (published)
+├── cli/              # @workflow-engine/cli          (published, binary: wfe)
 ├── sandbox/          # @workflow-engine/sandbox
 └── runtime/          # @workflow-engine/runtime
 workflows/            # User-defined workflows (build target, not a package)
@@ -115,10 +116,11 @@ infrastructure/       # OpenTofu IaC (modules + dev environment)
 ```
 
 - **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, ambient `emit()` global declaration, `ManifestSchema`, Zod re-exports.
-- **vite-plugin**: Vite plugin that imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file with npm polyfills via `@workflow-engine/sandbox-globals`, enforces TypeScript type checking on production builds.
+- **vite-plugin**: Vite plugin that auto-discovers workflow entries at `<root>/src/*.ts`, imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file with npm polyfills via `@workflow-engine/sandbox-globals`, enforces TypeScript type checking on production builds.
+- **cli**: `wfe upload` — builds workflows in cwd (via shipped default vite config + vite-plugin) and POSTs each `dist/<name>/bundle.tar.gz` to `<url>/api/workflows`. Authenticates via `GITHUB_TOKEN` env var when set. Exports a programmatic `upload()` function consumed by `scripts/dev.ts`.
 - **sandbox**: QuickJS WASM VM lifecycle running inside a dedicated Node `worker_threads` Worker per sandbox instance (host-bridge + QuickJS context live in the worker; main thread holds a thin proxy). Host-bridged globals (console, timers, performance, crypto, `__hostFetch`), `sandbox(source, methods, options) → { run, dispose, onDied }` and `createSandboxFactory({ logger })` public API. JSON-only host/sandbox boundary; cancel-on-run-end for timers and in-flight fetches. Main Node event loop stays free during guest CPU work.
 - **runtime**: HTTP server (Hono), scheduler (injects a `SandboxFactory` — factory owns per-source sandbox caching, death monitoring, and operational logging), EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
-- **workflows**: Workspace member containing user-authored `.ts` workflow files. Built by the vite-plugin into `workflows/dist/<name>/manifest.json` + per-action `.js` files.
+- **workflows**: Workspace member containing user-authored `.ts` workflow files at `src/*.ts`. Built and uploaded by `@workflow-engine/cli`.
 
 ## Important Constraints
 
