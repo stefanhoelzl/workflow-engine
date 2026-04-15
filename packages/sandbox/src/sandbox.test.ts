@@ -1065,3 +1065,27 @@ describe("polyfill scope detection", () => {
 		expect(emit).toHaveBeenCalledWith("result", { installed: true });
 	});
 });
+
+describe("cancel-on-run-end", () => {
+	it("un-awaited setTimeout does not emit after run completes", async () => {
+		const emit = vi.fn(async () => {
+			/* no-op */
+		});
+		const result = await runSource(
+			`export default async (ctx) => {
+				setTimeout(() => { emit("late", {}); }, 30);
+			}`,
+			{ emit },
+		);
+		expect(result.ok).toBe(true);
+		await new Promise((r) => setTimeout(r, 100));
+		expect(emit).not.toHaveBeenCalled();
+	});
+
+	// In-flight fetch abort on run end is worker-native (the AbortController
+	// lives in the worker and wraps worker.globalThis.fetch). When
+	// options.fetch forwards to main, cancellation is not propagated across
+	// the worker↔main boundary — that's a known limitation of the simple
+	// forwarding mechanism. The timer-cancel test above covers the main
+	// semantic (un-awaited background work does not leak past run end).
+});

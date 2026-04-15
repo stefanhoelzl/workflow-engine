@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MethodMap, Sandbox } from "@workflow-engine/sandbox";
+import type { Sandbox, SandboxFactory } from "@workflow-engine/sandbox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "../actions/index.js";
 import { ActionContext } from "../context/index.js";
@@ -326,15 +326,20 @@ describe("full startup/recovery integration", () => {
 			result: undefined,
 			logs: [],
 		}));
-		const sandboxFactory = async (
-			_src: string,
-			_methods: MethodMap,
-		): Promise<Sandbox> => ({
-			run: runSpy,
-			dispose: () => {
+		const sandboxFactory: SandboxFactory = {
+			create: async (_src: string): Promise<Sandbox> => ({
+				run: runSpy,
+				dispose: () => {
+					/* no-op */
+				},
+				onDied: () => {
+					/* no-op */
+				},
+			}),
+			dispose: async () => {
 				/* no-op */
 			},
-		});
+		};
 		const action: Action = {
 			name: "processOrder",
 			on: "order.received",

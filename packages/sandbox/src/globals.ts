@@ -4,6 +4,7 @@ import { setupCrypto } from "./crypto.js";
 
 interface TimerCleanup {
 	dispose(): void;
+	clearActive(): void;
 }
 
 function setupGlobals(b: Bridge): TimerCleanup {
@@ -110,16 +111,20 @@ function setupTimers(b: Bridge): TimerCleanup {
 	b.vm.setProp(b.vm.global, "clearInterval", clearIntervalFn);
 	clearIntervalFn.dispose();
 
+	function clearActive(): void {
+		for (const [id, cb] of pendingCallbacks) {
+			clearTimeout(id);
+			clearInterval(id);
+			cb.dispose();
+		}
+		pendingCallbacks.clear();
+	}
+
 	return {
-		dispose() {
-			for (const [id, cb] of pendingCallbacks) {
-				clearTimeout(id);
-				clearInterval(id);
-				cb.dispose();
-			}
-			pendingCallbacks.clear();
-		},
+		dispose: clearActive,
+		clearActive,
 	};
 }
 
+export type { TimerCleanup };
 export { setupGlobals };

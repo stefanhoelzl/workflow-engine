@@ -116,8 +116,8 @@ infrastructure/       # OpenTofu IaC (modules + dev environment)
 
 - **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, ambient `emit()` global declaration, `ManifestSchema`, Zod re-exports.
 - **vite-plugin**: Vite plugin that imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file with npm polyfills via `@workflow-engine/sandbox-globals`, enforces TypeScript type checking on production builds.
-- **sandbox**: QuickJS WASM VM lifecycle, host-bridged globals (console, timers, performance, crypto, `__hostFetch`), `sandbox(source, methods, options) → { run(name, ctx, extraMethods), dispose() }` public API. JSON-only host/sandbox boundary.
-- **runtime**: HTTP server (Hono), scheduler (owns per-workflow sandbox map), EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
+- **sandbox**: QuickJS WASM VM lifecycle running inside a dedicated Node `worker_threads` Worker per sandbox instance (host-bridge + QuickJS context live in the worker; main thread holds a thin proxy). Host-bridged globals (console, timers, performance, crypto, `__hostFetch`), `sandbox(source, methods, options) → { run, dispose, onDied }` and `createSandboxFactory({ logger })` public API. JSON-only host/sandbox boundary; cancel-on-run-end for timers and in-flight fetches. Main Node event loop stays free during guest CPU work.
+- **runtime**: HTTP server (Hono), scheduler (injects a `SandboxFactory` — factory owns per-source sandbox caching, death monitoring, and operational logging), EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
 - **workflows**: Workspace member containing user-authored `.ts` workflow files. Built by the vite-plugin into `workflows/dist/<name>/manifest.json` + per-action `.js` files.
 
 ## Important Constraints

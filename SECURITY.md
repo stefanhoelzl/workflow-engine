@@ -123,13 +123,25 @@ new capability across the sandbox boundary?*
 
 ### Entry points
 
-- `sandbox(source, methods, options)` — constructs a QuickJS WASM
-  context, installs host-bridged globals and host methods, and
-  evaluates the workflow module source once.
+- `sandbox(source, methods, options)` — spawns a dedicated Node
+  `worker_threads` Worker that constructs the QuickJS WASM context,
+  installs host-bridged globals and host methods inside the worker,
+  and evaluates the workflow module source once. The main thread
+  holds only a thin Sandbox proxy that routes `run` / `dispose` /
+  `onDied` to the worker and services per-run `request` / `response`
+  bridge messages. Guest code never observes the worker boundary —
+  the set of exposed globals is unchanged from the pre-worker design.
+- `createSandboxFactory({ logger })` — the supported lifecycle owner
+  for `Sandbox` instances. Caches sandboxes by source, registers a
+  death callback on each, and evicts on unexpected worker termination
+  so the next `create(source)` spawns a fresh worker.
 - `Sandbox.run(name, ctx, extraMethods)` — invokes a named export from
   the workflow module with a JSON-shaped `ctx` argument. Host-provided
   methods in `methods` (construction-time) and `extraMethods` (per-run)
-  are installed as top-level globals inside the sandbox.
+  are installed as top-level globals inside the sandbox via RPC
+  proxies: the worker posts a `request` carrying `method` + `args`,
+  the main thread dispatches to the provided implementation, and the
+  response travels back as a `response` message.
 - All arguments and return values crossing the host/sandbox boundary
   via consumer-provided methods are JSON-serializable. Host object
   references, closures, and proxies never cross.
@@ -204,6 +216,26 @@ new capability across the sandbox boundary?*
   (`packages/runtime/src/event-source.ts`)
 - **Static analysis.** TypeScript strict mode and Biome `all` rules are
   enabled to catch unsafe bridge patterns early.
+- **Worker-thread isolation of the host-bridge layer.** The QuickJS
+  runtime and the host-bridge implementation (`bridge-factory.ts`,
+  `bridge.ts`, `crypto.ts`, `globals.ts`) run inside a dedicated
+  `worker_threads` Worker, not on the Node main thread. This is an
+  implementation-level defense-in-depth layer: guest code still cannot
+  observe Node internals (QuickJS is the primary boundary), and the
+  worker has no additional permissions (same `process.env`, same file
+  system). What it does buy is that long synchronous guest CPU work
+  (S3) no longer freezes the main event loop — derived emit handling,
+  trigger ingestion, and the dashboard stay responsive. Unexpected
+  worker termination is surfaced as a `Sandbox.onDied` callback; the
+  factory evicts and respawns on next `create(source)`.
+  (`packages/sandbox/src/worker.ts`, `packages/sandbox/src/factory.ts`)
+- **Cancel-on-run-end.** When a guest's exported function resolves
+  (or throws), the worker clears every `setTimeout`/`setInterval`
+  registered during that run and aborts the per-run `AbortController`
+  that wraps in-flight `__hostFetch` calls. Un-awaited background
+  work does not outlive the run. This closes a latent bug where a
+  guest's `setTimeout(() => emit(...), N)` could fire during a later
+  run against the wrong event context.
 
 ### Residual risks
 
