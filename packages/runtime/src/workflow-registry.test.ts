@@ -18,6 +18,8 @@ const logger = {
 	child: vi.fn(),
 };
 
+const INVALID_MANIFEST_PREFIX = /^invalid manifest/;
+
 const MANIFEST = {
 	name: "test",
 	module: "actions.js",
@@ -84,10 +86,10 @@ describe("WorkflowRegistry", () => {
 		expect(registry.triggerRegistry.size).toBe(0);
 	});
 
-	it("register returns the workflow name", async () => {
+	it("register returns the workflow name on success", async () => {
 		const registry = createWorkflowRegistry({ logger });
-		const name = await registry.register(makeFiles());
-		expect(name).toBe("test");
+		const result = await registry.register(makeFiles());
+		expect(result).toEqual({ ok: true, name: "test" });
 	});
 
 	it("register adds actions and events", async () => {
@@ -125,26 +127,37 @@ describe("WorkflowRegistry", () => {
 		expect(registry.actions[0]?.name).toBe("handleNew");
 	});
 
-	it("register returns undefined for invalid manifest", async () => {
+	it("register returns failure with zod issues for invalid manifest", async () => {
 		const registry = createWorkflowRegistry({ logger });
 		const files = new Map([["manifest.json", '{"invalid": true}']]);
-		const name = await registry.register(files);
-		expect(name).toBeUndefined();
+		const result = await registry.register(files);
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			return;
+		}
+		expect(result.error).toMatch(INVALID_MANIFEST_PREFIX);
+		expect(result.issues).toBeDefined();
+		expect(result.issues?.length ?? 0).toBeGreaterThan(0);
 		expect(registry.actions).toEqual([]);
 	});
 
-	it("register returns undefined when manifest.json is missing", async () => {
+	it("register returns failure when manifest.json is missing", async () => {
 		const registry = createWorkflowRegistry({ logger });
 		const files = new Map([["actions.js", ACTION_SOURCE]]);
-		const name = await registry.register(files);
-		expect(name).toBeUndefined();
+		const result = await registry.register(files);
+		expect(result).toEqual({ ok: false, error: "missing manifest.json" });
 	});
 
-	it("register returns undefined when action source is missing", async () => {
+	it("register returns failure when action source is missing", async () => {
 		const registry = createWorkflowRegistry({ logger });
 		const files = new Map([["manifest.json", JSON.stringify(MANIFEST)]]);
-		const name = await registry.register(files);
-		expect(name).toBeUndefined();
+		const result = await registry.register(files);
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			return;
+		}
+		expect(result.error).toBe("missing action module: actions.js");
+		expect(result.issues).toBeUndefined();
 	});
 
 	it("remove deletes a workflow", async () => {

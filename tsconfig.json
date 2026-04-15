@@ -3,6 +3,7 @@
 	"references": [
 		{ "path": "packages/sandbox" },
 		{ "path": "packages/runtime" },
+		{ "path": "packages/cli" },
 		{ "path": "workflows" }
 	]
 }

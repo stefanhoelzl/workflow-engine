@@ -15,8 +15,17 @@ interface LoadedWorkflow {
 	jsonSchemas: Record<string, object>;
 }
 
+interface ManifestIssue {
+	path: Array<string | number>;
+	message: string;
+}
+
+type RegisterResult =
+	| { ok: true; name: string }
+	| { ok: false; error: string; issues?: ManifestIssue[] };
+
 interface WorkflowRegistry {
-	register(files: Map<string, string>): Promise<string | undefined>;
+	register(files: Map<string, string>): Promise<RegisterResult>;
 	remove(name: string): void;
 	recover(): Promise<void>;
 	readonly actions: Action[];
@@ -34,7 +43,12 @@ const WORKFLOWS_PREFIX = "workflows/";
 
 type LoadResult =
 	| { ok: true; name: string; workflow: LoadedWorkflow }
-	| { ok: false; name?: string | undefined; error: string };
+	| {
+			ok: false;
+			name?: string | undefined;
+			error: string;
+			issues?: ManifestIssue[];
+	  };
 
 function buildLoadedWorkflow(
 	manifest: Manifest,
@@ -74,6 +88,13 @@ function buildLoadedWorkflow(
 	};
 }
 
+function zodIssuesToManifestIssues(error: z.ZodError): ManifestIssue[] {
+	return error.issues.map((issue) => ({
+		path: issue.path.filter((p): p is string | number => typeof p !== "symbol"),
+		message: issue.message,
+	}));
+}
+
 function loadWorkflow(files: Map<string, string>): LoadResult {
 	const manifestRaw = files.get("manifest.json");
 	if (!manifestRaw) {
@@ -84,6 +105,13 @@ function loadWorkflow(files: Map<string, string>): LoadResult {
 	try {
 		manifest = ManifestSchema.parse(JSON.parse(manifestRaw));
 	} catch (error) {
+		if (error instanceof z.ZodError) {
+			return {
+				ok: false,
+				error: `invalid manifest: ${error.message}`,
+				issues: zodIssuesToManifestIssues(error),
+			};
+		}
 		return { ok: false, error: `invalid manifest: ${error}` };
 	}
 
@@ -172,7 +200,9 @@ function createWorkflowRegistry(
 					rebuild();
 				}
 				logger.warn("workflow.register-failed", { error: result.error });
-				return;
+				return result.issues
+					? { ok: false, error: result.error, issues: result.issues }
+					: { ok: false, error: result.error };
 			}
 
 			await persist(result.name, files);
@@ -180,7 +210,7 @@ function createWorkflowRegistry(
 			rebuild();
 
 			logger.info("workflow.registered", { name: result.name });
-			return result.name;
+			return { ok: true, name: result.name };
 		},
 
 		remove(name) {
@@ -229,5 +259,11 @@ function createWorkflowRegistry(
 	};
 }
 
-export type { LoadedWorkflow, Schema, WorkflowRegistry };
+export type {
+	LoadedWorkflow,
+	ManifestIssue,
+	RegisterResult,
+	Schema,
+	WorkflowRegistry,
+};
 export { createWorkflowRegistry, parseWorkflowNames };

@@ -19,12 +19,16 @@
 		"local:init": "tofu -chdir=infrastructure/local init",
 		"local:up": "tofu -chdir=infrastructure/local apply --auto-approve",
 		"local:up:build": "podman build -t localhost/workflow-engine:dev -f infrastructure/Dockerfile . && pnpm local:up",
-		"local:destroy": "tofu -chdir=infrastructure/local destroy --auto-approve"
+		"local:destroy": "tofu -chdir=infrastructure/local destroy --auto-approve",
+		"upload": "pnpm --filter=workflows exec wfe upload",
+		"upload:local": "pnpm upload --url=https://localhost:8443",
+		"upload:dev": "pnpm upload --url=http://localhost:8080"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.10",
 		"@fission-ai/openspec": "^1.2.0",
 		"@types/node": "^25.5.2",
+		"@workflow-engine/cli": "workspace:*",
 		"concurrently": "^9.2.1",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.2",
