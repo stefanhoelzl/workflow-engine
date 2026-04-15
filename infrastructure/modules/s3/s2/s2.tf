@@ -106,6 +106,37 @@ resource "kubernetes_service_v1" "s2" {
   }
 }
 
+# NetworkPolicy: allow ingress from workflow-engine on :9000.
+# The namespace-wide default-deny isolates all pods; this rule re-opens the
+# single path the app needs to reach the local S3 stand-in.
+resource "kubernetes_network_policy_v1" "s2" {
+  metadata {
+    name      = "s2"
+    namespace = "default"
+  }
+
+  spec {
+    pod_selector {
+      match_labels = { app = "s2" }
+    }
+
+    policy_types = ["Ingress"]
+
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { app = "workflow-engine" }
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "9000"
+      }
+    }
+  }
+}
+
 output "endpoint" {
   value       = "http://${kubernetes_service_v1.s2.metadata[0].name}:9000"
   description = "S3-compatible endpoint URL"
