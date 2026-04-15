@@ -191,14 +191,20 @@ resource "kubernetes_network_policy_v1" "app" {
       }
     }
 
-    # Egress: DNS via CoreDNS (podSelector works post-DNAT in Cilium).
+    # Egress: DNS via CoreDNS. Match both labels because kubeadm/kind ship
+    # CoreDNS as `k8s-app=kube-dns` (back-compat with kube-dns) while many
+    # managed distros (e.g. UpCloud) ship it as `k8s-app=coredns`.
     egress {
       to {
         namespace_selector {
           match_labels = { "kubernetes.io/metadata.name" = "kube-system" }
         }
         pod_selector {
-          match_labels = { "k8s-app" = "coredns" }
+          match_expressions {
+            key      = "k8s-app"
+            operator = "In"
+            values   = ["coredns", "kube-dns"]
+          }
         }
       }
 
@@ -209,6 +215,24 @@ resource "kubernetes_network_policy_v1" "app" {
       ports {
         protocol = "TCP"
         port     = "53"
+      }
+    }
+
+    # Egress: in-cluster S2 (only present in the local kind stack — prod
+    # talks to UpCloud Object Storage via the public internet, covered by
+    # the RFC1918-excluding rule above).
+    dynamic "egress" {
+      for_each = var.local_deployment ? [1] : []
+      content {
+        to {
+          pod_selector {
+            match_labels = { app = "s2" }
+          }
+        }
+        ports {
+          protocol = "TCP"
+          port     = "9000"
+        }
       }
     }
 

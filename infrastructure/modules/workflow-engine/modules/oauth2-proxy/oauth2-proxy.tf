@@ -275,7 +275,11 @@ resource "kubernetes_network_policy_v1" "oauth2_proxy" {
           match_labels = { "kubernetes.io/metadata.name" = "kube-system" }
         }
         pod_selector {
-          match_labels = { "k8s-app" = "coredns" }
+          match_expressions {
+            key      = "k8s-app"
+            operator = "In"
+            values   = ["coredns", "kube-dns"]
+          }
         }
       }
 
