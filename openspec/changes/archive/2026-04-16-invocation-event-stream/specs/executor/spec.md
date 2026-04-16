@@ -12,14 +12,6 @@ The executor SHALL generate an `invocationId` (`evt_<uuid>`) for each invocation
 - **WHEN** the sandbox emits events during execution
 - **THEN** the executor's `onEvent` wiring SHALL forward each event to `bus.emit()`
 
-### Requirement: Lifecycle events emitted via bus
-
-The executor SHALL NOT directly construct `StartedEvent`, `CompletedEvent`, or `FailedEvent`. Instead, `trigger.request`, `trigger.response`, and `trigger.error` events are emitted by the sandbox worker and forwarded to the bus via the `onEvent` callback.
-
-#### Scenario: Persistence is committed before HTTP response
-- **WHEN** an invocation completes
-- **THEN** all events (including the terminal `trigger.response` or `trigger.error`) SHALL have been emitted to the bus and processed by consumers before the executor returns the HTTP result
-
 ### Requirement: HTTP trigger result shape
 
 The executor SHALL shape the raw return value from `invokeHandler` into an `HttpTriggerResult` with defaults: `status: 200`, `body: ""`, `headers: {}`. If `invokeHandler` throws, the executor SHALL return `{ status: 500, body: { error: "internal_error" }, headers: {} }`.
