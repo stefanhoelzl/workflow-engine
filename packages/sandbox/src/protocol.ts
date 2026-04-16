@@ -24,7 +24,6 @@ type MainToWorker =
 			methodEventNames?: Record<string, string>;
 			filename: string;
 			forwardFetch: boolean;
-			iifeNamespace: string;
 			// Optional memoryLimit in bytes, passed to QuickJS.create.
 			memoryLimit?: number;
 			// TODO(quickjs-wasi): clock (WASI clock_time_get) and random

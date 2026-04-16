@@ -137,9 +137,9 @@ memory; there is no runtime/context split. Standard Web APIs (`URL`,
 extensions, not by host-side polyfills bundled into the workflow.
 Source is evaluated as an IIFE script (not an ES module) because
 `quickjs-wasi`'s `evalCode` does not expose the ES module namespace;
-the vite-plugin emits `format: "iife"` with a namespace name derived
-from the workflow filestem, and the sandbox reads exports from
-`globalThis[iifeNamespace]`.
+the vite-plugin emits `format: "iife"` with a fixed namespace name
+(`IIFE_NAMESPACE` exported from `@workflow-engine/core`), and the
+sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
 
 ### Entry points
 

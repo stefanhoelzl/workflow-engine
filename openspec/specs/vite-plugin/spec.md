@@ -31,7 +31,7 @@ The vite plugin code SHALL live inside the `@workflow-engine/sdk` package at `sr
 
 The plugin SHALL emit one bundled JavaScript file per workflow source file (not per action). The bundle SHALL contain all action handlers, the trigger handler, and module-scoped constants/imports. The bundle SHALL be written to `<outDir>/<workflow-name>/<workflow-name>.js` (e.g., `dist/cronitor/cronitor.js`).
 
-The bundle SHALL use Rollup output `format: "iife"`. The IIFE namespace name SHALL be derived from the workflow name. Exports SHALL be accessible from the IIFE's namespace object on `globalThis`.
+The bundle SHALL use Rollup output `format: "iife"`. The IIFE namespace name SHALL be a fixed constant (`IIFE_NAMESPACE`) exported from `@workflow-engine/core` and imported by both the plugin (as Rollup's `output.name`) and the sandbox (when reading exports). The namespace SHALL NOT be derived from the workflow name. Exports SHALL be accessible from the IIFE's namespace object on `globalThis[IIFE_NAMESPACE]`.
 
 The bundle SHALL NOT include the `@workflow-engine/sandbox-globals` polyfill import. Web API globals (`URL`, `TextEncoder`, `Headers`, `crypto`, `atob`, `btoa`, `structuredClone`, `fetch`, `Blob`, `AbortController`, `ReadableStream`) SHALL be provided by the sandbox's WASM extensions and host bridges, not by polyfills bundled into the workflow code.
 
@@ -40,7 +40,14 @@ The bundle SHALL NOT include the `@workflow-engine/sandbox-globals` polyfill imp
 - **GIVEN** a workflow file `cronitor.ts` declaring two actions and one trigger
 - **WHEN** the plugin builds
 - **THEN** the plugin SHALL emit exactly one workflow bundle: `dist/cronitor/cronitor.js`
-- **AND** the bundle SHALL be an IIFE that assigns exports to a namespace object on `globalThis`
+- **AND** the bundle SHALL be an IIFE that assigns exports to `globalThis[IIFE_NAMESPACE]`
+
+#### Scenario: Namespace is the shared constant, not derived from workflow name
+
+- **GIVEN** two workflow files `cronitor.ts` and `demo.ts`
+- **WHEN** the plugin builds each
+- **THEN** both bundles SHALL assign their exports to the same namespace identifier (the value of `IIFE_NAMESPACE` from `@workflow-engine/core`)
+- **AND** neither bundle SHALL use a workflow-name-derived namespace such as `__wf_cronitor` or `__wf_demo`
 
 #### Scenario: Bundle does not contain polyfills
 

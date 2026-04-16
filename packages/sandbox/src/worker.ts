@@ -1,5 +1,9 @@
 import { parentPort } from "node:worker_threads";
-import type { EventKind, InvocationEvent } from "@workflow-engine/core";
+import {
+	type EventKind,
+	IIFE_NAMESPACE,
+	type InvocationEvent,
+} from "@workflow-engine/core";
 import {
 	JSException,
 	type JSValueHandle,
@@ -192,7 +196,6 @@ interface SandboxState {
 	vm: QuickJS;
 	bridge: Bridge;
 	timers: TimerCleanup;
-	iifeNamespace: string;
 	constructionMethodNames: string[];
 	constructionMethodEventNames: Record<string, string>;
 	currentAbort: AbortController | null;
@@ -302,7 +305,6 @@ async function handleInit(
 		vm,
 		bridge,
 		timers,
-		iifeNamespace: msg.iifeNamespace,
 		constructionMethodNames: [...msg.methodNames],
 		constructionMethodEventNames: { ...(msg.methodEventNames ?? {}) },
 		currentAbort: null,
@@ -356,10 +358,9 @@ function emitTriggerEvent(
 
 function readExportFromIife(
 	vm: QuickJS,
-	iifeNamespace: string,
 	exportName: string,
 ): JSValueHandle | null {
-	const nsHandle = vm.global.getProp(iifeNamespace);
+	const nsHandle = vm.global.getProp(IIFE_NAMESPACE);
 	if (nsHandle.isUndefined || nsHandle.isNull) {
 		nsHandle.dispose();
 		return null;
@@ -428,7 +429,7 @@ async function handleRun(
 		});
 		return;
 	}
-	const { vm, bridge, timers, iifeNamespace } = state;
+	const { vm, bridge, timers } = state;
 
 	bridge.setRunContext({
 		invocationId: msg.invocationId,
@@ -445,7 +446,7 @@ async function handleRun(
 
 	let payload: RunResultPayload;
 	try {
-		const fnHandle = readExportFromIife(vm, iifeNamespace, msg.exportName);
+		const fnHandle = readExportFromIife(vm, msg.exportName);
 		if (fnHandle) {
 			payload = await callGuestFunction(vm, fnHandle, msg.ctx);
 			fnHandle.dispose();
@@ -453,7 +454,7 @@ async function handleRun(
 			payload = {
 				ok: false,
 				error: {
-					message: `export '${msg.exportName}' not found on IIFE namespace '${iifeNamespace}'`,
+					message: `export '${msg.exportName}' not found in workflow bundle`,
 					stack: "",
 				},
 			};

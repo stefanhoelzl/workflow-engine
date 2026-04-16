@@ -12,10 +12,10 @@ const RUN_OPTS = {
 };
 
 // Wrap a body of `exports.X = ...; exports.Y = ...;` statements in an IIFE
-// that assigns to `globalThis.__workflowExports` — the default namespace the
-// sandbox reads exports from.
+// that assigns to `globalThis.__wfe_exports__` — the fixed namespace the
+// sandbox reads exports from (see IIFE_NAMESPACE in @workflow-engine/core).
 function iife(body: string): string {
-	return `var __workflowExports = (function(exports) {\n${body}\nreturn exports;\n})({});`;
+	return `var __wfe_exports__ = (function(exports) {\n${body}\nreturn exports;\n})({});`;
 }
 
 // Convenience: a single default export shaped like `async (ctx) => <body>`.
@@ -86,6 +86,23 @@ describe("sandbox isolation", () => {
 			exportName: "missing",
 		});
 		expect(result.ok).toBe(false);
+	});
+
+	// The missing-export error must identify the requested export but must NOT
+	// leak the IIFE namespace identifier across the sandbox boundary — operators
+	// recover workflow identity via log prefix / stack-frame filename instead
+	// (see openspec/changes/simplify-iife-namespace/specs/sandbox/spec.md).
+	it("missing-export error names the export but does not leak the namespace identifier", async () => {
+		const { result } = await runSource(iife("exports.a = 1;"), {
+			exportName: "missing",
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.message).toContain("missing");
+			expect(result.error.message).not.toContain("__wfe_exports__");
+			expect(result.error.message).not.toContain("__wf_");
+			expect(result.error.message).not.toContain("__workflowExports");
+		}
 	});
 
 	it("fetch is available as a shim routing through __hostFetch", async () => {

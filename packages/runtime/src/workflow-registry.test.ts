@@ -44,11 +44,10 @@ const VALID_MANIFEST = {
 	],
 };
 
-// IIFE bundle: the vite-plugin outputs `format: "iife"` with `extend: true`,
-// assigning exports to `globalThis.__wf_<name>`. The runtime's
-// `toIifeNamespace("demo")` returns "__wf_demo".
+// IIFE bundle: the vite-plugin outputs `format: "iife"` assigning exports to
+// `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
 const BUNDLE_SOURCE = `
-var __wf_demo = (function(exports) {
+var __wfe_exports__ = (function(exports) {
   exports.doIt = Object.assign(
     async (input) => globalThis.__dispatchAction(
       "doIt",

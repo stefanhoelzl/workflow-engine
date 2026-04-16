@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createContext, runInContext } from "node:vm";
 import { createGzip } from "node:zlib";
-import { iifeName } from "@workflow-engine/core";
+import { IIFE_NAMESPACE } from "@workflow-engine/core";
 import { pack as tarPack } from "tar-stream";
 import ts from "typescript";
 import { build, type Plugin, type ResolvedConfig } from "vite";
@@ -168,14 +168,13 @@ interface BuildOneWorkflowArgs {
 async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
 	const { workflowPath, filestem, outDir, root, ctx } = args;
 
-	const bundleIifeName = iifeName(filestem);
-	const bundleSource = await bundleWorkflow(workflowPath, root, bundleIifeName);
+	const bundleSource = await bundleWorkflow(workflowPath, root);
 
 	// Evaluate the IIFE bundle in a Node vm context to discover branded
-	// exports. The bundle assigns its exports to `globalThis[bundleIifeName]`
+	// exports. The bundle assigns its exports to `globalThis[IIFE_NAMESPACE]`
 	// of the sandbox context, so we read that global from the context after
 	// script execution — no temp file needed.
-	const mod = runIifeInVmContext(bundleSource, bundleIifeName, filestem, ctx);
+	const mod = runIifeInVmContext(bundleSource, filestem, ctx);
 	const sha = createHash("sha256").update(bundleSource).digest("hex");
 	const manifest = buildManifest(mod, filestem, sha, ctx);
 
@@ -210,11 +209,10 @@ async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
 
 function runIifeInVmContext(
 	bundleSource: string,
-	iifeName: string,
 	filestem: string,
 	ctx: PluginContext,
 ): Record<string, unknown> {
-	// The IIFE bundle is a script that declares `var <iifeName> = (...)(...)`.
+	// The IIFE bundle is a script that declares `var <IIFE_NAMESPACE> = (...)(...)`.
 	// Running it via vm.createContext()/vm.runInContext() gives the script a
 	// dedicated global object that we can inspect (and discard) afterwards —
 	// `var` bindings bind to that sandbox's global, not this process's.
@@ -231,10 +229,10 @@ function runIifeInVmContext(
 			`Failed to evaluate bundled workflow "${filestem}": ${errorMessage(error)}`,
 		);
 	}
-	const ns = sandboxGlobal[iifeName];
+	const ns = sandboxGlobal[IIFE_NAMESPACE];
 	if (typeof ns !== "object" || ns === null) {
 		ctx.error(
-			`Bundled workflow "${filestem}": IIFE did not assign exports to globalThis.${iifeName}`,
+			`Bundled workflow "${filestem}": IIFE did not assign exports to globalThis.${IIFE_NAMESPACE}`,
 		);
 	}
 	return ns as Record<string, unknown>;
@@ -478,7 +476,6 @@ function isEmptyObjectSchema(schema: unknown): boolean {
 async function bundleWorkflow(
 	workflowPath: string,
 	root: string,
-	iifeName: string,
 ): Promise<string> {
 	const result = await build({
 		configFile: false,
@@ -492,7 +489,7 @@ async function bundleWorkflow(
 				input: workflowPath,
 				output: {
 					format: "iife",
-					name: iifeName,
+					name: IIFE_NAMESPACE,
 				},
 			},
 		},
