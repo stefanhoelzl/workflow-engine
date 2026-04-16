@@ -1,36 +1,38 @@
+import type { InvocationEvent } from "@workflow-engine/core";
 import type { Logger } from "../logger.js";
-import type { BusConsumer, InvocationLifecycleEvent } from "./index.js";
+import type { BusConsumer } from "./index.js";
 
-function baseFields(event: InvocationLifecycleEvent): Record<string, unknown> {
+function baseFields(event: InvocationEvent): Record<string, unknown> {
 	return {
 		id: event.id,
 		workflow: event.workflow,
-		trigger: event.trigger,
-		kind: event.kind,
-		ts: event.ts.toISOString(),
+		trigger: event.name,
+		ts: new Date(event.ts).toISOString(),
 	};
 }
 
 function createLoggingConsumer(logger: Logger): BusConsumer {
 	return {
 		// biome-ignore lint/suspicious/useAwait: async required by BusConsumer interface; logging itself is synchronous
-		async handle(event: InvocationLifecycleEvent): Promise<void> {
+		async handle(event: InvocationEvent): Promise<void> {
 			try {
-				const data = baseFields(event);
-				if (event.kind === "started") {
-					logger.info("invocation.started", data);
+				if (event.kind === "trigger.request") {
+					logger.info("invocation.started", baseFields(event));
 					return;
 				}
-				if (event.kind === "completed") {
-					data.result = event.result;
-					logger.info("invocation.completed", data);
+				if (event.kind === "trigger.response") {
+					logger.info("invocation.completed", baseFields(event));
 					return;
 				}
-				data.error = event.error;
-				logger.error("invocation.failed", data);
+				if (event.kind === "trigger.error") {
+					const data = baseFields(event);
+					data.error = event.error;
+					logger.error("invocation.failed", data);
+					return;
+				}
+				// action.* and system.* are not logged here — too verbose for
+				// structured logs. The event store keeps them for the dashboard.
 			} catch (err) {
-				// Never propagate logger failure — the bus would otherwise abort
-				// dispatch to subsequent consumers. Best-effort surface to stderr.
 				try {
 					// biome-ignore lint/suspicious/noConsole: last-resort fallback when structured logging has itself failed
 					console.error(

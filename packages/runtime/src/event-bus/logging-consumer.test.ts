@@ -1,157 +1,97 @@
-import { Writable } from "node:stream";
+import type { InvocationEvent } from "@workflow-engine/core";
 import { describe, expect, it, vi } from "vitest";
-import { createLogger, type Logger } from "../logger.js";
-import type { InvocationLifecycleEvent } from "./index.js";
+import type { Logger } from "../logger.js";
 import { createLoggingConsumer } from "./logging-consumer.js";
 
-function createTestLogger(level = "trace") {
-	const chunks: Buffer[] = [];
-	const stream = new Writable({
-		write(chunk, _encoding, callback) {
-			chunks.push(chunk);
-			callback();
-		},
-	});
+function makeLogger(): Logger {
 	return {
-		logger: createLogger("events", {
-			level: level as "trace",
-			destination: stream,
-		}),
-		lines: () =>
-			chunks
-				.map((c) => c.toString())
-				.join("")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line)),
-	};
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+	} as unknown as Logger;
 }
 
-function startedEvent(
-	overrides: Partial<
-		Extract<InvocationLifecycleEvent, { kind: "started" }>
-	> = {},
-): InvocationLifecycleEvent {
+function event(
+	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
+): InvocationEvent {
 	return {
-		kind: "started",
-		id: "evt_001",
-		workflow: "w1",
-		trigger: "t1",
-		ts: new Date("2026-01-01T00:00:00.000Z"),
-		input: {},
+		id: "evt_a",
+		seq: 0,
+		ref: null,
+		ts: 100,
+		workflow: "wf",
+		workflowSha: "sha",
+		name: overrides.name ?? "test",
 		...overrides,
-	};
-}
-
-function completedEvent(
-	overrides: Partial<
-		Extract<InvocationLifecycleEvent, { kind: "completed" }>
-	> = {},
-): InvocationLifecycleEvent {
-	return {
-		kind: "completed",
-		id: "evt_001",
-		workflow: "w1",
-		trigger: "t1",
-		ts: new Date("2026-01-01T00:00:01.000Z"),
-		result: { status: 200, body: "", headers: {} },
-		...overrides,
-	};
-}
-
-function failedEvent(
-	overrides: Partial<
-		Extract<InvocationLifecycleEvent, { kind: "failed" }>
-	> = {},
-): InvocationLifecycleEvent {
-	return {
-		kind: "failed",
-		id: "evt_001",
-		workflow: "w1",
-		trigger: "t1",
-		ts: new Date("2026-01-01T00:00:01.000Z"),
-		error: { message: "boom", stack: "at ..." },
-		...overrides,
-	};
+	} as InvocationEvent;
 }
 
 describe("logging consumer", () => {
-	it("logs started at info with required fields", async () => {
-		const { logger, lines } = createTestLogger();
-		const consumer = createLoggingConsumer(logger);
-
-		await consumer.handle(startedEvent({ id: "evt_a" }));
-
-		const output = lines();
-		const log = output.find((l) => l.msg === "invocation.started");
-		expect(log).toBeDefined();
-		expect(log?.id).toBe("evt_a");
-		expect(log?.workflow).toBe("w1");
-		expect(log?.trigger).toBe("t1");
-		expect(log?.kind).toBe("started");
-		expect(log?.ts).toBe("2026-01-01T00:00:00.000Z");
-		expect(log?.level).toBe(30); // info
-	});
-
-	it("logs completed at info with result", async () => {
-		const { logger, lines } = createTestLogger();
-		const consumer = createLoggingConsumer(logger);
-
-		await consumer.handle(
-			completedEvent({ result: { status: 201, body: "ok", headers: {} } }),
-		);
-
-		const output = lines();
-		const log = output.find((l) => l.msg === "invocation.completed");
-		expect(log).toBeDefined();
-		expect(log?.kind).toBe("completed");
-		expect(log?.result).toEqual({ status: 201, body: "ok", headers: {} });
-		expect(log?.level).toBe(30); // info
-	});
-
-	it("logs failed at error with serialized error", async () => {
-		const { logger, lines } = createTestLogger();
-		const consumer = createLoggingConsumer(logger);
-
-		await consumer.handle(
-			failedEvent({
-				error: { message: "timeout", stack: "", kind: "user_code" },
+	it("logs trigger.request at info", async () => {
+		const logger = makeLogger();
+		const c = createLoggingConsumer(logger);
+		await c.handle(event({ kind: "trigger.request", name: "on-push" }));
+		expect(logger.info).toHaveBeenCalledWith(
+			"invocation.started",
+			expect.objectContaining({
+				id: "evt_a",
+				workflow: "wf",
+				trigger: "on-push",
 			}),
 		);
-
-		const output = lines();
-		const log = output.find((l) => l.msg === "invocation.failed");
-		expect(log).toBeDefined();
-		expect(log?.kind).toBe("failed");
-		expect(log?.error).toEqual({
-			message: "timeout",
-			stack: "",
-			kind: "user_code",
-		});
-		expect(log?.level).toBe(50); // error
 	});
-});
 
-describe("logging consumer resilience", () => {
-	it("does not propagate logger backend failures", async () => {
-		const throwingLogger: Logger = {
-			info: () => {
-				throw new Error("logger dead");
+	it("logs trigger.response at info", async () => {
+		const logger = makeLogger();
+		const c = createLoggingConsumer(logger);
+		await c.handle(event({ kind: "trigger.response", name: "on-push" }));
+		expect(logger.info).toHaveBeenCalledWith(
+			"invocation.completed",
+			expect.objectContaining({ id: "evt_a", trigger: "on-push" }),
+		);
+	});
+
+	it("logs trigger.error at error with the serialized error", async () => {
+		const logger = makeLogger();
+		const c = createLoggingConsumer(logger);
+		await c.handle(
+			event({
+				kind: "trigger.error",
+				name: "on-push",
+				error: { message: "boom", stack: "" },
+			}),
+		);
+		expect(logger.error).toHaveBeenCalledWith(
+			"invocation.failed",
+			expect.objectContaining({
+				trigger: "on-push",
+				error: expect.objectContaining({ message: "boom" }),
+			}),
+		);
+	});
+
+	it("does not log action.* or system.* events", async () => {
+		const logger = makeLogger();
+		const c = createLoggingConsumer(logger);
+		await c.handle(event({ kind: "action.request", name: "notify" }));
+		await c.handle(event({ kind: "action.response", name: "notify" }));
+		await c.handle(event({ kind: "system.request", name: "host.fetch" }));
+		await c.handle(event({ kind: "system.response", name: "host.fetch" }));
+		expect(logger.info).not.toHaveBeenCalled();
+		expect(logger.error).not.toHaveBeenCalled();
+	});
+
+	it("swallows logger backend failures", async () => {
+		const logger = makeLogger();
+		(logger.info as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+			() => {
+				throw new Error("logger blew up");
 			},
-			warn: () => undefined,
-			error: () => undefined,
-			debug: () => undefined,
-			trace: () => undefined,
-			child: () => throwingLogger,
-		};
-		const consoleSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
-
-		const consumer = createLoggingConsumer(throwingLogger);
-		await expect(consumer.handle(startedEvent())).resolves.toBeUndefined();
-		expect(consoleSpy).toHaveBeenCalled();
-
-		consoleSpy.mockRestore();
+		);
+		const c = createLoggingConsumer(logger);
+		await expect(
+			c.handle(event({ kind: "trigger.request", name: "x" })),
+		).resolves.toBeUndefined();
 	});
 });

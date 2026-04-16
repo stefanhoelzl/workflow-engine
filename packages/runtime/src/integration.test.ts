@@ -1,389 +1,191 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Hono } from "hono";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEventStore } from "./event-bus/event-store.js";
+import type { InvocationEvent } from "@workflow-engine/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
-import {
-	createPersistence,
-	type InvocationRecord,
-	scanArchive,
-	scanPending,
-} from "./event-bus/persistence.js";
+import { createPersistence } from "./event-bus/persistence.js";
 import { createExecutor } from "./executor/index.js";
+import type { Logger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createFsStorage } from "./storage/fs.js";
-import { httpTriggerMiddleware } from "./triggers/http.js";
 import {
 	createWorkflowRegistry,
 	loadWorkflows,
 	type WorkflowRegistry,
 } from "./workflow-registry.js";
 
-// ---------------------------------------------------------------------------
-// Phase 4 end-to-end integration test
-// ---------------------------------------------------------------------------
-//
-// Drives the full v1 startup pipeline: storage → bus + consumers (persistence
-// + event-store + logging) → workflow registry loading a fixture manifest +
-// bundle → executor → recover() (no-op on empty pending) → HTTP middleware
-// wired up through Hono. Then fires a simulated webhook and asserts:
-//   1. The handler's HttpTriggerResult is returned.
-//   2. An archive/<id>.json record exists (persistence).
-//   3. The event-store has an indexed row.
-//
-// Uses the same inline fixture bundle pattern as workflow-registry.test.ts.
+function makeLogger(): Logger {
+	return {
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+	} as unknown as Logger;
+}
 
-const silentLogger = {
-	info: vi.fn(),
-	warn: vi.fn(),
-	error: vi.fn(),
-	debug: vi.fn(),
-	trace: vi.fn(),
-	child: vi.fn(function child() {
-		return silentLogger;
-	}),
+const MANIFEST = {
+	name: "demo",
+	module: "demo.js",
+	sha: "1".repeat(64),
+	env: {},
+	actions: [
+		{ name: "echo", input: { type: "object" }, output: { type: "object" } },
+	],
+	triggers: [
+		{
+			name: "ping",
+			type: "http",
+			path: "ping",
+			method: "POST",
+			body: { type: "object" },
+			params: [],
+			schema: { type: "object" },
+		},
+	],
 };
 
-function fixtureBundleSource(options?: {
-	strictStringOutput?: boolean;
-}): string {
-	// Output schema behaviour is toggleable so one test can assert the
-	// success path and another can assert SDK-wrapper output-validation
-	// failure (returning {greeting} while the output schema requires a
-	// string).
-	const outputSchemaDecl = options?.strictStringOutput
-		? `{ parse: (x) => { if (typeof x !== "string") { const err = new Error("output validation failed"); err.name = "ValidationError"; err.issues = [{path: [], message: "Expected string"}]; throw err; } return x; } }`
-		: "{ parse: (x) => x }";
-	return `
-const ACTION_BRAND = Symbol.for("@workflow-engine/action");
-const HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger");
-const WORKFLOW_BRAND = Symbol.for("@workflow-engine/workflow");
-
-export const workflow = Object.freeze({
-	[WORKFLOW_BRAND]: true,
-	name: "integration",
-	env: Object.freeze({}),
-});
-
-function makeAction(handler, input, output) {
-	let assignedName;
-	const callable = async function callAction(x) {
-		if (assignedName === undefined) throw new Error("unbound action");
-		await globalThis.__hostCallAction(assignedName, x);
-		const out = await handler(x);
-		return output.parse(out);
-	};
-	Object.defineProperty(callable, ACTION_BRAND, { value: true, enumerable: false });
-	Object.defineProperty(callable, "input", { value: input });
-	Object.defineProperty(callable, "output", { value: output });
-	Object.defineProperty(callable, "handler", { value: handler });
-	Object.defineProperty(callable, "name", { get: () => assignedName ?? "" });
-	Object.defineProperty(callable, "__setActionName", {
-		value: (name) => { if (!assignedName) assignedName = name; },
-	});
-	return callable;
-}
-
-const passThrough = { parse: (x) => x };
-const outputSchema = ${outputSchemaDecl};
-
-export const greet = makeAction(
-	async (input) => ({ greeting: "hello " + input.name }),
-	passThrough,
-	outputSchema,
+const BUNDLE = `
+export const echo = Object.assign(
+  async (input) => globalThis.__dispatchAction(
+    "echo",
+    input,
+    async (i) => i,
+    { parse: (x) => x },
+  ),
+  { __setActionName: () => {} },
 );
-
-export const hello = Object.freeze({
-	[HTTP_TRIGGER_BRAND]: true,
-	path: "hello",
-	method: "POST",
-	body: passThrough,
-	params: passThrough,
-	query: undefined,
-	handler: async (payload) => {
-		const result = await greet({ name: payload.body.name });
-		return { status: 200, body: result };
-	},
-});
+export const ping = {
+  handler: async (payload) => {
+    const e = await echo({ msg: payload.body?.msg ?? "hi" });
+    return { status: 200, body: { echoed: e.msg } };
+  },
+  body: { parse: (x) => x },
+  schema: { parse: (x) => x },
+};
 `;
-}
 
-interface Setup {
-	registry: WorkflowRegistry;
-	app: Hono;
-	persistencePath: string;
-	workflowsDir: string;
-	eventStore: Awaited<ReturnType<typeof createEventStore>>;
-}
+describe("end-to-end event flow", () => {
+	let dir: string;
+	let registry: WorkflowRegistry;
+	let store: EventStore;
 
-async function setupIntegration(): Promise<Setup> {
-	const root = await mkdtemp(join(tmpdir(), "wf-integration-"));
-	const persistencePath = join(root, "persistence");
-	const workflowsDir = join(root, "workflows");
-
-	// Storage.
-	const storage = createFsStorage(persistencePath);
-	await storage.init();
-
-	// Event bus + consumers.
-	const eventStore = await createEventStore({
-		logger: silentLogger,
-		persistence: { backend: storage },
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "integration-test-"));
 	});
-	await eventStore.initialized;
-	const persistence = createPersistence(storage, { logger: silentLogger });
-	const bus = createEventBus([persistence, eventStore]);
 
-	// Fixture workflow on disk.
-	const fixtureDir = join(workflowsDir, "integration");
-	const manifestPath = join(fixtureDir, "manifest.json");
-	const bundlePath = join(fixtureDir, "integration.js");
-	await mkdir(fixtureDir, { recursive: true });
-	await writeFile(
-		manifestPath,
-		JSON.stringify(
-			{
-				name: "integration",
-				module: "integration.js",
-				env: {},
-				actions: [
-					{
-						name: "greet",
-						input: {
-							type: "object",
-							properties: { name: { type: "string" } },
-							required: ["name"],
-						},
-						output: {
-							type: "object",
-							properties: { greeting: { type: "string" } },
-							required: ["greeting"],
-						},
-					},
-				],
-				triggers: [
-					{
-						name: "hello",
-						type: "http",
-						path: "hello",
-						method: "POST",
-						body: {
-							type: "object",
-							properties: { name: { type: "string" } },
-							required: ["name"],
-						},
-						params: [],
-						schema: { type: "object" },
-					},
-				],
-			},
-			null,
-			2,
-		),
-		{},
-	);
-	await writeFile(bundlePath, fixtureBundleSource(), {});
-
-	// Registry + loading.
-	const registry = createWorkflowRegistry({ logger: silentLogger });
-	await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
-
-	// Executor.
-	const executor = createExecutor({ bus });
-
-	// Recover (no-op on empty pending).
-	await recover({ backend: storage }, bus);
-
-	// HTTP.
-	const middleware = httpTriggerMiddleware(registry, executor);
-	const app = new Hono();
-	app.all(middleware.match, middleware.handler);
-	if (middleware.match.endsWith("/*")) {
-		app.all(middleware.match.slice(0, -2), middleware.handler);
-	}
-
-	return { registry, app, persistencePath, workflowsDir, eventStore };
-}
-
-describe("Phase 4 bootstrap integration", () => {
-	const cleanups: (() => void | Promise<void>)[] = [];
 	afterEach(async () => {
-		for (const fn of cleanups) {
-			// biome-ignore lint/performance/noAwaitInLoops: sequential cleanup
-			await fn();
-		}
-		cleanups.length = 0;
+		registry?.dispose();
+		await rm(dir, { recursive: true, force: true });
 	});
 
-	it("end-to-end: webhook → executor → handler response → archive + event-store", async () => {
-		const setup = await setupIntegration();
-		cleanups.push(() => setup.registry.dispose());
+	it("trigger → action → host validation → trigger.response, persisted to events table and archive", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
 
-		const res = await setup.app.request("/webhooks/hello", {
-			method: "POST",
-			body: JSON.stringify({ name: "world" }),
-			headers: { "Content-Type": "application/json" },
+		// Wire the runtime as main.ts does (minus HTTP).
+		store = await createEventStore({
+			persistence: { backend },
+			logger,
 		});
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
 
-		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ greeting: "hello world" });
-
-		// Archive entry present.
-		const storage = createFsStorage(setup.persistencePath);
-		const archiveEntries: InvocationRecord[] = [];
-		for await (const entry of scanArchive(storage)) {
-			archiveEntries.push(entry);
+		registry = createWorkflowRegistry({ logger });
+		const manifestPath = join(dir, "manifest.json");
+		await writeFile(manifestPath, JSON.stringify(MANIFEST), "utf8");
+		await writeFile(join(dir, "demo.js"), BUNDLE, "utf8");
+		await loadWorkflows(registry, [manifestPath], { logger });
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("expected at least one runner");
 		}
-		expect(archiveEntries).toHaveLength(1);
-		const entry = archiveEntries[0];
-		expect(entry?.status).toBe("succeeded");
-		expect(entry?.workflow).toBe("integration");
-		expect(entry?.trigger).toBe("hello");
 
-		// No pending entries left.
-		const pendingEntries: InvocationRecord[] = [];
-		for await (const p of scanPending(storage)) {
-			pendingEntries.push(p);
-		}
-		expect(pendingEntries).toHaveLength(0);
-
-		// EventStore indexed the invocation — dashboard list view reads
-		// from this table, so 15.1 asserts it explicitly.
-		const rows = await setup.eventStore.query.selectAll().execute();
-		expect(rows).toHaveLength(1);
-		expect(rows[0]?.status).toBe("succeeded");
-		expect(rows[0]?.workflow).toBe("integration");
-		expect(rows[0]?.trigger).toBe("hello");
-	});
-
-	it("404 when no trigger matches the webhook path", async () => {
-		const setup = await setupIntegration();
-		cleanups.push(() => setup.registry.dispose());
-
-		const res = await setup.app.request("/webhooks/nope", {
-			method: "POST",
-			body: JSON.stringify({}),
-			headers: { "Content-Type": "application/json" },
-		});
-		expect(res.status).toBe(404);
-	});
-
-	it("422 when body fails validation — executor never invoked", async () => {
-		const setup = await setupIntegration();
-		cleanups.push(() => setup.registry.dispose());
-
-		const res = await setup.app.request("/webhooks/hello", {
-			method: "POST",
-			body: JSON.stringify({ wrong: "shape" }),
-			headers: { "Content-Type": "application/json" },
-		});
-		expect(res.status).toBe(422);
-		const json = (await res.json()) as { error: string };
-		expect(json.error).toBe("payload_validation_failed");
-
-		// No archive entry because the executor was never invoked.
-		const storage = createFsStorage(setup.persistencePath);
-		const entries: InvocationRecord[] = [];
-		for await (const e of scanArchive(storage)) {
-			entries.push(e);
-		}
-		expect(entries).toHaveLength(0);
-	});
-
-	it("handler throw → 500 + failed archive entry", async () => {
-		// This test exercises an in-sandbox output validation failure: the
-		// SDK wrapper (emulated in the fixture) throws when the handler's
-		// {greeting} return does not match a string output schema. That
-		// surfaces as an uncaught rejection from `invokeHandler`, which
-		// the executor records as a `failed` invocation + 500 response.
-		const root = await mkdtemp(join(tmpdir(), "wf-integration-fail-"));
-		const persistencePath = join(root, "persistence");
-		const workflowsDir = join(root, "workflows");
-		const fixtureDir = join(workflowsDir, "integration");
-		const manifestPath = join(fixtureDir, "manifest.json");
-		const bundlePath = join(fixtureDir, "integration.js");
-
-		const storage = createFsStorage(persistencePath);
-		await storage.init();
-		const eventStore = await createEventStore({
-			logger: silentLogger,
-			persistence: { backend: storage },
-		});
-		await eventStore.initialized;
-		const persistence = createPersistence(storage, { logger: silentLogger });
-		const bus = createEventBus([persistence, eventStore]);
-
-		// Action "greet" with a STRICT string output schema that the
-		// in-sandbox handler's `{greeting}` return will fail — the SDK
-		// wrapper surfaces that as a rejection.
-		await mkdir(fixtureDir, { recursive: true });
-		await writeFile(
-			manifestPath,
-			JSON.stringify({
-				name: "integration-fail",
-				module: "integration.js",
-				env: {},
-				actions: [
-					{
-						name: "greet",
-						input: {
-							type: "object",
-							properties: { name: { type: "string" } },
-							required: ["name"],
-						},
-						output: { type: "string" },
-					},
-				],
-				triggers: [
-					{
-						name: "hello",
-						type: "http",
-						path: "hello",
-						method: "POST",
-						body: {
-							type: "object",
-							properties: { name: { type: "string" } },
-							required: ["name"],
-						},
-						params: [],
-						schema: { type: "object" },
-					},
-				],
-			}),
-			{},
-		);
-		await writeFile(
-			bundlePath,
-			fixtureBundleSource({ strictStringOutput: true }),
-			{},
-		);
-
-		const registry = createWorkflowRegistry({ logger: silentLogger });
-		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
-		cleanups.push(() => registry.dispose());
 		const executor = createExecutor({ bus });
-
-		const middleware = httpTriggerMiddleware(registry, executor);
-		const app = new Hono();
-		app.all(middleware.match, middleware.handler);
-		if (middleware.match.endsWith("/*")) {
-			app.all(middleware.match.slice(0, -2), middleware.handler);
-		}
-
-		const res = await app.request("/webhooks/hello", {
-			method: "POST",
-			body: JSON.stringify({ name: "world" }),
-			headers: { "Content-Type": "application/json" },
+		const result = await executor.invoke(runner, "ping", {
+			body: { msg: "hello" },
 		});
-		expect(res.status).toBe(500);
+		expect(result.status).toBe(200);
+		expect(result.body).toEqual({ echoed: "hello" });
 
-		const archiveEntries: InvocationRecord[] = [];
-		for await (const e of scanArchive(storage)) {
-			archiveEntries.push(e);
+		// Allow any onEvent forwarding to settle (executor wires fire-and-forget).
+		await new Promise((r) => setImmediate(r));
+
+		// The events table should contain the full trace.
+		const rows = await store.query.selectAll().orderBy("seq", "asc").execute();
+		const kinds = rows.map((r) => r.kind);
+		expect(kinds[0]).toBe("trigger.request");
+		expect(kinds.at(-1)).toBe("trigger.response");
+		expect(kinds).toContain("action.request");
+		expect(kinds).toContain("action.response");
+		expect(kinds).toContain("system.request");
+		expect(kinds).toContain("system.response");
+
+		// All events share the same invocation id and workflow metadata.
+		const ids = new Set(rows.map((r) => r.id));
+		expect(ids.size).toBe(1);
+		const id = [...ids][0];
+		if (!id) {
+			throw new Error("expected one invocation id");
 		}
-		expect(archiveEntries).toHaveLength(1);
-		expect(archiveEntries[0]?.status).toBe("failed");
+
+		// All pending files were moved to archive on trigger.response.
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) {
+			pending.push(p);
+		}
+		expect(pending).toEqual([]);
+
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) {
+			archive.push(p);
+		}
+		expect(archive.length).toBeGreaterThan(0);
+		expect(archive.every((p) => p.startsWith(`archive/${id}/`))).toBe(true);
+	});
+
+	it("recovery synthesizes a trigger.error and archives orphaned events", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		// Pre-seed pending/ as if the process crashed mid-invocation.
+		const orphan: InvocationEvent = {
+			kind: "trigger.request",
+			id: "evt_crashed",
+			seq: 0,
+			ref: null,
+			ts: Date.now(),
+			workflow: "demo",
+			workflowSha: MANIFEST.sha,
+			name: "ping",
+		};
+		await backend.write(
+			`pending/${orphan.id}_${orphan.seq}.json`,
+			JSON.stringify(orphan),
+		);
+
+		store = await createEventStore({ persistence: { backend }, logger });
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		await recover({ backend }, bus);
+
+		// The synthesized trigger.error should be in the events table.
+		const rows = await store.query
+			.where("id", "=", "evt_crashed")
+			.selectAll()
+			.execute();
+		expect(rows.some((r) => r.kind === "trigger.error")).toBe(true);
+
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) {
+			pending.push(p);
+		}
+		expect(pending).toEqual([]);
 	});
 });

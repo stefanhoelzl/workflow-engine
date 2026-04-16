@@ -330,27 +330,49 @@ function buildHttpTriggers(manifest: Manifest): {
 	return { descriptors, bindings };
 }
 
+// The action dispatcher implementation, appended as JS source to the sandbox
+// bundle. It reads the host-installed `__hostCallAction` and `__emitEvent`
+// globals to wrap every action call with paired action.request/response/error
+// events around the validation + handler + output-parse pipeline.
+const ACTION_DISPATCHER_SOURCE = `
+globalThis.__dispatchAction = async (name, input, handler, outputSchema) => {
+  globalThis.__emitEvent({ kind: "action.request", name, input });
+  try {
+    await globalThis.__hostCallAction(name, input);
+    const raw = await handler(input);
+    const output = outputSchema.parse(raw);
+    globalThis.__emitEvent({ kind: "action.response", name, output });
+    return output;
+  } catch (err) {
+    const error = {
+      message: err && err.message ? String(err.message) : String(err),
+      stack: err && err.stack ? String(err.stack) : "",
+    };
+    if (err && err.issues !== undefined) error.issues = err.issues;
+    globalThis.__emitEvent({ kind: "action.error", name, error });
+    throw err;
+  }
+};
+`;
+
 function buildSandboxSource(manifest: Manifest, bundleSource: string): string {
-	// The bundle's trigger exports are plain objects (`{handler, body, ...}`)
-	// — calling `sb.run("triggerName", payload)` would try to invoke the
-	// object as a function. Append a dispatcher shim per trigger that wraps
-	// the handler call. The shim names are namespaced (`__trigger_<name>`)
-	// so they never collide with user exports.
 	const shim = buildTriggerShim(manifest.triggers.map((t) => t.name));
-	// Bind every manifest-declared action so the sandbox-side Action callable
-	// has its name set before any trigger handler runs. Non-declared exports
-	// that call the sandbox's `action()` factory also self-name via the
-	// vite-plugin (build time) or remain anonymous and surface as an
-	// "unbound action" error at invocation time — both of which are correct
-	// failure modes.
 	const nameBinder = buildActionNameBinder(manifest.actions.map((a) => a.name));
-	return `${bundleSource}\n${nameBinder}\n${shim}`;
+	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}\n${nameBinder}\n${shim}`;
 }
 
-function buildInvokeHandler(sb: Sandbox) {
-	return async function invokeHandler(triggerName: string, payload: unknown) {
+function buildInvokeHandler(sb: Sandbox, manifest: Manifest) {
+	return async function invokeHandler(
+		invocationId: string,
+		triggerName: string,
+		payload: unknown,
+	) {
 		const exportName = triggerShimName(triggerName);
-		const runResult = await sb.run(exportName, payload);
+		const runResult = await sb.run(exportName, payload, {
+			invocationId,
+			workflow: manifest.name,
+			workflowSha: manifest.sha,
+		});
 		if (!runResult.ok) {
 			const err = new Error(runResult.error.message);
 			err.stack = runResult.error.stack;
@@ -370,7 +392,14 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 	const __hostCallAction = buildHostCallAction({ manifest, logger });
 	const sourceWithShim = buildSandboxSource(manifest, bundleSource);
 
-	const sb = await sandbox(sourceWithShim, { __hostCallAction }, { filename });
+	const sb = await sandbox(
+		sourceWithShim,
+		{ __hostCallAction },
+		{
+			filename,
+			methodEventNames: { __hostCallAction: "host.validateAction" },
+		},
+	);
 
 	const actionDescriptors = buildActionDescriptors(manifest);
 	const { descriptors: triggerDescriptors, bindings: httpTriggers } =
@@ -381,7 +410,10 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 		env: Object.freeze({ ...manifest.env }),
 		actions: actionDescriptors,
 		triggers: triggerDescriptors,
-		invokeHandler: buildInvokeHandler(sb),
+		invokeHandler: buildInvokeHandler(sb, manifest),
+		onEvent(cb) {
+			sb.onEvent(cb);
+		},
 	};
 
 	return { runner, sandbox: sb, httpTriggers };

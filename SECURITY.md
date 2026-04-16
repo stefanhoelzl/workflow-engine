@@ -142,61 +142,100 @@ new capability across the sandbox boundary?*
   for `Sandbox` instances. Caches sandboxes by source, registers a
   death callback on each, and evicts on unexpected worker termination
   so the next `create(source)` spawns a fresh worker.
-- `Sandbox.run(name, ctx, extraMethods)` — invokes a named export from
-  the workflow module with a JSON-shaped `ctx` argument. Host-provided
+- `Sandbox.run(name, ctx, runOptions)` — invokes a named export from
+  the workflow module with a JSON-shaped `ctx` argument. `runOptions`
+  carries `invocationId`, `workflow`, `workflowSha`, and optional
+  `extraMethods`. The worker uses these to stamp every `InvocationEvent`
+  emitted during the run (see `__emitEvent` below). Host-provided
   methods in `methods` (construction-time) and `extraMethods` (per-run)
   are installed as top-level globals inside the sandbox via RPC
   proxies: the worker posts a `request` carrying `method` + `args`,
   the main thread dispatches to the provided implementation, and the
   response travels back as a `response` message.
+- `Sandbox.onEvent(cb)` — registers a callback the main-thread sandbox
+  proxy invokes for each `InvocationEvent` the worker streams. The
+  worker posts `{ type: "event", event }` messages as paired
+  `system.request` / `system.response` (or `*.error`) events fire from
+  the bridge, plus `trigger.*` events around the export call and
+  `action.*` events emitted by the in-sandbox dispatcher via
+  `__emitEvent`. Events flow main-thread → consumer (typically the
+  runtime's event bus) → persistence + DuckDB. The sandbox package
+  itself does not know about the bus; it just calls back.
 - All arguments and return values crossing the host/sandbox boundary
   via consumer-provided methods are JSON-serializable. Host object
   references, closures, and proxies never cross.
 - Globals exposed inside the sandbox: `console.*`, `performance.now`,
   `crypto.*` (full WebCrypto), `setTimeout` / `setInterval` /
   `clearTimeout` / `clearInterval`, `__hostFetch` (for the workflow
-  bundle's fetch polyfill chain), plus the host methods registered via
-  `methods` and `extraMethods`. The runtime passes `__hostCallAction`
-  as a construction-time method in `methods` — it is a convention, not
-  a hardcoded built-in; the sandbox package itself does not know about
-  manifests, Zod, or action dispatch.
-- **Action dispatch model (design D11).** The author writes
+  bundle's fetch polyfill chain), `__emitEvent` (write-only telemetry
+  channel for `action.*` events; see below), plus the host methods
+  registered via `methods` and `extraMethods`. The runtime passes
+  `__hostCallAction` as a construction-time method in `methods` and
+  appends `__dispatchAction` as plain JS source after the workflow
+  bundle — both are conventions, not hardcoded built-ins; the sandbox
+  package itself does not know about manifests, Zod, or action
+  dispatch.
+- **`__emitEvent(event)`** — write-only telemetry channel installed
+  directly on `globalThis` via `vm.newFunction` (NOT through
+  `bridge.sync()` / `bridge.async()`, so it does not itself appear in
+  the event stream). Accepts a JSON payload constrained to
+  `kind ∈ {action.request, action.response, action.error}`; any other
+  `kind` is rejected with a `TypeError` thrown into the guest. The
+  worker stamps the supplied event with `id`, `seq`, `ref`, `ts`,
+  `workflow`, `workflowSha` from the current run context and posts it
+  to the main thread as a `{ type: "event" }` message. The guest cannot
+  read host state through this channel, cannot influence other events'
+  metadata, and cannot post `trigger.*` or `system.*` events (those
+  are emitted by the worker and bridge respectively, never by guest
+  code).
+- **Action dispatch model.** The author writes
   `await sendNotification(input)` against the SDK-returned callable.
-  That callable is a sandbox-side wrapper (defined in
-  `packages/sdk/src/index.ts`) that runs entirely inside the
-  QuickJS context and does three things, in order:
-  1. Notifies the host via `__hostCallAction(name, input)`. The host
+  That callable delegates to `dispatchAction()` from
+  `@workflow-engine/core`, which reads `globalThis.__dispatchAction`
+  and calls it. The runtime appends `__dispatchAction` as plain JS
+  source after the workflow bundle in `buildSandboxSource`; the
+  appended dispatcher runs entirely inside the QuickJS context and
+  does five things, in order:
+  1. Calls `__emitEvent({ kind: "action.request", name, input })` to
+     emit the start of the action lifecycle.
+  2. Notifies the host via `__hostCallAction(name, input)`. The host
+     (registered with the bridge method name `host.validateAction`)
      looks up the action by name in the workflow's manifest, validates
      `input` against the declared JSON Schema (Ajv on the host side),
      and emits an audit-log entry. The host then returns `undefined`
      — it does NOT dispatch the user's handler.
-  2. Invokes the author's handler as a plain JS function call in the
+  3. Invokes the author's handler as a plain JS function call in the
      same QuickJS context (no nested `sandbox.run()`).
-  3. Validates the handler's return value against the action's output
+  4. Validates the handler's return value against the action's output
      Zod schema using the Zod bundle that ships inlined in the
      workflow bundle.
-  This means action code runs inside the sandbox's QuickJS boundary
-  at all times — the host bridge is reached only for input validation
-  + audit logging. Validation errors from either end propagate across
-  the bridge (when thrown host-side) or propagate directly (when
-  thrown sandbox-side, step 3) as JS `Error` rejections. On the
-  host-thrown path, the guest-side error carries the Zod-shaped
-  `issues` array preserved as a JSON-marshaled own property.
+  5. Calls `__emitEvent({ kind: "action.response", name, output })` (or
+     `action.error` on any thrown rejection in steps 2-4).
+  Action code runs inside the sandbox's QuickJS boundary at all times
+  — the host bridge is reached only for input validation + audit
+  logging. Validation errors from either end propagate across the
+  bridge (when thrown host-side) or propagate directly (when thrown
+  sandbox-side, step 4) as JS `Error` rejections. On the host-thrown
+  path, the guest-side error carries the Zod-shaped `issues` array
+  preserved as a JSON-marshaled own property.
 - If the runtime does not pass `__hostCallAction` in `methods`, it is
   not installed — the SDK wrapper's first step throws "is not a
   function" and the author's handler MUST NOT execute.
 - **Bridge surface inventory** (the total set of guest-visible globals
   beyond standard JS built-ins):
-  - **Built-ins** (hardcoded in `packages/sandbox/src/globals.ts`):
-    `console`, `setTimeout`, `setInterval`, `clearTimeout`,
-    `clearInterval`, `performance`, `crypto`, `__hostFetch`.
+  - **Built-ins** (hardcoded in `packages/sandbox/src/globals.ts` /
+    `worker.ts`): `console`, `setTimeout`, `setInterval`,
+    `clearTimeout`, `clearInterval`, `performance`, `crypto`,
+    `__hostFetch`, `__emitEvent`.
   - **Runtime-passed** (via `methods` at `sandbox(source, methods)`
     construction time): `__hostCallAction`. Not a hardcoded built-in —
     the sandbox package has no knowledge of manifests or actions; it
     simply installs whatever methods the runtime provides.
-  The sandbox boundary regression test
-  (`packages/sandbox/src/host-call-action.test.ts` > "host-bridge
-  surface inventory") asserts this exact inventory.
+  - **Runtime-appended** (via JS source appended to the bundle in
+    `buildSandboxSource`): `__dispatchAction`. Not a function the
+    sandbox package installs; it is plain workflow-bundle source that
+    the runtime emits after the bundle to wire `__emitEvent` and
+    `__hostCallAction` together for the SDK's action callable.
 - Handlers receive `(payload)` (trigger) or `(input)` (action) — no
   `ctx` parameter. Workflow-level env is declared on
   `defineWorkflow({env})` and is referenced via the imported

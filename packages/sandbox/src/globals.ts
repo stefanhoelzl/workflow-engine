@@ -47,6 +47,13 @@ function setupPerformance(b: Bridge): void {
 function setupTimers(b: Bridge): TimerCleanup {
 	const pendingCallbacks = new Map<number, QuickJSHandle>();
 
+	// Timers are direct vm.newFunction installs (not bridge.sync) because they
+	// take a guest callback handle and must dup/call it; the bridge wrappers
+	// can't represent that argument shape. They emit no events for now — guest
+	// timer use is rare and the cost of full request/response wrapping
+	// outweighs the value. Method-name tracking in the event stream would
+	// require restructuring how vm.newFunction interacts with bridge state.
+
 	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
 		(callbackHandle, delayHandle) => {

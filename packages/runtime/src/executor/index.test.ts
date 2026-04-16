@@ -1,324 +1,142 @@
-import type { HttpTriggerResult } from "@workflow-engine/core";
-import { describe, expect, it } from "vitest";
-import {
-	type BusConsumer,
-	createEventBus,
-	type InvocationLifecycleEvent,
-} from "../event-bus/index.js";
+import type { InvocationEvent } from "@workflow-engine/core";
+import { describe, expect, it, vi } from "vitest";
+import { createEventBus, type EventBus } from "../event-bus/index.js";
 import { createExecutor } from "./index.js";
 import type { WorkflowRunner } from "./types.js";
 
-// Capture-all consumer — dispatches are fully synchronous-ordered so each
-// entry lands before the executor returns.
-function makeRecorder() {
-	const events: InvocationLifecycleEvent[] = [];
-	const consumer: BusConsumer = {
-		async handle(event) {
-			events.push(event);
-		},
-	};
-	return { events, consumer };
-}
+const EVT_ID_RE = /^evt_/;
 
-interface BuildRunnerOpts {
-	name: string;
-	handler: (payload: unknown) => Promise<unknown>;
-}
-
-function buildRunner(opts: BuildRunnerOpts): WorkflowRunner {
-	return {
-		name: opts.name,
+function makeRunner(
+	overrides: Partial<WorkflowRunner> & Pick<WorkflowRunner, "name">,
+): WorkflowRunner {
+	const base: WorkflowRunner = {
+		name: overrides.name,
 		env: Object.freeze({}),
 		actions: [],
-		triggers: [
-			{
-				name: "webhook",
-				type: "http",
-				path: "/",
-				method: "POST",
-				params: [],
-				body: { parse: (d) => d },
-			},
-		],
-		invokeHandler: async (_name, payload) => {
-			const raw = await opts.handler(payload);
-			return raw as HttpTriggerResult;
+		triggers: [],
+		invokeHandler: async () => ({ status: 200 }),
+		onEvent: () => {
+			/* no-op */
 		},
 	};
+	return { ...base, ...overrides };
 }
 
-describe("executor.invoke — result shaping", () => {
-	it("returns handler's full response with defaults where missing", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
+describe("executor", () => {
+	it("generates an invocation id and passes it to invokeHandler", async () => {
+		const handler = vi.fn().mockResolvedValue({ status: 200 });
+		const runner = makeRunner({
+			name: "wf",
+			invokeHandler: handler as WorkflowRunner["invokeHandler"],
+		});
+		const bus = createEventBus([]);
 		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => ({
-				status: 202,
-				body: { ok: true },
-				headers: { x: "1" },
-			}),
-		});
 
-		const result = await executor.invoke(runner, "webhook", {});
-		expect(result).toEqual({
-			status: 202,
-			body: { ok: true },
-			headers: { x: "1" },
-		});
+		await executor.invoke(runner, "trig", { hello: "world" });
+
+		expect(handler).toHaveBeenCalledTimes(1);
+		const args = handler.mock.calls[0];
+		if (!args) {
+			throw new Error("expected at least one call");
+		}
+		expect(typeof args[0]).toBe("string");
+		expect(args[0]).toMatch(EVT_ID_RE);
+		expect(args[1]).toBe("trig");
+		expect(args[2]).toEqual({ hello: "world" });
 	});
 
-	it("fills defaults for a partial response", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => ({ status: 204 }),
-		});
-
-		const result = await executor.invoke(runner, "webhook", {});
-		expect(result).toEqual({ status: 204, body: "", headers: {} });
-	});
-
-	it("returns the full default shape when handler returns undefined", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => undefined,
-		});
-
-		const result = await executor.invoke(runner, "webhook", {});
-		expect(result).toEqual({ status: 200, body: "", headers: {} });
-	});
-
-	it("maps handler throw to 500 + internal_error body", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => {
-				throw new Error("boom");
+	it("wires onEvent → bus.emit on first invoke and reuses the wiring", async () => {
+		const registrations: ((e: InvocationEvent) => void)[] = [];
+		const runner = makeRunner({
+			name: "wf",
+			onEvent: (cb) => {
+				registrations.push(cb);
 			},
 		});
-
-		const result = await executor.invoke(runner, "webhook", {});
-		expect(result).toEqual({
-			status: 500,
-			body: { error: "internal_error" },
-			headers: {},
-		});
-	});
-});
-
-describe("executor.invoke — bus emission", () => {
-	it("emits started before dispatching the handler, completed after", async () => {
-		const { events, consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-
-		const handlerEvents: string[] = [];
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => {
-				handlerEvents.push("handler");
-				return { status: 200 };
-			},
-		});
-
-		await executor.invoke(runner, "webhook", { x: 1 });
-
-		expect(events.map((e) => e.kind)).toEqual(["started", "completed"]);
-		expect(events[0]?.id).toBe(events[1]?.id);
-		expect(events[0]?.workflow).toBe("w1");
-		expect(events[0]?.trigger).toBe("webhook");
-		const started = events[0] as Extract<
-			InvocationLifecycleEvent,
-			{ kind: "started" }
-		>;
-		expect(started.input).toEqual({ x: 1 });
-		expect(handlerEvents).toEqual(["handler"]);
-	});
-
-	it("emits failed with serialized error on throw", async () => {
-		const { events, consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => {
-				throw new Error("boom");
-			},
-		});
-
-		await executor.invoke(runner, "webhook", {});
-
-		expect(events.map((e) => e.kind)).toEqual(["started", "failed"]);
-		const failed = events[1] as Extract<
-			InvocationLifecycleEvent,
-			{ kind: "failed" }
-		>;
-		expect(failed.error.message).toBe("boom");
-		expect(typeof failed.error.stack).toBe("string");
-	});
-
-	it("propagates Zod-style issues on failure", async () => {
-		const { events, consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => {
-				const err = new Error("validation") as Error & { issues: unknown[] };
-				err.name = "ZodError";
-				err.issues = [{ path: ["foo"], message: "Required" }];
-				throw err;
-			},
-		});
-
-		await executor.invoke(runner, "webhook", {});
-		const failed = events[1] as Extract<
-			InvocationLifecycleEvent,
-			{ kind: "failed" }
-		>;
-		expect(failed.error.issues).toEqual([
-			{ path: ["foo"], message: "Required" },
-		]);
-	});
-});
-
-describe("executor.invoke — serialization", () => {
-	it("serializes two invocations of the same workflow", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-
-		const runStart: string[] = [];
-		let resolveFirst: () => void = () => undefined;
-		const firstGate = new Promise<void>((resolve) => {
-			resolveFirst = resolve;
-		});
-
-		const runner = buildRunner({
-			name: "w1",
-			handler: async (payload) => {
-				const label = (payload as { label: string }).label;
-				runStart.push(label);
-				if (label === "a") {
-					await firstGate;
-				}
-				return { status: 200 };
-			},
-		});
-
-		const p1 = executor.invoke(runner, "webhook", { label: "a" });
-		const p2 = executor.invoke(runner, "webhook", { label: "b" });
-
-		// Give the event loop a chance. Only `a` should have started.
-		await new Promise((r) => setTimeout(r, 5));
-		expect(runStart).toEqual(["a"]);
-
-		resolveFirst();
-		await Promise.all([p1, p2]);
-		expect(runStart).toEqual(["a", "b"]);
-	});
-
-	it("runs two workflows in parallel", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-
-		let aStarted = false;
-		let bStarted = false;
-		let resolveA: () => void = () => undefined;
-		const aGate = new Promise<void>((r) => {
-			resolveA = r;
-		});
-
-		const runnerA = buildRunner({
-			name: "wA",
-			handler: async () => {
-				aStarted = true;
-				await aGate;
-				return { status: 200 };
-			},
-		});
-		const runnerB = buildRunner({
-			name: "wB",
-			handler: async () => {
-				bStarted = true;
-				return { status: 200 };
-			},
-		});
-
-		const pA = executor.invoke(runnerA, "webhook", {});
-		const pB = executor.invoke(runnerB, "webhook", {});
-
-		await new Promise((r) => setTimeout(r, 5));
-		expect(aStarted).toBe(true);
-		expect(bStarted).toBe(true);
-
-		resolveA();
-		await Promise.all([pA, pB]);
-	});
-
-	it("a failure does not block the next invocation", async () => {
-		const { consumer } = makeRecorder();
-		const bus = createEventBus([consumer]);
-		const executor = createExecutor({ bus });
-
-		let secondRan = false;
-		const runner = buildRunner({
-			name: "w1",
-			handler: async (payload) => {
-				if ((payload as { fail?: boolean }).fail) {
-					throw new Error("first fails");
-				}
-				secondRan = true;
-				return { status: 200 };
-			},
-		});
-
-		const p1 = executor.invoke(runner, "webhook", { fail: true });
-		const p2 = executor.invoke(runner, "webhook", {});
-
-		await Promise.all([p1, p2]);
-		expect(secondRan).toBe(true);
-	});
-});
-
-describe("executor.invoke — bus commit-before-observe", () => {
-	it("completes bus dispatch before resolving to caller", async () => {
-		const order: string[] = [];
-		const persistence: BusConsumer = {
-			async handle(event) {
-				await new Promise((r) => setTimeout(r, 5));
-				order.push(`persistence:${event.kind}`);
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
 			},
 		};
-		const bus = createEventBus([persistence]);
 		const executor = createExecutor({ bus });
 
-		const runner = buildRunner({
-			name: "w1",
-			handler: async () => {
-				order.push("handler");
+		await executor.invoke(runner, "t", null);
+		await executor.invoke(runner, "t", null);
+
+		// onEvent should be wired exactly once across multiple invocations.
+		expect(registrations).toHaveLength(1);
+
+		const evt: InvocationEvent = {
+			kind: "trigger.request",
+			id: "evt_x",
+			seq: 0,
+			ref: null,
+			ts: 1,
+			workflow: "wf",
+			workflowSha: "sha",
+			name: "t",
+		};
+		const cb = registrations[0];
+		if (!cb) {
+			throw new Error("expected onEvent to have been called");
+		}
+		cb(evt);
+		await new Promise((r) => setImmediate(r));
+		expect(seen).toContain(evt);
+	});
+
+	it("shapes a missing return value into a default 200 response", async () => {
+		const runner = makeRunner({
+			name: "wf",
+			invokeHandler: async () => undefined as unknown as never,
+		});
+		const bus = createEventBus([]);
+		const executor = createExecutor({ bus });
+		const result = await executor.invoke(runner, "t", null);
+		expect(result.status).toBe(200);
+	});
+
+	it("returns a 500 response when invokeHandler throws", async () => {
+		const runner = makeRunner({
+			name: "wf",
+			invokeHandler: async () => {
+				throw new Error("boom");
+			},
+		});
+		const bus = createEventBus([]);
+		const executor = createExecutor({ bus });
+		const result = await executor.invoke(runner, "t", null);
+		expect(result.status).toBe(500);
+		expect(result.body).toEqual({ error: "internal_error" });
+	});
+
+	it("serializes invocations of the same workflow via the runQueue", async () => {
+		const callOrder: string[] = [];
+		let active = 0;
+		let maxActive = 0;
+		const runner = makeRunner({
+			name: "wf",
+			invokeHandler: async (id) => {
+				active++;
+				maxActive = Math.max(maxActive, active);
+				callOrder.push(`start:${id}`);
+				await new Promise((r) => setTimeout(r, 5));
+				callOrder.push(`end:${id}`);
+				active--;
 				return { status: 200 };
 			},
 		});
+		const bus = createEventBus([]);
+		const executor = createExecutor({ bus });
 
-		await executor.invoke(runner, "webhook", {});
-		order.push("caller-returned");
-
-		expect(order).toEqual([
-			"persistence:started",
-			"handler",
-			"persistence:completed",
-			"caller-returned",
+		await Promise.all([
+			executor.invoke(runner, "t", null),
+			executor.invoke(runner, "t", null),
+			executor.invoke(runner, "t", null),
 		]);
+
+		expect(maxActive).toBe(1);
+		expect(callOrder.length).toBe(6);
 	});
 });

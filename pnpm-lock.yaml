@@ -121,6 +121,9 @@ importers:
       '@jitl/quickjs-wasmfile-release-sync':
         specifier: ^0.32.0
         version: 0.32.0
+      '@workflow-engine/core':
+        specifier: workspace:*
+        version: link:../core
       quickjs-emscripten:
         specifier: ^0.32.0
         version: 0.32.0

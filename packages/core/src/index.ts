@@ -26,6 +26,67 @@ interface HttpTriggerPayload<
 }
 
 // ---------------------------------------------------------------------------
+// Invocation events
+// ---------------------------------------------------------------------------
+
+type EventKind =
+	| "trigger.request"
+	| "trigger.response"
+	| "trigger.error"
+	| "action.request"
+	| "action.response"
+	| "action.error"
+	| "system.request"
+	| "system.response"
+	| "system.error";
+
+interface InvocationEventError {
+	message: string;
+	stack: string;
+	issues?: unknown;
+}
+
+interface InvocationEvent {
+	readonly kind: EventKind;
+	readonly id: string;
+	readonly seq: number;
+	readonly ref: number | null;
+	readonly ts: number;
+	readonly workflow: string;
+	readonly workflowSha: string;
+	readonly name: string;
+	readonly input?: unknown;
+	readonly output?: unknown;
+	readonly error?: InvocationEventError;
+}
+
+// ---------------------------------------------------------------------------
+// Action dispatch contract
+// ---------------------------------------------------------------------------
+
+type ActionDispatcher = (
+	name: string,
+	input: unknown,
+	handler: (input: unknown) => Promise<unknown>,
+	outputSchema: { parse(data: unknown): unknown },
+) => Promise<unknown>;
+
+function dispatchAction(
+	name: string,
+	input: unknown,
+	handler: (input: unknown) => Promise<unknown>,
+	outputSchema: { parse(data: unknown): unknown },
+): Promise<unknown> {
+	const fn = (globalThis as Record<string, unknown>).__dispatchAction;
+	if (typeof fn !== "function") {
+		throw new Error(
+			"No action dispatcher installed; actions can only run inside the workflow sandbox",
+		);
+	}
+	return (fn as ActionDispatcher)(name, input, handler, outputSchema);
+}
+
+// ---------------------------------------------------------------------------
 // Manifest schema (v1)
 // ---------------------------------------------------------------------------
 
@@ -63,6 +124,7 @@ const triggerManifestSchema = z.discriminatedUnion("type", [
 const ManifestSchema = z.object({
 	name: z.string(),
 	module: z.string(),
+	sha: z.string(),
 	env: z.record(z.string(), z.string()),
 	actions: z.array(actionManifestSchema),
 	triggers: z.array(triggerManifestSchema),
@@ -74,5 +136,13 @@ type Manifest = z.infer<typeof ManifestSchema>;
 // Exports
 // ---------------------------------------------------------------------------
 
-export type { HttpTriggerPayload, HttpTriggerResult, Manifest };
-export { ManifestSchema, z };
+export type {
+	ActionDispatcher,
+	EventKind,
+	HttpTriggerPayload,
+	HttpTriggerResult,
+	InvocationEvent,
+	InvocationEventError,
+	Manifest,
+};
+export { dispatchAction, ManifestSchema, z };

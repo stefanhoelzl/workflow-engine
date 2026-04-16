@@ -1,120 +1,68 @@
+import type { InvocationEvent } from "@workflow-engine/core";
 import { describe, expect, it, vi } from "vitest";
-import {
-	type BusConsumer,
-	createEventBus,
-	type InvocationLifecycleEvent,
-} from "./index.js";
+import { type BusConsumer, createEventBus } from "./index.js";
 
-function makeStartedEvent(
-	overrides: Partial<InvocationLifecycleEvent> = {},
-): InvocationLifecycleEvent {
+function makeEvent(seq: number): InvocationEvent {
 	return {
-		kind: "started",
-		id: `evt_${crypto.randomUUID()}`,
-		workflow: "w1",
-		trigger: "t1",
-		ts: new Date(),
-		input: {},
-		...overrides,
-	} as InvocationLifecycleEvent;
-}
-
-function mockConsumer(overrides?: Partial<BusConsumer>): BusConsumer {
-	return {
-		handle: overrides?.handle ?? vi.fn<BusConsumer["handle"]>(),
+		kind: "system.request",
+		id: "evt_test",
+		seq,
+		ref: null,
+		ts: 1000 + seq,
+		workflow: "wf",
+		workflowSha: "sha",
+		name: "console.log",
+		input: ["hello"],
 	};
 }
 
 describe("createEventBus", () => {
-	describe("emit", () => {
-		it("calls handle on all consumers in registration order", async () => {
-			const order: string[] = [];
-			const a = mockConsumer({
-				handle: async () => {
-					order.push("a");
-				},
-			});
-			const b = mockConsumer({
-				handle: async () => {
-					order.push("b");
-				},
-			});
-			const c = mockConsumer({
-				handle: async () => {
-					order.push("c");
-				},
-			});
-			const bus = createEventBus([a, b, c]);
+	it("fans out one event to every consumer", async () => {
+		const a: BusConsumer = { handle: vi.fn().mockResolvedValue(undefined) };
+		const b: BusConsumer = { handle: vi.fn().mockResolvedValue(undefined) };
+		const bus = createEventBus([a, b]);
 
-			await bus.emit(makeStartedEvent());
+		const event = makeEvent(0);
+		await bus.emit(event);
 
-			expect(order).toEqual(["a", "b", "c"]);
-		});
+		expect(a.handle).toHaveBeenCalledWith(event);
+		expect(b.handle).toHaveBeenCalledWith(event);
+	});
 
-		it("dispatches consumers sequentially (awaits each before next)", async () => {
-			const events: string[] = [];
-			const a = mockConsumer({
-				handle: async () => {
-					events.push("a:start");
-					await new Promise((resolve) => setTimeout(resolve, 10));
-					events.push("a:end");
-				},
-			});
-			const b = mockConsumer({
-				handle: async () => {
-					events.push("b:start");
-					events.push("b:end");
-				},
-			});
-			const bus = createEventBus([a, b]);
+	it("awaits consumers in registration order", async () => {
+		const calls: string[] = [];
+		const first: BusConsumer = {
+			handle: async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				calls.push("first");
+			},
+		};
+		const second: BusConsumer = {
+			handle: async () => {
+				calls.push("second");
+			},
+		};
+		const bus = createEventBus([first, second]);
 
-			await bus.emit(makeStartedEvent());
+		await bus.emit(makeEvent(0));
 
-			expect(events).toEqual(["a:start", "a:end", "b:start", "b:end"]);
-		});
+		expect(calls).toEqual(["first", "second"]);
+	});
 
-		it("passes the event to each consumer", async () => {
-			const consumer = mockConsumer();
-			const bus = createEventBus([consumer]);
+	it("propagates a consumer error and skips subsequent consumers", async () => {
+		const boom = new Error("boom");
+		const failing: BusConsumer = {
+			handle: vi.fn().mockRejectedValue(boom),
+		};
+		const after: BusConsumer = { handle: vi.fn() };
+		const bus = createEventBus([failing, after]);
 
-			const event = makeStartedEvent();
-			await bus.emit(event);
+		await expect(bus.emit(makeEvent(0))).rejects.toThrow("boom");
+		expect(after.handle).not.toHaveBeenCalled();
+	});
 
-			expect(consumer.handle).toHaveBeenCalledWith(event);
-		});
-
-		it("propagates consumer error and stops fan-out", async () => {
-			const a = mockConsumer({
-				handle: async () => {
-					throw new Error("consumer A failed");
-				},
-			});
-			const b = mockConsumer();
-			const bus = createEventBus([a, b]);
-
-			await expect(bus.emit(makeStartedEvent())).rejects.toThrow(
-				"consumer A failed",
-			);
-			expect(b.handle).not.toHaveBeenCalled();
-		});
-
-		it("awaits all consumers before resolving", async () => {
-			let lastResolved = false;
-			const slow = mockConsumer({
-				handle: async () => {
-					await new Promise((resolve) => setTimeout(resolve, 20));
-					lastResolved = true;
-				},
-			});
-			const bus = createEventBus([slow]);
-
-			await bus.emit(makeStartedEvent());
-			expect(lastResolved).toBe(true);
-		});
-
-		it("works with empty consumer list", async () => {
-			const bus = createEventBus([]);
-			await expect(bus.emit(makeStartedEvent())).resolves.toBeUndefined();
-		});
+	it("emits with no consumers as a no-op", async () => {
+		const bus = createEventBus([]);
+		await expect(bus.emit(makeEvent(0))).resolves.toBeUndefined();
 	});
 });

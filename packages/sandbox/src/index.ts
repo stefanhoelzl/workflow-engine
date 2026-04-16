@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { LogEntry } from "./bridge-factory.js";
+import type { InvocationEvent } from "@workflow-engine/core";
 import type { MethodMap } from "./install-host-methods.js";
 import type {
 	MainToWorker,
@@ -10,15 +10,8 @@ import type {
 	WorkerToMain,
 } from "./protocol.js";
 
-// Resolve the compiled worker.js regardless of whether this module was loaded
-// from src/ (TS, via vitest/tsx) or dist/src/ (JS, production). The worker
-// runs as a plain node:worker_threads Worker, which requires a .js file with
-// matching .js imports — the tsc-built dist/src/worker.js fits that. This
-// assumes `tsc --build` has run for the package.
 function resolveWorkerUrl(): URL {
 	const here = dirname(fileURLToPath(import.meta.url));
-	// When loaded from dist/src/index.js, `./worker.js` is a sibling.
-	// When loaded from src/index.ts, hop to ../dist/src/worker.js.
 	const distSrcDir = here.includes(`${resolve("/dist/src")}`)
 		? here
 		: resolve(here, "..", "dist", "src");
@@ -26,25 +19,37 @@ function resolveWorkerUrl(): URL {
 }
 
 type RunResult =
-	| { ok: true; result: unknown; logs: LogEntry[] }
-	| {
-			ok: false;
-			error: { message: string; stack: string };
-			logs: LogEntry[];
-	  };
+	| { ok: true; result: unknown }
+	| { ok: false; error: { message: string; stack: string } };
+
+interface RunOptions {
+	readonly invocationId: string;
+	readonly workflow: string;
+	readonly workflowSha: string;
+	readonly extraMethods?: MethodMap;
+}
 
 interface SandboxOptions {
 	filename?: string;
-	// Reserved for future use: a custom fetch impl that would need to cross the
-	// worker boundary. Today fetch is the worker's native globalThis.fetch.
 	fetch?: typeof globalThis.fetch;
+	// Optional event-name overrides for construction-time methods. The bridge
+	// uses these to label `system.*` events (e.g. `__hostCallAction` →
+	// `host.validateAction`). Without an entry, the method name itself is used.
+	methodEventNames?: Record<string, string>;
 }
 
 interface Sandbox {
-	run(name: string, ctx: unknown, extraMethods?: MethodMap): Promise<RunResult>;
+	run(name: string, ctx: unknown, options?: RunOptions): Promise<RunResult>;
+	onEvent(cb: (event: InvocationEvent) => void): void;
 	dispose(): void;
 	onDied(cb: (err: Error) => void): void;
 }
+
+const DEFAULT_RUN_OPTIONS: RunOptions = {
+	invocationId: "evt_test",
+	workflow: "test",
+	workflowSha: "",
+};
 
 const RESERVED_BUILTIN_GLOBALS = new Set([
 	"console",
@@ -55,6 +60,7 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"setInterval",
 	"clearInterval",
 	"__hostFetch",
+	"__emitEvent",
 ]);
 
 function collisionName(
@@ -127,7 +133,7 @@ function serializeError(err: unknown): SerializedError {
 	return { name: "Error", message: msg, stack: "" };
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, and run/dispose orchestration
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, run/dispose, event subscription
 async function sandbox(
 	source: string,
 	methods: MethodMap,
@@ -142,16 +148,27 @@ async function sandbox(
 
 	const worker = new Worker(resolveWorkerUrl());
 
-	// Persistent listener for __hostFetchForward requests when a custom
-	// options.fetch is provided. Lives for the worker's lifetime because fetch
-	// may be invoked at module-eval time (polyfills) before any run() is in
-	// flight, and per-run listeners don't cover that window.
+	let onEventCb: ((event: InvocationEvent) => void) | null = null;
+
+	// Persistent listener: forwards events from worker to onEvent callback
+	// AND forwards __hostFetchForward requests when forwardFetch is set.
 	const forwardFetch = options?.fetch;
-	if (forwardFetch) {
-		const onForwardRequest = async (msg: WorkerToMain) => {
-			if (msg.type !== "request" || msg.method !== "__hostFetchForward") {
-				return;
+	const onPersistentMessage = async (msg: WorkerToMain) => {
+		if (msg.type === "event") {
+			if (onEventCb) {
+				try {
+					onEventCb(msg.event);
+				} catch {
+					// Swallow callback errors so they don't kill the worker listener.
+				}
 			}
+			return;
+		}
+		if (
+			forwardFetch &&
+			msg.type === "request" &&
+			msg.method === "__hostFetchForward"
+		) {
 			try {
 				const [method, url, headers, body] = msg.args as [
 					string,
@@ -189,9 +206,9 @@ async function sandbox(
 				};
 				worker.postMessage(reply);
 			}
-		};
-		worker.on("message", onForwardRequest);
-	}
+		}
+	};
+	worker.on("message", onPersistentMessage);
 
 	let disposed = false;
 	let deathRecorded: Error | null = null;
@@ -207,7 +224,6 @@ async function sandbox(
 		}
 	}
 
-	// Worker-level error/exit hooks. Dispose suppresses onDied via `disposed`.
 	worker.on("error", (err) => {
 		if (!disposed) {
 			fireOnDied(err instanceof Error ? err : new Error(String(err)));
@@ -256,6 +272,9 @@ async function sandbox(
 			type: "init",
 			source,
 			methodNames,
+			...(options?.methodEventNames
+				? { methodEventNames: options.methodEventNames }
+				: {}),
 			filename,
 			forwardFetch: forwardFetch !== undefined,
 		};
@@ -266,11 +285,11 @@ async function sandbox(
 
 	const pendingRunRejects = new Set<(err: Error) => void>();
 
-	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run validates args then spins up message/error/exit listeners and their cleanup inline
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run validates args then sets up message/error/exit listeners and their cleanup inline
 	function run(
 		name: string,
 		ctx: unknown,
-		extraMethods: MethodMap = {},
+		runOptions: RunOptions = DEFAULT_RUN_OPTIONS,
 	): Promise<RunResult> {
 		if (disposed) {
 			return Promise.reject(new Error("Sandbox is disposed"));
@@ -281,6 +300,7 @@ async function sandbox(
 			);
 		}
 
+		const extraMethods = runOptions.extraMethods ?? {};
 		const collision = collisionName(reserved, extraMethods);
 		if (collision) {
 			return Promise.reject(
@@ -297,11 +317,9 @@ async function sandbox(
 		return new Promise<RunResult>((resolve, reject) => {
 			pendingRunRejects.add(reject);
 
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: branches handle request (method lookup + reply), response, done, error, exit paths
+			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: branches handle request, done, error, exit paths
 			const onMessage = async (msg: WorkerToMain) => {
 				if (msg.type === "request") {
-					// Requests handled by a persistent listener elsewhere must
-					// not be answered here.
 					if (msg.method === "__hostFetchForward") {
 						return;
 					}
@@ -371,6 +389,9 @@ async function sandbox(
 				exportName: name,
 				ctx,
 				extraNames,
+				invocationId: runOptions.invocationId,
+				workflow: runOptions.workflow,
+				workflowSha: runOptions.workflowSha,
 			};
 			worker.postMessage(runMsg);
 		});
@@ -397,13 +418,16 @@ async function sandbox(
 		}
 	}
 
-	return { run, dispose, onDied };
+	function onEvent(cb: (event: InvocationEvent) => void): void {
+		onEventCb = cb;
+	}
+
+	return { run, onEvent, dispose, onDied };
 }
 
-export type { LogEntry } from "./bridge-factory.js";
 export type { Logger, SandboxFactory } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
 export type { MethodMap } from "./install-host-methods.js";
-export type { RunResult, Sandbox, SandboxOptions };
+export type { RunOptions, RunResult, Sandbox, SandboxOptions };
 export { sandbox };

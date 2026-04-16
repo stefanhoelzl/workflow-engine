@@ -1,132 +1,117 @@
+import type { InvocationEvent } from "@workflow-engine/core";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
-import { createEventStore } from "../../event-bus/event-store.js";
-import { createEventBus } from "../../event-bus/index.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+	createEventStore,
+	type EventStore,
+} from "../../event-bus/event-store.js";
 import { dashboardMiddleware } from "./middleware.js";
 
-function mount(eventStore: Awaited<ReturnType<typeof createEventStore>>) {
-	const m = dashboardMiddleware({ eventStore });
+function event(
+	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
+): InvocationEvent {
+	return {
+		id: "evt_a",
+		seq: 0,
+		ref: null,
+		ts: Date.parse("2026-04-16T10:00:00Z"),
+		workflow: "wf",
+		workflowSha: "sha",
+		name: "on-push",
+		...overrides,
+	} as InvocationEvent;
+}
+
+async function mount(eventStore: EventStore): Promise<Hono> {
 	const app = new Hono();
-	app.all(m.match, m.handler);
-	if (m.match.endsWith("/*")) {
-		app.all(m.match.slice(0, -2), m.handler);
-	}
+	const m = dashboardMiddleware({ eventStore });
+	const noopNext = async () => {
+		/* no-op */
+	};
+	app.use("*", async (c) => {
+		const res = await m.handler(c, noopNext);
+		return res ?? c.text("unhandled", 404);
+	});
 	return app;
 }
 
-describe("dashboardMiddleware", () => {
-	it("renders an empty-state when there are no invocations", async () => {
-		const eventStore = await createEventStore();
-		await eventStore.initialized;
+describe("dashboard middleware", () => {
+	let store: EventStore;
 
-		const app = mount(eventStore);
-		const res = await app.request("/dashboard/");
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	it("renders an empty state when there are no invocations", async () => {
+		const app = await mount(store);
+		const res = await app.request("/dashboard");
 		expect(res.status).toBe(200);
-		const body = await res.text();
-		expect(body).toContain("Dashboard");
-		expect(body).toContain("No invocations yet");
+		const html = await res.text();
+		expect(html).toContain("No invocations yet");
 	});
 
-	it("renders rows for completed and failed invocations", async () => {
-		const eventStore = await createEventStore();
-		await eventStore.initialized;
-		const bus = createEventBus([eventStore]);
-
-		const start = new Date("2026-04-15T10:00:00.000Z");
-		const end = new Date("2026-04-15T10:00:00.150Z");
-		await bus.emit({
-			kind: "started",
-			id: "evt_a",
-			workflow: "cronitor",
-			trigger: "cronitorWebhook",
-			ts: start,
-			input: {},
-		});
-		await bus.emit({
-			kind: "completed",
-			id: "evt_a",
-			workflow: "cronitor",
-			trigger: "cronitorWebhook",
-			ts: end,
-			result: { status: 202, body: "", headers: {} },
-		});
-		await bus.emit({
-			kind: "started",
-			id: "evt_b",
-			workflow: "cronitor",
-			trigger: "cronitorWebhook",
-			ts: start,
-			input: {},
-		});
-		await bus.emit({
-			kind: "failed",
-			id: "evt_b",
-			workflow: "cronitor",
-			trigger: "cronitorWebhook",
-			ts: end,
-			error: { message: "boom" },
-		});
-
-		const app = mount(eventStore);
-		const res = await app.request("/dashboard/");
-		expect(res.status).toBe(200);
-		const body = await res.text();
-		expect(body).toContain("cronitor");
-		expect(body).toContain("cronitorWebhook");
-		expect(body).toContain("succeeded");
-		expect(body).toContain("failed");
-		expect(body).toContain("150ms");
+	it("renders a row with status=pending for an invocation with no terminal event", async () => {
+		await store.handle(event({ kind: "trigger.request", seq: 0 }));
+		const app = await mount(store);
+		const res = await app.request("/dashboard");
+		const html = await res.text();
+		expect(html).toContain("on-push");
+		expect(html).toContain("pending");
 	});
 
-	it("orders invocations by startedAt descending", async () => {
-		const eventStore = await createEventStore();
-		await eventStore.initialized;
-		const bus = createEventBus([eventStore]);
-
-		await bus.emit({
-			kind: "started",
-			id: "evt_old",
-			workflow: "wf_old",
-			trigger: "tg",
-			ts: new Date("2026-04-14T10:00:00.000Z"),
-			input: {},
-		});
-		await bus.emit({
-			kind: "started",
-			id: "evt_new",
-			workflow: "wf_new",
-			trigger: "tg",
-			ts: new Date("2026-04-15T10:00:00.000Z"),
-			input: {},
-		});
-
-		const app = mount(eventStore);
-		const res = await app.request("/dashboard/");
-		const body = await res.text();
-		const newIdx = body.indexOf("wf_new");
-		const oldIdx = body.indexOf("wf_old");
-		expect(newIdx).toBeGreaterThan(-1);
-		expect(oldIdx).toBeGreaterThan(newIdx);
+	it("derives status=succeeded from trigger.response", async () => {
+		await store.handle(event({ kind: "trigger.request", seq: 0 }));
+		await store.handle(
+			event({
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				output: { status: 200 },
+				ts: Date.parse("2026-04-16T10:00:01Z"),
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard");
+		const html = await res.text();
+		expect(html).toContain("succeeded");
 	});
 
-	it("shows '—' for the duration of a still-pending invocation", async () => {
-		const eventStore = await createEventStore();
-		await eventStore.initialized;
-		const bus = createEventBus([eventStore]);
+	it("derives status=failed from trigger.error", async () => {
+		await store.handle(event({ kind: "trigger.request", seq: 0 }));
+		await store.handle(
+			event({
+				kind: "trigger.error",
+				seq: 1,
+				ref: 0,
+				error: { message: "boom", stack: "" },
+				ts: Date.parse("2026-04-16T10:00:01Z"),
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard");
+		const html = await res.text();
+		expect(html).toContain("failed");
+	});
 
-		await bus.emit({
-			kind: "started",
-			id: "evt_pending",
-			workflow: "wf",
-			trigger: "tg",
-			ts: new Date("2026-04-15T10:00:00.000Z"),
-			input: {},
-		});
-
-		const app = mount(eventStore);
-		const res = await app.request("/dashboard/");
-		const body = await res.text();
-		expect(body).toContain("pending");
-		expect(body).toContain("—");
+	it("orders by ts desc and limits", async () => {
+		// 3 invocations, oldest first
+		await Promise.all(
+			[0, 1, 2].map((i) =>
+				store.handle(
+					event({
+						id: `evt_${i}`,
+						kind: "trigger.request",
+						seq: 0,
+						ts: Date.parse(`2026-04-16T10:00:0${i}Z`),
+						name: `tr_${i}`,
+					}),
+				),
+			),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard");
+		const html = await res.text();
+		// most recent first → tr_2 appears before tr_0 in the rendered HTML
+		expect(html.indexOf("tr_2")).toBeLessThan(html.indexOf("tr_0"));
 	});
 });

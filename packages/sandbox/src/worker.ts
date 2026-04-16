@@ -1,4 +1,5 @@
 import { parentPort } from "node:worker_threads";
+import type { EventKind, InvocationEvent } from "@workflow-engine/core";
 import {
 	getQuickJS,
 	type QuickJSContext,
@@ -6,7 +7,7 @@ import {
 	type QuickJSRuntime,
 } from "quickjs-emscripten";
 import { bridgeHostFetch } from "./bridge.js";
-import { type Bridge, createBridge, type LogEntry } from "./bridge-factory.js";
+import { type Bridge, createBridge } from "./bridge-factory.js";
 import { setupGlobals, type TimerCleanup } from "./globals.js";
 import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
 import type {
@@ -95,6 +96,80 @@ function handleResponse(
 	}
 }
 
+// --- __emitEvent guest global ---
+//
+// Installed once per sandbox via vm.newFunction (NOT via bridge.sync/async).
+// Accepts only `action.*` event kinds. Stamps id/seq/ref/ts/workflow/workflowSha
+// from the bridge's current run context and posts the event to the main thread.
+// Does NOT generate system events for itself.
+
+const ALLOWED_EMIT_KINDS = new Set<EventKind>([
+	"action.request",
+	"action.response",
+	"action.error",
+]);
+
+function installEmitEvent(bridge: Bridge): void {
+	const fn = bridge.vm.newFunction("__emitEvent", (eventHandle) => {
+		const raw = bridge.vm.dump(eventHandle) as {
+			kind?: string;
+			name?: string;
+			input?: unknown;
+			output?: unknown;
+			error?: unknown;
+		};
+		const ctx = bridge.getRunContext();
+		if (!ctx) {
+			return bridge.vm.undefined;
+		}
+		const kind = raw?.kind as EventKind | undefined;
+		if (!(kind && ALLOWED_EMIT_KINDS.has(kind))) {
+			return {
+				error: bridge.vm.newError({
+					name: "TypeError",
+					message: `__emitEvent: invalid kind '${String(raw?.kind)}' (only action.* allowed)`,
+				}),
+			};
+		}
+		const name = String(raw?.name ?? "");
+		const seqValue = bridge.nextSeq();
+
+		let ref: number | null;
+		if (kind === "action.request") {
+			ref = bridge.currentRef();
+			bridge.pushRef(seqValue);
+		} else {
+			ref = bridge.popRef();
+		}
+
+		const event: InvocationEvent = {
+			kind,
+			id: ctx.invocationId,
+			seq: seqValue,
+			ref,
+			ts: Date.now(),
+			workflow: ctx.workflow,
+			workflowSha: ctx.workflowSha,
+			name,
+			...(raw.input === undefined ? {} : { input: raw.input }),
+			...(raw.output === undefined ? {} : { output: raw.output }),
+			...(raw.error === undefined
+				? {}
+				: {
+						error: raw.error as {
+							message: string;
+							stack: string;
+							issues?: unknown;
+						},
+					}),
+		};
+		bridge.emit(event);
+		return bridge.vm.undefined;
+	});
+	bridge.vm.setProp(bridge.vm.global, "__emitEvent", fn);
+	fn.dispose();
+}
+
 // --- Sandbox state (lives for the life of this worker) ---
 
 interface SandboxState {
@@ -104,6 +179,7 @@ interface SandboxState {
 	timers: TimerCleanup;
 	moduleNamespace: QuickJSHandle;
 	constructionMethodNames: string[];
+	constructionMethodEventNames: Record<string, string>;
 	currentAbort: AbortController | null;
 }
 
@@ -117,12 +193,9 @@ async function handleInit(
 	const runtime = module.newRuntime();
 	const vm = runtime.newContext();
 	const bridge = createBridge(vm, runtime);
+	bridge.setSink((event) => post({ type: "event", event }));
 	const timers = setupGlobals(bridge);
 
-	// Fetch uses a signal provider that reads the current run's AbortController.
-	// When the main side requests forwarding (options.fetch set), the bridge
-	// implementation round-trips via sendRequest instead of calling the
-	// worker's native fetch.
 	const fetchImpl: typeof globalThis.fetch = msg.forwardFetch
 		? ((async (input, init) => {
 				const url = typeof input === "string" ? input : String(input);
@@ -154,8 +227,15 @@ async function handleInit(
 		: globalThis.fetch;
 	bridgeHostFetch(bridge, fetchImpl, () => state?.currentAbort?.signal);
 
-	// Construction-time methods are installed as RPC proxies.
-	installRpcMethods(bridge, bridge.vm.global, msg.methodNames, sendRequest);
+	installEmitEvent(bridge);
+
+	installRpcMethods(
+		bridge,
+		bridge.vm.global,
+		msg.methodNames,
+		sendRequest,
+		msg.methodEventNames,
+	);
 
 	const evalResult = vm.evalCode(msg.source, msg.filename, { type: "module" });
 	if (evalResult.error) {
@@ -165,8 +245,6 @@ async function handleInit(
 		vm.dispose();
 		runtime.dispose();
 		post({ type: "init-error", error: err });
-		// Drain pending jobs then exit so the main side's `worker.on("exit")`
-		// fires deterministically.
 		process.exit(0);
 	}
 
@@ -177,13 +255,57 @@ async function handleInit(
 		timers,
 		moduleNamespace: evalResult.value,
 		constructionMethodNames: [...msg.methodNames],
+		constructionMethodEventNames: { ...(msg.methodEventNames ?? {}) },
 		currentAbort: null,
 	};
 
 	post({ type: "ready" });
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrates install/invoke/cleanup as one unit
+function emitTriggerEvent(
+	bridge: Bridge,
+	kind: EventKind,
+	name: string,
+	extra: { input?: unknown; output?: unknown; error?: unknown },
+): number {
+	const ctx = bridge.getRunContext();
+	if (!ctx) {
+		return -1;
+	}
+	const seqValue = bridge.nextSeq();
+	let ref: number | null;
+	if (kind === "trigger.request") {
+		ref = null;
+		bridge.pushRef(seqValue);
+	} else {
+		ref = bridge.popRef();
+	}
+	const event: InvocationEvent = {
+		kind,
+		id: ctx.invocationId,
+		seq: seqValue,
+		ref,
+		ts: Date.now(),
+		workflow: ctx.workflow,
+		workflowSha: ctx.workflowSha,
+		name,
+		...(extra.input === undefined ? {} : { input: extra.input }),
+		...(extra.output === undefined ? {} : { output: extra.output }),
+		...(extra.error === undefined
+			? {}
+			: {
+					error: extra.error as {
+						message: string;
+						stack: string;
+						issues?: unknown;
+					},
+				}),
+	};
+	bridge.emit(event);
+	return seqValue;
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrates context setup, install/invoke/cleanup, and trigger event emission as one unit
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
 ): Promise<void> {
@@ -193,17 +315,24 @@ async function handleRun(
 			payload: {
 				ok: false,
 				error: { message: "sandbox not initialized", stack: "" },
-				logs: [],
 			},
 		});
 		return;
 	}
 	const { vm, bridge, timers, moduleNamespace } = state;
 
-	bridge.resetLogs();
+	bridge.setRunContext({
+		invocationId: msg.invocationId,
+		workflow: msg.workflow,
+		workflowSha: msg.workflowSha,
+	});
 	state.currentAbort = new AbortController();
 	const extraNames = msg.extraNames;
 	installRpcMethods(bridge, bridge.vm.global, extraNames, sendRequest);
+
+	emitTriggerEvent(bridge, "trigger.request", msg.exportName, {
+		input: msg.ctx,
+	});
 
 	let payload: RunResultPayload;
 	try {
@@ -216,10 +345,12 @@ async function handleRun(
 
 		if (callResult.error) {
 			const err = dumpVmError(vm, callResult.error);
+			emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
+				error: { message: err.message, stack: err.stack },
+			});
 			payload = {
 				ok: false,
 				error: { message: err.message, stack: err.stack },
-				logs: [...bridge.logs],
 			};
 		} else {
 			const resolved = vm.resolvePromise(callResult.value);
@@ -228,41 +359,43 @@ async function handleRun(
 			const actionResult = await resolved;
 			if (actionResult.error) {
 				const err = dumpVmError(vm, actionResult.error);
+				emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
+					error: { message: err.message, stack: err.stack },
+				});
 				payload = {
 					ok: false,
 					error: { message: err.message, stack: err.stack },
-					logs: [...bridge.logs],
 				};
 			} else {
 				const resultValue = vm.dump(actionResult.value);
 				actionResult.value.dispose();
+				emitTriggerEvent(bridge, "trigger.response", msg.exportName, {
+					output: resultValue,
+				});
 				payload = {
 					ok: true,
 					result: resultValue,
-					logs: [...bridge.logs],
 				};
 			}
 		}
 	} catch (err) {
 		const e = serializeError(err);
+		emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
+			error: { message: e.message, stack: e.stack },
+		});
 		payload = {
 			ok: false,
 			error: { message: e.message, stack: e.stack },
-			logs: [...bridge.logs],
 		};
 	} finally {
-		// Cancel any pending background work this run started.
 		timers.clearActive();
 		state.currentAbort?.abort();
 		state.currentAbort = null;
 		uninstallGlobals(bridge, extraNames);
+		bridge.clearRunContext();
 	}
 
 	post({ type: "done", payload });
-}
-
-function drainExtractedLogs(bridge: Bridge): LogEntry[] {
-	return [...bridge.logs];
 }
 
 port.on("message", (msg: MainToWorker) => {
@@ -280,13 +413,9 @@ port.on("message", (msg: MainToWorker) => {
 				}
 			}
 		} catch (err) {
-			// Uncaught worker error — surface to main via worker.on("error") by
-			// re-throwing synchronously from a microtask.
 			queueMicrotask(() => {
 				throw err;
 			});
 		}
 	})();
 });
-
-export { drainExtractedLogs };

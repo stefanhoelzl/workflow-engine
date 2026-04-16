@@ -3,7 +3,7 @@ import type {
 	HttpTriggerResult,
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
-import { ManifestSchema, z } from "@workflow-engine/core";
+import { dispatchAction, ManifestSchema, z } from "@workflow-engine/core";
 
 // ---------------------------------------------------------------------------
 // Brand symbols
@@ -161,19 +161,6 @@ interface Action<I = unknown, O = unknown> {
 	__setActionName(name: string): void;
 }
 
-type HostCallAction = (name: string, input: unknown) => Promise<unknown>;
-
-function getHostCallAction(): HostCallAction {
-	const g = globalThis as Record<string, unknown>;
-	const fn = g.__hostCallAction;
-	if (typeof fn !== "function") {
-		throw new Error(
-			"__hostCallAction is not available; actions can only be invoked inside the workflow sandbox",
-		);
-	}
-	return fn as HostCallAction;
-}
-
 interface ActionMetadata<I, O> {
 	readonly callable: (input: I) => Promise<O>;
 	readonly input: z.ZodType<I>;
@@ -236,18 +223,12 @@ function action<I, O>(config: {
 				"Action was invoked before the build system assigned it a name",
 			);
 		}
-		// 1. Notify the host: validates input against the manifest JSON Schema
-		//    and audit-logs the invocation. Throws if validation fails — the
-		//    handler MUST NOT run in that case.
-		const host = getHostCallAction();
-		await host(assignedName, input);
-		// 2. Run the handler in-sandbox — just a normal JS function call in
-		//    the same QuickJS context.
-		const rawOutput = await handler(input);
-		// 3. Validate the handler's return value against the output Zod
-		//    schema (bundled inline). Throws synchronously on invalid output;
-		//    the rejection propagates to the caller.
-		return outputSchema.parse(rawOutput) as O;
+		return (await dispatchAction(
+			assignedName,
+			input,
+			handler as (input: unknown) => Promise<unknown>,
+			outputSchema,
+		)) as O;
 	};
 	const setName = (name: string) => {
 		if (assignedName !== undefined) {

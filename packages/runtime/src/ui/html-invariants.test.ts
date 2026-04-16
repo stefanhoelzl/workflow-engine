@@ -32,6 +32,9 @@ function makeRunner(name: string): WorkflowRunner {
 		actions: [],
 		triggers: [],
 		invokeHandler: async () => ({}),
+		onEvent: () => {
+			/* no-op for tests */
+		},
 	};
 }
 
