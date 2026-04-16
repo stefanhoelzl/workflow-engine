@@ -1,16 +1,18 @@
 import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { watch } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
 import { connect, createServer } from "node:net";
-import { join, resolve } from "node:path";
-import { build as viteBuild } from "vite";
+import { resolve } from "node:path";
+import { upload } from "@workflow-engine/cli";
 
 const DEFAULT_PORT = 8080;
 const DEBOUNCE_MS = 300;
+const PORT_POLL_INTERVAL_MS = 100;
+const PORT_POLL_TIMEOUT_MS = 10_000;
 const KILL_WAIT_MS = 500;
 const PID_PATTERN = /\d+/;
 
 const rootDir = resolve(import.meta.dirname, "..");
+const workflowsDir = resolve(rootDir, "workflows");
 
 function parseArgs(): { randomPort: boolean; kill: boolean } {
 	return {
@@ -20,28 +22,28 @@ function parseArgs(): { randomPort: boolean; kill: boolean } {
 }
 
 function getFreePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
+	return new Promise((res, rej) => {
 		const srv = createServer();
 		srv.listen(0, () => {
 			const addr = srv.address();
 			if (addr && typeof addr === "object") {
-				srv.close(() => resolve(addr.port));
+				srv.close(() => res(addr.port));
 			} else {
-				srv.close(() => reject(new Error("Failed to get free port")));
+				srv.close(() => rej(new Error("Failed to get free port")));
 			}
 		});
 	});
 }
 
 function isPortInUse(port: number): Promise<boolean> {
-	return new Promise((resolve) => {
+	return new Promise((res) => {
 		const socket = connect(port, "127.0.0.1");
 		socket.once("connect", () => {
 			socket.destroy();
-			resolve(true);
+			res(true);
 		});
 		socket.once("error", () => {
-			resolve(false);
+			res(false);
 		});
 	});
 }
@@ -79,10 +81,10 @@ async function ensurePortAvailable(port: number, kill: boolean): Promise<void> {
 	if (kill && pid) {
 		console.log(`Killing process ${pid} on port ${String(port)}...`);
 		process.kill(Number(pid), "SIGTERM");
-		await new Promise((resolve) => setTimeout(resolve, KILL_WAIT_MS));
+		await new Promise((res) => setTimeout(res, KILL_WAIT_MS));
 		if (await isPortInUse(port)) {
 			process.kill(Number(pid), "SIGKILL");
-			await new Promise((resolve) => setTimeout(resolve, KILL_WAIT_MS));
+			await new Promise((res) => setTimeout(res, KILL_WAIT_MS));
 		}
 		if (await isPortInUse(port)) {
 			console.error(
@@ -99,21 +101,37 @@ async function ensurePortAvailable(port: number, kill: boolean): Promise<void> {
 	process.exit(1);
 }
 
-async function buildWorkflows(): Promise<void> {
-	const workflowsRoot = resolve(rootDir, "workflows");
-	await viteBuild({
-		configFile: resolve(workflowsRoot, "vite.config.ts"),
-		root: workflowsRoot,
-		logLevel: "warn",
-	});
+function sleep(ms: number): Promise<void> {
+	return new Promise((res) => setTimeout(res, ms));
+}
+
+async function waitForPort(port: number, timeoutMs: number): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (await isPortInUse(port)) {
+			return;
+		}
+		await sleep(PORT_POLL_INTERVAL_MS);
+	}
+	throw new Error(
+		`Timed out after ${String(timeoutMs)}ms waiting for port ${String(port)}`,
+	);
+}
+
+async function runUpload(port: number): Promise<void> {
+	try {
+		await upload({
+			cwd: workflowsDir,
+			url: `http://localhost:${String(port)}`,
+		});
+	} catch (error) {
+		console.error(
+			`Upload failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 function runtimeEnv(port: number): NodeJS.ProcessEnv {
-	// Note: WORKFLOWS_DIR is intentionally NOT set. The runtime boots with
-	// an empty registry and we upload each built workflow via
-	// POST /api/workflows once the runtime is reachable — mirroring the
-	// production flow (workflows arrive via upload, not via a shared
-	// filesystem mount).
 	return {
 		...process.env,
 		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
@@ -127,57 +145,6 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 	};
 }
 
-const UPLOAD_POLL_INTERVAL_MS = 250;
-const UPLOAD_POLL_TIMEOUT_MS = 15_000;
-
-async function waitForRuntime(port: number): Promise<void> {
-	const deadline = Date.now() + UPLOAD_POLL_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		if (await isPortInUse(port)) {
-			return;
-		}
-		await new Promise((r) => setTimeout(r, UPLOAD_POLL_INTERVAL_MS));
-	}
-	throw new Error(`runtime did not bind to ${String(port)} in time`);
-}
-
-async function uploadWorkflow(
-	port: number,
-	distRoot: string,
-	entry: string,
-): Promise<void> {
-	const tarGzPath = join(distRoot, entry, "bundle.tar.gz");
-	const s = await stat(tarGzPath).catch(() => undefined);
-	if (!s?.isFile()) {
-		return;
-	}
-	const body = await readFile(tarGzPath);
-	const res = await fetch(`http://localhost:${String(port)}/api/workflows`, {
-		method: "POST",
-		body: new Uint8Array(body),
-	});
-	if (!res.ok) {
-		const text = await res.text();
-		console.error(`Upload of "${entry}" failed: ${String(res.status)} ${text}`);
-		return;
-	}
-	console.log(`Uploaded workflow "${entry}"`);
-}
-
-async function uploadWorkflows(port: number): Promise<void> {
-	const distRoot = resolve(rootDir, "workflows/dist");
-	let entries: string[];
-	try {
-		entries = await readdir(distRoot);
-	} catch {
-		console.warn(`No workflows built at ${distRoot}; skipping upload.`);
-		return;
-	}
-	await Promise.all(
-		entries.map((entry) => uploadWorkflow(port, distRoot, entry)),
-	);
-}
-
 function spawnRuntime(port: number): ChildProcess {
 	return spawn("pnpm", ["--filter", "@workflow-engine/runtime", "dev"], {
 		stdio: "inherit",
@@ -185,18 +152,12 @@ function spawnRuntime(port: number): ChildProcess {
 	});
 }
 
-function watchWorkflows(restart: () => void): void {
-	const workflowsDir = resolve(rootDir, "workflows");
+function watchWorkflows(port: number): void {
+	const srcDir = resolve(workflowsDir, "src");
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-	watch(workflowsDir, { recursive: true }, (_event, filename) => {
-		if (
-			!filename ||
-			filename.includes("dist/") ||
-			filename.startsWith("dist") ||
-			!filename.endsWith(".ts") ||
-			filename === "vite.config.ts"
-		) {
+	watch(srcDir, { recursive: true }, (_event, filename) => {
+		if (!filename?.endsWith(".ts")) {
 			return;
 		}
 
@@ -204,20 +165,8 @@ function watchWorkflows(restart: () => void): void {
 			clearTimeout(debounceTimer);
 		}
 		debounceTimer = setTimeout(() => {
-			console.log(
-				"Workflow source changed, rebuilding + restarting runtime...",
-			);
-			(async () => {
-				try {
-					await buildWorkflows();
-				} catch (error) {
-					console.error(
-						`Workflow build failed: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					return;
-				}
-				restart();
-			})();
+			console.log("Workflow source changed, rebuilding...");
+			runUpload(port);
 		}, DEBOUNCE_MS);
 	});
 }
@@ -228,16 +177,7 @@ async function main(): Promise<void> {
 
 	await ensurePortAvailable(port, args.kill);
 
-	try {
-		await buildWorkflows();
-	} catch (error) {
-		console.error(
-			`Initial workflow build failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exit(1);
-	}
-
-	let runtime = spawnRuntime(port);
+	const runtime = spawnRuntime(port);
 
 	console.log(`Runtime server starting on http://localhost:${String(port)}`);
 
@@ -256,25 +196,15 @@ async function main(): Promise<void> {
 	});
 
 	try {
-		await waitForRuntime(port);
-		await uploadWorkflows(port);
+		await waitForPort(port, PORT_POLL_TIMEOUT_MS);
 	} catch (error) {
-		console.error(
-			`Post-boot upload failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		console.error(error instanceof Error ? error.message : String(error));
+		cleanup();
+		process.exit(1);
 	}
 
-	watchWorkflows(() => {
-		cleanup();
-		runtime = spawnRuntime(port);
-		waitForRuntime(port)
-			.then(() => uploadWorkflows(port))
-			.catch((error: unknown) => {
-				console.error(
-					`Post-restart upload failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			});
-	});
+	await runUpload(port);
+	watchWorkflows(port);
 }
 
 main();

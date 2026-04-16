@@ -5,22 +5,22 @@ import type { InlineConfig } from "vite";
 
 function discoverWorkflows(root: string): string[] {
 	const workflows: string[] = [];
+	const srcDir = join(root, "src");
 	let entries: string[];
 	try {
-		entries = readdirSync(root);
+		entries = readdirSync(srcDir);
 	} catch {
 		return workflows;
 	}
 	for (const entry of entries) {
 		if (
 			entry.endsWith(".ts") &&
-			entry !== "vite.config.ts" &&
 			!entry.endsWith(".test.ts") &&
 			!entry.endsWith(".d.ts")
 		) {
-			const full = join(root, entry);
+			const full = join(srcDir, entry);
 			if (statSync(full).isFile()) {
-				workflows.push(`./${entry}`);
+				workflows.push(`./src/${entry}`);
 			}
 		}
 	}
@@ -30,7 +30,7 @@ function discoverWorkflows(root: string): string[] {
 function defaultViteConfig(root: string): InlineConfig {
 	const workflows = discoverWorkflows(root);
 	if (workflows.length === 0) {
-		throw new Error(`no workflows found in ${root}`);
+		throw new Error(`no workflows found in ${join(root, "src")}`);
 	}
 	return {
 		root,
