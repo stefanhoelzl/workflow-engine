@@ -16,7 +16,7 @@ function makeLogger(): Logger {
 }
 
 function iife(body: string): string {
-	return `var __workflowExports = (function(exports) {\n${body}\nreturn exports;\n})({});`;
+	return `var __wfe_exports__ = (function(exports) {\n${body}\nreturn exports;\n})({});`;
 }
 
 describe("sandbox factory", () => {

@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { InvocationEvent } from "@workflow-engine/core";
+import { IIFE_NAMESPACE, type InvocationEvent } from "@workflow-engine/core";
 import type { MethodMap } from "./install-host-methods.js";
 import type {
 	MainToWorker,
@@ -36,10 +36,6 @@ interface SandboxOptions {
 	// uses these to label `system.*` events (e.g. `__hostCallAction` →
 	// `host.validateAction`). Without an entry, the method name itself is used.
 	methodEventNames?: Record<string, string>;
-	// Name of the IIFE global namespace object that carries the bundle's
-	// exports. The sandbox reads `globalThis[iifeNamespace][exportName]` to
-	// locate each runnable function. Defaults to `__workflowExports`.
-	iifeNamespace?: string;
 	// Maximum memory (in bytes) the QuickJS runtime is allowed to allocate.
 	// Exceeding it triggers an OOM error inside the guest. Passed directly
 	// to QuickJS.create({ memoryLimit }).
@@ -63,8 +59,6 @@ const DEFAULT_RUN_OPTIONS: RunOptions = {
 	workflow: "test",
 	workflowSha: "",
 };
-
-const DEFAULT_IIFE_NAMESPACE = "__workflowExports";
 
 const RESERVED_BUILTIN_GLOBALS = new Set([
 	"console",
@@ -164,18 +158,17 @@ async function sandbox(
 	options?: SandboxOptions,
 ): Promise<Sandbox> {
 	const filename = options?.filename ?? "action.js";
-	const iifeNamespace = options?.iifeNamespace ?? DEFAULT_IIFE_NAMESPACE;
 	const methodNames = Object.keys(methods);
 	const reserved = new Set<string>(methodNames);
 	for (const name of RESERVED_BUILTIN_GLOBALS) {
 		reserved.add(name);
 	}
-	reserved.add(iifeNamespace);
+	reserved.add(IIFE_NAMESPACE);
 
 	// Also check construction-time methods against reserved globals (the IIFE
 	// namespace is a fresh addition).
 	for (const name of methodNames) {
-		if (RESERVED_BUILTIN_GLOBALS.has(name) || name === iifeNamespace) {
+		if (RESERVED_BUILTIN_GLOBALS.has(name) || name === IIFE_NAMESPACE) {
 			throw new Error(
 				`method name '${name}' collides with a reserved global or the IIFE namespace`,
 			);
@@ -313,7 +306,6 @@ async function sandbox(
 				: {}),
 			filename,
 			forwardFetch: forwardFetch !== undefined,
-			iifeNamespace,
 			...(options?.memoryLimit === undefined
 				? {}
 				: { memoryLimit: options.memoryLimit }),
@@ -470,4 +462,4 @@ export type { Logger, SandboxFactory } from "./factory.js";
 export { createSandboxFactory } from "./factory.js";
 export type { MethodMap } from "./install-host-methods.js";
 export type { RunOptions, RunResult, Sandbox, SandboxOptions };
-export { DEFAULT_IIFE_NAMESPACE, sandbox };
+export { sandbox };

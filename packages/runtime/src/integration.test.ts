@@ -46,10 +46,10 @@ const MANIFEST = {
 	],
 };
 
-// IIFE bundle: the vite-plugin emits `format: "iife"` and the runtime's
-// `toIifeNamespace("demo")` derives "__wf_demo".
+// IIFE bundle: the vite-plugin emits `format: "iife"` and assigns exports to
+// `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
 const BUNDLE = `
-var __wf_demo = (function(exports) {
+var __wfe_exports__ = (function(exports) {
   exports.echo = Object.assign(
     async (input) => globalThis.__dispatchAction(
       "echo",

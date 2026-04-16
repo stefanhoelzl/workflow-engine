@@ -9,7 +9,7 @@ const RUN_OPTS = {
 };
 
 function iife(body: string): string {
-	return `var __workflowExports = (function(exports) {\n${body}\nreturn exports;\n})({});`;
+	return `var __wfe_exports__ = (function(exports) {\n${body}\nreturn exports;\n})({});`;
 }
 
 describe("__hostCallAction RPC bridge", () => {

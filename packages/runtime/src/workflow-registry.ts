@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { iifeName, type Manifest, ManifestSchema } from "@workflow-engine/core";
+import {
+	IIFE_NAMESPACE,
+	type Manifest,
+	ManifestSchema,
+} from "@workflow-engine/core";
 import { type Sandbox, sandbox } from "@workflow-engine/sandbox";
 import Ajv2020 from "ajv/dist/2020.js";
 import type {
@@ -214,17 +218,14 @@ function triggerShimName(triggerName: string): string {
 }
 
 // The sandbox bundle is an IIFE that assigns its exports to
-// `globalThis[iifeNamespace]`. The trigger shim rewrites every trigger export
-// to also be callable as `globalThis[iifeNamespace].__trigger_<name>(payload)`
+// `globalThis[IIFE_NAMESPACE]`. The trigger shim rewrites every trigger export
+// to also be callable as `globalThis[IIFE_NAMESPACE].__trigger_<name>(payload)`
 // so `sandbox.run(__trigger_<name>, payload)` resolves the correct handler.
-function buildTriggerShim(
-	iifeNamespace: string,
-	triggerNames: readonly string[],
-): string {
+function buildTriggerShim(triggerNames: readonly string[]): string {
 	return triggerNames
 		.map(
 			(name) =>
-				`${iifeNamespace}.${triggerShimName(name)} = async (p) => await ${iifeNamespace}.${name}.handler(p);`,
+				`${IIFE_NAMESPACE}.${triggerShimName(name)} = async (p) => await ${IIFE_NAMESPACE}.${name}.handler(p);`,
 		)
 		.join("\n");
 }
@@ -237,14 +238,11 @@ function buildTriggerShim(
 // sandbox's copy is a fresh instance without a bound name. Append a tiny
 // binder call per action so the sandbox copy is properly named before any
 // trigger handler runs.
-function buildActionNameBinder(
-	iifeNamespace: string,
-	actionNames: readonly string[],
-): string {
+function buildActionNameBinder(actionNames: readonly string[]): string {
 	return actionNames
 		.map(
 			(name) =>
-				`if (typeof ${iifeNamespace}.${name} === "function" && typeof ${iifeNamespace}.${name}.__setActionName === "function") ${iifeNamespace}.${name}.__setActionName(${JSON.stringify(name)});`,
+				`if (typeof ${IIFE_NAMESPACE}.${name} === "function" && typeof ${IIFE_NAMESPACE}.${name}.__setActionName === "function") ${IIFE_NAMESPACE}.${name}.__setActionName(${JSON.stringify(name)});`,
 		)
 		.join("\n");
 }
@@ -366,15 +364,8 @@ globalThis.__dispatchAction = async (name, input, handler, outputSchema) => {
 `;
 
 function buildSandboxSource(manifest: Manifest, bundleSource: string): string {
-	const iifeNamespace = iifeName(manifest.name);
-	const shim = buildTriggerShim(
-		iifeNamespace,
-		manifest.triggers.map((t) => t.name),
-	);
-	const nameBinder = buildActionNameBinder(
-		iifeNamespace,
-		manifest.actions.map((a) => a.name),
-	);
+	const shim = buildTriggerShim(manifest.triggers.map((t) => t.name));
+	const nameBinder = buildActionNameBinder(manifest.actions.map((a) => a.name));
 	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}\n${nameBinder}\n${shim}`;
 }
 
@@ -408,7 +399,6 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 
 	const __hostCallAction = buildHostCallAction({ manifest, logger });
 	const sourceWithShim = buildSandboxSource(manifest, bundleSource);
-	const iifeNamespace = iifeName(manifest.name);
 
 	const sb = await sandbox(
 		sourceWithShim,
@@ -416,7 +406,6 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 		{
 			filename,
 			methodEventNames: { __hostCallAction: "host.validateAction" },
-			iifeNamespace,
 		},
 	);
 
