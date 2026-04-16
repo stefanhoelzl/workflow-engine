@@ -1,5 +1,44 @@
 /* global Jedison */
 
+const COPY_FEEDBACK_MS = 2000;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function createIcon(children) {
+	const svg = document.createElementNS(SVG_NS, "svg");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("width", "14");
+	svg.setAttribute("height", "14");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "2");
+	svg.setAttribute("stroke-linecap", "round");
+	svg.setAttribute("stroke-linejoin", "round");
+	svg.setAttribute("aria-hidden", "true");
+	for (const [tag, attrs] of children) {
+		const el = document.createElementNS(SVG_NS, tag);
+		for (const [k, v] of Object.entries(attrs)) {
+			el.setAttribute(k, v);
+		}
+		svg.appendChild(el);
+	}
+	return svg;
+}
+
+function createCopyIcon() {
+	return createIcon([
+		["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" }],
+		["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" }],
+	]);
+}
+
+function createCheckIcon() {
+	return createIcon([["path", { d: "M20 6 9 17l-5-5" }]]);
+}
+
+function replaceIcon(btn, icon) {
+	btn.replaceChildren(icon);
+}
+
 class EditorInlineMultiple extends Jedison.EditorMultiple {
 	static resolves(schema) {
 		return Jedison.EditorMultiple.resolves(schema);
@@ -246,12 +285,85 @@ function initForm(details) {
 	observer.observe(container, { childList: true, subtree: true });
 }
 
-const HTML_ENTITIES = { "<": "&lt;", ">": "&gt;", "&": "&amp;" };
+function getResultDialog() {
+	let dialog = document.getElementById("trigger-result-dialog");
+	if (dialog) {
+		return dialog;
+	}
+	dialog = document.createElement("dialog");
+	dialog.id = "trigger-result-dialog";
+	dialog.classList.add("trigger-result-dialog");
 
-function renderBanner(ok, message) {
-	const cls = ok ? "success" : "error";
-	const safe = String(message).replace(/[<>&]/g, (c) => HTML_ENTITIES[c] ?? c);
-	return `<div class="banner ${cls}">${safe}</div>`;
+	const codeWrap = document.createElement("div");
+	codeWrap.classList.add("trigger-result-code");
+
+	const pre = document.createElement("pre");
+	pre.classList.add("trigger-result-body");
+	codeWrap.appendChild(pre);
+
+	const copyBtn = document.createElement("button");
+	copyBtn.type = "button";
+	copyBtn.classList.add("trigger-result-copy");
+	copyBtn.setAttribute("aria-label", "Copy to clipboard");
+	replaceIcon(copyBtn, createCopyIcon());
+	copyBtn.addEventListener("click", () => {
+		navigator.clipboard.writeText(pre.textContent).then(() => {
+			replaceIcon(copyBtn, createCheckIcon());
+			copyBtn.classList.add("trigger-result-copy--copied");
+			setTimeout(() => {
+				replaceIcon(copyBtn, createCopyIcon());
+				copyBtn.classList.remove("trigger-result-copy--copied");
+			}, COPY_FEEDBACK_MS);
+		});
+	});
+	codeWrap.appendChild(copyBtn);
+
+	dialog.appendChild(codeWrap);
+
+	const closeBtn = document.createElement("button");
+	closeBtn.type = "button";
+	closeBtn.classList.add("trigger-result-close");
+	closeBtn.textContent = "Close";
+	closeBtn.addEventListener("click", () => {
+		dialog.close();
+	});
+	dialog.appendChild(closeBtn);
+
+	// Click outside the dialog content (on the backdrop) also closes it.
+	dialog.addEventListener("click", (event) => {
+		if (event.target === dialog) {
+			dialog.close();
+		}
+	});
+
+	document.body.appendChild(dialog);
+	return dialog;
+}
+
+function showResult(result, ok) {
+	const dialog = getResultDialog();
+	const pre = dialog.querySelector(".trigger-result-body");
+	pre.textContent = JSON.stringify(result, null, 2);
+	dialog.classList.toggle("trigger-result-dialog--error", !ok);
+	dialog.showModal();
+}
+
+function buildResult(response, bodyText) {
+	const headers = {};
+	response.headers.forEach((value, key) => {
+		headers[key] = value;
+	});
+	let body;
+	if (bodyText === "") {
+		body = null;
+	} else {
+		try {
+			body = JSON.parse(bodyText);
+		} catch {
+			body = bodyText;
+		}
+	}
+	return { status: response.status, headers, body };
 }
 
 function submitTrigger(btn) {
@@ -263,7 +375,6 @@ function submitTrigger(btn) {
 	const formValue = jedison.getValue();
 	const url = btn.dataset.triggerUrl;
 	const method = btn.dataset.triggerMethod || "POST";
-	const target = details.querySelector(".banner-target");
 
 	// The form renders a composite schema (body + headers + url + method +
 	// params). Extract the sub-fields and build the fetch call.
@@ -281,14 +392,10 @@ function submitTrigger(btn) {
 	})
 		.then(async (r) => {
 			const text = await r.text();
-			if (r.ok) {
-				target.innerHTML = renderBanner(true, text || `OK (${r.status})`);
-			} else {
-				target.innerHTML = renderBanner(false, text || `HTTP ${r.status}`);
-			}
+			showResult(buildResult(r, text), r.ok);
 		})
 		.catch((err) => {
-			target.innerHTML = renderBanner(false, err.message || String(err));
+			showResult({ error: err.message || String(err) }, false);
 		});
 }
 
