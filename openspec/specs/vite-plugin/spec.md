@@ -1,134 +1,100 @@
-# Vite Plugin Specification
+### Requirement: Plugin accepts explicit workflow list
 
-## Purpose
+The Vite plugin SHALL accept a configuration object with a `workflows` field listing the workflow source file paths. The plugin SHALL NOT scan directories for workflow files. Each path SHALL correspond to exactly one workflow (one workflow per file).
 
-Compile each workflow source file into a sandbox-safe bundle (`manifest.json` + `actions.js` + `bundle.tar.gz`) consumable by the runtime's `POST /api/workflows` endpoint. The plugin owns the metadata-extraction pass (`tsImport` + `.compile()`), the action-module build pass (nested vite build with polyfilled globals), tar.gz packing, and TypeScript type-checking. Workflow entries are auto-discovered from `<root>/src/*.ts`; the plugin is consumed exclusively by `@workflow-engine/cli`'s shipped default config.
+#### Scenario: Explicit workflow list
 
-## Requirements
+- **WHEN** the plugin is configured with `workflows: ["./cronitor.ts"]`
+- **THEN** it SHALL process only `cronitor.ts`
+- **AND** it SHALL NOT discover or process other `.ts` files in the directory
 
-### Requirement: Auto-discovery of workflow entry files
+### Requirement: Per-workflow bundle
 
-The `@workflow-engine/vite-plugin` SHALL auto-discover workflow entry files by globbing `<vite-root>/src/*.ts` non-recursively when the plugin is invoked with no options: `workflowPlugin()`. Each matched file becomes a workflow whose name is the file basename without the `.ts` extension.
+The plugin SHALL emit one bundled JavaScript module per workflow source file (not per action). The bundle SHALL contain all action handlers, the trigger handler, and module-scoped constants/imports as named exports. The bundle SHALL be written to `<outDir>/<workflow-name>/<workflow-name>.js` (e.g., `dist/cronitor/cronitor.js`).
 
-The plugin SHALL NOT accept a `workflows: string[]` option. Callers MUST rely on auto-discovery.
+#### Scenario: One bundle per workflow
 
-#### Scenario: No options given, single workflow present
+- **GIVEN** a workflow file `cronitor.ts` declaring two actions and one trigger
+- **WHEN** the plugin builds
+- **THEN** the plugin SHALL emit exactly one workflow bundle: `dist/cronitor/cronitor.js`
+- **AND** the bundle SHALL export the actions and trigger by their original export names
 
-- **WHEN** `workflowPlugin()` is invoked and `<vite-root>/src/foo.ts` exists
-- **THEN** the plugin SHALL treat `foo` as the sole workflow entry
-- **AND** the build SHALL emit `dist/foo/bundle.tar.gz`
+#### Scenario: Bundle contains module-scoped imports and constants
 
-#### Scenario: No options given, multiple workflows present
+- **GIVEN** a workflow file with `import { format } from "date-fns"` and `const BASE = "..."` at module scope
+- **WHEN** the plugin builds
+- **THEN** the bundle SHALL inline the `format` import and preserve `BASE` as a module-scoped constant
+- **AND** the SDK and Zod runtime code SHALL NOT be included in the bundle
 
-- **WHEN** `workflowPlugin()` is invoked and `<vite-root>/src/` contains `foo.ts` and `bar.ts`
-- **THEN** the plugin SHALL treat both as workflow entries
-- **AND** the build SHALL emit `dist/foo/bundle.tar.gz` and `dist/bar/bundle.tar.gz`
+### Requirement: Brand-symbol export discovery
 
-#### Scenario: Files in nested directories are ignored
+The plugin SHALL discover the workflow's `Workflow` config, `Action`s, and `HttpTrigger`s (and other future trigger types) by walking the workflow file's exports and matching brand symbols on each export value. The plugin SHALL NOT use reference equality on handler functions for identification.
 
-- **WHEN** `<vite-root>/src/` contains `foo.ts` and a subdirectory `shared/util.ts`
-- **THEN** the plugin SHALL treat only `foo` as a workflow entry
-- **AND** `util` SHALL NOT be treated as a workflow entry
+The plugin SHALL recognize:
+- `Symbol.for("@workflow-engine/workflow")` -> workflow config (at most one per file)
+- `Symbol.for("@workflow-engine/action")` -> action; identity = export name
+- `Symbol.for("@workflow-engine/http-trigger")` -> HTTP trigger; identity = export name
 
-### Requirement: Loud failure when src/ is empty or missing
+#### Scenario: Plugin identifies action by brand
 
-The plugin SHALL fail the build loudly when the auto-discovery step finds no workflow entry files. The failure SHALL be reported via vite's plugin error mechanism with a message that names the expected directory.
+- **GIVEN** `export const sendNotification = action({...})` in a workflow file
+- **WHEN** the plugin walks exports
+- **THEN** the plugin SHALL detect `sendNotification` as an action via the `ACTION_BRAND` symbol
+- **AND** SHALL register it with `name: "sendNotification"`
 
-#### Scenario: Missing src directory
+#### Scenario: Plugin identifies HTTP trigger by brand
 
-- **WHEN** the plugin runs and `<vite-root>/src/` does not exist
-- **THEN** the build SHALL fail with an error message that includes the text `no workflows found`
-- **AND** the error message SHALL include the absolute path the plugin was looking at
+- **GIVEN** `export const myTrigger = httpTrigger({...})` in a workflow file
+- **WHEN** the plugin walks exports
+- **THEN** the plugin SHALL detect `myTrigger` as an HTTP trigger via the `HTTP_TRIGGER_BRAND` symbol
+- **AND** SHALL register it with `name: "myTrigger"`
 
-#### Scenario: Empty src directory
+#### Scenario: Plugin ignores unbranded exports
 
-- **WHEN** the plugin runs and `<vite-root>/src/` exists but has no `.ts` files at the top level
-- **THEN** the build SHALL fail with an error message that includes the text `no workflows found`
+- **GIVEN** a workflow file with `export function helper() { ... }` and other non-action/trigger exports
+- **WHEN** the plugin walks exports
+- **THEN** non-branded exports SHALL be ignored for the manifest
+- **AND** they SHALL still be bundled (they may be referenced by handlers)
 
-### Requirement: Bundle artifact produced per workflow
+### Requirement: Workflow name derivation
 
-For each discovered workflow `<name>`, the plugin SHALL emit a `<name>/bundle.tar.gz` artifact under the vite build output directory. The tar archive SHALL contain `manifest.json` and `actions.js` at its root. This `bundle.tar.gz` is the sole artifact consumed by downstream upload tooling (`@workflow-engine/cli`).
+When the workflow's `defineWorkflow({name})` argument is omitted (or `defineWorkflow` itself is omitted), the plugin SHALL derive the workflow name from the workflow file's filestem (e.g., `cronitor.ts` -> `"cronitor"`). When `name` is provided, the plugin SHALL use it as-is.
 
-#### Scenario: Bundle contains manifest and action module
+#### Scenario: Name from filestem
 
-- **WHEN** the plugin successfully builds workflow `foo`
-- **THEN** `dist/foo/bundle.tar.gz` SHALL unpack into files named `manifest.json` and `actions.js`
+- **GIVEN** a workflow file `workflows/cronitor.ts` with `defineWorkflow()` (no name)
+- **WHEN** the plugin builds
+- **THEN** the manifest SHALL have `name: "cronitor"`
+- **AND** the bundle SHALL be at `dist/cronitor/cronitor.js`
 
-### Requirement: Two-pass build per workflow
+#### Scenario: Explicit name overrides filestem
 
-The plugin SHALL perform two passes for each workflow file: a metadata extraction pass using `tsImport()` from `tsx/esm/api` on the original `.ts` source, and a stub-SDK Vite build pass that produces a single ES module per workflow containing all action handlers as named exports.
+- **GIVEN** `defineWorkflow({ name: "my-workflow" })` in `cronitor.ts`
+- **WHEN** the plugin builds
+- **THEN** the manifest SHALL have `name: "my-workflow"`
 
-#### Scenario: Metadata pass extracts manifest via tsx import
+### Requirement: Action call resolution at build time
 
-- **WHEN** the plugin processes a workflow file with `createWorkflow("cronitor")`
-- **THEN** it SHALL import the `.ts` source via `tsImport()`, call `.compile()` on the default export, and produce manifest data including `name: "cronitor"`
-- **AND** it SHALL NOT write a temporary file for metadata extraction
+The plugin SHALL resolve `await someAction(input)` calls inside handlers by injecting the action's name. Specifically: the SDK's `action({...})` returns a callable shim whose body is `(input) => __hostCallAction(<name>, input)`; the plugin SHALL fill in `<name>` as the action's export name during the build pass.
 
-#### Scenario: Build pass produces single module with named exports
+#### Scenario: Action call compiles to host bridge invocation
 
-- **WHEN** the plugin processes a workflow file with actions `handleCronitorEvent` and `sendMessage`
-- **THEN** it SHALL produce `dist/cronitor/actions.js` containing both handlers as named exports
-- **AND** the module SHALL NOT contain `@workflow-engine/sdk` or `zod` code
-- **AND** the module size SHALL be proportional to the handler code, not the SDK/Zod dependency tree
-
-### Requirement: Transform hook produces default exports
-
-The plugin SHALL transform each workflow into a standalone ES module by running a secondary `vite.build()` with a stub SDK plugin and a sandbox-globals plugin. The stub SHALL replace `@workflow-engine/sdk` so that `workflow.action({ handler })` returns `handler` directly. The sandbox-globals plugin SHALL resolve `@workflow-engine/sandbox-globals` to a virtual module that sets up Web API polyfills on `globalThis`, and SHALL inject `import "@workflow-engine/sandbox-globals"` at the top of the workflow entry via a `transform` hook. The secondary build SHALL use `build.ssr: true`, `ssr.noExternal: true`, `enforce: 'pre'` on both plugins, and `rollupOptions.input` pointing to the original workflow `.ts` file.
-
-#### Scenario: Handler preserved as named export with npm imports and polyfills bundled
-
-- **WHEN** a handler imports `format` from `date-fns` and calls it
-- **THEN** the output module SHALL contain the `format` function bundled inline
-- **AND** the handler's named export SHALL be callable with the same behavior
-- **AND** the output module SHALL contain polyfill setup code for globals used by `date-fns`
-
-#### Scenario: Module-level imports preserved
-
-- **WHEN** a handler references a module-level import (e.g., `import { format } from "date-fns"`)
-- **THEN** the import SHALL be resolved and bundled into the output module
-- **AND** the handler's reference to `format` SHALL remain valid
-
-#### Scenario: Module-level constants preserved
-
-- **WHEN** a handler references a module-level constant (e.g., `const BASE_URL = "..."`)
-- **THEN** the constant SHALL be preserved in the output module
-
-#### Scenario: Polyfill virtual module is resolved
-
-- **WHEN** the secondary build encounters `import "@workflow-engine/sandbox-globals"`
-- **THEN** the sandbox-globals plugin SHALL resolve it to the virtual module ID `"\0sandbox-globals"`
-- **AND** the virtual module source SHALL be loaded and bundled into the output
-
-#### Scenario: Polyfill import is injected into workflow entry
-
-- **WHEN** the secondary build transforms the workflow `.ts` file
-- **THEN** `import "@workflow-engine/sandbox-globals"` SHALL be prepended to the source
-- **AND** the polyfill setup code SHALL execute before any action handler code
-
-### Requirement: Per-workflow output directories
-
-The plugin SHALL output each workflow's artifacts into a subdirectory of the output directory, named after the workflow name from `createWorkflow("name")`. The module file SHALL be named `actions.js` at the workflow subdirectory root.
-
-#### Scenario: Output directory structure
-
-- **WHEN** the plugin processes a workflow created with `createWorkflow("cronitor")` with actions `handleCronitorEvent` and `sendMessage`
-- **THEN** it SHALL produce `dist/cronitor/manifest.json` and `dist/cronitor/actions.js`
-- **AND** `actions.js` SHALL export both `handleCronitorEvent` and `sendMessage` as named exports
+- **GIVEN** `await sendNotification({ message: "x" })` inside a trigger handler
+- **WHEN** the bundle is built
+- **THEN** the compiled bundle SHALL invoke `__hostCallAction("sendNotification", { message: "x" })` at the call site
 
 ### Requirement: Build failure on validation errors
 
-The plugin SHALL fail the Vite build if a workflow has validation errors during `.compile()` or if TypeScript type checking detects errors in workflow files during production builds.
+The plugin SHALL fail the Vite build if a workflow file declares zero or more than one `defineWorkflow(...)` exports, if any action's `input` or `output` is not a Zod schema, or if TypeScript type checking detects errors in workflow files during production builds.
 
-#### Scenario: Action references undefined event
-- **WHEN** a workflow's `.compile()` throws because an action references an event not defined via `.event()`
-- **THEN** the Vite build SHALL fail with an error message identifying the workflow and the error
+#### Scenario: Multiple defineWorkflow exports fails
 
-#### Scenario: Unmatched handler export
-- **WHEN** `.compile()` returns an action whose handler reference does not match any named export
-- **THEN** the Vite build SHALL fail with an error identifying the unmatched action
+- **GIVEN** a workflow file with two `defineWorkflow(...)` exports
+- **WHEN** the plugin builds
+- **THEN** the build SHALL fail with an error indicating "at most one defineWorkflow per file"
 
-#### Scenario: TypeScript type error in workflow
-- **WHEN** a workflow file contains a TypeScript type error
-- **AND** the build is not in watch mode
-- **THEN** the Vite build SHALL fail during `buildStart` with formatted type error diagnostics
-- **AND** the error SHALL be reported before any bundling occurs
+#### Scenario: Action without input schema fails
+
+- **GIVEN** an action whose `input` is not a Zod schema
+- **WHEN** the plugin builds
+- **THEN** the build SHALL fail with an error identifying the action

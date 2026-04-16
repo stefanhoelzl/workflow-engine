@@ -54,7 +54,6 @@ function renderLayout(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
   <link rel="stylesheet" href="/static/workflow-engine.css">
-  <script defer src="/static/dashboard-alpine.js"></script>
   <script defer src="/static/alpine.js"></script>
   <script src="/static/htmx.js"></script>
 ${head ?? ""}

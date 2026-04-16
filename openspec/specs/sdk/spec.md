@@ -2,8 +2,10 @@
 
 ## Purpose
 
-Provide the TypeScript API for defining events, wiring workflows, and typing action handlers. The SDK is a build-time-only dependency — no SDK code ships in the bundled action files.
+Provide the TypeScript API for defining workflows, actions, triggers, and typing handlers. The SDK is a build-time-only dependency --- no SDK code ships in the bundled workflow files.
+
 ## Requirements
+
 ### Requirement: Zod v4 dependency
 
 The SDK SHALL depend on `zod@^4.0.0` and import the Zod API from `"zod"`. The `z` namespace SHALL be re-exported for workflow authors.
@@ -14,85 +16,131 @@ The SDK SHALL depend on `zod@^4.0.0` and import the Zod API from `"zod"`. The `z
 - **WHEN** the author uses `z.object()`, `z.string()`, `z.enum()`, `z.nullable()`
 - **THEN** these SHALL be Zod v4 functions
 
-### Requirement: createWorkflow requires a name argument
+### Requirement: Brand symbols identify SDK products
 
-The `createWorkflow()` function SHALL accept a required first argument: the workflow name as a `string`. This name SHALL be included in the compiled manifest's `name` field.
+The SDK SHALL export three brand symbols used to identify objects produced by its factories:
+- `ACTION_BRAND = Symbol.for("@workflow-engine/action")`
+- `HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger")`
+- `WORKFLOW_BRAND = Symbol.for("@workflow-engine/workflow")`
 
-#### Scenario: Workflow created with name
+The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `isWorkflow(value)` that check for the corresponding brand symbol.
 
-- **WHEN** `createWorkflow("cronitor")` is called
-- **THEN** the workflow builder SHALL store the name "cronitor"
-- **AND** the compiled manifest SHALL contain `name: "cronitor"`
+#### Scenario: Brand on each factory return value
 
-#### Scenario: Workflow created without name
+- **WHEN** `action(...)`, `httpTrigger(...)`, or `defineWorkflow(...)` is called
+- **THEN** the returned value SHALL have the corresponding brand symbol set to `true`
 
-- **WHEN** `createWorkflow()` is called without a name argument
-- **THEN** it SHALL fail with a TypeScript type error at compile time
+#### Scenario: Type guard recognizes branded value
 
-### Requirement: ActionContext type in SDK
+- **GIVEN** a value `v` returned from `action({...})`
+- **WHEN** `isAction(v)` is called
+- **THEN** the function SHALL return `true`
 
-The SDK's `ActionContext` type SHALL include `event`, `env`, and a per-action narrowed `emit` method. It SHALL NOT include a `fetch` property.
+#### Scenario: Type guard rejects unrelated value
 
-The `emit` method SHALL be generic-narrowed based on the action's declared `emits` array and the workflow's declared event schemas:
+- **GIVEN** a plain function `() => 1`
+- **WHEN** `isAction(value)` is called
+- **THEN** the function SHALL return `false`
 
-```ts
-interface ActionContext<Payload, Events, Env> {
-  event: Event<Payload>;
-  env: Readonly<Record<Env, string>>;
-  emit: <K extends keyof Events & string>(
-    type: K,
-    payload: Events[K],
-  ) => Promise<void>;
-}
-```
+### Requirement: defineWorkflow factory
 
-`ctx.emit` is injected onto ctx at runtime by a wrapper installed in the SDK's `workflow.action({...})` builder. The wrapper closes over the per-run `emit` global that the runtime installs via `Sandbox.run(name, ctx, extraMethods)`. The wrapper performs a lazy check: if `globalThis.emit` is not a function when `ctx.emit` is called, it throws `Error("emit is not installed; the runtime must register it as an extraMethod")`.
+The SDK SHALL export `defineWorkflow(config)` returning a `Workflow` object branded with `WORKFLOW_BRAND`. The config SHALL accept optional `name?: string` and optional `env?: Record<string, string | EnvRef>`. When `name` is omitted, the build system SHALL derive the workflow name from the file's filestem. The returned `Workflow.env` SHALL be a `Readonly<Record<string, string>>` with `EnvRef`s resolved at build time.
 
-`ctx.emit` is the single workflow-author-facing path for emitting events. The SDK does NOT declare an ambient global `emit` — authors must emit via `ctx.emit` so the per-action narrowing applies.
+#### Scenario: Workflow defined with explicit name and env
 
-Network access is provided by the global `fetch` function (a polyfill), not by a method on the context.
+- **WHEN** `defineWorkflow({ name: "cronitor", env: { URL: env({ default: "https://x" }) } })` is called
+- **THEN** the returned object SHALL have `name: "cronitor"`
+- **AND** SHALL have `env.URL: "https://x"`
+- **AND** SHALL be branded with `WORKFLOW_BRAND`
 
-#### Scenario: ActionContext type has no fetch
+#### Scenario: Workflow defined with no config
 
-- **GIVEN** a workflow action handler typed with the SDK's `ActionContext`
-- **WHEN** the handler attempts to access `ctx.fetch`
-- **THEN** TypeScript SHALL report a type error (property does not exist)
+- **WHEN** `defineWorkflow()` is called
+- **THEN** the returned object SHALL be branded with `WORKFLOW_BRAND`
+- **AND** SHALL have `name: undefined` (build system fills in filestem)
+- **AND** SHALL have `env: {}`
 
-#### Scenario: ctx.emit accepts a declared event in the emits array
+#### Scenario: Multiple defineWorkflow calls in one file
 
-- **GIVEN** an action declared with `emits: ["order.parsed"]` and a corresponding event schema
-- **WHEN** the handler calls `ctx.emit("order.parsed", { total: 42 })` with a matching payload
-- **THEN** TypeScript SHALL accept the call
+- **GIVEN** a workflow file with two `defineWorkflow(...)` exports
+- **WHEN** the build system processes the file
+- **THEN** the build system SHALL fail with an error indicating "at most one defineWorkflow per file"
 
-#### Scenario: ctx.emit rejects an event name not in emits
+### Requirement: action factory returns typed callable
 
-- **GIVEN** an action declared with `emits: ["order.parsed"]`
-- **WHEN** the handler calls `ctx.emit("order.shipped", {})` where `order.shipped` is a defined event but not in emits
-- **THEN** TypeScript SHALL report a type error on the event name argument
+The SDK SHALL export `action({ input, output, handler })` returning an `Action<I, O>` object that is BOTH branded with `ACTION_BRAND` AND callable as `(input: I) => Promise<O>`. The returned callable's body SHALL invoke the action via the host bridge (`__hostCallAction(name, input)`), where `name` is filled in by the build system based on the export name.
 
-#### Scenario: ctx.emit rejects a wrong payload shape
+The config SHALL require:
+- `input`: `z.ZodType<I>` --- Zod schema validating action input
+- `output`: `z.ZodType<O>` --- Zod schema validating action output
+- `handler`: `(input: I) => Promise<O>` --- async handler function
 
-- **GIVEN** an action declared with `emits: ["order.parsed"]` where `order.parsed` expects `{ total: number }`
-- **WHEN** the handler calls `ctx.emit("order.parsed", { orderId: "abc" })`
-- **THEN** TypeScript SHALL report a type error on the payload argument
+#### Scenario: Action handle is callable and branded
 
-#### Scenario: bare emit global is not declared by the SDK
+- **GIVEN** `const send = action({ input, output, handler })`
+- **WHEN** the value is inspected
+- **THEN** `send` SHALL be a function (callable)
+- **AND** `send[ACTION_BRAND]` SHALL be `true`
+- **AND** `send.input`, `send.output`, `send.handler` SHALL be exposed
 
-- **GIVEN** a workflow TypeScript file importing from `@workflow-engine/sdk`
-- **WHEN** the file references a bare `emit(...)` call at module scope
-- **THEN** TypeScript SHALL report a "Cannot find name 'emit'" error
-- **AND** authors SHALL use `ctx.emit(...)` inside action handlers instead
+#### Scenario: TypeScript infers input/output from schemas
 
-#### Scenario: ActionContext type has event and env
+- **GIVEN** `const a = action({ input: z.object({ x: z.number() }), output: z.string(), handler: ... })`
+- **WHEN** `await a({ x: 1 })` is called
+- **THEN** TypeScript SHALL accept the call and infer the result as `Promise<string>`
+- **AND** `await a({ x: "wrong" })` SHALL be a TypeScript compile-time error
 
-- **GIVEN** a workflow action handler typed with the SDK's `ActionContext`
-- **WHEN** the handler accesses `ctx.event` and `ctx.env`
-- **THEN** both are properly typed and accessible
+### Requirement: One workflow per file
 
-#### Scenario: ctx.emit throws when the runtime has not installed the emit global
+A workflow file SHALL declare at most one workflow. The vite-plugin SHALL identify the workflow's actions and triggers by walking the file's exports and matching brand symbols on the export values. Action and trigger identity SHALL equal the export name in the workflow file.
 
-- **GIVEN** a sandbox invoked via `Sandbox.run(name, ctx)` without an `emit` entry in `extraMethods`
-- **WHEN** the wrapped handler calls `ctx.emit(...)`
-- **THEN** the wrapper SHALL throw `Error("emit is not installed; the runtime must register it as an extraMethod")`
-- **AND** the error SHALL surface as a failed `RunResult`
+#### Scenario: Action identity is export name
 
+- **GIVEN** `export const sendNotification = action({...})` in workflow file `cronitor.ts`
+- **WHEN** the build system walks exports
+- **THEN** the discovered action SHALL have `name: "sendNotification"`
+
+#### Scenario: Renamed export updates identity
+
+- **GIVEN** an exported action renamed from `sendNotification` to `notify`
+- **WHEN** the build system walks exports
+- **THEN** the discovered action SHALL have `name: "notify"`
+- **AND** any code calling `await sendNotification(...)` SHALL be a TypeScript compile-time error
+
+### Requirement: env() helper for environment references
+
+The SDK SHALL export `env(opts?)` returning an `EnvRef` placeholder used in `defineWorkflow({ env })`. The opts SHALL accept optional `name?: string` (the env var name; defaults to the key it's assigned to) and optional `default?: string` (used when the env var is not set).
+
+#### Scenario: env() defaults to key as name
+
+- **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
+- **WHEN** the build resolves env
+- **THEN** the runtime SHALL read `process.env.API_KEY`
+
+#### Scenario: env() with explicit name
+
+- **GIVEN** `defineWorkflow({ env: { url: env({ name: "MY_URL" }) } })`
+- **WHEN** the build resolves env
+- **THEN** the runtime SHALL read `process.env.MY_URL` and assign it to `workflow.env.url`
+
+#### Scenario: env() with default
+
+- **GIVEN** `defineWorkflow({ env: { URL: env({ default: "https://x" }) } })`
+- **WHEN** `process.env.URL` is unset
+- **THEN** `workflow.env.URL` SHALL be `"https://x"`
+
+#### Scenario: Missing env without default fails build
+
+- **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
+- **WHEN** `process.env.API_KEY` is unset and no default is provided
+- **THEN** the build SHALL fail with `"Missing environment variable: API_KEY"`
+
+### Requirement: Zod re-export
+
+The SDK SHALL re-export the `z` namespace from Zod v4 for workflow authors. The SDK SHALL depend on `zod@^4.0.0`.
+
+#### Scenario: Workflow author imports z from SDK
+
+- **GIVEN** a workflow file that imports `z` from `@workflow-engine/sdk`
+- **WHEN** the author uses `z.object(...)`, `z.string(...)`, etc.
+- **THEN** these SHALL be Zod v4 functions

@@ -1,23 +1,22 @@
 ### Requirement: Workflow source files in workflows directory
-Each workflow SHALL be a single TypeScript file in the `workflows/` directory that default-exports a `WorkflowBuilder` created via `createWorkflow()`. Action handlers SHALL be exported as named `const`s via calls to `workflow.action()`.
+Each workflow SHALL be a single TypeScript file in the `workflows/` directory that exports branded SDK products (`defineWorkflow`, `action`, `httpTrigger`). Action and trigger identity SHALL be determined by export names.
 
 #### Scenario: Workflow file structure
 - **WHEN** a developer creates `workflows/cronitor.ts`
-- **THEN** it SHALL contain `export default createWorkflow().event(...).trigger(...)` as its default export
-- **AND** it SHALL export action handlers as named constants: `export const handleEvent = workflow.action({...})`
-- **AND** it SHALL import `createWorkflow` and `z` from `@workflow-engine/sdk`
+- **THEN** it SHALL export branded SDK products as named constants
+- **AND** it SHALL import `defineWorkflow`, `action`, `httpTrigger`, and `z` from `@workflow-engine/sdk`
 
-### Requirement: Vite plugin builds workflows into manifest and actions
-A `workflows/vite.config.ts` SHALL use the `@workflow-engine/vite-plugin` with an explicit list of workflow source files. The plugin SHALL produce a subdirectory per workflow in `workflows/dist/` containing `manifest.json` and `actions.js`.
+### Requirement: Vite plugin builds workflows into manifest and bundle
+A `workflows/vite.config.ts` SHALL use the `@workflow-engine/vite-plugin` with an explicit list of workflow source files. The plugin SHALL produce a subdirectory per workflow in `workflows/dist/` containing `manifest.json` and the per-workflow bundle.
 
 #### Scenario: Build produces directory per workflow
 - **WHEN** `pnpm --filter workflows build` is run
 - **AND** `workflows/vite.config.ts` lists `"./cronitor.ts"` in the workflow configuration
-- **THEN** `workflows/dist/cronitor/manifest.json` and `workflows/dist/cronitor/actions.js` SHALL be produced
+- **THEN** `workflows/dist/cronitor/manifest.json` and `workflows/dist/cronitor/cronitor.js` SHALL be produced
 
-#### Scenario: Actions module has no SDK dependency
+#### Scenario: Bundle has no SDK dependency
 - **WHEN** a workflow is built
-- **THEN** the output `actions.js` SHALL NOT contain import statements referencing `@workflow-engine/sdk` or `zod`
+- **THEN** the output bundle SHALL NOT contain import statements referencing `@workflow-engine/sdk` or `zod`
 
 #### Scenario: Node built-ins are externalized
 - **WHEN** a workflow is built
@@ -36,7 +35,7 @@ The root `pnpm build` script SHALL build both the runtime and the workflows.
 #### Scenario: Full build
 - **WHEN** `pnpm build` is run from the repository root
 - **THEN** `dist/main.js` (runtime) SHALL be produced
-- **AND** `workflows/dist/*/manifest.json` and `workflows/dist/*/actions.js` (workflow artifacts) SHALL be produced
+- **AND** `workflows/dist/*/manifest.json` and `workflows/dist/*/*.js` (workflow artifacts) SHALL be produced
 
 ### Requirement: Vite plugin package
 A new `packages/vite-plugin` package SHALL exist as a pnpm workspace member, exporting the workflow compilation Vite plugin.
@@ -44,3 +43,30 @@ A new `packages/vite-plugin` package SHALL exist as a pnpm workspace member, exp
 #### Scenario: Plugin package structure
 - **WHEN** a consumer imports from `@workflow-engine/vite-plugin`
 - **THEN** it SHALL receive the `workflowPlugin` function for use in Vite config
+
+### Requirement: Per-workflow bundle output
+
+The build SHALL produce one bundled JS module per workflow file. The bundle SHALL contain all action handlers, the trigger handler(s), and module-scoped imports/constants as named exports under their original names.
+
+#### Scenario: Single bundle per workflow
+
+- **GIVEN** a workflow file `cronitor.ts` with two actions and one trigger
+- **WHEN** the build runs
+- **THEN** the build SHALL produce exactly one JS bundle `dist/cronitor/cronitor.js`
+- **AND** the bundle SHALL export each action and the trigger by their original export names
+
+#### Scenario: Bundle includes module-scoped npm imports
+
+- **GIVEN** a handler importing `format` from `date-fns`
+- **WHEN** the build runs
+- **THEN** the bundle SHALL inline the `format` function
+
+### Requirement: Build emits manifest alongside bundle
+
+For each workflow, the build SHALL emit `dist/<name>/manifest.json` and `dist/<name>/<name>.js`. The manifest format follows the `workflow-manifest` capability spec.
+
+#### Scenario: Manifest and bundle in same directory
+
+- **GIVEN** a workflow named `cronitor`
+- **WHEN** the build runs
+- **THEN** `dist/cronitor/manifest.json` and `dist/cronitor/cronitor.js` SHALL both exist

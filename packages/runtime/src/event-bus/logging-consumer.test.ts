@@ -1,7 +1,7 @@
 import { Writable } from "node:stream";
-import { describe, expect, it } from "vitest";
-import { createLogger } from "../logger.js";
-import type { RuntimeEvent } from "./index.js";
+import { describe, expect, it, vi } from "vitest";
+import { createLogger, type Logger } from "../logger.js";
+import type { InvocationLifecycleEvent } from "./index.js";
 import { createLoggingConsumer } from "./logging-consumer.js";
 
 function createTestLogger(level = "trace") {
@@ -27,136 +27,131 @@ function createTestLogger(level = "trace") {
 	};
 }
 
-function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
+function startedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "started" }>
+	> = {},
+): InvocationLifecycleEvent {
 	return {
+		kind: "started",
 		id: "evt_001",
-		type: "order.received",
-		payload: {},
-		correlationId: "corr_abc",
-		createdAt: new Date(),
-		emittedAt: new Date(),
-		state: "pending",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:00.000Z"),
+		input: {},
 		...overrides,
-	} as RuntimeEvent;
+	};
 }
 
-describe("LoggingConsumer", () => {
-	describe("handle", () => {
-		it("logs pending events at info level with event.created", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
+function completedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "completed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "completed",
+		id: "evt_001",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		result: { status: 200, body: "", headers: {} },
+		...overrides,
+	};
+}
 
-			await consumer.handle(makeEvent({ state: "pending" }));
+function failedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "failed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "failed",
+		id: "evt_001",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		error: { message: "boom", stack: "at ..." },
+		...overrides,
+	};
+}
 
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.created");
-			expect(log).toBeDefined();
-			expect(log?.correlationId).toBe("corr_abc");
-			expect(log?.eventId).toBe("evt_001");
-			expect(log?.type).toBe("order.received");
-			expect(log?.level).toBe(30); // info
-		});
+describe("logging consumer", () => {
+	it("logs started at info with required fields", async () => {
+		const { logger, lines } = createTestLogger();
+		const consumer = createLoggingConsumer(logger);
 
-		it("logs processing events at trace level", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
+		await consumer.handle(startedEvent({ id: "evt_a" }));
 
-			await consumer.handle(makeEvent({ state: "processing" }));
-
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.processing");
-			expect(log).toBeDefined();
-			expect(log?.level).toBe(10); // trace
-		});
-
-		it("logs done/succeeded events at trace level", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
-
-			await consumer.handle({
-				...makeEvent(),
-				state: "done",
-				result: "succeeded",
-			} as RuntimeEvent);
-
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.done");
-			expect(log).toBeDefined();
-			expect(log?.result).toBe("succeeded");
-			expect(log?.level).toBe(10); // trace
-		});
-
-		it("logs done/failed events at error level with error field", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
-
-			await consumer.handle({
-				...makeEvent(),
-				state: "done",
-				result: "failed",
-				error: { message: "timeout", stack: "" },
-			} as RuntimeEvent);
-
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.failed");
-			expect(log).toBeDefined();
-			expect(log?.result).toBe("failed");
-			expect(log?.error).toEqual({ message: "timeout", stack: "" });
-			expect(log?.level).toBe(50); // error
-		});
-
-		it("includes targetAction when present", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
-
-			await consumer.handle(makeEvent({ targetAction: "sendEmail" }));
-
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.created");
-			expect(log?.targetAction).toBe("sendEmail");
-		});
-
-		it("omits targetAction when absent", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
-
-			await consumer.handle(makeEvent());
-
-			const output = lines();
-			const log = output.find((l) => l.msg === "event.created");
-			expect(log?.targetAction).toBeUndefined();
-		});
+		const output = lines();
+		const log = output.find((l) => l.msg === "invocation.started");
+		expect(log).toBeDefined();
+		expect(log?.id).toBe("evt_a");
+		expect(log?.workflow).toBe("w1");
+		expect(log?.trigger).toBe("t1");
+		expect(log?.kind).toBe("started");
+		expect(log?.ts).toBe("2026-01-01T00:00:00.000Z");
+		expect(log?.level).toBe(30); // info
 	});
 
-	describe("bootstrap", () => {
-		it("logs events.recovered only when finished signal is sent with total", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
+	it("logs completed at info with result", async () => {
+		const { logger, lines } = createTestLogger();
+		const consumer = createLoggingConsumer(logger);
 
-			await consumer.bootstrap([makeEvent(), makeEvent()]);
-			expect(lines().find((l) => l.msg === "events.recovered")).toBeUndefined();
+		await consumer.handle(
+			completedEvent({ result: { status: 201, body: "ok", headers: {} } }),
+		);
 
-			await consumer.bootstrap([makeEvent()]);
-			expect(lines().find((l) => l.msg === "events.recovered")).toBeUndefined();
+		const output = lines();
+		const log = output.find((l) => l.msg === "invocation.completed");
+		expect(log).toBeDefined();
+		expect(log?.kind).toBe("completed");
+		expect(log?.result).toEqual({ status: 201, body: "ok", headers: {} });
+		expect(log?.level).toBe(30); // info
+	});
 
-			await consumer.bootstrap([], { finished: true, total: 3 });
+	it("logs failed at error with serialized error", async () => {
+		const { logger, lines } = createTestLogger();
+		const consumer = createLoggingConsumer(logger);
 
-			const output = lines();
-			const log = output.find((l) => l.msg === "events.recovered");
-			expect(log).toBeDefined();
-			expect(log?.count).toBe(3);
-			expect(log?.level).toBe(30); // info
+		await consumer.handle(
+			failedEvent({
+				error: { message: "timeout", stack: "", kind: "user_code" },
+			}),
+		);
+
+		const output = lines();
+		const log = output.find((l) => l.msg === "invocation.failed");
+		expect(log).toBeDefined();
+		expect(log?.kind).toBe("failed");
+		expect(log?.error).toEqual({
+			message: "timeout",
+			stack: "",
+			kind: "user_code",
 		});
+		expect(log?.level).toBe(50); // error
+	});
+});
 
-		it("logs count 0 when no events recovered", async () => {
-			const { logger, lines } = createTestLogger();
-			const consumer = createLoggingConsumer(logger);
+describe("logging consumer resilience", () => {
+	it("does not propagate logger backend failures", async () => {
+		const throwingLogger: Logger = {
+			info: () => {
+				throw new Error("logger dead");
+			},
+			warn: () => undefined,
+			error: () => undefined,
+			debug: () => undefined,
+			trace: () => undefined,
+			child: () => throwingLogger,
+		};
+		const consoleSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 
-			await consumer.bootstrap([], { finished: true, total: 0 });
+		const consumer = createLoggingConsumer(throwingLogger);
+		await expect(consumer.handle(startedEvent())).resolves.toBeUndefined();
+		expect(consoleSpy).toHaveBeenCalled();
 
-			const output = lines();
-			const log = output.find((l) => l.msg === "events.recovered");
-			expect(log?.count).toBe(0);
-		});
+		consoleSpy.mockRestore();
 	});
 });

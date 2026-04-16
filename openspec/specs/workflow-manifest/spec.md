@@ -1,114 +1,81 @@
-### Requirement: Manifest JSON format
+### Requirement: Manifest JSON format (v1)
 
-The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: name, module, events (with JSON Schema), triggers, and actions. The manifest SHALL NOT contain executable code or function references.
+The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`. The manifest SHALL NOT contain executable code or function references.
 
-The manifest SHALL include a required `name` field containing the workflow name as specified in `createWorkflow("name")`.
+The top-level fields:
+- `name`: string --- workflow name (`defineWorkflow({name})` if provided, otherwise the workflow file's filestem)
+- `module`: string --- relative path to the bundled workflow JS file (e.g., `"cronitor.js"`). One bundle per workflow.
+- `env`: `Record<string, string>` --- workflow-level resolved env values.
 
-The manifest SHALL include a required `module` field at the top level containing the relative path to the workflow's action module (e.g., `"actions.js"`). There SHALL be no `module` field on individual action entries.
+Each action entry SHALL have:
+- `name`: string --- derived from the workflow file's export name
+- `input`: object --- JSON Schema for the action's input (from the action's Zod input schema)
+- `output`: object --- JSON Schema for the action's output (from the action's Zod output schema)
 
-Each action entry SHALL have an `export` field containing the name of the JavaScript export in the module that corresponds to this action's handler function.
+Each trigger entry SHALL have:
+- `name`: string --- derived from the export name
+- `type`: string --- discriminant for trigger type (e.g., `"http"`)
+- Type-specific fields. For `type: "http"`: `path`, `method`, `body` (JSON Schema), `params` (string array), and optionally `query` (JSON Schema).
 
-Trigger entries SHALL NOT have an `event` field. The trigger `name` SHALL be used to resolve the corresponding event from the `events` array. Trigger-owned events SHALL appear in the `events` array with their full schema (including the HTTP payload wrapper fields `body`, `headers`, `url`, `method`, and `params`).
+The manifest SHALL NOT contain an `events` array, action `on`/`emits` fields, per-action `module` field, per-action `env` field, or trigger `response` field.
 
-Each trigger entry SHALL include a `params` field containing an array of param names extracted from the path string. Static paths SHALL have `params: []`.
+#### Scenario: Manifest contains workflow-level fields and per-action input/output schemas
 
-#### Scenario: Manifest contains name, module, and all workflow metadata
+- **GIVEN** a workflow named "cronitor" with one HTTP trigger and two actions
+- **WHEN** the build runs
+- **THEN** `manifest.json` SHALL contain `name: "cronitor"`, `module: "cronitor.js"`, `env: {...}`, an `actions` array of length 2 (each with `name`, `input`, `output`), and a `triggers` array of length 1 (with `name`, `type: "http"`, `path`, `method`, `body`, `params`)
+- **AND** SHALL NOT contain an `events` array
+- **AND** action entries SHALL NOT contain `on`, `emits`, `module`, or `env` fields
+- **AND** trigger entries SHALL NOT contain a `response` field
 
-- **WHEN** a workflow named "cronitor" defines 1 trigger, 1 action event, and 2 actions
-- **THEN** `manifest.json` SHALL contain a `name` field with value `"cronitor"`, a `module` field with value `"actions.js"`, an `events` array with 2 entries, a `triggers` array with 1 entry (without an `event` field), and an `actions` array with 2 entries
-- **AND** each action entry SHALL have an `export` field but no `module` field
+#### Scenario: Workflow name defaults to filestem
 
-#### Scenario: Static trigger entry includes empty params
+- **GIVEN** a workflow file `workflows/cronitor.ts` with `defineWorkflow()` (no name)
+- **WHEN** the build runs
+- **THEN** the manifest SHALL have `name: "cronitor"`
 
-- **WHEN** a workflow defines `trigger("webhook.order", http({ path: "order", body: z.object({ orderId: z.string() }) }))`
-- **THEN** the trigger entry in `manifest.json` SHALL have `name: "webhook.order"`, `type: "http"`, `path: "order"`, `method: "POST"` (default), and `params: []`
-- **AND** SHALL NOT have an `event` field
+#### Scenario: HTTP trigger entry with parameterized path
 
-#### Scenario: Parameterized trigger entry includes param names
+- **GIVEN** `httpTrigger({ path: "users/:userId/status", body: z.object({ active: z.boolean() }), handler })`
+- **WHEN** the build runs
+- **THEN** the trigger entry SHALL have `path: "users/:userId/status"`, `params: ["userId"]`, `body: <JSON Schema for {active: boolean}>`, `method: "POST"`
 
-- **WHEN** a workflow defines `trigger("webhook.user.status", http({ path: "users/:userId/status" }))`
-- **THEN** the trigger entry in `manifest.json` SHALL have `path: "users/:userId/status"` and `params: ["userId"]`
+#### Scenario: HTTP trigger entry with wildcard path
 
-#### Scenario: Wildcard trigger entry includes wildcard name
+- **GIVEN** `httpTrigger({ path: "files/*rest", handler })`
+- **WHEN** the build runs
+- **THEN** the trigger entry SHALL have `path: "files/*rest"`, `params: ["rest"]`
 
-- **WHEN** a workflow defines `trigger("webhook.files", http({ path: "files/*rest" }))`
-- **THEN** the trigger entry in `manifest.json` SHALL have `path: "files/*rest"` and `params: ["rest"]`
+### Requirement: ManifestSchema validation (v1)
 
-#### Scenario: Trigger-owned event includes params in schema
+The SDK SHALL export a `ManifestSchema` Zod object validating the v1 manifest shape. The schema SHALL require `name`, `module`, `env`, `actions`, `triggers` at the top level. Each action entry SHALL require `name`, `input`, `output`. Each trigger entry SHALL require `name`, `type` and the type-specific fields. The runtime SHALL parse every loaded manifest through `ManifestSchema`.
 
-- **WHEN** a workflow defines `trigger("webhook.user.status", http({ path: "users/:userId/status", body: z.object({ active: z.boolean() }) }))`
-- **THEN** the `events` array SHALL contain an entry with `name: "webhook.user.status"` and a `schema` field containing a JSON Schema with `type: "object"`, `properties` for `body`, `headers`, `url`, `method`, and `params`, and `required: ["body", "headers", "url", "method", "params"]`
+#### Scenario: Valid v1 manifest passes validation
 
-#### Scenario: Top-level module with per-action export fields
-
-- **WHEN** a workflow defines actions `handleCronitorEvent` and `sendMessage`
-- **THEN** the manifest SHALL contain `module: "actions.js"` at the top level
-- **AND** action entries SHALL have `export: "handleCronitorEvent"` and `export: "sendMessage"` respectively
-- **AND** action entries SHALL NOT have a `module` field
-
-#### Scenario: Action-owned event in events array
-
-- **WHEN** a workflow defines `event("notify.message", z.object({ message: z.string() }))`
-- **THEN** the `events` array SHALL contain an entry with `name: "notify.message"` and a `schema` field containing a JSON Schema with `type: "object"`, `properties` for `message`
-
-#### Scenario: Action entry fields
-
-- **WHEN** a workflow defines an action with `on: "event.a"`, `emits: ["event.b"]`, `env: { API_KEY: "resolved-value" }`
-- **THEN** the action entry in `manifest.json` SHALL contain `name`, `export`, `on`, `emits`, and `env` fields
-- **AND** `env` SHALL be a JSON object mapping string keys to string values
-- **AND** `name` SHALL be the action identity (from export name or explicit override)
-- **AND** `export` SHALL be the JavaScript export name in the module
-
-### Requirement: ManifestSchema validation
-
-The SDK SHALL export a `ManifestSchema` Zod object for validating `manifest.json` files. The schema SHALL include a required `name` field of type `z.string()` and a required `module` field of type `z.string()` at the top level. The action schema SHALL include a required `export` field of type `z.string()` and SHALL NOT include a `module` field. The `actions[].env` field in the schema SHALL be `z.record(z.string())`. The trigger schema SHALL NOT require an `event` field. The trigger schema SHALL include a `params` field of type `z.array(z.string())`. The runtime SHALL parse every manifest through `ManifestSchema` at load time.
-
-#### Scenario: Valid manifest with params passes validation
-
-- **WHEN** a well-formed `manifest.json` with `name`, `module`, actions with `export` fields, `env` as `Record<string, string>`, triggers with `params` arrays, and triggers lacking the `event` field is parsed through `ManifestSchema`
+- **WHEN** a well-formed v1 `manifest.json` is parsed through `ManifestSchema`
 - **THEN** parsing SHALL succeed and return the typed manifest object
 
-#### Scenario: Manifest missing module field
+#### Scenario: Manifest missing required top-level field fails
 
-- **WHEN** a `manifest.json` is missing the top-level `module` field
+- **WHEN** a manifest is missing `name`, `module`, or `actions`
 - **THEN** parsing through `ManifestSchema` SHALL throw a validation error
 
-#### Scenario: Action missing export field
+#### Scenario: Action entry missing input schema fails
 
-- **WHEN** a `manifest.json` contains an action entry without the `export` field
+- **WHEN** a manifest contains an action entry without `input`
 - **THEN** parsing through `ManifestSchema` SHALL throw a validation error
 
-#### Scenario: Manifest missing name field
+#### Scenario: Legacy events array rejected
 
-- **WHEN** a `manifest.json` is missing the `name` field
-- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
-
-#### Scenario: Legacy per-action module field rejected
-
-- **WHEN** a `manifest.json` contains an action entry with a `module` field
-- **THEN** parsing through `ManifestSchema` SHALL still succeed (extra fields are ignored by default)
-- **AND** the `module` field SHALL NOT be present on the parsed action type
-
-#### Scenario: Trigger missing params field rejected
-
-- **WHEN** a `manifest.json` contains a trigger entry without the `params` field
-- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
-
-#### Scenario: Action missing required fields
-
-- **WHEN** a `manifest.json` contains an action entry without the `on` field
-- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
-
-#### Scenario: Legacy array env format rejected
-
-- **WHEN** a `manifest.json` contains an action with `env: ["API_KEY"]` (array format)
-- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
+- **WHEN** a manifest contains an `events` array
+- **THEN** the field SHALL be ignored (extra fields stripped) and SHALL NOT appear on the parsed manifest type
 
 ### Requirement: Manifest type exported from SDK
 
 The SDK SHALL export a `Manifest` TypeScript type derived from `ManifestSchema` for consumers that need to work with manifest data.
 
 #### Scenario: Manifest type matches schema
+
 - **WHEN** a consumer imports `Manifest` from the SDK
 - **THEN** the type SHALL match the shape validated by `ManifestSchema`
-- **AND** `Manifest["actions"][number]["env"]` SHALL be `Record<string, string>`
+- **AND** SHALL expose `Manifest["actions"][number]["input"]` and `["output"]` as JSON Schema objects

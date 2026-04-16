@@ -1,348 +1,538 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createFsStorage } from "./storage/fs.js";
-import type { StorageBackend } from "./storage/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createWorkflowRegistry,
-	parseWorkflowNames,
+	loadWorkflows,
+	type WorkflowRegistry,
 } from "./workflow-registry.js";
 
-const logger = {
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+const silentLogger = {
 	info: vi.fn(),
 	warn: vi.fn(),
 	error: vi.fn(),
 	debug: vi.fn(),
 	trace: vi.fn(),
-	child: vi.fn(),
+	child: vi.fn(function child() {
+		return silentLogger;
+	}),
 };
 
-const INVALID_MANIFEST_PREFIX = /^invalid manifest/;
-
-const MANIFEST = {
-	name: "test",
-	module: "actions.js",
-	events: [
-		{
-			name: "test.event",
-			schema: { type: "object", properties: {}, required: [] },
-		},
-	],
-	triggers: [],
-	actions: [
-		{
-			name: "handle",
-			export: "handle",
-			on: "test.event",
-			emits: [],
-			env: {},
-		},
-	],
-};
-
-const ACTION_SOURCE = "export default async (ctx) => {}";
-
-function makeFiles(overrides?: {
-	manifest?: object;
-	actionFiles?: Map<string, string>;
-}): Map<string, string> {
-	const files = new Map<string, string>();
-	files.set("manifest.json", JSON.stringify(overrides?.manifest ?? MANIFEST));
-	const actionFiles =
-		overrides?.actionFiles ?? new Map([["actions.js", ACTION_SOURCE]]);
-	for (const [name, content] of actionFiles) {
-		files.set(name, content);
-	}
-	return files;
+interface FixtureManifestAction {
+	name: string;
+	input: Record<string, unknown>;
+	output: Record<string, unknown>;
 }
 
-describe("parseWorkflowNames", () => {
-	it("extracts unique workflow names from paths", () => {
-		const paths = [
-			"workflows/foo/manifest.json",
-			"workflows/foo/actions/handle.js",
-			"workflows/bar/manifest.json",
-		];
-		expect(parseWorkflowNames(paths)).toEqual(["foo", "bar"]);
-	});
+interface FixtureManifestTrigger {
+	name: string;
+	type: "http";
+	path: string;
+	method: string;
+	body: Record<string, unknown>;
+	params: string[];
+	query?: Record<string, unknown>;
+	schema: Record<string, unknown>;
+}
 
-	it("ignores non-workflow paths", () => {
-		const paths = ["events/pending/001.json", "workflows/foo/manifest.json"];
-		expect(parseWorkflowNames(paths)).toEqual(["foo"]);
-	});
+interface FixtureManifest {
+	name: string;
+	module: string;
+	env: Record<string, string>;
+	actions: FixtureManifestAction[];
+	triggers: FixtureManifestTrigger[];
+}
 
-	it("returns empty for no workflows", () => {
-		expect(parseWorkflowNames([])).toEqual([]);
-	});
+async function makeFixture(
+	manifest: FixtureManifest,
+	bundleSource: string,
+): Promise<{ dir: string; manifestPath: string }> {
+	const dir = await mkdtemp(join(tmpdir(), "wf-registry-test-"));
+	const manifestPath = join(dir, "manifest.json");
+	const bundlePath = join(dir, manifest.module);
+	await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+	await writeFile(bundlePath, bundleSource, "utf8");
+	return { dir, manifestPath };
+}
+
+// A minimal v1 bundle built by hand. Each action/trigger export must carry
+// the correct brand symbol for the registry's discovery to pick them up.
+// The action callable mirrors the SDK's new wrapper model:
+//   1. notify the host via __hostCallAction (input validation + audit log),
+//   2. run the user handler in-sandbox via a direct JS call,
+//   3. validate the handler output against the output schema.
+// Using a passThrough schema (`parse: (x) => x`) here keeps the fixture
+// small; the SDK's real wrapper uses inlined Zod.
+function simpleBundleSource(): string {
+	return `
+const ACTION_BRAND = Symbol.for("@workflow-engine/action");
+const HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger");
+const WORKFLOW_BRAND = Symbol.for("@workflow-engine/workflow");
+
+export const workflow = Object.freeze({
+	[WORKFLOW_BRAND]: true,
+	name: "fixture",
+	env: Object.freeze({}),
 });
 
-describe("WorkflowRegistry", () => {
-	it("starts empty", () => {
-		const registry = createWorkflowRegistry({ logger });
-		expect(registry.actions).toEqual([]);
-		expect(registry.events).toEqual({});
-		expect(registry.jsonSchemas).toEqual({});
-		expect(registry.triggerRegistry.size).toBe(0);
+function makeAction(handler, input, output) {
+	let assignedName;
+	const callable = async function callAction(x) {
+		if (assignedName === undefined) throw new Error("unbound action");
+		await globalThis.__hostCallAction(assignedName, x);
+		const out = await handler(x);
+		return output.parse(out);
+	};
+	Object.defineProperty(callable, ACTION_BRAND, { value: true, enumerable: false });
+	Object.defineProperty(callable, "input", { value: input });
+	Object.defineProperty(callable, "output", { value: output });
+	Object.defineProperty(callable, "handler", { value: handler });
+	Object.defineProperty(callable, "name", { get: () => assignedName ?? "" });
+	Object.defineProperty(callable, "__setActionName", {
+		value: (name) => { if (!assignedName) assignedName = name; },
+	});
+	return callable;
+}
+
+const passThrough = { parse: (x) => x };
+
+export const double = makeAction(
+	async (x) => x * 2,
+	passThrough,
+	passThrough,
+);
+
+export const webhookTrigger = Object.freeze({
+	[HTTP_TRIGGER_BRAND]: true,
+	path: "test",
+	method: "POST",
+	body: passThrough,
+	params: passThrough,
+	query: undefined,
+	handler: async (payload) => {
+		const doubled = await double(payload.body.value);
+		return { status: 200, body: { doubled } };
+	},
+});
+`;
+}
+
+// When an action export is NOT declared in the manifest, the sandbox's
+// name-binder never runs for it, so the SDK callable remains without a
+// name and fails fast with "unbound action". (If a bundle bypasses the
+// SDK and calls __hostCallAction directly with an unknown name, the
+// dispatcher rejects it with "not declared in the manifest" — covered
+// by the sandbox package's own host-call tests.)
+const UNBOUND_ACTION_RE = /unbound action/;
+const VALIDATION_RE = /validation/i;
+const UNDECLARED_NOBODY_RE = /nobody.*not declared/;
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("workflow-registry: v1 manifest loading", () => {
+	let registry: WorkflowRegistry | null = null;
+
+	afterEach(async () => {
+		await registry?.dispose();
+		registry = null;
 	});
 
-	it("register returns the workflow name on success", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const result = await registry.register(makeFiles());
-		expect(result).toEqual({ ok: true, name: "test" });
-	});
-
-	it("register adds actions and events", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		await registry.register(makeFiles());
-
-		expect(registry.actions).toHaveLength(1);
-		expect(registry.actions[0]?.name).toBe("handle");
-		expect(registry.events).toHaveProperty("test.event");
-		expect(registry.jsonSchemas).toHaveProperty("test.event");
-	});
-
-	it("register replaces existing workflow with same name", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		await registry.register(makeFiles());
-
-		const newManifest = {
-			...MANIFEST,
+	it("exposes runners with name/env/actions/triggers (no events)", async () => {
+		const manifest: FixtureManifest = {
+			name: "fixture",
+			module: "fixture.js",
+			env: { FOO: "bar" },
 			actions: [
 				{
-					...MANIFEST.actions[0],
-					name: "handleNew",
-					export: "handleNew",
+					name: "double",
+					input: { type: "number" },
+					output: { type: "number" },
+				},
+			],
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: "test",
+					method: "POST",
+					body: {
+						type: "object",
+						properties: { value: { type: "number" } },
+						required: ["value"],
+					},
+					params: [],
+					schema: { type: "object" },
 				},
 			],
 		};
-		await registry.register(
-			makeFiles({
-				manifest: newManifest,
-				actionFiles: new Map([["actions.js", "new code"]]),
+		const { manifestPath } = await makeFixture(manifest, simpleBundleSource());
+
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
+
+		expect(registry.runners).toHaveLength(1);
+		const runner = registry.runners[0];
+		expect(runner?.name).toBe("fixture");
+		expect(runner?.env).toEqual({ FOO: "bar" });
+		expect(runner?.actions).toEqual([
+			expect.objectContaining({ name: "double" }),
+		]);
+		expect(runner?.triggers).toEqual([
+			expect.objectContaining({
+				name: "webhookTrigger",
+				type: "http",
+				path: "test",
+				method: "POST",
 			}),
-		);
-
-		expect(registry.actions).toHaveLength(1);
-		expect(registry.actions[0]?.name).toBe("handleNew");
+		]);
+		// No `events` field anywhere on the runner.
+		expect("events" in (runner ?? {})).toBe(false);
 	});
 
-	it("register returns failure with zod issues for invalid manifest", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const files = new Map([["manifest.json", '{"invalid": true}']]);
-		const result = await registry.register(files);
-		expect(result.ok).toBe(false);
-		if (result.ok) {
+	it("registers http triggers with the trigger registry", async () => {
+		const manifest: FixtureManifest = {
+			name: "fixture",
+			module: "fixture.js",
+			env: {},
+			actions: [
+				{
+					name: "double",
+					input: { type: "number" },
+					output: { type: "number" },
+				},
+			],
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: "test",
+					method: "POST",
+					body: {
+						type: "object",
+						properties: { value: { type: "number" } },
+						required: ["value"],
+					},
+					params: [],
+					schema: { type: "object" },
+				},
+			],
+		};
+		const { manifestPath } = await makeFixture(manifest, simpleBundleSource());
+
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
+
+		expect(registry.triggerRegistry.size).toBe(1);
+		const match = registry.triggerRegistry.lookup("test", "POST");
+		expect(match?.descriptor.name).toBe("webhookTrigger");
+		expect(match?.workflow.name).toBe("fixture");
+	});
+
+	it("runs the full path: trigger handler -> SDK wrapper -> host bridge (validate+log) -> in-sandbox handler -> output", async () => {
+		const manifest: FixtureManifest = {
+			name: "fixture",
+			module: "fixture.js",
+			env: {},
+			actions: [
+				{
+					name: "double",
+					input: { type: "number" },
+					output: { type: "number" },
+				},
+			],
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: "test",
+					method: "POST",
+					body: {
+						type: "object",
+						properties: { value: { type: "number" } },
+						required: ["value"],
+					},
+					params: [],
+					schema: { type: "object" },
+				},
+			],
+		};
+		const { manifestPath } = await makeFixture(manifest, simpleBundleSource());
+
+		// Spy on the logger.info call so we can confirm the dispatcher
+		// audit-logs the action invocation.
+		const auditLogger = {
+			...silentLogger,
+			info: vi.fn(),
+		};
+
+		registry = createWorkflowRegistry({ logger: auditLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: auditLogger });
+
+		const runner = registry.runners[0];
+		expect(runner).toBeDefined();
+		if (!runner) {
 			return;
 		}
-		expect(result.error).toMatch(INVALID_MANIFEST_PREFIX);
-		expect(result.issues).toBeDefined();
-		expect(result.issues?.length ?? 0).toBeGreaterThan(0);
-		expect(registry.actions).toEqual([]);
-	});
 
-	it("register returns failure when manifest.json is missing", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const files = new Map([["actions.js", ACTION_SOURCE]]);
-		const result = await registry.register(files);
-		expect(result).toEqual({ ok: false, error: "missing manifest.json" });
-	});
+		// Invoke the trigger handler. The handler in the bundle calls
+		// `double(21)`. The SDK wrapper (emulated in the fixture) posts to
+		// __hostCallAction first (which validates input + logs), THEN runs
+		// the handler (which returns 42) in-sandbox, THEN validates the
+		// output schema. The host never dispatches the handler.
+		const result = await runner.invokeHandler("webhookTrigger", {
+			body: { value: 21 },
+			headers: {},
+			url: "http://host/webhooks/test",
+			method: "POST",
+			params: {},
+			query: {},
+		});
+		expect(result).toEqual({ status: 200, body: { doubled: 42 } });
 
-	it("register returns failure when action source is missing", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const files = new Map([["manifest.json", JSON.stringify(MANIFEST)]]);
-		const result = await registry.register(files);
-		expect(result.ok).toBe(false);
-		if (result.ok) {
-			return;
-		}
-		expect(result.error).toBe("missing action module: actions.js");
-		expect(result.issues).toBeUndefined();
-	});
-
-	it("remove deletes a workflow", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		await registry.register(makeFiles());
-		registry.remove("test");
-		expect(registry.actions).toEqual([]);
-	});
-
-	it("merges actions from multiple workflows", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		await registry.register(makeFiles());
-
-		const manifest2 = {
-			...MANIFEST,
-			name: "other",
-			actions: [{ ...MANIFEST.actions[0], name: "handleOther" }],
-		};
-		await registry.register(makeFiles({ manifest: manifest2 }));
-
-		expect(registry.actions).toHaveLength(2);
-	});
-
-	it("trigger override: last-write-wins", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const manifest1 = {
-			...MANIFEST,
-			name: "foo",
-			triggers: [
-				{ name: "foo.webhook", type: "http", path: "orders", params: [] },
-			],
-		};
-		const manifest2 = {
-			...MANIFEST,
-			name: "bar",
-			triggers: [
-				{ name: "bar.webhook", type: "http", path: "orders", params: [] },
-			],
-		};
-		await registry.register(makeFiles({ manifest: manifest1 }));
-		await registry.register(makeFiles({ manifest: manifest2 }));
-
-		const trigger = registry.triggerRegistry.lookup("orders", "POST");
-		expect(trigger?.name).toBe("bar.webhook");
-	});
-
-	it("replacing a workflow clears its old triggers", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		const manifest1 = {
-			...MANIFEST,
-			triggers: [
-				{ name: "webhook.a", type: "http", path: "a", params: [] },
-				{ name: "webhook.b", type: "http", path: "b", params: [] },
-			],
-		};
-		await registry.register(makeFiles({ manifest: manifest1 }));
-
-		const manifest2 = {
-			...MANIFEST,
-			triggers: [{ name: "webhook.c", type: "http", path: "c", params: [] }],
-		};
-		await registry.register(makeFiles({ manifest: manifest2 }));
-
-		expect(registry.triggerRegistry.lookup("a", "POST")).toBeNull();
-		expect(registry.triggerRegistry.lookup("b", "POST")).toBeNull();
-		expect(registry.triggerRegistry.lookup("c", "POST")).not.toBeNull();
-	});
-});
-
-describe("WorkflowRegistry with storage backend", () => {
-	let dir: string;
-	let backend: StorageBackend;
-
-	beforeEach(async () => {
-		dir = await mkdtemp(join(tmpdir(), "registry-test-"));
-		backend = createFsStorage(dir);
-		await backend.init();
-		vi.clearAllMocks();
-	});
-
-	afterEach(async () => {
-		await rm(dir, { recursive: true });
-	});
-
-	it("persists workflow to storage backend on register", async () => {
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.register(makeFiles());
-
-		const manifest = await backend.read("workflows/test/manifest.json");
-		expect(JSON.parse(manifest).name).toBe("test");
-
-		const source = await backend.read("workflows/test/actions.js");
-		expect(source).toBe(ACTION_SOURCE);
-	});
-
-	it("recover loads workflows from storage backend", async () => {
-		await backend.write(
-			"workflows/test/manifest.json",
-			JSON.stringify(MANIFEST),
+		// The dispatcher audit-logged the invocation with the validated
+		// input. Exactly one `action.invoked` entry was emitted.
+		const invokedCalls = auditLogger.info.mock.calls.filter(
+			(c) => c[0] === "action.invoked",
 		);
-		await backend.write("workflows/test/actions.js", ACTION_SOURCE);
-
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.recover();
-
-		expect(registry.actions).toHaveLength(1);
-		expect(registry.actions[0]?.name).toBe("handle");
-		expect(registry.actions[0]?.source).toBe(ACTION_SOURCE);
-		expect(logger.info).toHaveBeenCalledWith("workflow.loaded", {
-			name: "test",
+		expect(invokedCalls).toHaveLength(1);
+		expect(invokedCalls[0]?.[1]).toMatchObject({
+			workflow: "fixture",
+			action: "double",
+			input: 21,
 		});
 	});
 
-	it("recover with empty storage starts empty", async () => {
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.recover();
-		expect(registry.actions).toEqual([]);
-	});
-
-	it("recover without backend is a no-op", async () => {
-		const registry = createWorkflowRegistry({ logger });
-		await registry.recover();
-		expect(registry.actions).toEqual([]);
-	});
-
-	it("recover skips workflows with invalid manifest", async () => {
-		await backend.write("workflows/bad/manifest.json", '{"invalid": true}');
-
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.recover();
-
-		expect(registry.actions).toEqual([]);
-		expect(logger.warn).toHaveBeenCalledWith(
-			"workflow.load-failed",
-			expect.objectContaining({
-				name: "bad",
-				error: expect.stringContaining("invalid manifest"),
-			}),
-		);
-	});
-
-	it("recover skips workflows with missing action source", async () => {
-		await backend.write(
-			"workflows/broken/manifest.json",
-			JSON.stringify({ ...MANIFEST, name: "broken" }),
-		);
-
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.recover();
-
-		expect(registry.actions).toEqual([]);
-		expect(logger.warn).toHaveBeenCalledWith(
-			"workflow.load-failed",
-			expect.objectContaining({
-				name: "broken",
-				error: expect.stringContaining("missing action module"),
-			}),
-		);
-	});
-
-	it("reconstructs event schemas from JSON Schema", async () => {
-		const manifest = {
-			...MANIFEST,
-			events: [
+	it("dispatcher rejects bad input before the sandbox handler runs", async () => {
+		const manifest: FixtureManifest = {
+			name: "fixture",
+			module: "fixture.js",
+			env: {},
+			actions: [
 				{
-					name: "test.event",
-					schema: {
+					name: "double",
+					input: { type: "number" }, // handler will be called with a string
+					output: { type: "number" },
+				},
+			],
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: "test",
+					method: "POST",
+					body: {
+						// Let anything through at the trigger layer so we hit the
+						// action-input boundary, not the trigger-input boundary.
 						type: "object",
-						properties: { id: { type: "string" } },
-						required: ["id"],
 					},
+					params: [],
+					schema: { type: "object" },
 				},
 			],
 		};
-		await backend.write(
-			"workflows/schema/manifest.json",
-			JSON.stringify(manifest),
+		const { manifestPath } = await makeFixture(manifest, simpleBundleSource());
+
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
+
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("runner not loaded");
+		}
+
+		await expect(
+			runner.invokeHandler("webhookTrigger", {
+				body: { value: "not-a-number" }, // triggers double("not-a-number")
+				headers: {},
+				url: "http://host/webhooks/test",
+				method: "POST",
+				params: {},
+				query: {},
+			}),
+		).rejects.toThrow(VALIDATION_RE);
+	});
+
+	it("rejects an action call when the name isn't declared in the manifest", async () => {
+		const manifest: FixtureManifest = {
+			name: "fixture",
+			module: "fixture.js",
+			env: {},
+			actions: [], // NO double here — bundle calls it anyway.
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: "test",
+					method: "POST",
+					body: {
+						type: "object",
+						properties: { value: { type: "number" } },
+						required: ["value"],
+					},
+					params: [],
+					schema: { type: "object" },
+				},
+			],
+		};
+		const { manifestPath } = await makeFixture(manifest, simpleBundleSource());
+
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
+		const runner = registry.runners[0];
+		expect(runner).toBeDefined();
+		if (!runner) {
+			return;
+		}
+
+		await expect(
+			runner.invokeHandler("webhookTrigger", {
+				body: { value: 5 },
+				headers: {},
+				url: "",
+				method: "POST",
+				params: {},
+				query: {},
+			}),
+		).rejects.toThrow(UNBOUND_ACTION_RE);
+	});
+
+	it("dispatcher rejects __hostCallAction calls with unknown names", async () => {
+		// The fixture bundle above goes through the SDK wrapper, which binds
+		// the action's name before calling the host. To probe the dispatcher
+		// directly we use a tiny bundle whose trigger handler reaches the
+		// host bridge with a name that isn't in the manifest — the host
+		// MUST reject it.
+		const HTTP_TRIGGER_BRAND = "@workflow-engine/http-trigger";
+		const bundle = `
+const HTTP_TRIGGER_BRAND = Symbol.for(${JSON.stringify(HTTP_TRIGGER_BRAND)});
+const passThrough = { parse: (x) => x };
+export const shot = Object.freeze({
+	[HTTP_TRIGGER_BRAND]: true,
+	path: "shot",
+	method: "POST",
+	body: passThrough,
+	params: passThrough,
+	query: undefined,
+	handler: async () => {
+		await globalThis.__hostCallAction("nobody", {});
+		return { status: 200, body: "unreachable" };
+	},
+});
+`;
+		const manifest: FixtureManifest = {
+			name: "direct",
+			module: "direct.js",
+			env: {},
+			actions: [],
+			triggers: [
+				{
+					name: "shot",
+					type: "http",
+					path: "shot",
+					method: "POST",
+					body: { type: "object" },
+					params: [],
+					schema: { type: "object" },
+				},
+			],
+		};
+		const { manifestPath } = await makeFixture(manifest, bundle);
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [manifestPath], { logger: silentLogger });
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("no runner");
+		}
+		await expect(
+			runner.invokeHandler("shot", {
+				body: {},
+				headers: {},
+				url: "",
+				method: "POST",
+				params: {},
+				query: {},
+			}),
+		).rejects.toThrow(UNDECLARED_NOBODY_RE);
+	});
+
+	it("loads multiple workflows from multiple manifests", async () => {
+		const makeManifest = (name: string): FixtureManifest => ({
+			name,
+			module: `${name}.js`,
+			env: {},
+			actions: [
+				{
+					name: "double",
+					input: { type: "number" },
+					output: { type: "number" },
+				},
+			],
+			triggers: [
+				{
+					name: "webhookTrigger",
+					type: "http",
+					path: `trigger-${name}`,
+					method: "POST",
+					body: {
+						type: "object",
+						properties: { value: { type: "number" } },
+						required: ["value"],
+					},
+					params: [],
+					schema: { type: "object" },
+				},
+			],
+		});
+
+		const m1 = makeManifest("alpha");
+		const m2 = makeManifest("beta");
+
+		// Fixtures: each bundle uses a unique filename to avoid Node ESM
+		// import cache collisions.
+		const dirAlpha = await mkdtemp(join(tmpdir(), "wf-reg-alpha-"));
+		const dirBeta = await mkdtemp(join(tmpdir(), "wf-reg-beta-"));
+		const alphaPath = join(dirAlpha, "manifest.json");
+		const betaPath = join(dirBeta, "manifest.json");
+		await writeFile(alphaPath, JSON.stringify(m1), "utf8");
+		await writeFile(join(dirAlpha, "alpha.js"), simpleBundleSource(), "utf8");
+		await writeFile(betaPath, JSON.stringify(m2), "utf8");
+		await writeFile(join(dirBeta, "beta.js"), simpleBundleSource(), "utf8");
+
+		registry = createWorkflowRegistry({ logger: silentLogger });
+		await loadWorkflows(registry, [alphaPath, betaPath], {
+			logger: silentLogger,
+		});
+
+		expect(registry.runners.map((r) => r.name).sort()).toEqual([
+			"alpha",
+			"beta",
+		]);
+		expect(registry.triggerRegistry.size).toBe(2);
+	});
+
+	it("skips a broken manifest but keeps the runtime bootable", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "wf-reg-broken-"));
+		const badPath = join(dir, "manifest.json");
+		await writeFile(badPath, "not-json", "utf8");
+		const errorLogger = {
+			...silentLogger,
+			error: vi.fn(),
+		};
+
+		registry = createWorkflowRegistry({ logger: errorLogger });
+		await loadWorkflows(registry, [badPath], { logger: errorLogger });
+
+		expect(registry.runners).toHaveLength(0);
+		expect(errorLogger.error).toHaveBeenCalledWith(
+			"workflow-registry.load-failed",
+			expect.objectContaining({ manifestPath: badPath }),
 		);
-		await backend.write("workflows/schema/actions.js", ACTION_SOURCE);
-
-		const registry = createWorkflowRegistry({ backend, logger });
-		await registry.recover();
-
-		const schema = registry.events["test.event"];
-		expect(schema).toBeDefined();
-		expect(() => schema?.parse({ id: "123" })).not.toThrow();
 	});
 });

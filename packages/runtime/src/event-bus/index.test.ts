@@ -2,27 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type BusConsumer,
 	createEventBus,
-	type RuntimeEvent,
+	type InvocationLifecycleEvent,
 } from "./index.js";
 
-function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
+function makeStartedEvent(
+	overrides: Partial<InvocationLifecycleEvent> = {},
+): InvocationLifecycleEvent {
 	return {
+		kind: "started",
 		id: `evt_${crypto.randomUUID()}`,
-		type: "test.event",
-		payload: {},
-		correlationId: "corr_test",
-		createdAt: new Date(),
-		state: "pending",
-		sourceType: "trigger",
-		sourceName: "test-trigger",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date(),
+		input: {},
 		...overrides,
-	} as RuntimeEvent;
+	} as InvocationLifecycleEvent;
 }
 
 function mockConsumer(overrides?: Partial<BusConsumer>): BusConsumer {
 	return {
 		handle: overrides?.handle ?? vi.fn<BusConsumer["handle"]>(),
-		bootstrap: overrides?.bootstrap ?? vi.fn<BusConsumer["bootstrap"]>(),
 	};
 }
 
@@ -31,32 +30,54 @@ describe("createEventBus", () => {
 		it("calls handle on all consumers in registration order", async () => {
 			const order: string[] = [];
 			const a = mockConsumer({
-				async handle() {
+				handle: async () => {
 					order.push("a");
 				},
 			});
 			const b = mockConsumer({
-				async handle() {
+				handle: async () => {
 					order.push("b");
 				},
 			});
 			const c = mockConsumer({
-				async handle() {
+				handle: async () => {
 					order.push("c");
 				},
 			});
 			const bus = createEventBus([a, b, c]);
 
-			await bus.emit(makeEvent());
+			await bus.emit(makeStartedEvent());
 
 			expect(order).toEqual(["a", "b", "c"]);
+		});
+
+		it("dispatches consumers sequentially (awaits each before next)", async () => {
+			const events: string[] = [];
+			const a = mockConsumer({
+				handle: async () => {
+					events.push("a:start");
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					events.push("a:end");
+				},
+			});
+			const b = mockConsumer({
+				handle: async () => {
+					events.push("b:start");
+					events.push("b:end");
+				},
+			});
+			const bus = createEventBus([a, b]);
+
+			await bus.emit(makeStartedEvent());
+
+			expect(events).toEqual(["a:start", "a:end", "b:start", "b:end"]);
 		});
 
 		it("passes the event to each consumer", async () => {
 			const consumer = mockConsumer();
 			const bus = createEventBus([consumer]);
 
-			const event = makeEvent();
+			const event = makeStartedEvent();
 			await bus.emit(event);
 
 			expect(consumer.handle).toHaveBeenCalledWith(event);
@@ -64,82 +85,36 @@ describe("createEventBus", () => {
 
 		it("propagates consumer error and stops fan-out", async () => {
 			const a = mockConsumer({
-				async handle() {
+				handle: async () => {
 					throw new Error("consumer A failed");
 				},
 			});
 			const b = mockConsumer();
 			const bus = createEventBus([a, b]);
 
-			await expect(bus.emit(makeEvent())).rejects.toThrow("consumer A failed");
+			await expect(bus.emit(makeStartedEvent())).rejects.toThrow(
+				"consumer A failed",
+			);
 			expect(b.handle).not.toHaveBeenCalled();
 		});
 
-		it("works with empty consumer list", async () => {
-			const bus = createEventBus([]);
-			await expect(bus.emit(makeEvent())).resolves.toBeUndefined();
-		});
-	});
-
-	describe("bootstrap", () => {
-		it("calls bootstrap on all consumers in registration order", async () => {
-			const order: string[] = [];
-			const a = mockConsumer({
-				async bootstrap() {
-					order.push("a");
+		it("awaits all consumers before resolving", async () => {
+			let lastResolved = false;
+			const slow = mockConsumer({
+				handle: async () => {
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					lastResolved = true;
 				},
 			});
-			const b = mockConsumer({
-				async bootstrap() {
-					order.push("b");
-				},
-			});
-			const bus = createEventBus([a, b]);
+			const bus = createEventBus([slow]);
 
-			await bus.bootstrap([makeEvent()]);
-
-			expect(order).toEqual(["a", "b"]);
-		});
-
-		it("passes events and options to each consumer", async () => {
-			const consumer = mockConsumer();
-			const bus = createEventBus([consumer]);
-
-			const events = [makeEvent()];
-			await bus.bootstrap(events, { pending: true });
-
-			expect(consumer.bootstrap).toHaveBeenCalledWith(events, {
-				pending: true,
-			});
-		});
-
-		it("passes pending flag through", async () => {
-			const consumer = mockConsumer();
-			const bus = createEventBus([consumer]);
-
-			await bus.bootstrap([], { pending: false });
-
-			expect(consumer.bootstrap).toHaveBeenCalledWith([], { pending: false });
-		});
-
-		it("propagates consumer error and stops fan-out", async () => {
-			const a = mockConsumer({
-				async bootstrap() {
-					throw new Error("bootstrap failed");
-				},
-			});
-			const b = mockConsumer();
-			const bus = createEventBus([a, b]);
-
-			await expect(bus.bootstrap([makeEvent()])).rejects.toThrow(
-				"bootstrap failed",
-			);
-			expect(b.bootstrap).not.toHaveBeenCalled();
+			await bus.emit(makeStartedEvent());
+			expect(lastResolved).toBe(true);
 		});
 
 		it("works with empty consumer list", async () => {
 			const bus = createEventBus([]);
-			await expect(bus.bootstrap([makeEvent()])).resolves.toBeUndefined();
+			await expect(bus.emit(makeStartedEvent())).resolves.toBeUndefined();
 		});
 	});
 });

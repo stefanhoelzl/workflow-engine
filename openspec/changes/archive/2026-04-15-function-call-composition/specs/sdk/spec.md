@@ -1,0 +1,150 @@
+## ADDED Requirements
+
+### Requirement: Brand symbols identify SDK products
+
+The SDK SHALL export three brand symbols used to identify objects produced by its factories:
+- `ACTION_BRAND = Symbol.for("@workflow-engine/action")`
+- `HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger")`
+- `WORKFLOW_BRAND = Symbol.for("@workflow-engine/workflow")`
+
+The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `isWorkflow(value)` that check for the corresponding brand symbol.
+
+#### Scenario: Brand on each factory return value
+
+- **WHEN** `action(...)`, `httpTrigger(...)`, or `defineWorkflow(...)` is called
+- **THEN** the returned value SHALL have the corresponding brand symbol set to `true`
+
+#### Scenario: Type guard recognizes branded value
+
+- **GIVEN** a value `v` returned from `action({...})`
+- **WHEN** `isAction(v)` is called
+- **THEN** the function SHALL return `true`
+
+#### Scenario: Type guard rejects unrelated value
+
+- **GIVEN** a plain function `() => 1`
+- **WHEN** `isAction(value)` is called
+- **THEN** the function SHALL return `false`
+
+### Requirement: defineWorkflow factory
+
+The SDK SHALL export `defineWorkflow(config)` returning a `Workflow` object branded with `WORKFLOW_BRAND`. The config SHALL accept optional `name?: string` and optional `env?: Record<string, string | EnvRef>`. When `name` is omitted, the build system SHALL derive the workflow name from the file's filestem. The returned `Workflow.env` SHALL be a `Readonly<Record<string, string>>` with `EnvRef`s resolved at build time.
+
+#### Scenario: Workflow defined with explicit name and env
+
+- **WHEN** `defineWorkflow({ name: "cronitor", env: { URL: env({ default: "https://x" }) } })` is called
+- **THEN** the returned object SHALL have `name: "cronitor"`
+- **AND** SHALL have `env.URL: "https://x"`
+- **AND** SHALL be branded with `WORKFLOW_BRAND`
+
+#### Scenario: Workflow defined with no config
+
+- **WHEN** `defineWorkflow()` is called
+- **THEN** the returned object SHALL be branded with `WORKFLOW_BRAND`
+- **AND** SHALL have `name: undefined` (build system fills in filestem)
+- **AND** SHALL have `env: {}`
+
+#### Scenario: Multiple defineWorkflow calls in one file
+
+- **GIVEN** a workflow file with two `defineWorkflow(...)` exports
+- **WHEN** the build system processes the file
+- **THEN** the build system SHALL fail with an error indicating "at most one defineWorkflow per file"
+
+### Requirement: action factory returns typed callable
+
+The SDK SHALL export `action({ input, output, handler })` returning an `Action<I, O>` object that is BOTH branded with `ACTION_BRAND` AND callable as `(input: I) => Promise<O>`. The returned callable's body SHALL invoke the action via the host bridge (`__hostCallAction(name, input)`), where `name` is filled in by the build system based on the export name.
+
+The config SHALL require:
+- `input`: `z.ZodType<I>` — Zod schema validating action input
+- `output`: `z.ZodType<O>` — Zod schema validating action output
+- `handler`: `(input: I) => Promise<O>` — async handler function
+
+#### Scenario: Action handle is callable and branded
+
+- **GIVEN** `const send = action({ input, output, handler })`
+- **WHEN** the value is inspected
+- **THEN** `send` SHALL be a function (callable)
+- **AND** `send[ACTION_BRAND]` SHALL be `true`
+- **AND** `send.input`, `send.output`, `send.handler` SHALL be exposed
+
+#### Scenario: TypeScript infers input/output from schemas
+
+- **GIVEN** `const a = action({ input: z.object({ x: z.number() }), output: z.string(), handler: ... })`
+- **WHEN** `await a({ x: 1 })` is called
+- **THEN** TypeScript SHALL accept the call and infer the result as `Promise<string>`
+- **AND** `await a({ x: "wrong" })` SHALL be a TypeScript compile-time error
+
+### Requirement: One workflow per file
+
+A workflow file SHALL declare at most one workflow. The vite-plugin SHALL identify the workflow's actions and triggers by walking the file's exports and matching brand symbols on the export values. Action and trigger identity SHALL equal the export name in the workflow file.
+
+#### Scenario: Action identity is export name
+
+- **GIVEN** `export const sendNotification = action({...})` in workflow file `cronitor.ts`
+- **WHEN** the build system walks exports
+- **THEN** the discovered action SHALL have `name: "sendNotification"`
+
+#### Scenario: Renamed export updates identity
+
+- **GIVEN** an exported action renamed from `sendNotification` to `notify`
+- **WHEN** the build system walks exports
+- **THEN** the discovered action SHALL have `name: "notify"`
+- **AND** any code calling `await sendNotification(...)` SHALL be a TypeScript compile-time error
+
+### Requirement: env() helper for environment references
+
+The SDK SHALL export `env(opts?)` returning an `EnvRef` placeholder used in `defineWorkflow({ env })`. The opts SHALL accept optional `name?: string` (the env var name; defaults to the key it's assigned to) and optional `default?: string` (used when the env var is not set).
+
+#### Scenario: env() defaults to key as name
+
+- **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
+- **WHEN** the build resolves env
+- **THEN** the runtime SHALL read `process.env.API_KEY`
+
+#### Scenario: env() with explicit name
+
+- **GIVEN** `defineWorkflow({ env: { url: env({ name: "MY_URL" }) } })`
+- **WHEN** the build resolves env
+- **THEN** the runtime SHALL read `process.env.MY_URL` and assign it to `workflow.env.url`
+
+#### Scenario: env() with default
+
+- **GIVEN** `defineWorkflow({ env: { URL: env({ default: "https://x" }) } })`
+- **WHEN** `process.env.URL` is unset
+- **THEN** `workflow.env.URL` SHALL be `"https://x"`
+
+#### Scenario: Missing env without default fails build
+
+- **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
+- **WHEN** `process.env.API_KEY` is unset and no default is provided
+- **THEN** the build SHALL fail with `"Missing environment variable: API_KEY"`
+
+### Requirement: Zod re-export
+
+The SDK SHALL re-export the `z` namespace from Zod v4 for workflow authors. The SDK SHALL depend on `zod@^4.0.0`.
+
+#### Scenario: Workflow author imports z from SDK
+
+- **GIVEN** a workflow file that imports `z` from `@workflow-engine/sdk`
+- **WHEN** the author uses `z.object(...)`, `z.string(...)`, etc.
+- **THEN** these SHALL be Zod v4 functions
+
+## REMOVED Requirements
+
+### Requirement: createWorkflow requires a name argument
+
+**Reason**: `createWorkflow(name).event(...).action(...)` builder API is replaced by the declarative `defineWorkflow({ name? })` + branded `action(...)` + branded `httpTrigger(...)` exports. The phased builder existed to enforce event-then-action ordering at the type level; events are removed in v1, so the phasing is unnecessary.
+
+**Migration**: Replace `const w = createWorkflow("name");` with `export const workflow = defineWorkflow({ name: "name" });`. The `name` is optional in the new API and defaults to the file's filestem.
+
+### Requirement: ActionContext type in SDK
+
+**Reason**: With events and `emit` removed, the only thing `ctx` carried was env. Env is now exposed via the module-scoped `workflow.env` object referenced from inside handlers. Handlers receive only `(input)` (action) or `(payload)` (trigger handler). No `ctx` parameter exists.
+
+**Migration**: Replace `handler: async (ctx) => { use ctx.event.payload, ctx.env.X, ctx.emit(...) }` with `handler: async (input) => { use input directly, workflow.env.X, await otherAction(...) }`. Trigger handlers receive `payload` directly and return their HTTP response shape.
+
+### Requirement: Zod-based event definitions
+
+**Reason**: The event primitive is removed in v1. There are no longer any user-defined event types or schemas. Action input/output are typed by Zod schemas declared on each `action({ input, output })` instead.
+
+**Migration**: For each event used to ferry data between actions, inline the data flow as a typed function call. For example, `.event("notify.message", schema).action({on: "notify.message", handler})` becomes `const notify = action({ input: schema, output: z.void(), handler });` plus `await notify(input)` at the call site.

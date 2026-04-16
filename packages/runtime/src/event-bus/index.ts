@@ -1,100 +1,85 @@
-import { z } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/sdk";
 
-// Each sandbox bridge call (console.*, fetch/xhr.send, crypto.*, emit,
-// timers) produces one of these entries. Populated on action events when the
-// scheduler transitions them to `done`, so the timeline UI can show what the
-// action did while it ran.
-const LogEntrySchema = z.object({
-	method: z.string(),
-	args: z.array(z.unknown()),
-	status: z.enum(["ok", "failed"]),
-	result: z.unknown().optional(),
-	error: z.string().optional(),
-	ts: z.number(),
-	durationMs: z.number().optional(),
-});
+// ---------------------------------------------------------------------------
+// Invocation lifecycle events
+// ---------------------------------------------------------------------------
+//
+// The bus carries a single discriminated union of lifecycle events — one
+// member per transition (started / completed / failed). These events are the
+// only thing that flows through the bus in v1; RuntimeEvent (the v0 append-
+// only state-transition record) is gone.
 
-const baseFields = {
-	id: z.string(),
-	type: z.string(),
-	payload: z.unknown(),
-	targetAction: z.exactOptional(z.string()),
-	correlationId: z.string(),
-	parentEventId: z.exactOptional(z.string()),
-	logs: z.array(LogEntrySchema).optional(),
-	createdAt: z.coerce.date(),
-	sourceType: z.enum(["trigger", "action"]),
-	sourceName: z.string(),
-	emittedAt: z.coerce.date(),
-	startedAt: z.coerce.date().optional(),
-	doneAt: z.coerce.date().optional(),
-};
+interface SerializedErrorPayload {
+	// Normal handler failures carry { message, stack } (plus optional structured
+	// extras like Zod `issues`); recovery sweeps produce { kind: "engine_crashed" }
+	// for pending invocations left behind by a prior process death. The union
+	// stays open to admit future error shapes without widening the type.
+	readonly kind?: string;
+	readonly message?: string;
+	readonly stack?: string;
+	readonly issues?: unknown;
+	readonly [extra: string]: unknown;
+}
 
-const ActiveEventSchema = z.object({
-	...baseFields,
-	state: z.enum(["pending", "processing"]),
-});
+interface StartedEvent {
+	readonly kind: "started";
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly ts: Date;
+	readonly input: unknown;
+}
 
-const SucceededEventSchema = z.object({
-	...baseFields,
-	state: z.literal("done"),
-	result: z.literal("succeeded"),
-});
+interface CompletedEvent {
+	readonly kind: "completed";
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly ts: Date;
+	readonly result: HttpTriggerResult;
+}
 
-const SkippedEventSchema = z.object({
-	...baseFields,
-	state: z.literal("done"),
-	result: z.literal("skipped"),
-});
+interface FailedEvent {
+	readonly kind: "failed";
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly ts: Date;
+	readonly error: SerializedErrorPayload;
+}
 
-const FailedEventSchema = z.object({
-	...baseFields,
-	state: z.literal("done"),
-	result: z.literal("failed"),
-	error: z.unknown(),
-});
+type InvocationLifecycleEvent = StartedEvent | CompletedEvent | FailedEvent;
 
-const RuntimeEventSchema = z.union([
-	ActiveEventSchema,
-	SucceededEventSchema,
-	SkippedEventSchema,
-	FailedEventSchema,
-]);
-
-type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
+// ---------------------------------------------------------------------------
+// Bus + consumer interfaces
+// ---------------------------------------------------------------------------
 
 interface BusConsumer {
-	handle(event: RuntimeEvent): Promise<void>;
-	bootstrap(
-		events: RuntimeEvent[],
-		options?: { pending?: boolean; finished?: boolean; total?: number },
-	): Promise<void>;
+	handle(event: InvocationLifecycleEvent): Promise<void>;
 }
 
 interface EventBus {
-	emit(event: RuntimeEvent): Promise<void>;
-	bootstrap(
-		events: RuntimeEvent[],
-		options?: { pending?: boolean; finished?: boolean; total?: number },
-	): Promise<void>;
+	emit(event: InvocationLifecycleEvent): Promise<void>;
 }
 
 function createEventBus(consumers: BusConsumer[]): EventBus {
 	return {
 		async emit(event) {
 			for (const consumer of consumers) {
-				// biome-ignore lint/performance/noAwaitInLoops: sequential fan-out by design — consumers must execute in order
+				// biome-ignore lint/performance/noAwaitInLoops: sequential fan-out by design — persistence must commit before observers see the event
 				await consumer.handle(event);
-			}
-		},
-		async bootstrap(events, options) {
-			for (const consumer of consumers) {
-				// biome-ignore lint/performance/noAwaitInLoops: sequential fan-out by design — consumers must execute in order
-				await consumer.bootstrap(events, options);
 			}
 		},
 	};
 }
 
-export type { BusConsumer, EventBus, RuntimeEvent };
-export { createEventBus, RuntimeEventSchema };
+export type {
+	BusConsumer,
+	CompletedEvent,
+	EventBus,
+	FailedEvent,
+	InvocationLifecycleEvent,
+	SerializedErrorPayload,
+	StartedEvent,
+};
+export { createEventBus };

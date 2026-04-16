@@ -2,84 +2,83 @@
 
 ## Purpose
 
-Define the contract for user-provided action handlers: plain TypeScript functions that receive typed event data and may emit new events, bundled into standalone JavaScript files at build time.
+Define the contract for user-provided action handlers: typed callable functions with input/output schemas that compose via direct function calls within a workflow's sandbox.
 
 ## Requirements
 
-### Requirement: Typed context
+### Requirement: Action is a typed callable with input/output schemas
 
-Actions SHALL receive an `ActionContext` providing typed `ctx.event.payload`, typed `ctx.emit()`, and typed `ctx.env`. The `emit()` method SHALL only accept event names listed in the action's `emits` declaration at compile-time. When `emits` is omitted, `ctx.emit()` SHALL accept `never`. The `ctx.env` property SHALL be typed as `Readonly<Record<DeclaredKeys, string>>` based on the action's `env` declaration. When `env` is omitted, `ctx.env` SHALL be `Readonly<{}>`.
+An action SHALL be a typed callable function created via `action({ input, output, handler })`. The action SHALL have required Zod schemas for `input` and `output`. The action SHALL be invocable as `await myAction(input)` from any other action's handler or any trigger handler within the same workflow.
 
-#### Scenario: Type-safe emit restricted to emits
+#### Scenario: Action callable from another action
 
-- **GIVEN** a workflow with events `"order.parsed"` and `"order.received"`, and an action with `emits: ["order.parsed"]`
-- **WHEN** the action calls `ctx.emit("order.parsed", { orderId: "123", total: 42 })`
-- **THEN** TypeScript verifies the payload matches the event's Zod schema type
-- **AND** calling `ctx.emit("order.received", ...)` is a compile-time error (not in `emits`)
-- **AND** calling `ctx.emit("order.typo", ...)` is a compile-time error (not a defined event)
-- **AND** calling `ctx.emit()` with a wrong payload type is a compile-time error
+- **GIVEN** `const a = action({ input: z.object({ x: z.number() }), output: z.string(), handler: async ({ x }) => String(x) })`
+- **AND** another action `b` whose handler calls `await a({ x: 42 })`
+- **WHEN** `b` is invoked
+- **THEN** `a` SHALL be invoked via the host bridge with the validated input
+- **AND** `a`'s return value SHALL be returned to `b`'s handler
 
-#### Scenario: No emits means emit accepts never
+#### Scenario: Action callable from trigger handler
 
-- **GIVEN** an action without an `emits` declaration
-- **WHEN** the handler calls `ctx.emit("order.parsed", { total: 1 })`
-- **THEN** TypeScript raises a compile-time error because `ctx.emit` accepts `never`
+- **GIVEN** an action `a` and a trigger handler that calls `await a(input)`
+- **WHEN** the trigger fires
+- **THEN** the trigger handler SHALL receive `a`'s return value
 
-#### Scenario: Type-safe env access
+### Requirement: Action input validated at bridge boundary
 
-- **GIVEN** an action with `env: ["API_KEY"]`
-- **WHEN** the handler accesses `ctx.env.API_KEY`
-- **THEN** TypeScript accepts the access with type `string`
-- **AND** accessing `ctx.env.SECRET` is a compile-time error
-- **AND** assigning `ctx.env.API_KEY = "x"` is a compile-time error (`Readonly`)
+The runtime SHALL validate action input against the declared input Zod schema each time the action is called. Validation failures SHALL throw a validation error inside the calling handler.
 
-### Requirement: No side effects at module scope
+#### Scenario: Valid input passes validation
 
-Actions SHOULD NOT perform side effects at module scope. The runtime loads the module to obtain the handler function; module-scope code runs inside the isolate on every invocation.
+- **GIVEN** an action with `input: z.object({ x: z.number() })`
+- **WHEN** invoked with `{ x: 42 }`
+- **THEN** the handler SHALL receive the validated input
 
-#### Scenario: Module-scope code
+#### Scenario: Invalid input throws
 
-- GIVEN an action with `console.log('loaded')` at module scope
-- WHEN the action is invoked
-- THEN the log statement executes inside the isolate (no effect on host)
-- AND it runs on every invocation (fresh isolate each time)
+- **GIVEN** an action with `input: z.object({ x: z.number() })`
+- **WHEN** invoked with `{ x: "not a number" }`
+- **THEN** the bridge SHALL throw a validation error into the calling handler
+- **AND** the action's `handler` function SHALL NOT execute
 
-### Requirement: Action type
+### Requirement: Action output validated at bridge boundary
 
-An `Action` SHALL be a plain object with the following properties:
-- `name`: string — unique identifier for the action, derived from the `.action(name, config)` builder call
-- `on`: string — the event type this action subscribes to, derived from the action's `on` field in the builder
-- `handler`: `(ctx: ActionContext) => Promise<void>` — async function that processes the event via the context object
+The runtime SHALL validate the action handler's return value against the declared output Zod schema before returning to the caller. Output validation failures SHALL surface as a thrown error inside the calling handler.
 
-#### Scenario: Define an action
+#### Scenario: Valid output passes validation
 
-- **GIVEN** a builder chain with `.action("parseOrder", { on: "order.received", handler: async (ctx) => { ... } })`
-- **WHEN** the runtime extracts actions from the config produced by `.build()`
-- **THEN** the action has `name: "parseOrder"`, `on: "order.received"`, and a `handler` function
+- **GIVEN** an action with `output: z.string()` whose handler returns `"hello"`
+- **WHEN** invoked
+- **THEN** the caller SHALL receive `"hello"`
 
-#### Scenario: Action does not have a match predicate
+#### Scenario: Invalid output throws
 
-- **GIVEN** an action object extracted from a workflow config
-- **WHEN** the action's properties are inspected
-- **THEN** the action has `name`, `on`, and `handler` properties
-- **AND** the action does NOT have a `match` property
+- **GIVEN** an action with `output: z.string()` whose handler returns `42`
+- **WHEN** invoked
+- **THEN** the bridge SHALL throw a validation error into the calling handler
 
-### Requirement: Action handler receives ActionContext
+### Requirement: Action identity is the export name
 
-The action handler SHALL receive an `ActionContext` object providing access to the source event and an `emit()` method for creating downstream events.
+The action's `name` SHALL be the export name from the workflow file. The build system SHALL discover actions by walking workflow file exports and matching `ACTION_BRAND`.
 
-#### Scenario: Handler invocation
+#### Scenario: Export name becomes action name
 
-- **GIVEN** a registered action with handler `parseOrderFn`
-- **WHEN** the scheduler matches an event to this action
-- **THEN** the handler is called with an `ActionContext`
-- **AND** `ctx.event` provides the full source event object
-- **AND** `ctx.emit(type, payload)` enqueues a new event that goes through the dispatch pipeline
+- **GIVEN** `export const sendNotification = action({...})` in a workflow file
+- **WHEN** the workflow is built
+- **THEN** the manifest SHALL contain an action entry with `name: "sendNotification"`
 
-#### Scenario: Handler emits downstream event
+### Requirement: Action handler receives only input
 
-- **GIVEN** an action handler that calls `ctx.emit("order.validated", { valid: true })`
+Action handlers SHALL be invoked as `handler(input)` with a single argument. Handlers SHALL NOT receive a `ctx` parameter. Workflow-level env SHALL be accessed via the module-scoped `workflow.env` object imported at file scope.
+
+#### Scenario: Handler signature is single-argument
+
+- **GIVEN** an action declared with `handler: async (input) => { ... }`
+- **WHEN** the runtime invokes the action
+- **THEN** exactly one argument (the validated input) SHALL be passed
+
+#### Scenario: Env access via module-scoped workflow
+
+- **GIVEN** a handler accessing `workflow.env.NEXTCLOUD_URL`
 - **WHEN** the handler executes
-- **THEN** a new event with `type: "order.validated"` is enqueued
-- **AND** the new event has `targetAction: undefined` (enters dispatch)
-- **AND** the new event inherits `correlationId` from the source event
+- **THEN** `workflow.env.NEXTCLOUD_URL` SHALL contain the resolved env value declared on `defineWorkflow({ env })`
