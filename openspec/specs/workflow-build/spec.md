@@ -7,7 +7,11 @@ Each workflow SHALL be a single TypeScript file in the `workflows/` directory th
 - **AND** it SHALL import `defineWorkflow`, `action`, `httpTrigger`, and `z` from `@workflow-engine/sdk`
 
 ### Requirement: Vite plugin builds workflows into manifest and bundle
-A `workflows/vite.config.ts` SHALL use the `@workflow-engine/vite-plugin` with an explicit list of workflow source files. The plugin SHALL produce a subdirectory per workflow in `workflows/dist/` containing `manifest.json` and the per-workflow bundle.
+`workflows/vite.config.ts` (if used) SHALL import the plugin from `@workflow-engine/sdk/plugin` instead of `@workflow-engine/vite-plugin`. Plugin produces subdirectory per workflow in `workflows/dist/` containing `manifest.json` and per-workflow bundle. Bundle does NOT contain SDK or Zod imports. Node built-ins remain as external imports.
+
+#### Scenario: Plugin import path in vite config
+- **WHEN** a vite config imports the workflow plugin
+- **THEN** it uses `import { workflowPlugin } from "@workflow-engine/sdk/plugin"`
 
 #### Scenario: Build produces directory per workflow
 - **WHEN** `pnpm --filter workflows build` is run
@@ -23,11 +27,16 @@ A `workflows/vite.config.ts` SHALL use the `@workflow-engine/vite-plugin` with a
 - **THEN** Node.js built-in modules SHALL remain as external imports
 
 ### Requirement: Workflows directory is a pnpm workspace member
-The `workflows/` directory SHALL have a `package.json` declaring `@workflow-engine/sdk` and `@workflow-engine/vite-plugin` as workspace dependencies and SHALL be listed in `pnpm-workspace.yaml`.
+The `workflows/` directory SHALL have a `package.json` declaring only `@workflow-engine/sdk` as a workspace dependency and SHALL be listed in `pnpm-workspace.yaml`. The separate `@workflow-engine/cli` dependency is no longer needed.
+
+#### Scenario: workflows/package.json dependencies
+- **WHEN** inspecting `workflows/package.json`
+- **THEN** it lists `@workflow-engine/sdk` as a dependency
+- **THEN** it does NOT list `@workflow-engine/cli` or `@workflow-engine/vite-plugin`
 
 #### Scenario: Plugin dependency resolution
 - **WHEN** `pnpm install` is run at the repository root
-- **THEN** both `@workflow-engine/sdk` and `@workflow-engine/vite-plugin` SHALL be resolved as workspace links for the workflows directory
+- **THEN** `@workflow-engine/sdk` SHALL be resolved as a workspace link for the workflows directory
 
 ### Requirement: Root build includes workflows
 The root `pnpm build` script SHALL build both the runtime and the workflows.
@@ -36,13 +45,6 @@ The root `pnpm build` script SHALL build both the runtime and the workflows.
 - **WHEN** `pnpm build` is run from the repository root
 - **THEN** `dist/main.js` (runtime) SHALL be produced
 - **AND** `workflows/dist/*/manifest.json` and `workflows/dist/*/*.js` (workflow artifacts) SHALL be produced
-
-### Requirement: Vite plugin package
-A new `packages/vite-plugin` package SHALL exist as a pnpm workspace member, exporting the workflow compilation Vite plugin.
-
-#### Scenario: Plugin package structure
-- **WHEN** a consumer imports from `@workflow-engine/vite-plugin`
-- **THEN** it SHALL receive the `workflowPlugin` function for use in Vite config
 
 ### Requirement: Per-workflow bundle output
 
