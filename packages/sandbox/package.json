@@ -6,6 +6,9 @@
 	"exports": {
 		".": "./src/index.ts"
 	},
+	"scripts": {
+		"build": "tsc --build"
+	},
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",
 		"quickjs-wasi": "^2.2.0"
