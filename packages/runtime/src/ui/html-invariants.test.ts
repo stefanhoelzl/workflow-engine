@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowRunner } from "../executor/types.js";
 import type { HttpTriggerEntry } from "../triggers/http.js";
-import { renderDashboardPage } from "./dashboard/page.js";
+import {
+	type InvocationRow,
+	renderDashboardPage,
+	renderInvocationList,
+} from "./dashboard/page.js";
 import { renderTriggerPage } from "./trigger/page.js";
 
 // ---------------------------------------------------------------------------
@@ -56,28 +60,50 @@ function makeTriggerEntry(): HttpTriggerEntry {
 	};
 }
 
+const sampleRows: readonly InvocationRow[] = [
+	{
+		id: "evt_1",
+		workflow: "w",
+		trigger: "t",
+		status: "succeeded",
+		startedAt: "2026-01-01T00:00:00Z",
+		completedAt: "2026-01-01T00:00:01Z",
+	},
+	{
+		id: "evt_2",
+		workflow: "w",
+		trigger: "t",
+		status: "pending",
+		startedAt: "2026-01-01T00:00:00Z",
+		completedAt: null,
+	},
+];
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("HTML CSP invariants", () => {
-	it("renderDashboardPage output has no forbidden inline patterns", async () => {
+	it("renderDashboardPage (shell) output has no forbidden inline patterns", async () => {
 		const html = (
-			await renderDashboardPage(
-				[
-					{
-						id: "evt_1",
-						workflow: "w",
-						trigger: "t",
-						status: "succeeded",
-						startedAt: "2026-01-01T00:00:00Z",
-						completedAt: "2026-01-01T00:00:01Z",
-					},
-				],
-				"user",
-				"user@example.com",
-			)
+			await renderDashboardPage("user", "user@example.com")
 		).toString();
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+	});
+
+	it("renderInvocationList (fragment) output has no forbidden inline patterns", async () => {
+		const html = (await renderInvocationList(sampleRows)).toString();
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+	});
+
+	it("renderInvocationList (empty) output has no forbidden inline patterns", async () => {
+		const html = (await renderInvocationList([])).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);
 		expect(html).not.toMatch(EVENT_HANDLER_RE);
 		expect(html).not.toMatch(INLINE_STYLE_RE);
