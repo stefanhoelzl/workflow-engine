@@ -6,7 +6,10 @@
 !.npmrc
 !tsconfig.base.json
 !packages/runtime/
+!packages/sandbox/
 !packages/sdk/
 packages/runtime/node_modules
 packages/runtime/dist
+packages/sandbox/node_modules
+packages/sandbox/dist
 packages/sdk/node_modules

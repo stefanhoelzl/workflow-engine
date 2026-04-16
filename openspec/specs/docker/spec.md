@@ -24,11 +24,17 @@ The image SHALL be built by `podman build` via the `image/local` OpenTofu module
 - **THEN** `/workflows` SHALL contain the compiled workflow JavaScript bundles
 - **AND** the `WORKFLOW_DIR` environment variable SHALL be set to `/workflows`
 
-### Requirement: Production image runs as non-root
+### Requirement: Dockerfile USER directive
 
-The production stage SHALL use the distroless `nonroot` user (UID 65532) to run the Node.js process.
+The Dockerfile SHALL use `USER 65532` (numeric UID) instead of `USER nonroot`. This is the same UID (distroless "nonroot" user) but in numeric form, which PodSecurity admission can validate statically without inspecting the image's `/etc/passwd`.
 
-#### Scenario: Process runs as non-root
+#### Scenario: Numeric UID in Dockerfile
 
-- **WHEN** the container is running
-- **THEN** the Node.js process SHALL be running as UID 65532
+- **WHEN** the Dockerfile is inspected
+- **THEN** the `USER` directive SHALL be `65532`
+
+#### Scenario: Container runs as non-root
+
+- **WHEN** the container starts
+- **THEN** the process SHALL run as UID 65532
+- **AND** the behavior SHALL be identical to the previous `USER nonroot` directive
