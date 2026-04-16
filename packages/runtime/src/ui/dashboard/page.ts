@@ -3,6 +3,7 @@ import { renderLayout } from "../layout.js";
 
 const MS_PER_SECOND = 1000;
 const SECOND_FRACTION_DIGITS = 2;
+const SKELETON_CARD_COUNT = 3;
 
 interface InvocationRow {
 	readonly id: string;
@@ -43,46 +44,48 @@ function formatDuration(
 	return `${(ms / MS_PER_SECOND).toFixed(SECOND_FRACTION_DIGITS)}s`;
 }
 
-function renderRow(row: InvocationRow) {
-	const statusClass = `status-${row.status}`;
-	return html`<tr class="invocation-row">
-    <td class="invocation-workflow">${row.workflow}</td>
-    <td class="invocation-trigger">${row.trigger}</td>
-    <td class="invocation-status"><span class="${statusClass}">${row.status}</span></td>
-    <td class="invocation-started">${formatTimestamp(row.startedAt)}</td>
-    <td class="invocation-duration">${formatDuration(row.startedAt, row.completedAt)}</td>
-  </tr>`;
+function renderCard(row: InvocationRow) {
+	return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
+    <div class="entry-header">
+      <span class="entry-workflow">${row.workflow}</span>
+      <span class="entry-trigger">${row.trigger}</span>
+      <span class="badge ${row.status}">${row.status}</span>
+    </div>
+    <div class="entry-meta">
+      <span class="entry-started">${formatTimestamp(row.startedAt)}</span>
+      <span class="entry-sep">·</span>
+      <span class="entry-duration">${formatDuration(row.startedAt, row.completedAt)}</span>
+    </div>
+  </div>`;
 }
 
-function renderDashboardPage(
-	invocations: readonly InvocationRow[],
-	user: string,
-	email: string,
-) {
+function renderInvocationList(invocations: readonly InvocationRow[]) {
+	if (invocations.length === 0) {
+		return html`<div class="empty-state">No invocations yet</div>`;
+	}
+	return html`${invocations.map(renderCard)}`;
+}
+
+function renderSkeletonCards() {
+	const placeholders = Array.from({ length: SKELETON_CARD_COUNT });
+	return html`${placeholders.map(
+		() => html`<div class="entry skeleton" aria-hidden="true"></div>`,
+	)}`;
+}
+
+function renderDashboardPage(user: string, email: string) {
 	const content = html`
   <div class="page-header">
     <h1>Dashboard</h1>
   </div>
 
-  <div class="dashboard-content">
-    ${
-			invocations.length > 0
-				? html`<table class="invocations-table">
-        <thead>
-          <tr>
-            <th>Workflow</th>
-            <th>Trigger</th>
-            <th>Status</th>
-            <th>Started</th>
-            <th>Duration</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${invocations.map(renderRow)}
-        </tbody>
-      </table>`
-				: html`<div class="empty-state">No invocations yet</div>`
-		}
+  <div class="list">
+    <div id="invocation-list"
+         hx-get="/dashboard/invocations"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      ${renderSkeletonCards()}
+    </div>
   </div>`;
 
 	return renderLayout(
@@ -92,4 +95,4 @@ function renderDashboardPage(
 }
 
 export type { InvocationRow };
-export { renderDashboardPage };
+export { renderDashboardPage, renderInvocationList };

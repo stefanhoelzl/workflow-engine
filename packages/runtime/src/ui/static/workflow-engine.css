@@ -342,8 +342,6 @@ body {
 	display: flex;
 	align-items: center;
 	gap: 12px;
-	cursor: pointer;
-	user-select: none;
 }
 
 .chevron {
@@ -370,7 +368,7 @@ body {
 	animation: pulse 2s ease-in-out infinite;
 }
 
-.state-dot.done {
+.state-dot.succeeded {
 	background: var(--green);
 	box-shadow: 0 0 0 3px var(--green-border);
 }
@@ -405,7 +403,7 @@ body {
 	color: var(--yellow);
 	border: 1px solid var(--yellow-border);
 }
-.badge.done {
+.badge.succeeded {
 	background: var(--green-bg);
 	color: var(--green);
 	border: 1px solid var(--green-border);
@@ -687,18 +685,76 @@ body {
 	flex: 1;
 }
 
+.entry-workflow {
+	font-weight: 600;
+	font-size: 14px;
+	color: var(--text);
+}
+
+.entry-trigger {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	color: var(--text-secondary);
+}
+
+.entry-header .badge {
+	margin-left: auto;
+}
+
 .entry-meta {
+	padding: 4px 16px 14px 16px;
 	display: flex;
-	gap: 16px;
+	gap: 10px;
 	font-size: 12px;
 	color: var(--text-muted);
 	align-items: center;
 }
 
-.entry-meta span {
-	display: flex;
-	align-items: center;
-	gap: 4px;
+.entry-started,
+.entry-duration {
+	font-family: var(--font-mono);
+}
+
+.entry-sep {
+	color: var(--text-muted);
+}
+
+/* Skeleton placeholder */
+.entry.skeleton {
+	height: 68px;
+	position: relative;
+	overflow: hidden;
+	background: var(--bg-elevated);
+}
+
+.entry.skeleton::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		var(--bg-surface) 50%,
+		transparent 100%
+	);
+	animation: entry-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes entry-skeleton-shimmer {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(100%);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.entry.skeleton::after {
+		animation: none;
+		background: var(--bg-surface);
+		opacity: 0.5;
+	}
 }
 
 .timeline-container {

@@ -1,10 +1,4 @@
-# Dashboard List View Specification
-
-## Purpose
-
-Provide a simple invocation list view for the dashboard, showing recent trigger invocations with their status and duration.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Dashboard lists invocations
 
@@ -41,6 +35,8 @@ The dashboard SHALL render invocations from the EventStore, ordered by `startedA
 - **WHEN** the invocation list is rendered
 - **THEN** the response SHALL contain user-visible text indicating the absence of invocations
 
+## ADDED Requirements
+
 ### Requirement: Deferred list loading
 
 The dashboard SHALL render a user-visible loading state before invocation data is available, and SHALL serve invocation data from an endpoint distinct from the page shell. The loading state SHALL be replaced by the invocation list (or the empty-state message) once data is received.
@@ -69,12 +65,3 @@ The dashboard SHALL render a user-visible loading state before invocation data i
 - **WHEN** the loading-state placeholder is rendered
 - **THEN** it SHALL NOT apply motion-based animation
 - **AND** it SHALL remain visible as a static placeholder
-
-### Requirement: No filters or detail page in v1
-
-The v1 dashboard SHALL NOT support filters (by workflow, trigger, status, time range), detail pages per invocation, replay/retry buttons, flame graph rendering, or live-streaming updates.
-
-#### Scenario: List is the only dashboard view
-
-- **WHEN** the user navigates to any dashboard URL other than the list
-- **THEN** the response SHALL be `404` (or the request SHALL be redirected to the list)

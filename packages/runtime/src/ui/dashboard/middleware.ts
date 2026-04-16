@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { InvocationRow } from "./page.js";
-import { renderDashboardPage } from "./page.js";
+import { renderDashboardPage, renderInvocationList } from "./page.js";
 
 const DEFAULT_LIMIT = 100;
 
@@ -40,8 +40,13 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 
-	const render = async (c: Context) => {
-		// 1. Fetch trigger.request events (one per invocation, ordered by ts desc)
+	const renderShell = (c: Context) => {
+		const user = c.req.header("X-Auth-Request-User") ?? "";
+		const email = c.req.header("X-Auth-Request-Email") ?? "";
+		return c.html(renderDashboardPage(user, email));
+	};
+
+	const renderFragment = async (c: Context) => {
 		const requests = (await deps.eventStore.query
 			.where("kind", "=", "trigger.request")
 			.select(["id", "workflow", "name", "ts"])
@@ -49,7 +54,6 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 			.limit(limit)
 			.execute()) as RawRequestRow[];
 
-		// 2. Fetch matching terminal events for those ids
 		const ids = requests.map((r) => r.id);
 		const terminals =
 			ids.length === 0
@@ -77,12 +81,12 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 			};
 		});
 
-		const user = c.req.header("X-Auth-Request-User") ?? "";
-		const email = c.req.header("X-Auth-Request-Email") ?? "";
-		return c.html(renderDashboardPage(rows, user, email));
+		return c.html(renderInvocationList(rows));
 	};
-	app.get("/", render);
-	app.get("", render);
+
+	app.get("/", renderShell);
+	app.get("", renderShell);
+	app.get("/invocations", renderFragment);
 
 	return {
 		match: "/dashboard/*",
