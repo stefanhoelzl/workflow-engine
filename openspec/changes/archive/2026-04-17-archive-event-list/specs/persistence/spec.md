@@ -1,20 +1,4 @@
-# Persistence Specification
-
-## Purpose
-
-Provide crash-resilient invocation persistence using pending/archive lifecycle records, ensuring invocations survive process restarts through atomic writes and startup recovery.
-
-## Requirements
-
-### Requirement: Persistence consumer implements BusConsumer
-
-The persistence consumer SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function that accepts a `StorageBackend` instance and returns an object with `handle()`.
-
-#### Scenario: Factory creates persistence consumer
-
-- **GIVEN** a `StorageBackend` instance
-- **WHEN** the persistence factory is called with the backend
-- **THEN** the returned object implements `BusConsumer` (handle)
+## MODIFIED Requirements
 
 ### Requirement: Persistence consumer writes invocation lifecycle records
 
@@ -75,16 +59,6 @@ The consumer SHALL update the accumulator only after the corresponding pending w
 - **THEN** the consumer SHALL log the failure
 - **AND** the accumulator entry for `evt_a` SHALL already be cleared
 - **AND** the terminal event handling SHALL be considered complete for the bus's purposes
-
-### Requirement: Atomic file writes via StorageBackend
-
-All file writes SHALL be delegated to `StorageBackend.write()`. The backend is responsible for atomicity (FS uses tmp+rename, S3 uses PutObject). The persistence consumer SHALL NOT use `node:fs/promises` directly.
-
-#### Scenario: Write delegates to StorageBackend
-
-- **GIVEN** a persistence consumer created with a `StorageBackend`
-- **WHEN** any lifecycle event triggers a file write
-- **THEN** the consumer SHALL call `backend.write(path, data)`
 
 ### Requirement: Persistence exposes scan helpers for recovery
 

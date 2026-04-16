@@ -4,6 +4,7 @@ interface StorageBackend {
 	read(path: string): Promise<string>;
 	list(prefix: string): AsyncIterable<string>;
 	remove(path: string): Promise<void>;
+	removePrefix(prefix: string): Promise<void>;
 	move(from: string, to: string): Promise<void>;
 }
 

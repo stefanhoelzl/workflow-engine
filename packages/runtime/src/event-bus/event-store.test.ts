@@ -109,21 +109,21 @@ describe("event store", () => {
 		try {
 			const backend: StorageBackend = createFsStorage(dir);
 			await backend.init();
-			const evt: InvocationEvent = event({
-				kind: "trigger.request",
-				input: { hello: "world" },
-			});
-			await backend.write(
-				`archive/${evt.id}/${evt.seq}.json`,
-				JSON.stringify(evt),
-			);
+			const evts: InvocationEvent[] = [
+				event({ kind: "trigger.request", seq: 0, input: { hello: "world" } }),
+				event({ kind: "trigger.response", seq: 1, ref: 0, output: "ok" }),
+			];
+			await backend.write(`archive/${evts[0]?.id}.json`, JSON.stringify(evts));
 
 			const s = await createEventStore({ persistence: { backend } });
 			await s.initialized;
 
-			const rows = await s.query.selectAll().execute();
-			expect(rows).toHaveLength(1);
-			expect(rows[0]?.kind).toBe("trigger.request");
+			const rows = await s.query.selectAll().orderBy("seq", "asc").execute();
+			expect(rows).toHaveLength(2);
+			expect(rows.map((r) => r.kind)).toEqual([
+				"trigger.request",
+				"trigger.response",
+			]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

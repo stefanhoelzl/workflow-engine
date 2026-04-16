@@ -28,12 +28,14 @@ import { createWorkflowRegistry, loadWorkflows } from "./workflow-registry.js";
 
 function createStorageBackend(
 	config: ReturnType<typeof createConfig>,
+	logger: ReturnType<typeof createLogger>,
 ): StorageBackend | undefined {
 	if (config.persistenceS3Bucket) {
 		return createS3Storage({
 			bucket: config.persistenceS3Bucket,
 			accessKeyId: config.persistenceS3AccessKeyId?.reveal() ?? "",
 			secretAccessKey: config.persistenceS3SecretAccessKey?.reveal() ?? "",
+			logger,
 			...(config.persistenceS3Endpoint
 				? { endpoint: config.persistenceS3Endpoint }
 				: {}),
@@ -109,7 +111,7 @@ async function init() {
 	}
 
 	// 1. Init storage backend.
-	const storageBackend = createStorageBackend(config);
+	const storageBackend = createStorageBackend(config, runtimeLogger);
 	if (storageBackend) {
 		await storageBackend.init();
 	}
@@ -160,7 +162,10 @@ async function init() {
 
 	// 5. Sweep crashed pending invocations before binding the HTTP port.
 	if (storageBackend) {
-		await recover({ backend: storageBackend }, eventBus);
+		await recover(
+			{ backend: storageBackend, eventStore, logger: runtimeLogger },
+			eventBus,
+		);
 	}
 
 	// 6. Wire the HTTP server. Order matters: secure-headers → logger →
