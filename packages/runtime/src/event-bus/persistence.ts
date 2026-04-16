@@ -1,4 +1,4 @@
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import type { StorageBackend } from "../storage/index.js";
 import type {
 	BusConsumer,

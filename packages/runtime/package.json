@@ -15,7 +15,7 @@
 		"@hono/node-server": "^1.19.12",
 		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/sandbox": "workspace:*",
-		"@workflow-engine/sdk": "workspace:*",
+		"@workflow-engine/core": "workspace:*",
 		"ajv": "^8.18.0",
 		"alpinejs": "^3.14.9",
 		"hono": "^4.12.10",
@@ -28,7 +28,7 @@
 	},
 	"devDependencies": {
 		"@types/tar-stream": "^3.1.4",
-		"@workflow-engine/vite-plugin": "workspace:*",
+		"@workflow-engine/sdk": "workspace:*",
 		"s3rver": "^3.7.1",
 		"vite": "^8.0.8",
 		"vite-node": "^6.0.0"

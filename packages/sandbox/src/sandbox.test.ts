@@ -980,7 +980,7 @@ describe("polyfill scope detection", () => {
 	// globalThis.
 	const setupPath = join(
 		dirname(fileURLToPath(import.meta.url)),
-		"../../vite-plugin/src/sandbox-globals-setup.js",
+		"../../sdk/src/plugin/sandbox-globals-setup.js",
 	);
 	const setup = readFileSync(setupPath, "utf8");
 

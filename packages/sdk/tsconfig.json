@@ -4,7 +4,10 @@
 		"composite": true,
 		"declaration": true,
 		"noEmit": false,
-		"outDir": "dist"
+		"rootDir": "src",
+		"outDir": "dist",
+		"types": ["node"]
 	},
-	"include": ["src/**/*"]
+	"include": ["src/**/*"],
+	"references": [{ "path": "../core" }]
 }

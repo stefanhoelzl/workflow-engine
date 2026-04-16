@@ -1,4 +1,4 @@
-import { z } from "@workflow-engine/sdk";
+import { z } from "@workflow-engine/core";
 
 const DISABLE_AUTH_SENTINEL = "__DISABLE_AUTH__";
 const INSPECT_CUSTOM = Symbol.for("nodejs.util.inspect.custom");

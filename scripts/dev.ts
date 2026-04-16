@@ -2,7 +2,7 @@ import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { watch } from "node:fs";
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
-import { upload } from "@workflow-engine/cli";
+import { upload } from "@workflow-engine/sdk/cli";
 
 const DEFAULT_PORT = 8080;
 const DEBOUNCE_MS = 300;

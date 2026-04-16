@@ -5,6 +5,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createGzip } from "node:zlib";
+import { pack as tarPack } from "tar-stream";
+import ts from "typescript";
+import { build, type Plugin, type ResolvedConfig } from "vite";
 import {
 	type Action,
 	extractParamNames,
@@ -13,10 +16,7 @@ import {
 	isHttpTrigger,
 	isWorkflow,
 	type Workflow,
-} from "@workflow-engine/sdk";
-import { pack as tarPack } from "tar-stream";
-import ts from "typescript";
-import { build, type Plugin, type ResolvedConfig } from "vite";
+} from "../index.js";
 
 interface WorkflowPluginOptions {
 	workflows: string[];

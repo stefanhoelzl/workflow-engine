@@ -1,7 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { workflowPlugin } from "@workflow-engine/vite-plugin";
 import type { InlineConfig } from "vite";
+import { workflowPlugin } from "../plugin/index.js";
 
 function discoverWorkflows(root: string): string[] {
 	const workflows: string[] = [];

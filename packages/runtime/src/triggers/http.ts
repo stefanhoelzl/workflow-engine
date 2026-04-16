@@ -1,5 +1,5 @@
 import { constants } from "node:http2";
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Executor } from "../executor/index.js";

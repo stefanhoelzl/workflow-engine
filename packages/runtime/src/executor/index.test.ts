@@ -1,4 +1,4 @@
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
 import {
 	type BusConsumer,

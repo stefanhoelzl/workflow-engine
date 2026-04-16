@@ -1,0 +1,18 @@
+{
+	"name": "@workflow-engine/core",
+	"description": "Internal shared contract types and schemas for workflow-engine.",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts"
+	],
+	"dependencies": {
+		"ajv": "^8.18.0",
+		"zod": "^4.0.0"
+	}
+}
