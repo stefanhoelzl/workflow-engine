@@ -37,15 +37,18 @@ The dev root SHALL use `backend "local" {}`. The state file SHALL be gitignored.
 
 ### Requirement: Module wiring
 
-The local root SHALL instantiate five modules: `kubernetes/kind`, `image/local`, `s3/s2`, `workflow-engine`, and `routing`. The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The routing module SHALL receive `traefik_extra_objects` from the workflow-engine module and `traefik_helm_sets` from the root config.
+The local root (`envs/local/local.tf`) SHALL instantiate five modules: `kubernetes/kind`, `image/build`, `object-storage/s2`, `baseline`, `cert-manager`, `traefik`, and `app-instance` (via `for_each`). The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The traefik module SHALL receive service configuration and error page HTML. The app-instance module SHALL receive baseline, traefik readiness, and per-instance config from the `for_each` map.
 
 #### Scenario: Single apply creates everything
 
 - **WHEN** `tofu apply` is run on a clean state
 - **THEN** a kind cluster SHALL be created
 - **AND** the app image SHALL be built and loaded
-- **AND** S2, app, and oauth2-proxy SHALL be deployed
-- **AND** the Traefik Helm release SHALL be deployed with IngressRoute and Middleware CRDs
+- **AND** workload namespaces SHALL be created with PSA labels
+- **AND** S2, app, and oauth2-proxy SHALL be deployed in their respective namespaces
+- **AND** the Traefik Helm release SHALL be deployed in `ns/traefik`
+- **AND** per-instance routes Helm releases SHALL be deployed
+- **AND** cert-manager SHALL be deployed with selfsigned CA
 
 ### Requirement: Non-secret variables in terraform.tfvars
 
@@ -229,28 +232,9 @@ The module SHALL output `image_name` matching the input, so downstream modules c
 <!-- modules/image/registry/                                -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
-### Requirement: Image URL construction
+<!-- Removed: Image URL construction — see archive/2026-04-16-infra-refactor -->
 
-The module SHALL construct a fully qualified container image reference from `registry`, `repository`, and `tag` inputs and output it as `image_name`.
-
-#### Scenario: Standard registry image
-
-- **WHEN** the module is applied with `registry = "ghcr.io"`, `repository = "stefanhoelzl/workflow-engine"`, `tag = "latest"`
-- **THEN** `image_name` output SHALL be `"ghcr.io/stefanhoelzl/workflow-engine:latest"`
-
-#### Scenario: Custom tag
-
-- **WHEN** the module is applied with `registry = "ghcr.io"`, `repository = "stefanhoelzl/workflow-engine"`, `tag = "v2026.04.10"`
-- **THEN** `image_name` output SHALL be `"ghcr.io/stefanhoelzl/workflow-engine:v2026.04.10"`
-
-### Requirement: No resources created
-
-The module SHALL not create any infrastructure resources. It SHALL only compute and output the `image_name` string.
-
-#### Scenario: Clean plan
-
-- **WHEN** `tofu plan` is run
-- **THEN** no resources SHALL be created, modified, or destroyed
+<!-- Removed: No resources created — see archive/2026-04-16-infra-refactor -->
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- modules/s3/s2/                                         -->
@@ -360,43 +344,9 @@ The s3/upcloud module SHALL create an `upcloud_managed_object_storage_user_acces
 <!-- modules/workflow-engine/                                -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
-### Requirement: Workflow-engine module composes sub-modules
+<!-- Removed: Workflow-engine module composes sub-modules — see archive/2026-04-16-infra-refactor -->
 
-The `workflow-engine` module SHALL instantiate two sub-modules: `app` and `oauth2-proxy`. It SHALL accept an optional `tls` variable of type `object({ certResolver = string })` defaulting to `null`. It SHALL output `traefik_extra_objects` containing the Middleware and IngressRoute CRD definitions, constructed from `app` and `oauth2-proxy` service names/ports and `var.network`. When `var.tls` is not null, the IngressRoute spec SHALL include a `tls` block with the provided configuration.
-
-#### Scenario: All sub-modules created
-
-- **WHEN** `tofu apply` completes with valid inputs
-- **THEN** the app Deployment and Service SHALL exist
-- **AND** the oauth2-proxy Deployment and Service SHALL exist
-
-#### Scenario: Extra objects output contains CRDs
-
-- **WHEN** the module is applied
-- **THEN** `traefik_extra_objects` SHALL contain an `oauth2-forward-auth` Middleware
-- **AND** `traefik_extra_objects` SHALL contain an `oauth2-errors` Middleware
-- **AND** `traefik_extra_objects` SHALL contain a `redirect-root` Middleware
-- **AND** `traefik_extra_objects` SHALL contain a `workflow-engine` IngressRoute
-
-#### Scenario: TLS disabled (default)
-
-- **WHEN** the module is applied without setting `tls`
-- **THEN** the IngressRoute spec SHALL NOT contain a `tls` block
-
-#### Scenario: TLS enabled
-
-- **WHEN** the module is applied with `tls = { certResolver = "letsencrypt" }`
-- **THEN** the IngressRoute spec SHALL contain `tls = { certResolver = "letsencrypt" }`
-
-### Requirement: Workflow-engine module threads oauth2 allow-list to app
-
-The `modules/workflow-engine` module SHALL pass `var.oauth2.github_users` into the `app` module as its `github_users` input. The app module SHALL NOT receive any other field from the `oauth2` variable.
-
-#### Scenario: Allow-list propagation
-
-- **WHEN** `tofu apply` runs with `oauth2.github_users = "alice,bob"`
-- **THEN** the rendered oauth2-proxy deployment SHALL have `OAUTH2_PROXY_GITHUB_USERS=alice,bob`
-- **AND** the rendered app deployment SHALL have `GITHUB_USER=alice,bob`
+<!-- Removed: Workflow-engine module threads oauth2 allow-list to app — see archive/2026-04-16-infra-refactor -->
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- modules/workflow-engine/modules/app/                    -->
@@ -585,80 +535,9 @@ The Traefik plugin `traefik_inline_response` SHALL be loaded from a vendored loc
 - **AND** the plugin SHALL be available for middleware configuration
 - **AND** no runtime HTTPS request to `github.com` SHALL be made by the Traefik container for plugin loading
 
-### Requirement: Traefik inline-response plugin source fetched and vendored at apply time
+<!-- Removed: Traefik inline-response plugin source fetched and vendored at apply time — see archive/2026-04-16-infra-refactor -->
 
-The workflow-engine umbrella module SHALL fetch the `traefik_inline_response` plugin source tarball from the GitHub tagged-commit archive URL at `tofu apply` time. The tarball SHALL be:
-
-1. Fetched via a `data "external"` program (bash script) that base64-encodes the archive and returns it as a JSON string. The program SHALL check for a cached copy at `${path.module}/.plugin-cache/traefik_inline_response-<version>.tar.gz` first and skip the `curl` when the file is already present, so the network call happens at most once per worktree per version.
-2. Captured in a `terraform_data` resource whose `input` is the base64 content from the `data.external` result. `triggers_replace` SHALL include the pinned version so that bumping `local.plugin_version` destroys and recreates the resource, capturing new bytes. The resource SHALL declare `lifecycle { ignore_changes = [input] }` so the state-stored bytes remain stable across subsequent plans even if the script re-reads the disk cache.
-3. Stored in a Kubernetes `ConfigMap` via `binary_data` by reading from the `terraform_data` resource's `output` attribute (not from a `data "local_file"`). State — not the filesystem — is the source of truth for the ConfigMap payload.
-4. Mounted into the Traefik pod via the Helm chart's `deployment.additionalVolumes` + the chart's own `experimental.localPlugins.inline-response` (type `localPath`) mechanism.
-
-The plugin version SHALL be declared in a `locals` block (`plugin_version`) so that bumping the version is an explicit, reviewable change. Integrity relies on the stability of the GitHub tagged-commit URL at `archive/refs/tags/<tag>.tar.gz`; no separate sha256 verification is performed (OpenTofu cannot ergonomically hash binary HTTP responses in-memory — see design.md D6a).
-
-The rationale for `data "external"` (vs the simpler `data "http"` pattern) is to avoid the `hashicorp/http` provider's unconditional "Response body is not recognized as UTF-8" warning for binary responses: `response_body_base64` is correct for binary but the provider emits the warning regardless of which attribute the caller reads. The rationale for state-captured bytes (vs reading the cache file via `data "local_file"`) is that remote/shared state and local filesystem will diverge on fresh clones — reading bytes from state avoids the drift entirely, eliminating the need for manual `tofu taint` recovery. The cache directory `.plugin-cache/` is gitignored and is only a speedup layer.
-
-#### Scenario: Plugin tarball fetched from pinned archive URL
-
-- **WHEN** `tofu apply` runs in an environment with Internet access and `.plugin-cache/` is empty
-- **THEN** the `data "external"` program SHALL `curl` the archive from the URL computed from `local.plugin_version` and cache it under `.plugin-cache/`
-- **AND** the base64 content SHALL be stored in `terraform_data.traefik_plugin_content.input`
-- **AND** the `ConfigMap` `binary_data` SHALL contain the tarball as base64 read from the `terraform_data` resource's `output`
-
-#### Scenario: Fresh clone with populated remote state
-
-- **WHEN** `tofu plan` runs in a worktree where `.plugin-cache/` is absent but the remote state already contains `terraform_data.traefik_plugin_content`
-- **THEN** the `data "external"` program SHALL re-fetch the tarball to repopulate the cache
-- **AND** `lifecycle.ignore_changes = [input]` SHALL suppress any diff on the `terraform_data` resource
-- **AND** no `tofu taint` recovery SHALL be required
-
-#### Scenario: Plugin version bump replaces state-captured bytes
-
-- **WHEN** `local.plugin_version` changes
-- **THEN** the `triggers_replace` comparison SHALL force replacement of `terraform_data.traefik_plugin_content`
-- **AND** the new `input` SHALL be the base64 of the archive at the new tag
-- **AND** the `ConfigMap` `binary_data` SHALL reflect the new version on the next apply
-
-#### Scenario: Plugin source available to Traefik at runtime
-
-- **WHEN** the Traefik pod starts
-- **THEN** the plugin source tree SHALL be present at `/plugins-local/src/github.com/tuxgal/traefik_inline_response/`
-- **AND** no outbound network call to `github.com` SHALL be required for plugin loading
-
-#### Scenario: Plugin tarball fetched from pinned release URL
-
-- **WHEN** `tofu apply` runs in an environment with Internet access
-- **THEN** the `http` data source SHALL download the release asset from the URL computed from `local.plugin_version`
-- **AND** the `ConfigMap` `binary_data` SHALL contain the tarball as base64
-
-#### Scenario: Plugin source available to Traefik at runtime
-
-- **WHEN** the Traefik pod starts
-- **THEN** the plugin source tree SHALL be present at `/plugins-local/src/github.com/tuxgal/traefik_inline_response/`
-- **AND** no outbound network call to `github.com` SHALL be required for plugin loading
-
-### Requirement: Namespace default-deny NetworkPolicy
-
-The workflow-engine umbrella module SHALL create a namespace-wide `NetworkPolicy` in the `default` namespace with `podSelector: {}`, `policyTypes: ["Ingress", "Egress"]`, and no allow rules. This policy establishes deny-by-default for every pod in the namespace whose traffic is not permitted by a more specific allow-rule NetworkPolicy.
-
-The policy SHALL be declared as a Kubernetes resource in the same environments where the module is instantiated. Local environments running kindnet (which does not enforce NetworkPolicy) SHALL tolerate the resource as an inert object; production environments running Cilium (UpCloud UKS) SHALL enforce it.
-
-#### Scenario: Default-deny blocks unlisted egress in production
-
-- **WHEN** a pod in `default` namespace attempts egress to a destination not covered by any allow-rule NetworkPolicy
-- **THEN** the Cilium CNI SHALL drop the packet
-
-#### Scenario: Default-deny blocks unlisted ingress in production
-
-- **WHEN** a peer attempts to connect to a pod in `default` namespace on a port not covered by any allow-rule NetworkPolicy
-- **THEN** the Cilium CNI SHALL drop the packet
-
-#### Scenario: Local kindnet accepts but does not enforce
-
-- **WHEN** `tofu apply` is run against the local kind cluster
-- **THEN** the NetworkPolicy resource SHALL be created successfully
-- **AND** kindnet SHALL NOT enforce it
-- **AND** existing local traffic patterns SHALL continue to work unchanged
+<!-- Removed: Namespace default-deny NetworkPolicy — see archive/2026-04-16-infra-refactor -->
 
 ### Requirement: App workload network allow-rules
 
@@ -941,15 +820,23 @@ The Helm release `extraObjects` SHALL include a Traefik `IngressRoute` CRD on th
 
 ### Requirement: Production composition root
 
-`infrastructure/upcloud/upcloud.tf` SHALL wire modules: `kubernetes/upcloud`, `workflow-engine`, and `routing`. It SHALL use an S3 backend (state bucket, key `upcloud`, credentials from environment variables). The kubernetes and helm providers SHALL be configured from the cluster module's ephemeral credential outputs.
+`envs/upcloud/cluster/upcloud.tf` SHALL wire modules: `kubernetes/upcloud`, `baseline`, `cert-manager`, `traefik`, `app-instance` (via `for_each`), and `dns/dynu`. It SHALL use an S3 backend (state bucket, key `upcloud`, credentials from environment variables). The kubernetes and helm providers SHALL be configured from the cluster module's ephemeral credential outputs. App instances SHALL be defined in a `local.instances` map.
 
 #### Scenario: Single apply deploys production stack
 
-- **WHEN** `tofu apply` is run in `infrastructure/upcloud/` with the persistence project already applied
+- **WHEN** `tofu apply` is run in `envs/upcloud/cluster/` with the persistence project already applied
 - **THEN** a K8s cluster SHALL be created
-- **AND** the app and oauth2-proxy SHALL be deployed
-- **AND** Traefik SHALL be deployed with LoadBalancer service and TLS-ALPN-01
-- **AND** the Dynu DNS A record SHALL be created pointing at the LB IP
+- **AND** workload namespaces SHALL be created with PSA labels
+- **AND** the app and oauth2-proxy SHALL be deployed in namespace `prod`
+- **AND** Traefik SHALL be deployed in namespace `traefik` with LoadBalancer service
+- **AND** cert-manager SHALL be deployed with ACME HTTP-01
+- **AND** the Dynu DNS CNAME record SHALL be created pointing at the LB hostname
+
+#### Scenario: Adding staging instance
+
+- **WHEN** a new entry is added to `local.instances` map with key `staging`
+- **THEN** `tofu apply` SHALL create namespace `staging` with PSA label
+- **AND** a new app-instance SHALL be deployed in `staging` with its own oauth2-proxy, routes, and NetworkPolicies
 
 ### Requirement: S3 configuration from remote state
 
@@ -1087,6 +974,162 @@ CLAUDE.md SHALL include a production deployment section documenting prerequisite
 
 - **WHEN** a developer reads CLAUDE.md
 - **THEN** they SHALL find instructions for deploying to UpCloud production
+
+### Requirement: Multi-instance support via for_each
+
+The app-instance module SHALL be called with `for_each` over a map of instance configurations. Each instance SHALL receive its own `namespace`, `instance_name`, `network` (domain, port), `oauth2` credentials, `s3` configuration, and `tls` settings.
+
+#### Scenario: Single instance (local/current prod)
+
+- **WHEN** `for_each` is set to `{ default = {...} }` (local) or `{ prod = {...} }` (production)
+- **THEN** one app-instance SHALL be deployed in the named namespace
+
+#### Scenario: Multiple instances
+
+- **WHEN** `for_each` is set to `{ prod = {...}, staging = {...} }`
+- **THEN** two independent app-instances SHALL be deployed in namespaces `prod` and `staging`
+- **AND** each SHALL have its own Deployment, Service, Secret, NetworkPolicy, oauth2-proxy, and routes Helm release
+
+### Requirement: Namespace isolation
+
+Workloads SHALL be deployed in dedicated namespaces, not `default`:
+- App instances: namespace = instance name (e.g., `prod`, `staging`, `workflow-engine` for local)
+- Traefik: namespace `traefik`
+- cert-manager: namespace `cert-manager` (unchanged)
+- S2 (local only): namespace `default`
+
+#### Scenario: Default namespace is empty in production
+
+- **WHEN** `tofu apply` completes in production
+- **THEN** no application workloads SHALL be running in the `default` namespace
+
+#### Scenario: Traefik in dedicated namespace
+
+- **WHEN** `tofu apply` completes
+- **THEN** the Traefik Helm release SHALL be deployed in namespace `traefik`
+
+### Requirement: Standardized labels
+
+All workloads SHALL use `app.kubernetes.io/name` (service identity) and `app.kubernetes.io/instance` (instance identity) labels. These labels SHALL be used in Deployment selectors, Service selectors, and NetworkPolicy pod selectors.
+
+#### Scenario: Label consistency
+
+- **WHEN** the workflow-engine Deployment is inspected in namespace `prod`
+- **THEN** its labels SHALL include `app.kubernetes.io/name=workflow-engine` and `app.kubernetes.io/instance=prod`
+
+### Requirement: Traefik inline-response plugin source committed to repo
+
+The Traefik inline-response plugin tarball SHALL be committed to the repository at `modules/traefik/plugin/plugin-<version>.tar.gz`. The ConfigMap SHALL read the tarball via `filebase64()`. The plugin version SHALL be declared in a `locals` block.
+
+Version bumps SHALL be performed by downloading the new tarball, committing it, and updating `local.plugin_version`. No runtime fetch, no `data.external`, no `.plugin-cache/` directory, no `terraform_data` with `ignore_changes`.
+
+#### Scenario: Plugin loaded from committed file
+
+- **WHEN** `tofu apply` runs
+- **THEN** the ConfigMap `binary_data` SHALL contain the tarball read via `filebase64()` from the committed file
+- **AND** no runtime HTTPS request SHALL be made for plugin loading
+- **AND** no bash, curl, or base64 commands SHALL be executed
+
+#### Scenario: Plugin version bump
+
+- **WHEN** `local.plugin_version` is updated and a new tarball file is committed
+- **THEN** `tofu plan` SHALL show a ConfigMap update with the new binary content
+- **AND** the old tarball file SHALL be removed from the repository
+
+#### Scenario: Works on any platform
+
+- **WHEN** `tofu apply` runs on Linux, macOS, or Windows
+- **THEN** `filebase64()` SHALL read the committed tarball without platform-specific dependencies
+
+### Requirement: Routes delivered via per-instance Helm chart
+
+Each app-instance SHALL deliver its IngressRoutes and Middlewares via a `helm_release` pointing at a co-located local chart (`modules/app-instance/routes-chart/`). The chart SHALL template route definitions using `{{ .Values }}` for domain, service names, ports, and TLS configuration.
+
+#### Scenario: Route edits do not restart Traefik
+
+- **WHEN** an IngressRoute path or middleware is modified in the routes-chart
+- **THEN** `tofu apply` SHALL update the routes `helm_release` only
+- **AND** the Traefik `helm_release` SHALL show no changes
+
+#### Scenario: Multiple instances have independent routes
+
+- **WHEN** two app-instances are deployed (prod and staging)
+- **THEN** each SHALL have its own routes `helm_release` with distinct name and values
+- **AND** modifying staging routes SHALL not affect the prod routes release
+
+#### Scenario: Single apply from scratch works
+
+- **WHEN** `tofu apply` is run on a clean state creating the cluster, Traefik, and app-instances
+- **THEN** the routes Helm chart SHALL install successfully after Traefik registers its CRDs
+- **AND** no plan-time CRD access SHALL be required
+
+### Requirement: DNS module extraction
+
+The Dynu DNS CNAME record management SHALL be extracted to `modules/dns/dynu/`. The module SHALL accept `domain`, `target_hostname`, and `api_key` inputs and create the restapi provider, domain data lookup, and CNAME record resource.
+
+#### Scenario: DNS module creates CNAME record
+
+- **WHEN** the dns/dynu module is applied with a valid domain and target hostname
+- **THEN** a CNAME record SHALL be created pointing the domain at the target hostname
+
+#### Scenario: Provider swap readiness
+
+- **WHEN** a new DNS provider is needed (e.g., Scaleway DNS)
+- **THEN** a new `modules/dns/<provider>/` module can be created with the same interface
+- **AND** the env root swaps the module source without other changes
+
+### Requirement: Error page template as file
+
+The 5xx error page HTML SHALL be stored as `infrastructure/templates/error-5xx.html` (not as an inline HCL heredoc). The traefik module SHALL accept it as a `error_page_5xx_html` variable. Env roots SHALL read it via `file()`.
+
+#### Scenario: Template read from file
+
+- **WHEN** `tofu apply` runs
+- **THEN** the Traefik inline-response middleware SHALL serve the HTML content read from `templates/error-5xx.html`
+
+### Requirement: Staging bucket in cluster state
+
+When a staging app-instance is deployed in the production cluster, its S3 bucket SHALL be created in `envs/upcloud/cluster/` (not `envs/upcloud/persistence/`). The bucket SHALL be destroyed when the staging instance is removed.
+
+#### Scenario: Staging bucket lifecycle
+
+- **WHEN** the staging entry is removed from `local.instances`
+- **THEN** `tofu apply` SHALL destroy the staging S3 bucket and its contents
+
+#### Scenario: Prod bucket unaffected
+
+- **WHEN** the staging instance is destroyed
+- **THEN** the production S3 bucket in `envs/upcloud/persistence/` SHALL remain intact
+
+### Requirement: Deployment depends on NetworkPolicy
+
+Every `kubernetes_deployment_v1` SHALL declare `depends_on` on its corresponding NetworkPolicy (via the netpol factory module) and on the baseline module. This ensures the NP allow-rules are in place before the pod starts, preventing DNS-blocked-at-boot races on CNIs that enforce NetworkPolicy asynchronously.
+
+#### Scenario: NP exists before pod starts
+
+- **WHEN** `tofu apply` runs on a clean state
+- **THEN** the app's NetworkPolicy SHALL be created before the app Deployment
+- **AND** the baseline default-deny NetworkPolicy SHALL be created before any workload Deployment
+
+### Requirement: oauth2-proxy env vars via dynamic maps
+
+The oauth2-proxy container's environment variables SHALL be defined using `dynamic "env"` blocks iterating over two local maps: one for plain values and one for secret key references. This replaces ~15 individual `env {}` blocks.
+
+#### Scenario: All env vars set from maps
+
+- **WHEN** the oauth2-proxy Deployment is inspected
+- **THEN** all `OAUTH2_PROXY_*` environment variables SHALL be present with correct values
+- **AND** `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, and `OAUTH2_PROXY_COOKIE_SECRET` SHALL be sourced from the Kubernetes Secret
+
+### Requirement: Persistence project path
+
+The persistence project SHALL live at `infrastructure/envs/upcloud/persistence/` (moved from `infrastructure/upcloud/persistence/`). Its S3 backend key SHALL remain `persistence`. Its state and behavior SHALL be unchanged.
+
+#### Scenario: State continuity after path move
+
+- **WHEN** `tofu init` is run in the new path
+- **THEN** it SHALL pull the same state from the S3 backend (key `persistence`)
+- **AND** `tofu plan` SHALL show no changes
 
 ### Requirement: Security context
 

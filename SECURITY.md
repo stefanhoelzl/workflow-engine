@@ -589,17 +589,17 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 ### Entry points
 
-| Component | Exposure | Port | Who can reach it |
-|---|---|---|---|
-| Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | Internet |
-| Traefik Ingress (HTTP) | Public (LB → 80) | 80 | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
-| oauth2-proxy | In-cluster Service | 4180 | Traefik (forward-auth) |
-| App (runtime) | In-cluster Service | 8080 | Traefik; **any pod** (no NetworkPolicy) |
-| S2 (S3-compatible storage) | In-cluster Service | 9000 | App pod; **any pod** (no NetworkPolicy) |
-| cert-manager controllers | In-cluster Service (webhook) | 9402 | kube-apiserver (admission webhooks) |
-| DuckDB | Process-local | — | App process only (in-memory) |
-| GitHub API | External egress | 443 | App pod (auth validation) |
-| Let's Encrypt ACME (egress) | External egress | 443 | cert-manager (prod only, issuance + renewal) |
+| Component | Exposure | Port | Namespace | Who can reach it |
+|---|---|---|---|---|
+| Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `traefik` | Internet |
+| Traefik Ingress (HTTP) | Public (LB → 80) | 80 | `traefik` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
+| oauth2-proxy | In-cluster Service | 4180 | per-instance (e.g. `prod`) | Traefik (cross-namespace forward-auth) |
+| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) |
+| S2 (S3-compatible storage) | In-cluster Service | 9000 | `default` (local only) | App pod (NP-enforced) |
+| cert-manager controllers | In-cluster Service (webhook) | 9402 | `cert-manager` | kube-apiserver (admission webhooks) |
+| DuckDB | Process-local | — | — | App process only (in-memory) |
+| GitHub API | External egress | 443 | — | App pod (auth validation) |
+| Let's Encrypt ACME (egress) | External egress | 443 | — | cert-manager (prod only, issuance + renewal) |
 
 ### Threats
 
@@ -619,18 +619,33 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 ### Mitigations (current)
 
+- **Namespace isolation** — each app-instance runs in a dedicated
+  namespace (e.g. `prod`, `staging`). Traefik runs in `ns/traefik`.
+  cert-manager in `ns/cert-manager`. The `default` namespace is empty
+  (except S2 in local dev). Cross-namespace access is controlled by
+  NetworkPolicy `namespaceSelector` rules.
+- **PodSecurity admission `restricted`** — workload namespaces carry
+  the `pod-security.kubernetes.io/enforce=restricted` label (initially
+  `warn` during rollout). Non-compliant pods are rejected at admission.
+  (`infrastructure/modules/baseline/baseline.tf`)
+- **Explicit securityContext on all pods** — every workload sets
+  `runAsNonRoot=true`, `runAsUser=65532`, `seccompProfile=RuntimeDefault`,
+  `allowPrivilegeEscalation=false`, `readOnlyRootFilesystem=true`,
+  `capabilities.drop=["ALL"]`. Writable paths use `emptyDir` mounts.
+  (`infrastructure/modules/app-instance/workloads.tf`;
+  `infrastructure/modules/object-storage/s2/s2.tf`;
+  `infrastructure/modules/traefik/traefik.tf` Helm values)
 - **Secrets in K8s Secret objects** — oauth2 client credentials, S3
   credentials, and the cookie secret are all stored as Kubernetes
   Secrets and injected via `envFrom.secretRef`. None are baked into
   images or committed to source.
-  (`infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf` lines 43–53;
-  `infrastructure/modules/workflow-engine/modules/app/app.tf` lines 29–41;
-  `infrastructure/modules/s3/s2/s2.tf` lines 18–27)
+  (`infrastructure/modules/app-instance/secrets.tf`;
+  `infrastructure/modules/object-storage/s2/s2.tf`)
 - **Terraform `sensitive = true`** on all secret variables; values are
   expected in `dev.secrets.auto.tfvars` which is gitignored.
-- **Distroless non-root base image** — the application runs as
-  `nonroot` on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal
-  userspace.
+- **Distroless non-root base image** — the application runs as UID
+  65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal
+  userspace. Numeric UID for PodSecurity admission static validation.
   (`infrastructure/Dockerfile`)
 - **Internal-only services** — oauth2-proxy, S2, and the app's
   business-logic port are not published via NodePort; only Traefik is.
@@ -646,12 +661,11 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   in `infrastructure/modules/cert-manager/cert-manager.tf`.
 - **Build-time image versioning** — S2 uses a pinned minor tag
   (`0.4.1`); the app image is built from source.
-- **`automountServiceAccountToken: false` on `app` and `oauth2-proxy`
-  pods** — neither workload talks to the K8s API, so the projected
-  `default` SA token is suppressed at the pod spec (authoritative over
-  SA-level defaults). Mitigates **I11**.
-  (`infrastructure/modules/workflow-engine/modules/app/app.tf`;
-  `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`)
+- **`automountServiceAccountToken: false` on all app workloads** —
+  app, oauth2-proxy, and S2 pods suppress the projected SA token.
+  Mitigates **I11**.
+  (`infrastructure/modules/app-instance/workloads.tf`;
+  `infrastructure/modules/object-storage/s2/s2.tf`)
 - **`Secret` wrapper for K8s-Secret-sourced config fields** — the
   runtime config schema wraps S3 credentials (and any future
   Secret-sourced field) in a `Secret` value. `toJSON`, `toString`, and
@@ -670,9 +684,9 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
 | R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules: app / oauth2-proxy ingress restricted to Traefik (+ node CIDR for probes); Traefik ingress restricted to `0.0.0.0/0:80,443` + node CIDR; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
-| R-I2 | **App pod has no `securityContext`** — no `runAsNonRoot: true`, no `readOnlyRootFilesystem: true`, no `allowPrivilegeEscalation: false`, no dropped capabilities. The image runs as nonroot, but K8s does not enforce it. | I4 | **High priority** |
+| R-I2 | ~~App pod has no `securityContext`~~ — **Resolved**: all workloads now set explicit securityContext (runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation=false, capabilities.drop=[ALL]), enforced by PodSecurity admission `restricted` at namespace level. | I4 | **Resolved** |
 | R-I3 | **No resource `requests` / `limits`** on the app, oauth2-proxy, or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
-| R-I4 | **S2 container has no user specified** and no securityContext — runs with container defaults. | I4 | Medium |
+| R-I4 | ~~S2 container has no user specified~~ — **Resolved**: S2 now runs as UID 65532 with full securityContext. Data writes use emptyDir at `/data`. | I4 | **Resolved** |
 | R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: cert-manager codified in `infrastructure/modules/cert-manager/`; prod uses Let's Encrypt (HTTP-01), local uses a cluster-internal self-signed CA chain. Chart version is pinned. | I7, I8 | Resolved |
 | R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
@@ -693,14 +707,15 @@ following as **must-have** before exposing to real traffic:
    Resolves R-I1, R-A3, and the infrastructure half of R-I9 / §2 R-S4.
    Note: app does NOT need to reach oauth2-proxy directly — forward-auth
    is performed by Traefik, not the app.
-2. **Pod `securityContext`** — `runAsNonRoot: true`,
-   `runAsUser: <uid>`, `readOnlyRootFilesystem: true`,
-   `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`.
-   Resolves R-I2.
+2. **Pod `securityContext`** — DONE. All workloads set
+   `runAsNonRoot: true`, `runAsUser: 65532`,
+   `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`,
+   `capabilities.drop: ["ALL"]`. Enforced by PodSecurity admission
+   `restricted` at namespace level. Resolves R-I2.
 3. **Resource requests / limits** — at minimum `cpu` and `memory`
    limits on every pod, sized from observed usage. Resolves R-I3.
 4. **Real TLS** — cert-manager with the `letsencrypt-prod` ClusterIssuer
-   and HTTP-01 challenge is wired in (`infrastructure/upcloud/upcloud.tf`,
+   and HTTP-01 challenge is wired in (`infrastructure/envs/upcloud/cluster/upcloud.tf`,
    `infrastructure/modules/cert-manager/`). Resolves R-I5 and I8.
 5. **Egress policy** — NetworkPolicy half DONE (see item 1). URL
    filtering inside `__hostFetch` (§2 R-S4 app-layer half) is still
@@ -748,10 +763,13 @@ following as **must-have** before exposing to real traffic:
 
 ### File references
 
-- App deployment: `infrastructure/modules/workflow-engine/modules/app/app.tf`
-- oauth2-proxy deployment: `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`
-- Traefik routing: `infrastructure/modules/workflow-engine/modules/routing/routing.tf`
-- S2 storage: `infrastructure/modules/s3/s2/s2.tf`
+- App + oauth2-proxy deployment: `infrastructure/modules/app-instance/workloads.tf`
+- App-instance secrets: `infrastructure/modules/app-instance/secrets.tf`
+- App-instance NetworkPolicies: `infrastructure/modules/app-instance/netpol.tf`
+- Traefik: `infrastructure/modules/traefik/traefik.tf`
+- Baseline (namespaces, PSA, default-deny): `infrastructure/modules/baseline/baseline.tf`
+- NetworkPolicy factory: `infrastructure/modules/netpol/main.tf`
+- S2 storage: `infrastructure/modules/object-storage/s2/s2.tf`
 - Dockerfile: `infrastructure/Dockerfile`
 - OpenSpec spec: `openspec/specs/infrastructure/spec.md`
 

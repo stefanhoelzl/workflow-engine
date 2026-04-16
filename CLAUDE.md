@@ -19,12 +19,12 @@ Prerequisites: OpenTofu >= 1.11, Podman
 
 - `pnpm local:up` — create/update local environment
 - `pnpm local:up:build` — rebuild app image + create/update local environment
-- `pnpmlocal:destroy` — tear down local environment
+- `pnpm local:destroy` — tear down local environment
 
 Local stack: kind K8s cluster, Traefik (Helm), cert-manager (Helm, self-signed CA), S2 (local S3), oauth2-proxy, workflow-engine app.
 Accessible at `https://localhost:8443` (self-signed cert issued by an in-cluster CA; browser warns because the CA is not in the host trust store).
 
-Secrets: copy `infrastructure/local/local.secrets.auto.tfvars.example` to `local.secrets.auto.tfvars` and fill in OAuth2 credentials.
+Secrets: copy `infrastructure/envs/local/local.secrets.auto.tfvars.example` to `local.secrets.auto.tfvars` and fill in OAuth2 credentials.
 
 ## Production (OpenTofu + UpCloud)
 
@@ -36,15 +36,15 @@ Shared by both projects (state backend, scoped to `tofu-state` bucket only):
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — S3 state backend credentials
 - `TF_VAR_state_passphrase` — passphrase for client-side state encryption (AES-GCM)
 
-Persistence project (`infrastructure/upcloud/persistence/`):
+Persistence project (`infrastructure/envs/upcloud/persistence/`):
 - `TF_VAR_upcloud_token` — UpCloud API token (Object Storage permissions)
 
-Main project (`infrastructure/upcloud/`):
+Cluster project (`infrastructure/envs/upcloud/cluster/`):
 - `TF_VAR_upcloud_token` — UpCloud API token (K8s + networking permissions)
 - `TF_VAR_dynu_api_key` — Dynu DNS API key
 - `TF_VAR_oauth2_client_id`, `TF_VAR_oauth2_client_secret` — GitHub OAuth App credentials
 
-Non-secret inputs (`domain`, `oauth2_github_users`, `acme_email`) live in `infrastructure/upcloud/terraform.tfvars`. K8s cluster config (`zone`, `kubernetes_version`, `node_plan`) is hardcoded as locals in `infrastructure/modules/kubernetes/upcloud/upcloud.tf`.
+Non-secret inputs (`domain`, `oauth2_github_users`, `acme_email`) live in `infrastructure/envs/upcloud/cluster/terraform.tfvars`. K8s cluster config (`zone`, `kubernetes_version`, `node_plan`) is hardcoded as locals in `infrastructure/modules/kubernetes/upcloud/upcloud.tf`.
 
 Note: `TF_VAR_upcloud_token` is set to a different scoped token per project.
 State bucket and endpoint are hardcoded in backend configs.
@@ -55,16 +55,16 @@ One-time setup:
 3. Register GitHub OAuth App for `workflow-engine.webredirect.org`
 
 Deploy:
-1. `cd infrastructure/upcloud/persistence && tofu init && tofu apply` — creates app bucket + scoped user
-2. `cd infrastructure/upcloud && tofu init && tofu apply` — creates K8s cluster + installs cert-manager + deploys app + issues Let's Encrypt cert + sets DNS
+1. `cd infrastructure/envs/upcloud/persistence && tofu init && tofu apply` — creates app bucket + scoped user
+2. `cd infrastructure/envs/upcloud/cluster && tofu init && tofu apply` — creates K8s cluster + installs cert-manager + deploys app + issues Let's Encrypt cert + sets DNS
 
 `tofu apply` returns once the cert-manager Helm release is Ready. Cert issuance happens asynchronously over the next 30-90s (ACME HTTP-01). To block until the cert is actually served, run this after apply:
 
 ```
-kubectl wait --for=condition=Ready certificate/workflow-engine -n default --timeout=5m
+kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m
 ```
 
-Failure of that wait means DNS, port 80 reachability, CAA records, or another prerequisite is misconfigured — inspect via `kubectl describe certificate workflow-engine -n default`.
+Failure of that wait means DNS, port 80 reachability, CAA records, or another prerequisite is misconfigured — inspect via `kubectl describe certificate prod-workflow-engine -n prod`.
 
 **cert-manager chart upgrades**: `installCRDs=true` installs CRDs only on first release install, not on subsequent Helm upgrades. When bumping the cert-manager chart version in `infrastructure/modules/cert-manager/cert-manager.tf`, first apply the new CRDs manually:
 

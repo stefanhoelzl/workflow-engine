@@ -8,12 +8,15 @@ RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/runtime/package.json packages/runtime/
+COPY packages/sandbox/package.json packages/sandbox/
 COPY packages/sdk/package.json packages/sdk/
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.base.json ./
 COPY packages/runtime/tsconfig.json packages/runtime/vite.config.ts packages/runtime/
 COPY packages/runtime/src/ packages/runtime/src/
+COPY packages/sandbox/tsconfig.json packages/sandbox/
+COPY packages/sandbox/src/ packages/sandbox/src/
 COPY packages/sdk/tsconfig.json packages/sdk/
 COPY packages/sdk/src/ packages/sdk/src/
 RUN pnpm --filter @workflow-engine/runtime exec vite build
@@ -28,6 +31,6 @@ COPY --from=build /app/deploy .
 
 EXPOSE 8080
 
-USER nonroot
+USER 65532
 
 CMD ["main.js"]

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Error - Workflow Engine</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-elevated: #ffffff;
+      --border: #e1e4e8;
+      --text: #1a1a2e;
+      --text-muted: #8b8fa3;
+      --shadow-lg: 0 4px 12px rgba(0,0,0,0.1);
+      --radius: 8px;
+      --accent: #6366f1;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1117;
+        --bg-elevated: #1e2030;
+        --border: #2e3148;
+        --text: #e2e4f0;
+        --text-muted: #6b6f8a;
+        --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      padding: 40px;
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+    .brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; }
+    .icon { width: 28px; height: 28px; background: var(--accent); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; font-weight: 700; }
+    .brand-name { font-size: 18px; font-weight: 700; }
+    .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 32px; }
+    .message { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 10px 20px; font-size: 14px; font-weight: 600; font-family: var(--font); color: white; background: var(--accent); border: none; border-radius: var(--radius); cursor: pointer; transition: opacity 0.15s ease; }
+    .btn:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <span class="icon">W</span>
+      <span class="brand-name">Workflow Engine</span>
+    </div>
+    <p class="subtitle">Something went wrong</p>
+    <p class="message">The server encountered an error. Try again in a few moments.</p>
+    <button type="button" class="btn" onclick="location.reload()">Try again</button>
+  </div>
+</body>
+</html>

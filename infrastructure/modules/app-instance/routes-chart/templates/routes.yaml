@@ -1,0 +1,204 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-forward-auth
+  namespace: {{ .Release.Namespace }}
+spec:
+  forwardAuth:
+    address: http://{{ .Values.oauth2ServiceName }}:{{ .Values.oauth2ServicePort }}/oauth2/auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+      - X-Auth-Request-Redirect
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-errors
+  namespace: {{ .Release.Namespace }}
+spec:
+  errors:
+    status:
+      - "401-403"
+    service:
+      name: {{ .Values.oauth2ServiceName }}
+      port: {{ .Values.oauth2ServicePort }}
+    query: /oauth2/sign_in?rd={url}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-root
+  namespace: {{ .Release.Namespace }}
+spec:
+  redirectRegex:
+    regex: ^https?://[^/]+/$
+    replacement: /trigger
+    permanent: false
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-to-https
+  namespace: {{ .Release.Namespace }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: not-found
+  namespace: {{ .Release.Namespace }}
+spec:
+  errors:
+    status:
+      - "404"
+    service:
+      name: {{ .Values.appServiceName }}
+      port: {{ .Values.appServicePort }}
+    query: /static/404.html
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: server-error
+  namespace: {{ .Release.Namespace }}
+spec:
+  errors:
+    status:
+      - "500-599"
+    service:
+      name: traefik
+      port: 80
+    query: /error
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: inline-error
+  namespace: {{ .Release.Namespace }}
+spec:
+  plugin:
+    inline-response:
+      matchers:
+        - path:
+            abs: /error
+          statusCode: 500
+          response:
+            raw: {{ .Values.errorPageHtml | quote }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: workflow-engine
+  namespace: {{ .Release.Namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/dashboard`)
+      kind: Rule
+      middlewares:
+        - name: oauth2-errors
+        - name: oauth2-forward-auth
+        - name: not-found
+        - name: server-error
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/trigger`)
+      kind: Rule
+      middlewares:
+        - name: oauth2-errors
+        - name: oauth2-forward-auth
+        - name: not-found
+        - name: server-error
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && Path(`/`)
+      kind: Rule
+      middlewares:
+        - name: redirect-root
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/oauth2`)
+      kind: Rule
+      services:
+        - name: {{ .Values.oauth2ServiceName }}
+          port: {{ .Values.oauth2ServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/static`)
+      kind: Rule
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/webhooks`)
+      kind: Rule
+      middlewares:
+        - name: server-error
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && Path(`/livez`)
+      kind: Rule
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
+      kind: Rule
+      middlewares:
+        - name: server-error
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/`)
+      kind: Rule
+      priority: 1
+      middlewares:
+        - name: not-found
+      services:
+        - name: {{ .Values.appServiceName }}
+          port: {{ .Values.appServicePort }}
+  {{- if .Values.tlsSecretName }}
+  tls:
+    secretName: {{ .Values.tlsSecretName }}
+  {{- end }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: error-pages
+  namespace: {{ .Release.Namespace }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Path(`/error`)
+      kind: Rule
+      middlewares:
+        - name: inline-error
+      services:
+        - name: noop@internal
+          kind: TraefikService
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: redirect-to-https
+  namespace: {{ .Release.Namespace }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: PathPrefix(`/`)
+      kind: Rule
+      priority: 1
+      middlewares:
+        - name: redirect-to-https
+      services:
+        - name: noop@internal
+          kind: TraefikService
