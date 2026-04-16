@@ -507,34 +507,106 @@ body {
 	opacity: 0.9;
 }
 
-/* Banners */
-.banner {
-	padding: 10px 14px;
-	border-radius: var(--radius-sm);
-	font-size: 13px;
-	margin-bottom: 12px;
+/* Trigger result dialog */
+.trigger-result-dialog[open] {
+	background: var(--bg-elevated);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow-lg);
+	padding: 16px;
+	max-width: 720px;
+	width: 90vw;
+	max-height: 80vh;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	position: fixed;
+	inset: 0;
+	margin: auto;
 }
 
-.banner.success {
-	background: var(--green-bg);
-	border: 1px solid var(--green-border);
-	color: var(--green);
-	font-weight: 600;
+.trigger-result-dialog::backdrop {
+	background: rgba(0, 0, 0, 0.4);
 }
 
-.banner.error {
-	background: var(--red-bg);
-	border: 1px solid var(--red-border);
-	color: var(--red);
+.trigger-result-dialog--error {
+	border-color: var(--red-border);
 }
 
-.banner.error ul {
+.trigger-result-code {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+}
+
+.trigger-result-body {
 	margin: 0;
-	padding-left: 18px;
+	padding: 12px;
+	padding-right: 44px;
+	background: var(--bg-surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text);
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+	flex: 1 1 auto;
+	min-height: 0;
 }
 
-.banner.error li {
-	margin-bottom: 2px;
+.trigger-result-copy {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	background: var(--bg-elevated);
+	color: var(--text-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition:
+		border-color 0.15s ease,
+		color 0.15s ease;
+}
+
+.trigger-result-copy:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.trigger-result-copy--copied {
+	color: var(--green);
+	border-color: var(--green-border);
+}
+
+.trigger-result-close {
+	align-self: flex-end;
+	padding: 8px 16px;
+	background: var(--accent);
+	color: white;
+	border: none;
+	border-radius: var(--radius-sm);
+	font-size: 12px;
+	font-weight: 600;
+	font-family: var(--font);
+	cursor: pointer;
+	transition: opacity 0.15s ease;
+	flex: 0 0 auto;
+}
+
+.trigger-result-close:hover {
+	opacity: 0.9;
 }
 
 /* Empty state */

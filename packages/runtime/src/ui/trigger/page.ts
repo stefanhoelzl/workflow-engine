@@ -71,7 +71,6 @@ function renderTriggerCard(data: TriggerCardData) {
       </summary>
       <div class="trigger-body">
         <div class="form-container"></div>
-        <div class="banner-target"></div>
         <button
           type="button"
           class="submit-btn"
