@@ -8,14 +8,20 @@ const RUN_OPTS = {
 	workflowSha: "sha",
 };
 
+function iife(body: string): string {
+	return `var __workflowExports = (function(exports) {\n${body}\nreturn exports;\n})({});`;
+}
+
 describe("__hostCallAction RPC bridge", () => {
 	it("invokes the registered host method and returns its result to the guest", async () => {
 		const impl = vi.fn().mockResolvedValue({ ok: true });
 		const sb = await sandbox(
-			`export default async (ctx) => {
-        const r = await __hostCallAction("notify", { ch: ctx.ch });
-        return r;
-      }`,
+			iife(
+				`exports.default = async (ctx) => {
+					const r = await __hostCallAction("notify", { ch: ctx.ch });
+					return r;
+				};`,
+			),
 			{ __hostCallAction: impl },
 		);
 		const res = await sb.run("default", { ch: "ops" }, RUN_OPTS);
@@ -33,14 +39,16 @@ describe("__hostCallAction RPC bridge", () => {
 			.fn()
 			.mockRejectedValue(new Error("payload_validation_failed"));
 		const sb = await sandbox(
-			`export default async () => {
-        try {
-          await __hostCallAction("notify", { x: "bad" });
-          return "no-throw";
-        } catch (e) {
-          return e.message;
-        }
-      }`,
+			iife(
+				`exports.default = async () => {
+					try {
+						await __hostCallAction("notify", { x: "bad" });
+						return "no-throw";
+					} catch (e) {
+						return e.message;
+					}
+				};`,
+			),
 			{ __hostCallAction: impl },
 		);
 		const res = await sb.run("default", null, RUN_OPTS);
@@ -54,7 +62,9 @@ describe("__hostCallAction RPC bridge", () => {
 
 	it("emits system.request/system.response with the configured event name", async () => {
 		const sb = await sandbox(
-			`export default async () => { await __hostCallAction("a", { x: 1 }); return 0 }`,
+			iife(
+				`exports.default = async () => { await __hostCallAction("a", { x: 1 }); return 0; };`,
+			),
 			{ __hostCallAction: async () => undefined },
 			{ methodEventNames: { __hostCallAction: "host.validateAction" } },
 		);

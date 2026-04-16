@@ -133,6 +133,25 @@ const ManifestSchema = z.object({
 type Manifest = z.infer<typeof ManifestSchema>;
 
 // ---------------------------------------------------------------------------
+// IIFE namespace naming
+// ---------------------------------------------------------------------------
+//
+// The workflow bundle is emitted as an IIFE that assigns its exports to
+// `globalThis[<iifeName>]`. Both the vite-plugin (producer, deriving the
+// name from the source filestem) and the runtime (consumer, deriving the
+// name from the manifest `name`) need to agree on the exact string, so the
+// transformation lives here in core as the single source of truth. The
+// `__wf_` prefix avoids shadowing user-authored globals and keeps the
+// namespace recognisable in stack traces.
+
+function iifeName(workflowName: string): string {
+	const camel = workflowName.replace(/[-_]+(.)/g, (_, c: string) =>
+		c.toUpperCase(),
+	);
+	return `__wf_${camel}`;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -145,4 +164,4 @@ export type {
 	InvocationEventError,
 	Manifest,
 };
-export { dispatchAction, ManifestSchema, z };
+export { dispatchAction, iifeName, ManifestSchema, z };

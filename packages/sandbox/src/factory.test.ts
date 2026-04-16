@@ -15,11 +15,15 @@ function makeLogger(): Logger {
 	};
 }
 
+function iife(body: string): string {
+	return `var __workflowExports = (function(exports) {\n${body}\nreturn exports;\n})({});`;
+}
+
 describe("sandbox factory", () => {
 	it("creates a sandbox lazily and caches by source", async () => {
 		const logger = makeLogger();
 		const factory = createSandboxFactory({ logger });
-		const src = "export default async () => 42";
+		const src = iife("exports.default = async () => 42;");
 		const a = await factory.create(src);
 		const b = await factory.create(src);
 		expect(a).toBe(b);
@@ -32,7 +36,7 @@ describe("sandbox factory", () => {
 	it("disposes all cached sandboxes on factory.dispose", async () => {
 		const logger = makeLogger();
 		const factory = createSandboxFactory({ logger });
-		const sb = await factory.create("export default async () => 1");
+		const sb = await factory.create(iife("exports.default = async () => 1;"));
 		await factory.dispose();
 		await expect(sb.run("default", null, RUN_OPTS)).rejects.toThrow();
 	});

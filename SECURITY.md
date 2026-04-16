@@ -128,6 +128,19 @@ The sandbox is **the single strongest isolation boundary in the system**.
 Most security decisions in this document reduce to: *does this expose
 new capability across the sandbox boundary?*
 
+**Engine:** the sandbox uses `quickjs-wasi` (QuickJS-ng compiled to
+`wasm32-wasip1`), not `quickjs-emscripten`. Each `Sandbox` instance has
+its own `QuickJS.create()` VM with its own dedicated WASM linear
+memory; there is no runtime/context split. Standard Web APIs (`URL`,
+`TextEncoder`/`TextDecoder`, `atob`/`btoa`, `structuredClone`,
+`Headers`, WebCrypto) are provided by the engine's native WASM
+extensions, not by host-side polyfills bundled into the workflow.
+Source is evaluated as an IIFE script (not an ES module) because
+`quickjs-wasi`'s `evalCode` does not expose the ES module namespace;
+the vite-plugin emits `format: "iife"` with a namespace name derived
+from the workflow filestem, and the sandbox reads exports from
+`globalThis[iifeNamespace]`.
+
 ### Entry points
 
 - `sandbox(source, methods, options)` — spawns a dedicated Node
@@ -164,17 +177,26 @@ new capability across the sandbox boundary?*
 - All arguments and return values crossing the host/sandbox boundary
   via consumer-provided methods are JSON-serializable. Host object
   references, closures, and proxies never cross.
-- Globals exposed inside the sandbox: `console.*`, `performance.now`,
-  `crypto.*` (full WebCrypto), `setTimeout` / `setInterval` /
-  `clearTimeout` / `clearInterval`, `__hostFetch` (for the workflow
-  bundle's fetch polyfill chain), `__emitEvent` (write-only telemetry
-  channel for `action.*` events; see below), plus the host methods
-  registered via `methods` and `extraMethods`. The runtime passes
-  `__hostCallAction` as a construction-time method in `methods` and
-  appends `__dispatchAction` as plain JS source after the workflow
-  bundle — both are conventions, not hardcoded built-ins; the sandbox
-  package itself does not know about manifests, Zod, or action
-  dispatch.
+- Globals exposed inside the sandbox: `console.*`, `performance.now`
+  (QuickJS intrinsic, reads through the WASI `clock_time_get` syscall),
+  `crypto.*` (full WebCrypto — `crypto.randomUUID`,
+  `crypto.getRandomValues`, and `crypto.subtle.*` provided natively by
+  the WASM crypto extension with a JS Promise shim so `crypto.subtle.*`
+  returns Promises per spec), `setTimeout` / `setInterval` /
+  `clearTimeout` / `clearInterval` (host bridges, scheduled on the
+  worker event loop), `fetch` (JS shim inside the sandbox that routes
+  through `__hostFetch`), `__hostFetch` (async host bridge the fetch
+  shim calls into), `__emitEvent` (write-only telemetry channel for
+  `action.*` events; see below), plus the host methods registered via
+  `methods` and `extraMethods`. WASM extensions contribute the
+  additional standard globals `URL`, `URLSearchParams`, `TextEncoder`,
+  `TextDecoder`, `atob`, `btoa`, `structuredClone`, and `Headers` —
+  these are implemented in C/WASM inside the WASM linear memory, not
+  as host bridges. The runtime passes `__hostCallAction` as a
+  construction-time method in `methods` and appends `__dispatchAction`
+  as plain JS source after the workflow bundle — both are conventions,
+  not hardcoded built-ins; the sandbox package itself does not know
+  about manifests, Zod, or action dispatch.
 - **`__emitEvent(event)`** — write-only telemetry channel installed
   directly on `globalThis` via `vm.newFunction` (NOT through
   `bridge.sync()` / `bridge.async()`, so it does not itself appear in
@@ -225,8 +247,16 @@ new capability across the sandbox boundary?*
   beyond standard JS built-ins):
   - **Built-ins** (hardcoded in `packages/sandbox/src/globals.ts` /
     `worker.ts`): `console`, `setTimeout`, `setInterval`,
-    `clearTimeout`, `clearInterval`, `performance`, `crypto`,
-    `__hostFetch`, `__emitEvent`.
+    `clearTimeout`, `clearInterval`, `__hostFetch`, `__emitEvent`,
+    `fetch` (JS shim inside the VM that routes through `__hostFetch`),
+    plus the `crypto.subtle` Promise shim that wraps the WASM crypto
+    extension's synchronous API.
+  - **WASM extension globals** (provided by `quickjs-wasi` extensions
+    loaded at VM creation in `worker.ts`): `URL`, `URLSearchParams`,
+    `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`,
+    `Headers`, `crypto` (including `crypto.subtle.*`), `performance`.
+    These live inside WASM linear memory; they are not host bridges
+    and consume no host capability.
   - **Runtime-passed** (via `methods` at `sandbox(source, methods)`
     construction time): `__hostCallAction`. Not a hardcoded built-in —
     the sandbox package has no knowledge of manifests or actions; it
@@ -264,23 +294,34 @@ new capability across the sandbox boundary?*
 
 ### Mitigations (current)
 
-- **Fresh context per workflow module load.** `newRuntime()` +
-  `newContext()` are called once when the workflow registry first
-  instantiates a workflow. The context is reused across all subsequent
-  `run()` / handler-invoke calls for that workflow. Module-level state
-  and the internal opaque-reference store persist across runs within
+- **Fresh VM per workflow module load.** `QuickJS.create()` (one-level
+  model; `quickjs-wasi` exposes a single VM handle per instance, not
+  the runtime/context split that `quickjs-emscripten` used) is called
+  once when the workflow registry first instantiates a workflow. The
+  VM is reused across all subsequent `run()` / handler-invoke calls
+  for that workflow. Module-level state persists across runs within
   the same workflow. Disposal happens on workflow reload/unload via
-  `Sandbox.dispose()`.
+  `Sandbox.dispose()`. Each VM has its own dedicated WASM linear
+  memory; cross-VM memory access is physically impossible.
   (`packages/sandbox/src/index.ts`, `packages/runtime/src/workflow-registry.ts`)
 - **Cross-workflow isolation preserved.** Each workflow gets its own
-  `Sandbox` instance with its own QuickJS context. State leaking within
-  a workflow is self-leakage (same trust domain — one author, one
-  manifest, one deploy). Cross-workflow leakage is physically
-  impossible: separate VMs, separate opaque stores, separate env records.
-- **No Node.js surface.** QuickJS WASM has no built-in `process`,
-  `require`, `fs`, `child_process`, or network APIs. Only the explicit
-  globals set in `packages/sandbox/src/globals.ts` and the construction-time
-  + per-run host methods are present.
+  `Sandbox` instance with its own QuickJS VM and its own WASM linear
+  memory. State leaking within a workflow is self-leakage (same trust
+  domain — one author, one manifest, one deploy). Cross-workflow
+  leakage is physically impossible: separate VMs, separate WASM
+  memory, separate env records. `CryptoKey` objects also live inside
+  WASM linear memory (as PSA key handles managed by the WASM crypto
+  extension) and are freed automatically when the VM is disposed — no
+  host-side opaque reference store is involved.
+- **No Node.js surface.** QuickJS WASM (via `quickjs-wasi`, the WASI
+  build — no Emscripten / no `require`, no `process`, no `fs`,
+  `child_process`, or network APIs) has no built-in Node.js APIs.
+  Only the explicit globals set in `packages/sandbox/src/globals.ts`
+  and `worker.ts` (including the `fetch` shim routing through
+  `__hostFetch`), the globals contributed by the loaded WASM
+  extensions (url, encoding, base64, structured-clone, headers,
+  crypto), and the construction-time + per-run host methods are
+  present.
 - **Allowlist of globals.** Adding a built-in bridge requires editing
   `globals.ts` explicitly. Consumer-provided methods are declared as a
   plain `Record<string, async fn>` — the Bridge primitive
@@ -325,8 +366,8 @@ new capability across the sandbox boundary?*
   enabled to catch unsafe bridge patterns early.
 - **Worker-thread isolation of the host-bridge layer.** The QuickJS
   runtime and the host-bridge implementation (`bridge-factory.ts`,
-  `bridge.ts`, `crypto.ts`, `globals.ts`) run inside a dedicated
-  `worker_threads` Worker, not on the Node main thread. This is an
+  `bridge.ts`, `globals.ts`) run inside a dedicated `worker_threads`
+  Worker, not on the Node main thread. This is an
   implementation-level defense-in-depth layer: guest code still cannot
   observe Node internals (QuickJS is the primary boundary), and the
   worker has no additional permissions (same `process.env`, same file
@@ -358,13 +399,15 @@ exists. Each item should be tracked as a follow-up security task.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-S1 | No QuickJS `setMemoryLimit()` wired | S2 unmitigated | v1 limitation |
-| R-S2 | No QuickJS interrupt handler / execution timeout | S3 unmitigated | v1 limitation |
-| R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap | S4 unmitigated | v1 limitation |
+| R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that pass it get enforcement, callers that omit it fall back to the WASM module defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
+| R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. An interrupt handler that fires after N bytecode steps or a deadline would need a worker-side factory reconstituted from a serializable descriptor. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
+| R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap; cancel-on-run-end mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
 | R-S4 | `__hostFetch` has **no URL allowlist/denylist** at the app layer — the sandbox can reach any public URL the pod can reach. Infrastructure half (RFC1918 + cloud metadata) closed by K8s NetworkPolicy (§5). Public URL allowlist is a pending app-layer control. | S5 partial | **High priority** (app-layer half) |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress | S5 in-cluster / metadata half mitigated | **Resolved** (see §5 R-I1 / R-I9) |
 | R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret baked into `workflow.env` that a handler deliberately returns, echoes into an action input, or logs will appear in the archive record / pino logs | S7 partial | Behavioural; author responsibility |
-| R-S7 | Per-workflow opaque-reference store grows unboundedly over sandbox lifetime (crypto-heavy workflows generating many `CryptoKey` values) | Memory growth | v1 limitation; monitor in production |
+| R-S7 | **Resolved.** CryptoKey objects no longer live in a host-side opaque reference store — the WASM crypto extension manages them internally (PSA key handles in WASM linear memory) and they are freed with the VM. The previous unbounded-growth concern is eliminated by the engine swap. | — | **Resolved** (quickjs-wasi migration) |
+| R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). Workflows that require JWK export must export as raw and serialize to JWK themselves, or wait for the extension to add the format. | Feature gap | v1 limitation (engine-level) |
+| R-S9 | WASI `clock` and `random` overrides (for deterministic / replay execution) cannot be sent across the worker `postMessage` boundary as-is. Engine supports them at `QuickJS.create({ wasi: ... })`; wire-up requires a serializable descriptor resolved on the worker side. | Replay infrastructure | **Follow-up** (engine supports it; wire-up is pending) |
 
 ### Rules for AI agents
 
@@ -388,10 +431,10 @@ exists. Each item should be tracked as a follow-up security task.
    translation via `vm.newPromise()`; consumers provide plain async
    functions and let the sandbox marshal.
 6. **NEVER expose the Bridge primitive through the public API.**
-   `sync`/`async`/`arg`/`marshal`/`storeOpaque`/`derefOpaque`/`opaqueRef`
-   are sandbox-internal implementation details. Consumers register host
-   methods only via `methods` (construction-time) and `extraMethods`
-   (per-run). All arguments and return values on the public boundary
+   `sync`/`async`/`arg`/`marshal` are sandbox-internal implementation
+   details. Consumers register host methods only via `methods`
+   (construction-time) and `extraMethods` (per-run). All arguments and
+   return values on the public boundary
    are JSON.
 7. **When adding an outbound capability (fetch, action call, etc.),
    explicitly consider SSRF and exfiltration.** If there is no URL
@@ -399,9 +442,8 @@ exists. Each item should be tracked as a follow-up security task.
    sandbox "prevents" the action from reaching an internal service.
 8. **Sandbox-related changes MUST include security tests** (per
    `openspec/config.yaml` task rules) covering: escape attempts, global
-   visibility, sandbox disposal, cross-sandbox opaque-ref isolation,
-   extraMethods collision rejection, and any new bridge API's failure
-   modes.
+   visibility, sandbox disposal, extraMethods collision rejection, and
+   any new bridge API's failure modes.
 9. **Every new runtime-passed method in `methods` MUST validate its
    input on the host side before acting on it.** The host is the
    authoritative validation boundary (the guest's Zod copy is
@@ -416,8 +458,8 @@ exists. Each item should be tracked as a follow-up security task.
 - Host fetch bridge: `packages/sandbox/src/bridge.ts`
 - Bridge primitive (internal; promise / host-function plumbing): `packages/sandbox/src/bridge-factory.ts`
 - Host-method installer (internal): `packages/sandbox/src/install-host-methods.ts`
-- Globals allowlist: `packages/sandbox/src/globals.ts`
-- WebCrypto bridge: `packages/sandbox/src/crypto.ts`
+- Globals allowlist + fetch / crypto-subtle-Promise JS shims: `packages/sandbox/src/globals.ts`
+- WebCrypto: provided natively by the `quickjs-wasi` `cryptoExtension` WASM extension (loaded in `worker.ts`); a JS Promise shim in `globals.ts` wraps `crypto.subtle.*` to return Promises per WebCrypto spec
 - Workflow registry (owns per-workflow sandbox map + `__hostCallAction` dispatcher): `packages/runtime/src/workflow-registry.ts`
 - HTTP trigger middleware (payload validation + executor delegation): `packages/runtime/src/triggers/http.ts`
 - Executor (per-workflow runQueue + lifecycle emission): `packages/runtime/src/executor/`

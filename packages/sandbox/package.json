@@ -7,8 +7,7 @@
 		".": "./src/index.ts"
 	},
 	"dependencies": {
-		"@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
 		"@workflow-engine/core": "workspace:*",
-		"quickjs-emscripten": "^0.32.0"
+		"quickjs-wasi": "^2.2.0"
 	}
 }

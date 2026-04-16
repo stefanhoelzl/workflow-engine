@@ -1,9 +1,5 @@
 import type { EventKind, InvocationEvent } from "@workflow-engine/core";
-import type {
-	QuickJSContext,
-	QuickJSHandle,
-	QuickJSRuntime,
-} from "quickjs-emscripten";
+import type { JSValueHandle, QuickJS } from "quickjs-wasi";
 
 // --- Run context (set by worker before each run) ---
 
@@ -21,19 +17,19 @@ type EventSink = (event: InvocationEvent) => void;
 
 interface RequiredExtractor<T> {
 	readonly kind: "required";
-	readonly extractFn: (vm: QuickJSContext, handle: QuickJSHandle) => T;
+	readonly extractFn: (vm: QuickJS, handle: JSValueHandle) => T;
 	readonly optional: OptionalExtractor<T>;
 	readonly rest: RestExtractor<T>;
 }
 
 interface OptionalExtractor<T> {
 	readonly kind: "optional";
-	readonly extractFn: (vm: QuickJSContext, handle: QuickJSHandle) => T;
+	readonly extractFn: (vm: QuickJS, handle: JSValueHandle) => T;
 }
 
 interface RestExtractor<T> {
 	readonly kind: "rest";
-	readonly extractFn: (vm: QuickJSContext, handle: QuickJSHandle) => T;
+	readonly extractFn: (vm: QuickJS, handle: JSValueHandle) => T;
 }
 
 type AnyExtractor =
@@ -62,8 +58,7 @@ type InferArgs<E extends readonly AnyExtractor[]> = E extends readonly [
 // --- Bridge interface ---
 
 interface Bridge {
-	readonly vm: QuickJSContext;
-	readonly runtime: QuickJSRuntime;
+	readonly vm: QuickJS;
 	readonly arg: {
 		readonly string: RequiredExtractor<string>;
 		readonly number: RequiredExtractor<number>;
@@ -71,36 +66,33 @@ interface Bridge {
 		readonly boolean: RequiredExtractor<unknown>;
 	};
 	readonly marshal: {
-		readonly string: (value: string) => QuickJSHandle;
-		readonly number: (value: number) => QuickJSHandle;
-		readonly json: (value: unknown) => QuickJSHandle;
-		readonly boolean: (value: unknown) => QuickJSHandle;
+		readonly string: (value: string) => JSValueHandle;
+		readonly number: (value: number) => JSValueHandle;
+		readonly json: (value: unknown) => JSValueHandle;
+		readonly boolean: (value: unknown) => JSValueHandle;
 		// biome-ignore lint/suspicious/noConfusingVoidType: void marshal must accept void return values from impl
-		readonly void: (value: void) => QuickJSHandle;
+		readonly void: (value: void) => JSValueHandle;
 	};
 	sync<Args extends readonly AnyExtractor[], R>(
-		target: QuickJSHandle,
+		target: JSValueHandle,
 		name: string,
 		opts: {
 			args: [...Args];
-			marshal: (value: R) => QuickJSHandle;
+			marshal: (value: R) => JSValueHandle;
 			impl: (...args: InferArgs<Args>) => R;
 			method?: string;
 		},
 	): void;
 	async<Args extends readonly AnyExtractor[], R>(
-		target: QuickJSHandle,
+		target: JSValueHandle,
 		name: string,
 		opts: {
 			args: [...Args];
-			marshal: (value: R) => QuickJSHandle;
+			marshal: (value: R) => JSValueHandle;
 			impl: (...args: InferArgs<Args>) => Promise<R>;
 			method?: string;
 		},
 	): void;
-	storeOpaque(value: unknown): number;
-	derefOpaque<T>(ref: unknown): T;
-	opaqueRef: (value: unknown) => QuickJSHandle;
 	// Run-context lifecycle:
 	setRunContext(ctx: RunContext): void;
 	clearRunContext(): void;
@@ -118,7 +110,7 @@ interface Bridge {
 // --- Extractor construction ---
 
 function makeExtractor<T>(
-	extractFn: (vm: QuickJSContext, handle: QuickJSHandle) => T,
+	extractFn: (vm: QuickJS, handle: JSValueHandle) => T,
 ): RequiredExtractor<T> {
 	const optional: OptionalExtractor<T> = { kind: "optional", extractFn };
 	const rest: RestExtractor<T> = { kind: "rest", extractFn };
@@ -126,16 +118,16 @@ function makeExtractor<T>(
 }
 
 const ARG_EXTRACTORS = {
-	string: makeExtractor<string>((vm, h) => vm.getString(h)),
-	number: makeExtractor<number>((vm, h) => vm.getNumber(h)),
+	string: makeExtractor<string>((_vm, h) => h.toString()),
+	number: makeExtractor<number>((_vm, h) => h.toNumber()),
 	json: makeExtractor<unknown>((vm, h) => vm.dump(h)),
 	boolean: makeExtractor<unknown>((vm, h) => vm.dump(h)),
 };
 
 function extractArgValues(
-	vm: QuickJSContext,
+	vm: QuickJS,
 	extractors: readonly AnyExtractor[],
-	handles: QuickJSHandle[],
+	handles: JSValueHandle[],
 ): unknown[] {
 	const result: unknown[] = [];
 	for (let i = 0; i < extractors.length; i++) {
@@ -178,20 +170,11 @@ function isJsonSafe(value: unknown): boolean {
 	}
 }
 
-function newGuestErrorFromHost(
-	vm: QuickJSContext,
-	err: unknown,
-): QuickJSHandle {
-	const message = errorMessage(err);
+function newGuestErrorFromHost(vm: QuickJS, err: unknown): JSValueHandle {
 	if (!(err instanceof Error)) {
-		return vm.newError({ name: "Error", message });
+		return vm.newError(String(err));
 	}
-	const handle = vm.newError({ name: err.name, message });
-	if (err.stack) {
-		const stackHandle = vm.newString(err.stack);
-		vm.setProp(handle, "stack", stackHandle);
-		stackHandle.dispose();
-	}
+	const handle = vm.newError(err);
 	const source = err as unknown as Record<string, unknown>;
 	for (const key of Object.keys(source)) {
 		if (RESERVED_HOST_ERROR_KEYS.has(key)) {
@@ -201,13 +184,9 @@ function newGuestErrorFromHost(
 		if (!isJsonSafe(value)) {
 			continue;
 		}
-		const result = vm.evalCode(`(${JSON.stringify(value)})`);
-		if (result.error) {
-			result.error.dispose();
-			continue;
-		}
-		vm.setProp(handle, key, result.value);
-		result.value.dispose();
+		const valueHandle = vm.hostToHandle(value);
+		vm.setProp(handle, key, valueHandle);
+		valueHandle.dispose();
 	}
 	return handle;
 }
@@ -215,10 +194,7 @@ function newGuestErrorFromHost(
 // --- Factory ---
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-context state, and event emission as one cohesive unit
-function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
-	const opaqueStore = new Map<number, unknown>();
-	let opaqueNextId = 1;
-
+function createBridge(vm: QuickJS): Bridge {
 	let runContext: RunContext | null = null;
 	let seq = 0;
 	const refStack: number[] = [];
@@ -227,14 +203,7 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 	const marshal = {
 		string: (value: string) => vm.newString(value),
 		number: (value: number) => vm.newNumber(value),
-		json: (value: unknown) => {
-			const result = vm.evalCode(`(${JSON.stringify(value)})`);
-			if (result.error) {
-				result.error.dispose();
-				throw new Error("Failed to marshal JSON value");
-			}
-			return result.value;
-		},
+		json: (value: unknown) => vm.hostToHandle(value),
 		boolean: (value: unknown) => (value ? vm.true : vm.false),
 		// biome-ignore lint/suspicious/noConfusingVoidType: must accept void return values from impl
 		void: (_value: void) => vm.undefined,
@@ -331,11 +300,11 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 	}
 
 	function sync<Args extends readonly AnyExtractor[], R>(
-		target: QuickJSHandle,
+		target: JSValueHandle,
 		name: string,
 		opts: {
 			args: [...Args];
-			marshal: (value: R) => QuickJSHandle;
+			marshal: (value: R) => JSValueHandle;
 			impl: (...args: InferArgs<Args>) => R;
 			method?: string;
 		},
@@ -350,7 +319,14 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 				return opts.marshal(result);
 			} catch (err) {
 				emitSystemError(method, requestSeq, err);
-				return { error: newGuestErrorFromHost(vm, err) };
+				// newFunction's trampoline catches thrown host errors and
+				// converts them to QuickJS exceptions via vm.newError() —
+				// that preserves name/message/stack but strips custom props
+				// (e.g. Zod .issues). For sync bridges this is acceptable
+				// because the run loop primarily reports error.message and
+				// error.stack. Async bridges (the common path) preserve
+				// custom props via deferred.reject(newGuestErrorFromHost(...)).
+				throw err;
 			}
 		});
 		vm.setProp(target, name, fn);
@@ -358,11 +334,11 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 	}
 
 	function asyncBridge<Args extends readonly AnyExtractor[], R>(
-		target: QuickJSHandle,
+		target: JSValueHandle,
 		name: string,
 		opts: {
 			args: [...Args];
-			marshal: (value: R) => QuickJSHandle;
+			marshal: (value: R) => JSValueHandle;
 			impl: (...args: InferArgs<Args>) => Promise<R>;
 			method?: string;
 		},
@@ -386,14 +362,14 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 						errHandle.dispose();
 						emitSystemError(method, requestSeq, err);
 					}
-					runtime.executePendingJobs();
+					vm.executePendingJobs();
 				},
 				(err) => {
 					const errHandle = newGuestErrorFromHost(vm, err);
 					deferred.reject(errHandle);
 					errHandle.dispose();
 					emitSystemError(method, requestSeq, err);
-					runtime.executePendingJobs();
+					vm.executePendingJobs();
 				},
 			);
 
@@ -403,37 +379,12 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 		fn.dispose();
 	}
 
-	function storeOpaque(value: unknown): number {
-		const id = opaqueNextId++;
-		opaqueStore.set(id, value);
-		return id;
-	}
-
-	function derefOpaque<T>(ref: unknown): T {
-		const id =
-			typeof ref === "number"
-				? ref
-				: (ref as { __opaqueId: number } | null)?.__opaqueId;
-		if (typeof id !== "number") {
-			throw new Error("Invalid opaque reference");
-		}
-		const stored = opaqueStore.get(id);
-		if (stored === undefined) {
-			throw new Error(`Opaque reference ${id} not found`);
-		}
-		return stored as T;
-	}
-
 	return {
 		vm,
-		runtime,
 		arg: ARG_EXTRACTORS,
 		marshal,
 		sync,
 		async: asyncBridge,
-		storeOpaque,
-		derefOpaque,
-		opaqueRef: (value: unknown) => vm.newNumber(storeOpaque(value)),
 		setRunContext(ctx: RunContext) {
 			runContext = ctx;
 			seq = 0;
@@ -468,7 +419,7 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 			sink = s;
 		},
 		dispose() {
-			opaqueStore.clear();
+			/* nothing to release — keys live in WASM, not on the host */
 		},
 	};
 }

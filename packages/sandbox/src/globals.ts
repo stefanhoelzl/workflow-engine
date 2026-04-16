@@ -1,6 +1,5 @@
-import type { QuickJSHandle } from "quickjs-emscripten";
+import type { JSValueHandle } from "quickjs-wasi";
 import type { Bridge } from "./bridge-factory.js";
-import { setupCrypto } from "./crypto.js";
 
 interface TimerCleanup {
 	dispose(): void;
@@ -9,8 +8,6 @@ interface TimerCleanup {
 
 function setupGlobals(b: Bridge): TimerCleanup {
 	setupConsole(b);
-	setupCrypto(b);
-	setupPerformance(b);
 	return setupTimers(b);
 }
 
@@ -30,22 +27,9 @@ function setupConsole(b: Bridge): void {
 	consoleObj.dispose();
 }
 
-function setupPerformance(b: Bridge): void {
-	const origin = performance.now();
-	const perfObj = b.vm.newObject();
-	b.sync(perfObj, "now", {
-		method: "performance.now",
-		args: [],
-		marshal: b.marshal.number,
-		impl: () => performance.now() - origin,
-	});
-	b.vm.setProp(b.vm.global, "performance", perfObj);
-	perfObj.dispose();
-}
-
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: registering all timer globals together is clearer than splitting
 function setupTimers(b: Bridge): TimerCleanup {
-	const pendingCallbacks = new Map<number, QuickJSHandle>();
+	const pendingCallbacks = new Map<number, JSValueHandle>();
 
 	// Timers are direct vm.newFunction installs (not bridge.sync) because they
 	// take a guest callback handle and must dup/call it; the bridge wrappers
@@ -57,14 +41,19 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
 		(callbackHandle, delayHandle) => {
-			const delay = b.vm.getNumber(delayHandle);
+			const delay = delayHandle.toNumber();
 			const cb = callbackHandle.dup();
 
 			const id = setTimeout(() => {
 				pendingCallbacks.delete(id as unknown as number);
-				b.vm.callFunction(cb, b.vm.undefined);
+				try {
+					const ret = b.vm.callFunction(cb, b.vm.undefined);
+					ret.dispose();
+				} catch {
+					/* ignore guest errors in timer callbacks */
+				}
 				cb.dispose();
-				b.runtime.executePendingJobs();
+				b.vm.executePendingJobs();
 			}, delay);
 
 			const numId = id as unknown as number;
@@ -76,13 +65,14 @@ function setupTimers(b: Bridge): TimerCleanup {
 	setTimeoutFn.dispose();
 
 	const clearTimeoutFn = b.vm.newFunction("clearTimeout", (idHandle) => {
-		const id = b.vm.getNumber(idHandle);
+		const id = idHandle.toNumber();
 		clearTimeout(id);
 		const cb = pendingCallbacks.get(id);
 		if (cb) {
 			cb.dispose();
 			pendingCallbacks.delete(id);
 		}
+		return b.vm.undefined;
 	});
 	b.vm.setProp(b.vm.global, "clearTimeout", clearTimeoutFn);
 	clearTimeoutFn.dispose();
@@ -90,12 +80,17 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setIntervalFn = b.vm.newFunction(
 		"setInterval",
 		(callbackHandle, delayHandle) => {
-			const delay = b.vm.getNumber(delayHandle);
+			const delay = delayHandle.toNumber();
 			const cb = callbackHandle.dup();
 
 			const id = setInterval(() => {
-				b.vm.callFunction(cb, b.vm.undefined);
-				b.runtime.executePendingJobs();
+				try {
+					const ret = b.vm.callFunction(cb, b.vm.undefined);
+					ret.dispose();
+				} catch {
+					/* ignore guest errors in timer callbacks */
+				}
+				b.vm.executePendingJobs();
 			}, delay);
 
 			const numId = id as unknown as number;
@@ -107,13 +102,14 @@ function setupTimers(b: Bridge): TimerCleanup {
 	setIntervalFn.dispose();
 
 	const clearIntervalFn = b.vm.newFunction("clearInterval", (idHandle) => {
-		const id = b.vm.getNumber(idHandle);
+		const id = idHandle.toNumber();
 		clearInterval(id);
 		const cb = pendingCallbacks.get(id);
 		if (cb) {
 			cb.dispose();
 			pendingCallbacks.delete(id);
 		}
+		return b.vm.undefined;
 	});
 	b.vm.setProp(b.vm.global, "clearInterval", clearIntervalFn);
 	clearIntervalFn.dispose();
@@ -133,5 +129,93 @@ function setupTimers(b: Bridge): TimerCleanup {
 	};
 }
 
+// JS shim that wraps crypto.subtle methods so they return Promises, matching
+// the standard WebCrypto spec. The WASM crypto extension returns synchronously
+// — this shim runs inside the VM to wrap each method.
+const CRYPTO_PROMISE_SHIM = `(function() {
+  var _subtle = crypto.subtle;
+  var _methods = ['digest','importKey','exportKey','sign','verify','encrypt','decrypt','generateKey','deriveBits','deriveKey','wrapKey','unwrapKey'];
+  for (var i = 0; i < _methods.length; i++) {
+    var m = _methods[i];
+    var orig = _subtle[m].bind(_subtle);
+    _subtle[m] = (function(fn) {
+      return function() {
+        try { return Promise.resolve(fn.apply(null, arguments)); }
+        catch (e) { return Promise.reject(e); }
+      };
+    })(orig);
+  }
+})();`;
+
+// JS shim that provides a standard fetch() implementation on top of the
+// host-installed __hostFetch. Must be evaluated AFTER bridgeHostFetch has
+// installed __hostFetch on the global.
+const FETCH_SHIM = `(function() {
+  function normalizeHeaders(init) {
+    if (!init) return {};
+    if (typeof Headers !== 'undefined' && init instanceof Headers) {
+      var obj = {};
+      init.forEach(function(v, k) { obj[k] = v; });
+      return obj;
+    }
+    if (Array.isArray(init)) return Object.fromEntries(init);
+    return Object.assign({}, init);
+  }
+  function normalizeBody(body) {
+    if (body == null) return null;
+    if (typeof body === 'string') return body;
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+      return new TextDecoder().decode(body);
+    }
+    if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return body.toString();
+    return String(body);
+  }
+  function makeResponse(hostRes) {
+    var status = hostRes.status;
+    var headers = new Headers(hostRes.headers || {});
+    var body = hostRes.body == null ? '' : String(hostRes.body);
+    var consumed = false;
+    function consume() {
+      if (consumed) throw new TypeError('Body has already been consumed');
+      consumed = true;
+      return body;
+    }
+    return {
+      status: status,
+      statusText: hostRes.statusText || '',
+      ok: status >= 200 && status < 300,
+      headers: headers,
+      url: hostRes.url || '',
+      redirected: false,
+      type: 'basic',
+      text: function() { return Promise.resolve(consume()); },
+      json: function() {
+        try { return Promise.resolve(JSON.parse(consume())); }
+        catch (e) { return Promise.reject(e); }
+      },
+      arrayBuffer: function() {
+        return Promise.resolve(new TextEncoder().encode(consume()).buffer);
+      },
+    };
+  }
+  function fetch(input, init) {
+    var url = typeof input === 'string' ? input : String(input);
+    var method = (init && init.method) || 'GET';
+    var headers = normalizeHeaders(init && init.headers);
+    var body = normalizeBody(init && init.body);
+    return __hostFetch(method, url, headers, body).then(makeResponse);
+  }
+  // Lock fetch down so guest code cannot reassign it to point somewhere
+  // else. The shim routes through __hostFetch (which the host controls),
+  // so a rogue override could only break the workflow's own fetch calls,
+  // but freezing the binding removes an avenue for accidental confusion.
+  Object.defineProperty(globalThis, 'fetch', {
+    value: fetch,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+})();`;
+
 export type { TimerCleanup };
-export { setupGlobals };
+export { CRYPTO_PROMISE_SHIM, FETCH_SHIM, setupGlobals };

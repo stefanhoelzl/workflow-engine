@@ -46,24 +46,29 @@ const MANIFEST = {
 	],
 };
 
+// IIFE bundle: the vite-plugin emits `format: "iife"` and the runtime's
+// `toIifeNamespace("demo")` derives "__wf_demo".
 const BUNDLE = `
-export const echo = Object.assign(
-  async (input) => globalThis.__dispatchAction(
-    "echo",
-    input,
-    async (i) => i,
-    { parse: (x) => x },
-  ),
-  { __setActionName: () => {} },
-);
-export const ping = {
-  handler: async (payload) => {
-    const e = await echo({ msg: payload.body?.msg ?? "hi" });
-    return { status: 200, body: { echoed: e.msg } };
-  },
-  body: { parse: (x) => x },
-  schema: { parse: (x) => x },
-};
+var __wf_demo = (function(exports) {
+  exports.echo = Object.assign(
+    async (input) => globalThis.__dispatchAction(
+      "echo",
+      input,
+      async (i) => i,
+      { parse: (x) => x },
+    ),
+    { __setActionName: () => {} },
+  );
+  exports.ping = {
+    handler: async (payload) => {
+      const e = await exports.echo({ msg: payload.body?.msg ?? "hi" });
+      return { status: 200, body: { echoed: e.msg } };
+    },
+    body: { parse: (x) => x },
+    schema: { parse: (x) => x },
+  };
+  return exports;
+})({});
 `;
 
 describe("end-to-end event flow", () => {
