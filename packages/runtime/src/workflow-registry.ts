@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { type Manifest, ManifestSchema } from "@workflow-engine/core";
 import { type Sandbox, sandbox } from "@workflow-engine/sandbox";
-import { type Manifest, ManifestSchema } from "@workflow-engine/sdk";
 import Ajv2020 from "ajv/dist/2020.js";
 import type {
 	ActionDescriptor,

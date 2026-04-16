@@ -28,7 +28,7 @@
 		"@biomejs/biome": "^2.4.10",
 		"@fission-ai/openspec": "^1.2.0",
 		"@types/node": "^25.5.2",
-		"@workflow-engine/cli": "workspace:*",
+		"@workflow-engine/sdk": "workspace:*",
 		"concurrently": "^9.2.1",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.2",

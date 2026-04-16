@@ -1,4 +1,4 @@
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 
 // ---------------------------------------------------------------------------
 // Action + trigger descriptors (shared by executor + workflow-registry)

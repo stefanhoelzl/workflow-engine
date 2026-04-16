@@ -1,9 +1,10 @@
 {
 	"files": [],
 	"references": [
+		{ "path": "packages/core" },
+		{ "path": "packages/sdk" },
 		{ "path": "packages/sandbox" },
 		{ "path": "packages/runtime" },
-		{ "path": "packages/cli" },
 		{ "path": "workflows" }
 	]
 }

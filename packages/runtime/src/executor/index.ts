@@ -1,4 +1,4 @@
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import type { EventBus, SerializedErrorPayload } from "../event-bus/index.js";
 import { newInvocation } from "./invocation.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";

@@ -1,4 +1,4 @@
-import type { HttpTriggerResult } from "@workflow-engine/sdk";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../executor/index.js";

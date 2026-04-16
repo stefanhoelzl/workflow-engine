@@ -7,5 +7,9 @@
 		"types": ["node", "vite/client"]
 	},
 	"include": ["src/**/*"],
-	"references": [{ "path": "../sdk" }, { "path": "../sandbox" }]
+	"references": [
+		{ "path": "../core" },
+		{ "path": "../sdk" },
+		{ "path": "../sandbox" }
+	]
 }

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { workflowPlugin } from "@workflow-engine/vite-plugin";
+import { workflowPlugin } from "@workflow-engine/sdk/vite-plugin";
 import { Hono } from "hono";
 import { build as viteBuild } from "vite";
 import { afterEach, describe, expect, it, vi } from "vitest";

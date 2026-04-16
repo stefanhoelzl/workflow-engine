@@ -18,9 +18,9 @@ importers:
       '@types/node':
         specifier: ^25.5.2
         version: 25.5.2
-      '@workflow-engine/cli':
+      '@workflow-engine/sdk':
         specifier: workspace:*
-        version: link:packages/cli
+        version: link:packages/sdk
       concurrently:
         specifier: ^9.2.1
         version: 9.2.1
@@ -40,20 +40,14 @@ importers:
         specifier: ^4.1.4
         version: 4.1.4(@opentelemetry/api@1.9.1)(@types/node@25.5.2)(vite@8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3))
 
-  packages/cli:
+  packages/core:
     dependencies:
-      '@workflow-engine/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@workflow-engine/vite-plugin':
-        specifier: workspace:*
-        version: link:../vite-plugin
-      citty:
-        specifier: ^0.2.2
-        version: 0.2.2
-      vite:
-        specifier: ^8.0.8
-        version: 8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
+      ajv:
+        specifier: ^8.18.0
+        version: 8.18.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
 
   packages/runtime:
     dependencies:
@@ -72,12 +66,12 @@ importers:
       '@oorabona/kysely-duckdb':
         specifier: ^0.5.1
         version: 0.5.1(@duckdb/node-api@1.5.1-r.1)(kysely@0.28.15)(typescript@6.0.2)
+      '@workflow-engine/core':
+        specifier: workspace:*
+        version: link:../core
       '@workflow-engine/sandbox':
         specifier: workspace:*
         version: link:../sandbox
-      '@workflow-engine/sdk':
-        specifier: workspace:*
-        version: link:../sdk
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -109,9 +103,9 @@ importers:
       '@types/tar-stream':
         specifier: ^3.1.4
         version: 3.1.4
-      '@workflow-engine/vite-plugin':
+      '@workflow-engine/sdk':
         specifier: workspace:*
-        version: link:../vite-plugin
+        version: link:../sdk
       s3rver:
         specifier: ^3.7.1
         version: 3.7.1
@@ -133,22 +127,12 @@ importers:
 
   packages/sdk:
     dependencies:
-      zod:
-        specifier: ^4.0.0
-        version: 4.3.6
-    devDependencies:
-      ajv:
-        specifier: ^8.18.0
-        version: 8.18.0
-
-  packages/vite-plugin:
-    dependencies:
       '@ungap/structured-clone':
         specifier: ^1.3.0
         version: 1.3.0
-      '@workflow-engine/sdk':
+      '@workflow-engine/core':
         specifier: workspace:*
-        version: link:../sdk
+        version: link:../core
       abab:
         specifier: ^2.0.6
         version: 2.0.6
@@ -158,6 +142,9 @@ importers:
       blob-polyfill:
         specifier: ^9.0.20240710
         version: 9.0.20240710
+      citty:
+        specifier: ^0.2.2
+        version: 0.2.2
       fast-text-encoding:
         specifier: ^1.0.6
         version: 1.0.6
@@ -177,7 +164,7 @@ importers:
         specifier: ^1.1.14
         version: 1.1.14
       vite:
-        specifier: '>=6.0.0'
+        specifier: ^8.0.8
         version: 8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
       web-streams-polyfill:
         specifier: ^4.2.0
@@ -185,6 +172,9 @@ importers:
       whatwg-fetch:
         specifier: ^3.6.20
         version: 3.6.20
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
     devDependencies:
       '@types/tar-stream':
         specifier: ^3.1.4
@@ -192,9 +182,6 @@ importers:
 
   workflows:
     dependencies:
-      '@workflow-engine/cli':
-        specifier: workspace:*
-        version: link:../packages/cli
       '@workflow-engine/sdk':
         specifier: workspace:*
         version: link:../packages/sdk

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { workflowPlugin } from "./index.js";
 
 const thisFile = fileURLToPath(import.meta.url);
-const repoRoot = resolve(dirname(thisFile), "..", "..", "..");
+const repoRoot = resolve(dirname(thisFile), "..", "..", "..", "..");
 
 const ERR_AT_MOST_ONE_DEFINE = /at most one defineWorkflow/;
 const ERR_ACTION_MULTI_NAME = /exported under multiple names/;
