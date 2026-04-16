@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -206,7 +207,8 @@ async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
 		const tmpFile = join(tmpDir, `${filestem}.mjs`);
 		await writeFile(tmpFile, bundleSource, "utf8");
 		const mod = await importBundled(tmpFile, filestem, ctx);
-		const manifest = buildManifest(mod, filestem, ctx);
+		const sha = createHash("sha256").update(bundleSource).digest("hex");
+		const manifest = buildManifest(mod, filestem, sha, ctx);
 
 		const outWorkflowDir = join(outDir, manifest.name);
 		await mkdir(outWorkflowDir, { recursive: true });
@@ -330,6 +332,7 @@ type ManifestTriggerEntry = ManifestHttpTriggerEntry;
 interface BuiltManifest {
 	name: string;
 	module: string;
+	sha: string;
 	env: Record<string, string>;
 	actions: ManifestActionEntry[];
 	triggers: ManifestTriggerEntry[];
@@ -436,6 +439,7 @@ function buildTriggerEntry(
 function buildManifest(
 	mod: Record<string, unknown>,
 	filestem: string,
+	sha: string,
 	ctx: PluginContext,
 ): BuiltManifest {
 	const { workflowEntries, actionEntries, triggerEntries } =
@@ -459,6 +463,7 @@ function buildManifest(
 	return {
 		name,
 		module: `${name}.js`,
+		sha,
 		env,
 		actions,
 		triggers,

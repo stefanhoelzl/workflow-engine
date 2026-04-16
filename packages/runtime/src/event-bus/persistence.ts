@@ -1,71 +1,24 @@
-import type { HttpTriggerResult } from "@workflow-engine/core";
+import type { InvocationEvent } from "@workflow-engine/core";
 import type { StorageBackend } from "../storage/index.js";
-import type {
-	BusConsumer,
-	InvocationLifecycleEvent,
-	SerializedErrorPayload,
-} from "./index.js";
+import type { BusConsumer } from "./index.js";
 
 // ---------------------------------------------------------------------------
-// Invocation records (on-disk shape)
+// Persistence — one file per event
 // ---------------------------------------------------------------------------
 //
-// Pending: written at `started` time, removed when the invocation terminates.
-// Archive: written exactly once at `completed` or `failed` time.
-//
-// The record is the wire shape for scanArchive/scanPending consumers
-// (recovery, event-store bootstrap). It's intentionally looser than the
-// lifecycle event union — any future fields added here will surface to
-// consumers without bus involvement.
-
-interface PendingRecord {
-	readonly id: string;
-	readonly workflow: string;
-	readonly trigger: string;
-	readonly input: unknown;
-	readonly startedAt: string;
-	readonly status: "pending";
-}
-
-interface SucceededRecord {
-	readonly id: string;
-	readonly workflow: string;
-	readonly trigger: string;
-	readonly input: unknown;
-	readonly startedAt: string;
-	readonly completedAt: string;
-	readonly status: "succeeded";
-	readonly result: HttpTriggerResult;
-}
-
-interface FailedRecord {
-	readonly id: string;
-	readonly workflow: string;
-	readonly trigger: string;
-	readonly input: unknown;
-	readonly startedAt: string;
-	readonly completedAt: string;
-	readonly status: "failed";
-	readonly error: SerializedErrorPayload;
-}
-
-type InvocationRecord = PendingRecord | SucceededRecord | FailedRecord;
-type ArchiveRecord = SucceededRecord | FailedRecord;
+// During an invocation, every event is written to `pending/{id}_{seq}.json`.
+// On terminal events (`trigger.response` / `trigger.error`), all files for
+// that invocation id are moved to `archive/{id}/{seq}.json`.
 
 const PENDING_PREFIX = "pending/";
 const ARCHIVE_PREFIX = "archive/";
 
-function pendingPath(id: string): string {
-	return `${PENDING_PREFIX}${id}.json`;
+function pendingPath(id: string, seq: number): string {
+	return `${PENDING_PREFIX}${id}_${seq}.json`;
 }
 
-function archivePath(id: string): string {
-	return `${ARCHIVE_PREFIX}${id}.json`;
-}
-
-interface StartSnapshot {
-	readonly input: unknown;
-	readonly startedAt: string;
+function archivePath(id: string, seq: number): string {
+	return `${ARCHIVE_PREFIX}${id}/${seq}.json`;
 }
 
 interface PersistenceOptions {
@@ -74,127 +27,117 @@ interface PersistenceOptions {
 	};
 }
 
-// Remember start-time data between `started` and terminal events so the
-// archive record can include them without requiring the terminal event to
-// carry the full history. If the process dies between `started` and
-// terminal, the pending/ file still contains the start fields for recovery.
-interface PersistenceDeps {
-	readonly backend: StorageBackend;
-	readonly starts: Map<string, StartSnapshot>;
-	readonly logger?: PersistenceOptions["logger"];
-}
-
 interface PersistenceConsumer extends BusConsumer {
 	// Marker type — nothing extra in v1; kept as a named alias so callers
 	// (recovery, main bootstrap) can express "I want the consumer" clearly.
 }
 
-async function handleStarted(
-	deps: PersistenceDeps,
-	event: Extract<InvocationLifecycleEvent, { kind: "started" }>,
-): Promise<void> {
-	const record: PendingRecord = {
-		id: event.id,
-		workflow: event.workflow,
-		trigger: event.trigger,
-		input: event.input,
-		startedAt: event.ts.toISOString(),
-		status: "pending",
-	};
-	deps.starts.set(event.id, {
-		input: event.input,
-		startedAt: record.startedAt,
-	});
-	await deps.backend.write(
-		pendingPath(event.id),
-		JSON.stringify(record, null, 2),
-	);
+interface PersistenceDeps {
+	readonly backend: StorageBackend;
+	// Tracks which seqs we've written for each in-flight invocation id, so the
+	// terminal handler knows which files to move to archive.
+	readonly pendingSeqs: Map<string, number[]>;
+	readonly logger?: PersistenceOptions["logger"];
 }
 
-async function handleCompleted(
-	deps: PersistenceDeps,
-	event: Extract<InvocationLifecycleEvent, { kind: "completed" }>,
-): Promise<void> {
-	const snapshot =
-		deps.starts.get(event.id) ?? (await readPendingSnapshot(deps, event));
-	const record: SucceededRecord = {
-		id: event.id,
-		workflow: event.workflow,
-		trigger: event.trigger,
-		input: snapshot.input,
-		startedAt: snapshot.startedAt,
-		completedAt: event.ts.toISOString(),
-		status: "succeeded",
-		result: event.result,
-	};
-	await deps.backend.write(
-		archivePath(event.id),
-		JSON.stringify(record, null, 2),
-	);
-	await removePending(deps, event.id);
-	deps.starts.delete(event.id);
+function isTerminal(kind: string): boolean {
+	return kind === "trigger.response" || kind === "trigger.error";
 }
 
-async function handleFailed(
+async function writePending(
 	deps: PersistenceDeps,
-	event: Extract<InvocationLifecycleEvent, { kind: "failed" }>,
+	event: InvocationEvent,
 ): Promise<void> {
-	const snapshot =
-		deps.starts.get(event.id) ?? (await readPendingSnapshot(deps, event));
-	const record: FailedRecord = {
-		id: event.id,
-		workflow: event.workflow,
-		trigger: event.trigger,
-		input: snapshot.input,
-		startedAt: snapshot.startedAt,
-		completedAt: event.ts.toISOString(),
-		status: "failed",
-		error: event.error,
-	};
-	await deps.backend.write(
-		archivePath(event.id),
-		JSON.stringify(record, null, 2),
-	);
-	await removePending(deps, event.id);
-	deps.starts.delete(event.id);
-}
-
-async function readPendingSnapshot(
-	deps: PersistenceDeps,
-	event: InvocationLifecycleEvent,
-): Promise<StartSnapshot> {
-	// Terminal event arrived without a prior `started` in this process —
-	// typically the recovery path, where the pending file already exists
-	// from a prior session. Read from disk; fall back to a conservative
-	// default if the file is gone.
-	try {
-		const raw = await deps.backend.read(pendingPath(event.id));
-		const parsed = JSON.parse(raw) as PendingRecord;
-		return {
-			input: parsed.input,
-			startedAt: parsed.startedAt,
-		};
-	} catch (err) {
-		deps.logger?.error("persistence.read-pending-failed", {
-			id: event.id,
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return { input: null, startedAt: event.ts.toISOString() };
+	const path = pendingPath(event.id, event.seq);
+	await deps.backend.write(path, JSON.stringify(event, null, 2));
+	let seqs = deps.pendingSeqs.get(event.id);
+	if (!seqs) {
+		seqs = [];
+		deps.pendingSeqs.set(event.id, seqs);
 	}
+	seqs.push(event.seq);
 }
 
-async function removePending(deps: PersistenceDeps, id: string): Promise<void> {
-	try {
-		await deps.backend.remove(pendingPath(id));
-	} catch (err) {
-		// A missing pending file is expected on recovery (the file may have
-		// been the source we just promoted to archive, or may already have
-		// been swept). Log everything else at error-level.
-		deps.logger?.error("persistence.remove-pending-failed", {
-			id,
-			error: err instanceof Error ? err.message : String(err),
-		});
+async function archiveInvocation(
+	deps: PersistenceDeps,
+	id: string,
+): Promise<void> {
+	const seqs =
+		deps.pendingSeqs.get(id) ?? (await discoverPendingSeqs(deps, id));
+	for (const seq of seqs) {
+		const fromPath = pendingPath(id, seq);
+		const toPath = archivePath(id, seq);
+		try {
+			// biome-ignore lint/performance/noAwaitInLoops: per-file copy must complete before remove to keep files reachable on backend types without rename
+			const content = await deps.backend.read(fromPath);
+			await deps.backend.write(toPath, content);
+			await deps.backend.remove(fromPath);
+		} catch (err) {
+			deps.logger?.error("persistence.archive-failed", {
+				id,
+				seq,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
+	deps.pendingSeqs.delete(id);
+}
+
+async function discoverPendingSeqs(
+	deps: PersistenceDeps,
+	id: string,
+): Promise<number[]> {
+	const seqs: number[] = [];
+	for await (const path of deps.backend.list(PENDING_PREFIX)) {
+		const parsed = parsePendingPath(path);
+		if (parsed && parsed.id === id) {
+			seqs.push(parsed.seq);
+		}
+	}
+	seqs.sort((a, b) => a - b);
+	return seqs;
+}
+
+const PENDING_PATH_RE = /(?:^|\/)([^/]+)_(\d+)\.json$/;
+
+function parsePendingPath(
+	path: string,
+): { id: string; seq: number } | undefined {
+	const match = PENDING_PATH_RE.exec(path);
+	if (!match) {
+		return;
+	}
+	const id = match[1];
+	const seqRaw = match[2];
+	if (id === undefined || seqRaw === undefined) {
+		return;
+	}
+	const seq = Number(seqRaw);
+	if (!Number.isFinite(seq)) {
+		return;
+	}
+	return { id, seq };
+}
+
+const ARCHIVE_PATH_RE = /(?:^|\/)archive\/([^/]+)\/(\d+)\.json$/;
+
+function parseArchivePath(
+	path: string,
+): { id: string; seq: number } | undefined {
+	const match = ARCHIVE_PATH_RE.exec(path);
+	if (!match) {
+		return;
+	}
+	const id = match[1];
+	const seqRaw = match[2];
+	if (id === undefined || seqRaw === undefined) {
+		return;
+	}
+	const seq = Number(seqRaw);
+	if (!Number.isFinite(seq)) {
+		return;
+	}
+	return { id, seq };
 }
 
 function createPersistence(
@@ -203,38 +146,26 @@ function createPersistence(
 ): PersistenceConsumer {
 	const deps: PersistenceDeps = {
 		backend,
-		starts: new Map(),
+		pendingSeqs: new Map(),
 		...(options?.logger ? { logger: options.logger } : {}),
 	};
 	return {
-		async handle(event: InvocationLifecycleEvent): Promise<void> {
-			if (event.kind === "started") {
-				await handleStarted(deps, event);
-				return;
+		async handle(event: InvocationEvent): Promise<void> {
+			await writePending(deps, event);
+			if (isTerminal(event.kind)) {
+				await archiveInvocation(deps, event.id);
 			}
-			if (event.kind === "completed") {
-				await handleCompleted(deps, event);
-				return;
-			}
-			await handleFailed(deps, event);
 		},
 	};
 }
 
-const ID_FROM_PATH = /(?:^|\/)([^/]+)\.json$/;
-
-function idFromPath(path: string): string | undefined {
-	const match = ID_FROM_PATH.exec(path);
-	return match?.[1];
-}
-
-async function* scanPrefix(
+async function* scanPath(
 	backend: StorageBackend,
 	prefix: string,
-): AsyncGenerator<InvocationRecord> {
+	parser: (path: string) => { id: string; seq: number } | undefined,
+): AsyncGenerator<InvocationEvent> {
 	for await (const path of backend.list(prefix)) {
-		const id = idFromPath(path);
-		if (!id) {
+		if (!parser(path)) {
 			continue;
 		}
 		let raw: string;
@@ -244,43 +175,30 @@ async function* scanPrefix(
 			continue;
 		}
 		try {
-			yield JSON.parse(raw) as InvocationRecord;
+			yield JSON.parse(raw) as InvocationEvent;
 		} catch {
 			// Skip malformed records; callers receive a partial view rather
-			// than crashing on corruption. Recovery writes a failed archive
-			// entry for any pending id it sees, so a corrupt file still gets
-			// archived via its filename-derived id.
+			// than crashing on corruption.
 		}
 	}
 }
 
-function scanPending(
-	backend: StorageBackend,
-): AsyncGenerator<InvocationRecord> {
-	return scanPrefix(backend, PENDING_PREFIX);
+function scanPending(backend: StorageBackend): AsyncGenerator<InvocationEvent> {
+	return scanPath(backend, PENDING_PREFIX, parsePendingPath);
 }
 
-function scanArchive(
-	backend: StorageBackend,
-): AsyncGenerator<InvocationRecord> {
-	return scanPrefix(backend, ARCHIVE_PREFIX);
+function scanArchive(backend: StorageBackend): AsyncGenerator<InvocationEvent> {
+	return scanPath(backend, ARCHIVE_PREFIX, parseArchivePath);
 }
 
-export type {
-	ArchiveRecord,
-	FailedRecord,
-	InvocationRecord,
-	PendingRecord,
-	PersistenceConsumer,
-	PersistenceOptions,
-	SucceededRecord,
-};
+export type { PersistenceConsumer, PersistenceOptions };
 export {
 	ARCHIVE_PREFIX,
 	archivePath,
 	createPersistence,
-	idFromPath,
 	PENDING_PREFIX,
+	parseArchivePath,
+	parsePendingPath,
 	pendingPath,
 	scanArchive,
 	scanPending,

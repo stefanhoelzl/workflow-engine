@@ -15,6 +15,7 @@ const ERR_MISSING_HANDLER = /missing a handler function/;
 const ERR_NOT_ZOD_SCHEMA = /is not a Zod schema/;
 const EXPORT_ON_EVENT_RE = /export\s*\{[^}]*onEvent/;
 const EXPORT_SEND_NOTIFICATION_RE = /export\s*\{[^}]*sendNotification/;
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 // The fixtures below import `@workflow-engine/sdk` by name. For Vite to
 // resolve that from a temp workspace, we symlink the repo's SDK into the temp
@@ -187,6 +188,7 @@ describe("workflowPlugin: brand-based discovery", () => {
 		const manifest = (await readManifest(outDir, "basic")) as {
 			name: string;
 			module: string;
+			sha: string;
 			env: Record<string, string>;
 			actions: Array<{ name: string; input: unknown; output: unknown }>;
 			triggers: Array<{
@@ -201,6 +203,8 @@ describe("workflowPlugin: brand-based discovery", () => {
 		};
 		expect(manifest.name).toBe("basic");
 		expect(manifest.module).toBe("basic.js");
+		// sha is a 64-char hex SHA-256 of the bundle source.
+		expect(manifest.sha).toMatch(SHA256_HEX_RE);
 		expect(manifest.env).toEqual({});
 		expect(manifest.actions).toHaveLength(1);
 		expect(manifest.actions[0]?.name).toBe("sendNotification");
@@ -217,6 +221,11 @@ describe("workflowPlugin: brand-based discovery", () => {
 		// Bundle is an ES module with the original named exports preserved.
 		expect(bundleSrc).toMatch(EXPORT_ON_EVENT_RE);
 		expect(bundleSrc).toMatch(EXPORT_SEND_NOTIFICATION_RE);
+
+		// sha matches SHA-256 of the bundle source bytes — verify by recomputing.
+		const { createHash } = await import("node:crypto");
+		const expectedSha = createHash("sha256").update(bundleSrc).digest("hex");
+		expect(manifest.sha).toBe(expectedSha);
 	});
 
 	it("generates JSON Schema for input, output, and trigger body", async () => {

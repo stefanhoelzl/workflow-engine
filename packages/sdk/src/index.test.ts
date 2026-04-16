@@ -17,7 +17,7 @@ import {
 const ACTION_NAME_NOT_ASSIGNED_RE =
 	/invoked before the build system assigned it a name/;
 const ACTION_ALREADY_BOUND_RE = /Action already bound to name "n"/;
-const HOST_CALL_UNAVAILABLE_RE = /__hostCallAction is not available/;
+const HOST_CALL_UNAVAILABLE_RE = /No action dispatcher installed/;
 
 // ---------------------------------------------------------------------------
 // Brand + type-guard tests
@@ -87,12 +87,29 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 	const globalRef = globalThis as Record<string, unknown>;
 
 	beforeEach(() => {
+		// The SDK delegates to globalThis.__dispatchAction (installed by the
+		// runtime). Install the same dispatch shape used in production so the
+		// SDK callable runs the host bridge → handler → output-parse pipeline.
 		hostCallMock = vi.fn();
 		globalRef.__hostCallAction = hostCallMock;
+		globalRef.__dispatchAction = async (
+			name: string,
+			input: unknown,
+			handler: (input: unknown) => Promise<unknown>,
+			outputSchema: { parse(data: unknown): unknown },
+		) => {
+			await (hostCallMock as (n: string, i: unknown) => Promise<unknown>)(
+				name,
+				input,
+			);
+			const raw = await handler(input);
+			return outputSchema.parse(raw);
+		};
 	});
 
 	afterEach(() => {
 		globalRef.__hostCallAction = undefined;
+		globalRef.__dispatchAction = undefined;
 	});
 
 	it("notifies the host, then runs the handler, then returns the validated output", async () => {
@@ -183,9 +200,10 @@ describe("action callable without sandbox globals", () => {
 
 	beforeEach(() => {
 		globalRef.__hostCallAction = undefined;
+		globalRef.__dispatchAction = undefined;
 	});
 
-	it("throws when invoked outside the sandbox (no __hostCallAction) — handler MUST NOT run", async () => {
+	it("throws when invoked outside the sandbox (no dispatcher) — handler MUST NOT run", async () => {
 		const handler = vi.fn(async () => undefined);
 		const a = action({
 			input: z.unknown(),
@@ -346,6 +364,7 @@ describe("ManifestSchema", () => {
 	const validManifest = {
 		name: "cronitor",
 		module: "cronitor.js",
+		sha: "0".repeat(64),
 		env: { URL: "https://example.com" },
 		actions: [
 			{

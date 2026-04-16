@@ -1,4 +1,4 @@
-import type { LogEntry } from "./bridge-factory.js";
+import type { InvocationEvent } from "@workflow-engine/core";
 
 interface SerializedError {
 	name: string;
@@ -13,14 +13,15 @@ interface SerializedError {
 }
 
 type RunResultPayload =
-	| { ok: true; result: unknown; logs: LogEntry[] }
-	| { ok: false; error: { message: string; stack: string }; logs: LogEntry[] };
+	| { ok: true; result: unknown }
+	| { ok: false; error: { message: string; stack: string } };
 
 type MainToWorker =
 	| {
 			type: "init";
 			source: string;
 			methodNames: string[];
+			methodEventNames?: Record<string, string>;
 			filename: string;
 			forwardFetch: boolean;
 	  }
@@ -29,6 +30,9 @@ type MainToWorker =
 			exportName: string;
 			ctx: unknown;
 			extraNames: string[];
+			invocationId: string;
+			workflow: string;
+			workflowSha: string;
 	  }
 	| {
 			type: "response";
@@ -52,6 +56,7 @@ type WorkerToMain =
 			method: string;
 			args: unknown[];
 	  }
+	| { type: "event"; event: InvocationEvent }
 	| { type: "done"; payload: RunResultPayload };
 
 export type { MainToWorker, RunResultPayload, SerializedError, WorkerToMain };

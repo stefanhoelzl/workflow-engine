@@ -6,7 +6,7 @@ function bridgeHostFetch(
 	signalProvider: () => AbortSignal | undefined = () => undefined,
 ): void {
 	b.async(b.vm.global, "__hostFetch", {
-		method: "xhr.send",
+		method: "host.fetch",
 		args: [b.arg.string, b.arg.string, b.arg.json, b.arg.json],
 		marshal: b.marshal.json,
 		impl: async (method, url, headers, body) => {

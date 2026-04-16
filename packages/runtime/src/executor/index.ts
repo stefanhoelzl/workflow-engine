@@ -1,6 +1,5 @@
 import type { HttpTriggerResult } from "@workflow-engine/core";
-import type { EventBus, SerializedErrorPayload } from "../event-bus/index.js";
-import { newInvocation } from "./invocation.js";
+import type { EventBus } from "../event-bus/index.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";
 import type { WorkflowRunner } from "./types.js";
 
@@ -8,15 +7,10 @@ import type { WorkflowRunner } from "./types.js";
 // Executor
 // ---------------------------------------------------------------------------
 //
-// The executor owns the trigger-invocation lifecycle: allocate an id + start
-// event, serialize per-workflow via a runQueue, dispatch the handler through
-// the workflow's runner, shape the HTTP response, and emit completed/failed
-// events to the bus. It is intentionally unaware of persistence; the bus is
-// the single coordination point.
-//
-// The executor owns lifecycle emission (no separate EventSource). Bus dispatch
-// is awaited so persistence commits before the executor returns — this gives
-// the HTTP middleware a commit-before-observe guarantee for free.
+// The executor generates an invocation id, wires the workflow's onEvent stream
+// to the bus, and calls invokeHandler. The sandbox emits trigger.request /
+// trigger.response / trigger.error events itself — the executor no longer
+// constructs lifecycle events.
 
 const DEFAULT_STATUS = 200;
 const DEFAULT_BODY = "";
@@ -27,13 +21,10 @@ function defaultResult(): HttpTriggerResult {
 }
 
 function shapeResult(value: unknown): HttpTriggerResult {
-	// Handlers may return undefined, a partial { status?, body?, headers? }, or
-	// a full HttpTriggerResult. Apply defaults per the executor spec.
 	if (value === undefined || value === null) {
 		return defaultResult();
 	}
 	if (typeof value !== "object") {
-		// Primitive return — treat as body with defaults.
 		return { status: DEFAULT_STATUS, body: value, headers: {} };
 	}
 	const obj = value as Record<string, unknown>;
@@ -45,21 +36,6 @@ function shapeResult(value: unknown): HttpTriggerResult {
 			? (obj.headers as Record<string, string>)
 			: {};
 	return { status, body, headers };
-}
-
-function serializeError(err: unknown): SerializedErrorPayload {
-	if (err instanceof Error) {
-		const base: SerializedErrorPayload = {
-			message: err.message,
-			stack: err.stack ?? "",
-		};
-		const source = err as unknown as Record<string, unknown>;
-		if ("issues" in source) {
-			return { ...base, issues: source.issues };
-		}
-		return base;
-	}
-	return { message: String(err), stack: "" };
 }
 
 const ERROR_RESPONSE: HttpTriggerResult = {
@@ -80,13 +56,20 @@ interface Executor {
 	): Promise<HttpTriggerResult>;
 }
 
+function newInvocationId(): string {
+	return `evt_${crypto.randomUUID()}`;
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups runQueue management, onEvent wiring, sequential emit tail, and HTTP-result shaping
 function createExecutor(options: ExecutorOptions): Executor {
 	const { bus } = options;
-	// One runQueue per workflow — keyed by name. The registry is expected to
-	// pass a stable WorkflowRunner reference for each workflow, so we could
-	// key by identity; name-keying survives re-loads and keeps the executor
-	// uncoupled from registry lifecycle semantics.
 	const queues = new Map<string, RunQueue>();
+	// Per-workflow queue of pending bus.emit promises. The onEvent callback
+	// chains each new emit onto this tail so emits stay sequential per
+	// workflow, and runInvocation awaits the tail before returning to give
+	// callers a "events committed before HTTP response" guarantee.
+	const emitTails = new WeakMap<WorkflowRunner, Promise<void>>();
+	const wired = new WeakSet<WorkflowRunner>();
 
 	function queueFor(name: string): RunQueue {
 		let q = queues.get(name);
@@ -97,34 +80,44 @@ function createExecutor(options: ExecutorOptions): Executor {
 		return q;
 	}
 
+	function ensureWired(workflow: WorkflowRunner): void {
+		if (wired.has(workflow)) {
+			return;
+		}
+		emitTails.set(workflow, Promise.resolve());
+		workflow.onEvent((event) => {
+			const prev = emitTails.get(workflow) ?? Promise.resolve();
+			const next = prev.then(() =>
+				bus.emit(event).catch(() => {
+					/* swallow consumer errors — they shouldn't block the next emit */
+				}),
+			);
+			emitTails.set(workflow, next);
+		});
+		wired.add(workflow);
+	}
+
 	async function runInvocation(
 		workflow: WorkflowRunner,
 		triggerName: string,
 		payload: unknown,
 	): Promise<HttpTriggerResult> {
-		const invocation = newInvocation({
-			workflow: workflow.name,
-			trigger: triggerName,
-			payload,
-		});
-
-		// Emit `started` BEFORE the handler runs so persistence has a pending
-		// file if we crash mid-handler. Failures inside the started emit
-		// propagate — the HTTP middleware turns them into 500.
-		await bus.emit(invocation.startedEvent);
-
+		ensureWired(workflow);
+		const invocationId = newInvocationId();
 		let result: HttpTriggerResult;
 		try {
-			const raw = await workflow.invokeHandler(triggerName, payload);
+			const raw = await workflow.invokeHandler(
+				invocationId,
+				triggerName,
+				payload,
+			);
 			result = shapeResult(raw);
-		} catch (err) {
-			const failedEvent = invocation.fail(serializeError(err));
-			await bus.emit(failedEvent);
-			return ERROR_RESPONSE;
+		} catch {
+			result = ERROR_RESPONSE;
 		}
-
-		const completedEvent = invocation.complete(result);
-		await bus.emit(completedEvent);
+		// Wait for all in-flight bus emits to settle so callers see a
+		// "persistence committed before response" guarantee.
+		await (emitTails.get(workflow) ?? Promise.resolve());
 		return result;
 	}
 
@@ -137,10 +130,8 @@ function createExecutor(options: ExecutorOptions): Executor {
 	};
 }
 
-export type { Invocation } from "./invocation.js";
-// biome-ignore lint/performance/noBarrelFile: executor entry point re-exports its siblings (invocation factory, run-queue, descriptors) so consumers have a single module to import from; the alternative — deep-path imports across the runtime — is worse for refactor safety
-export { newInvocation } from "./invocation.js";
 export type { RunQueue } from "./run-queue.js";
+// biome-ignore lint/performance/noBarrelFile: executor entry point re-exports its siblings (run-queue, descriptors) so consumers have a single module to import from
 export { createRunQueue } from "./run-queue.js";
 export type {
 	ActionDescriptor,
