@@ -129,6 +129,38 @@ function storageBackendTests(
 			const data = await backend.read("pending/a.json");
 			expect(data).toBe("new");
 		});
+
+		it("removePrefix removes all nested files under the prefix", async () => {
+			await backend.write("pending/evt_a/000000.json", "a0");
+			await backend.write("pending/evt_a/000001.json", "a1");
+			await backend.write("pending/evt_a/000002.json", "a2");
+			await backend.write("pending/evt_b/000000.json", "b0");
+
+			await backend.removePrefix("pending/evt_a/");
+
+			const remaining: string[] = [];
+			for await (const path of backend.list("pending/")) {
+				remaining.push(path);
+			}
+			expect(remaining).toEqual(["pending/evt_b/000000.json"]);
+		});
+
+		it("removePrefix is idempotent on missing prefix", async () => {
+			await expect(
+				backend.removePrefix("pending/evt_nonexistent/"),
+			).resolves.toBeUndefined();
+		});
+
+		it("removePrefix does not affect keys outside the prefix", async () => {
+			await backend.write("pending/evt_a/0.json", "a0");
+			await backend.write("archive/evt_a.json", "arch");
+			await backend.write("pending_other.json", "keep");
+
+			await backend.removePrefix("pending/evt_a/");
+
+			expect(await backend.read("archive/evt_a.json")).toBe("arch");
+			expect(await backend.read("pending_other.json")).toBe("keep");
+		});
 	});
 }
 

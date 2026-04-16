@@ -3,6 +3,7 @@ import {
 	readdir,
 	readFile,
 	rename,
+	rm,
 	unlink,
 	writeFile,
 } from "node:fs/promises";
@@ -50,6 +51,10 @@ function createFsStorage(root: string): StorageBackend {
 
 		async remove(path) {
 			await unlink(join(root, path));
+		},
+
+		async removePrefix(prefix) {
+			await rm(join(root, prefix), { recursive: true, force: true });
 		},
 
 		async move(from, to) {

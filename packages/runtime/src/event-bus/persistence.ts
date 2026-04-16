@@ -3,22 +3,29 @@ import type { StorageBackend } from "../storage/index.js";
 import type { BusConsumer } from "./index.js";
 
 // ---------------------------------------------------------------------------
-// Persistence — one file per event
+// Persistence — per-event pending, single-file archive
 // ---------------------------------------------------------------------------
 //
-// During an invocation, every event is written to `pending/{id}_{seq}.json`.
-// On terminal events (`trigger.response` / `trigger.error`), all files for
-// that invocation id are moved to `archive/{id}/{seq}.json`.
+// During an invocation, every event is written to `pending/{id}/{seq}.json`
+// (seq zero-padded to 6 digits) and accumulated in memory keyed by id.
+// On terminal events (`trigger.response` / `trigger.error`), the full
+// accumulated event list is written as a JSON array to `archive/{id}.json`;
+// the in-memory entry is cleared; then the pending prefix is removed.
 
 const PENDING_PREFIX = "pending/";
 const ARCHIVE_PREFIX = "archive/";
+const SEQ_PAD = 6;
 
 function pendingPath(id: string, seq: number): string {
-	return `${PENDING_PREFIX}${id}_${seq}.json`;
+	return `${PENDING_PREFIX}${id}/${seq.toString().padStart(SEQ_PAD, "0")}.json`;
 }
 
-function archivePath(id: string, seq: number): string {
-	return `${ARCHIVE_PREFIX}${id}/${seq}.json`;
+function pendingPrefix(id: string): string {
+	return `${PENDING_PREFIX}${id}/`;
+}
+
+function archivePath(id: string): string {
+	return `${ARCHIVE_PREFIX}${id}.json`;
 }
 
 interface PersistenceOptions {
@@ -34,9 +41,10 @@ interface PersistenceConsumer extends BusConsumer {
 
 interface PersistenceDeps {
 	readonly backend: StorageBackend;
-	// Tracks which seqs we've written for each in-flight invocation id, so the
-	// terminal handler knows which files to move to archive.
-	readonly pendingSeqs: Map<string, number[]>;
+	// Holds events already persisted to `pending/` for each in-flight invocation
+	// id, in arrival (= seq) order. On terminal we serialize this list as the
+	// archive file, so we don't re-read N pending files.
+	readonly pendingEvents: Map<string, InvocationEvent[]>;
 	readonly logger?: PersistenceOptions["logger"];
 }
 
@@ -50,55 +58,40 @@ async function writePending(
 ): Promise<void> {
 	const path = pendingPath(event.id, event.seq);
 	await deps.backend.write(path, JSON.stringify(event, null, 2));
-	let seqs = deps.pendingSeqs.get(event.id);
-	if (!seqs) {
-		seqs = [];
-		deps.pendingSeqs.set(event.id, seqs);
+	let events = deps.pendingEvents.get(event.id);
+	if (!events) {
+		events = [];
+		deps.pendingEvents.set(event.id, events);
 	}
-	seqs.push(event.seq);
+	events.push(event);
 }
 
 async function archiveInvocation(
 	deps: PersistenceDeps,
 	id: string,
 ): Promise<void> {
-	const seqs =
-		deps.pendingSeqs.get(id) ?? (await discoverPendingSeqs(deps, id));
-	for (const seq of seqs) {
-		const fromPath = pendingPath(id, seq);
-		const toPath = archivePath(id, seq);
-		try {
-			// biome-ignore lint/performance/noAwaitInLoops: per-file copy must complete before remove to keep files reachable on backend types without rename
-			const content = await deps.backend.read(fromPath);
-			await deps.backend.write(toPath, content);
-			await deps.backend.remove(fromPath);
-		} catch (err) {
-			deps.logger?.error("persistence.archive-failed", {
-				id,
-				seq,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
+	const events = deps.pendingEvents.get(id) ?? [];
+	try {
+		await deps.backend.write(archivePath(id), JSON.stringify(events, null, 2));
+	} catch (err) {
+		deps.logger?.error("persistence.archive-failed", {
+			id,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return;
 	}
-	deps.pendingSeqs.delete(id);
+	deps.pendingEvents.delete(id);
+	try {
+		await deps.backend.removePrefix(pendingPrefix(id));
+	} catch (err) {
+		deps.logger?.error("persistence.remove-prefix-failed", {
+			id,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 }
 
-async function discoverPendingSeqs(
-	deps: PersistenceDeps,
-	id: string,
-): Promise<number[]> {
-	const seqs: number[] = [];
-	for await (const path of deps.backend.list(PENDING_PREFIX)) {
-		const parsed = parsePendingPath(path);
-		if (parsed && parsed.id === id) {
-			seqs.push(parsed.seq);
-		}
-	}
-	seqs.sort((a, b) => a - b);
-	return seqs;
-}
-
-const PENDING_PATH_RE = /(?:^|\/)([^/]+)_(\d+)\.json$/;
+const PENDING_PATH_RE = /(?:^|\/)pending\/([^/]+)\/(\d+)\.json$/;
 
 function parsePendingPath(
 	path: string,
@@ -119,25 +112,18 @@ function parsePendingPath(
 	return { id, seq };
 }
 
-const ARCHIVE_PATH_RE = /(?:^|\/)archive\/([^/]+)\/(\d+)\.json$/;
+const ARCHIVE_PATH_RE = /(?:^|\/)archive\/([^/]+)\.json$/;
 
-function parseArchivePath(
-	path: string,
-): { id: string; seq: number } | undefined {
+function parseArchivePath(path: string): { id: string } | undefined {
 	const match = ARCHIVE_PATH_RE.exec(path);
 	if (!match) {
 		return;
 	}
 	const id = match[1];
-	const seqRaw = match[2];
-	if (id === undefined || seqRaw === undefined) {
+	if (id === undefined) {
 		return;
 	}
-	const seq = Number(seqRaw);
-	if (!Number.isFinite(seq)) {
-		return;
-	}
-	return { id, seq };
+	return { id };
 }
 
 function createPersistence(
@@ -146,7 +132,7 @@ function createPersistence(
 ): PersistenceConsumer {
 	const deps: PersistenceDeps = {
 		backend,
-		pendingSeqs: new Map(),
+		pendingEvents: new Map(),
 		...(options?.logger ? { logger: options.logger } : {}),
 	};
 	return {
@@ -159,13 +145,11 @@ function createPersistence(
 	};
 }
 
-async function* scanPath(
+async function* scanPending(
 	backend: StorageBackend,
-	prefix: string,
-	parser: (path: string) => { id: string; seq: number } | undefined,
 ): AsyncGenerator<InvocationEvent> {
-	for await (const path of backend.list(prefix)) {
-		if (!parser(path)) {
+	for await (const path of backend.list(PENDING_PREFIX)) {
+		if (!parsePendingPath(path)) {
 			continue;
 		}
 		let raw: string;
@@ -183,12 +167,32 @@ async function* scanPath(
 	}
 }
 
-function scanPending(backend: StorageBackend): AsyncGenerator<InvocationEvent> {
-	return scanPath(backend, PENDING_PREFIX, parsePendingPath);
-}
-
-function scanArchive(backend: StorageBackend): AsyncGenerator<InvocationEvent> {
-	return scanPath(backend, ARCHIVE_PREFIX, parseArchivePath);
+async function* scanArchive(
+	backend: StorageBackend,
+): AsyncGenerator<InvocationEvent> {
+	for await (const path of backend.list(ARCHIVE_PREFIX)) {
+		if (!parseArchivePath(path)) {
+			continue;
+		}
+		let raw: string;
+		try {
+			raw = await backend.read(path);
+		} catch {
+			continue;
+		}
+		let events: unknown;
+		try {
+			events = JSON.parse(raw);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(events)) {
+			continue;
+		}
+		for (const event of events) {
+			yield event as InvocationEvent;
+		}
+	}
 }
 
 export type { PersistenceConsumer, PersistenceOptions };
@@ -200,6 +204,7 @@ export {
 	parseArchivePath,
 	parsePendingPath,
 	pendingPath,
+	pendingPrefix,
 	scanArchive,
 	scanPending,
 };

@@ -39,6 +39,7 @@ function stubStorageBackend(): StorageBackend {
 			// empty iterator
 		}),
 		remove: vi.fn().mockResolvedValue(undefined),
+		removePrefix: vi.fn().mockResolvedValue(undefined),
 		move: vi.fn().mockResolvedValue(undefined),
 	};
 }

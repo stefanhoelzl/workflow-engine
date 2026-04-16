@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import {
 	type BusConsumer,
 	createEventBus,
@@ -31,11 +32,13 @@ function event(
 describe("recovery", () => {
 	let dir: string;
 	let backend: StorageBackend;
+	let eventStore: EventStore;
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "recovery-test-"));
 		backend = createFsStorage(dir);
 		await backend.init();
+		eventStore = await createEventStore();
 	});
 
 	afterEach(async () => {
@@ -45,22 +48,22 @@ describe("recovery", () => {
 	it("is a no-op when pending/ is empty", async () => {
 		const consumer: BusConsumer = { handle: vi.fn() };
 		const bus = createEventBus([consumer]);
-		await recover({ backend }, bus);
+		await recover({ backend, eventStore }, bus);
 		expect(consumer.handle).not.toHaveBeenCalled();
 	});
 
 	it("replays pending events in seq order and synthesizes a trigger.error", async () => {
 		// Seed pending/ as if the process died after seq 2.
 		await backend.write(
-			"pending/evt_a_0.json",
+			"pending/evt_a/000000.json",
 			JSON.stringify(event({ kind: "trigger.request", seq: 0 })),
 		);
 		await backend.write(
-			"pending/evt_a_1.json",
+			"pending/evt_a/000001.json",
 			JSON.stringify(event({ kind: "system.request", seq: 1, ref: 0 })),
 		);
 		await backend.write(
-			"pending/evt_a_2.json",
+			"pending/evt_a/000002.json",
 			JSON.stringify(event({ kind: "system.response", seq: 2, ref: 1 })),
 		);
 
@@ -72,7 +75,7 @@ describe("recovery", () => {
 		};
 		const bus = createEventBus([consumer]);
 
-		await recover({ backend }, bus);
+		await recover({ backend, eventStore }, bus);
 
 		expect(seen.map((e) => e.kind)).toEqual([
 			"trigger.request",
@@ -90,15 +93,15 @@ describe("recovery", () => {
 
 	it("groups by invocation id and recovers each independently", async () => {
 		await backend.write(
-			"pending/evt_a_0.json",
+			"pending/evt_a/000000.json",
 			JSON.stringify(event({ id: "evt_a", kind: "trigger.request", seq: 0 })),
 		);
 		await backend.write(
-			"pending/evt_b_0.json",
+			"pending/evt_b/000000.json",
 			JSON.stringify(event({ id: "evt_b", kind: "trigger.request", seq: 0 })),
 		);
 		await backend.write(
-			"pending/evt_b_1.json",
+			"pending/evt_b/000001.json",
 			JSON.stringify(
 				event({ id: "evt_b", kind: "system.request", seq: 1, ref: 0 }),
 			),
@@ -114,7 +117,7 @@ describe("recovery", () => {
 			},
 		} as unknown as EventBus;
 
-		await recover({ backend }, bus);
+		await recover({ backend, eventStore }, bus);
 
 		const aEvents = seen.filter((e) => e.id === "evt_a");
 		const bEvents = seen.filter((e) => e.id === "evt_b");
@@ -129,16 +132,75 @@ describe("recovery", () => {
 		]);
 	});
 
+	it("skips replay and clears stale pending when archive is already in the event store", async () => {
+		// Seed archive with a complete invocation (simulates successful archive
+		// write from prior process).
+		const archived: InvocationEvent[] = [
+			event({ kind: "trigger.request", seq: 0 }),
+			event({ kind: "system.request", seq: 1, ref: 0 }),
+			event({ kind: "trigger.response", seq: 2, ref: 0, output: "ok" }),
+		];
+		await backend.write("archive/evt_a.json", JSON.stringify(archived));
+
+		// Bootstrap event store from archive (mirrors main.ts startup order).
+		const store = await createEventStore({ persistence: { backend } });
+		await store.initialized;
+
+		// Partial pending leftover (simulates crash during removePrefix).
+		await backend.write(
+			"pending/evt_a/000001.json",
+			JSON.stringify(archived[1]),
+		);
+		await backend.write(
+			"pending/evt_a/000002.json",
+			JSON.stringify(archived[2]),
+		);
+
+		const logger = { info: vi.fn() };
+		const busEmits: InvocationEvent[] = [];
+		const bus: EventBus = {
+			handle: async () => {
+				/* unused */
+			},
+			emit: async (e: InvocationEvent) => {
+				busEmits.push(e);
+			},
+		} as unknown as EventBus;
+
+		await recover({ backend, eventStore: store, logger }, bus);
+
+		// No replay, no synthetic.
+		expect(busEmits).toEqual([]);
+
+		// Archive cleanup was logged.
+		expect(logger.info).toHaveBeenCalledWith(
+			"runtime.recovery.archive-cleanup",
+			expect.objectContaining({ id: "evt_a", count: 2 }),
+		);
+
+		// Pending is cleared.
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) {
+			pending.push(p);
+		}
+		expect(pending).toEqual([]);
+
+		// Archive file is untouched.
+		const archive = JSON.parse(await backend.read("archive/evt_a.json"));
+		expect(archive).toHaveLength(3);
+		expect(archive[2].kind).toBe("trigger.response");
+	});
+
 	it("end-to-end: recovery + persistence consumer archives the recovered events", async () => {
 		await backend.write(
-			"pending/evt_a_0.json",
+			"pending/evt_a/000000.json",
 			JSON.stringify(event({ kind: "trigger.request", seq: 0 })),
 		);
 
 		const persistence = createPersistence(backend);
 		const bus = createEventBus([persistence]);
 
-		await recover({ backend }, bus);
+		await recover({ backend, eventStore }, bus);
 
 		const pending: string[] = [];
 		for await (const p of backend.list("pending/")) {
@@ -150,9 +212,12 @@ describe("recovery", () => {
 		for await (const p of backend.list("archive/")) {
 			archive.push(p);
 		}
-		expect(archive.sort()).toEqual([
-			"archive/evt_a/0.json",
-			"archive/evt_a/1.json",
+		expect(archive).toEqual(["archive/evt_a.json"]);
+
+		const content = JSON.parse(await backend.read("archive/evt_a.json"));
+		expect(content.map((e: InvocationEvent) => e.kind)).toEqual([
+			"trigger.request",
+			"trigger.error",
 		]);
 	});
 });

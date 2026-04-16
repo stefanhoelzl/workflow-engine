@@ -1,6 +1,7 @@
 import {
 	CopyObjectCommand,
 	DeleteObjectCommand,
+	DeleteObjectsCommand,
 	GetObjectCommand,
 	HeadBucketCommand,
 	ListObjectsV2Command,
@@ -15,11 +16,15 @@ interface S3StorageOptions {
 	secretAccessKey: string;
 	endpoint?: string;
 	region?: string;
+	logger?: {
+		error(msg: string, data: Record<string, unknown>): void;
+	};
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups all S3 operations
 function createS3Storage(options: S3StorageOptions): StorageBackend {
 	const { bucket } = options;
+	const logger = options.logger;
 	const client = new S3Client({
 		credentials: {
 			accessKeyId: options.accessKeyId,
@@ -79,6 +84,42 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 
 		async remove(path) {
 			await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: path }));
+		},
+
+		async removePrefix(prefix) {
+			let continuationToken: string | undefined;
+			do {
+				// biome-ignore lint/performance/noAwaitInLoops: sequential pagination required by S3 API
+				const listed = await client.send(
+					new ListObjectsV2Command({
+						Bucket: bucket,
+						Prefix: prefix,
+						ContinuationToken: continuationToken,
+					}),
+				);
+				const keys = (listed.Contents ?? [])
+					.map((obj) => obj.Key)
+					.filter((key): key is string => key != null);
+				if (keys.length > 0) {
+					const deleted = await client.send(
+						new DeleteObjectsCommand({
+							Bucket: bucket,
+							Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+						}),
+					);
+					if (deleted.Errors && deleted.Errors.length > 0) {
+						logger?.error("storage.s3.remove-prefix-failed", {
+							prefix,
+							errors: deleted.Errors.map((e) => ({
+								key: e.Key,
+								code: e.Code,
+								message: e.Message,
+							})),
+						});
+					}
+				}
+				continuationToken = listed.NextContinuationToken;
+			} while (continuationToken);
 		},
 
 		async move(from, to) {

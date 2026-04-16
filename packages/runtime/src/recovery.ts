@@ -1,28 +1,47 @@
 import type { InvocationEvent } from "@workflow-engine/core";
+import type { EventStore } from "./event-bus/event-store.js";
 import type { EventBus } from "./event-bus/index.js";
-import { scanPending } from "./event-bus/persistence.js";
+import { pendingPrefix, scanPending } from "./event-bus/persistence.js";
 import type { StorageBackend } from "./storage/index.js";
 
 // ---------------------------------------------------------------------------
 // Recovery — one-shot startup sweep
 // ---------------------------------------------------------------------------
 //
-// For each invocation id with files in `pending/` left behind by a prior
-// process death, replay the existing events to the bus, then synthesize a
-// `trigger.error` carrying `{ kind: "engine_crashed" }` so persistence moves
-// the files to the archive and the event store records a terminal state.
+// Runs after the EventStore has bootstrapped from the archive. For each id
+// with pending files left behind by a prior process death:
+//
+//   - if the event store already has events for that id, the archive is
+//     authoritative (prior process crashed during pending cleanup). Clear
+//     the stale pending prefix; do not replay.
+//   - otherwise the prior process crashed mid-invocation. Replay events to
+//     the bus in seq order, then emit a synthetic `trigger.error` carrying
+//     `{ kind: "engine_crashed" }`. Persistence then archives and cleans up
+//     as part of its normal terminal-event handling.
 
 interface RecoveryDeps {
 	readonly backend: StorageBackend;
+	readonly eventStore: EventStore;
+	readonly logger?: {
+		info(msg: string, data: Record<string, unknown>): void;
+	};
 }
 
-async function recover(
-	persistence: RecoveryDeps,
-	bus: EventBus,
-): Promise<void> {
-	// Collect all pending events grouped by invocation id.
+async function isArchived(
+	eventStore: EventStore,
+	id: string,
+): Promise<boolean> {
+	const rows = await eventStore.query
+		.where("id", "=", id)
+		.select("id")
+		.limit(1)
+		.execute();
+	return rows.length > 0;
+}
+
+async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 	const byId = new Map<string, InvocationEvent[]>();
-	for await (const event of scanPending(persistence.backend)) {
+	for await (const event of scanPending(deps.backend)) {
 		const list = byId.get(event.id) ?? [];
 		list.push(event);
 		byId.set(event.id, list);
@@ -35,8 +54,21 @@ async function recover(
 			continue;
 		}
 
-		// Replay each existing event to the bus so consumers (event store) see
-		// the full history before the synthetic terminal event.
+		// biome-ignore lint/performance/noAwaitInLoops: per-id decision must complete before advancing to next id so side effects (bus emits, pending cleanup) stay correctly ordered
+		if (await isArchived(deps.eventStore, id)) {
+			// Archive is authoritative (crash during pending cleanup). Drop the
+			// stale pending files; do not replay.
+			deps.logger?.info("runtime.recovery.archive-cleanup", {
+				id,
+				count: events.length,
+			});
+			await deps.backend.removePrefix(pendingPrefix(id));
+			continue;
+		}
+
+		// Crash mid-invocation. Replay pending events through the bus so
+		// consumers (event store, persistence) see the full history, then
+		// emit a synthetic terminal so persistence archives and cleans up.
 		for (const event of events) {
 			// biome-ignore lint/performance/noAwaitInLoops: sequential emission preserves seq ordering across consumers
 			await bus.emit(event);

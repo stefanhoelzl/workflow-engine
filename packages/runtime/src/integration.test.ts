@@ -137,19 +137,25 @@ describe("end-to-end event flow", () => {
 			throw new Error("expected one invocation id");
 		}
 
-		// All pending files were moved to archive on trigger.response.
+		// All pending files were cleaned up on trigger.response.
 		const pending: string[] = [];
 		for await (const p of backend.list("pending/")) {
 			pending.push(p);
 		}
 		expect(pending).toEqual([]);
 
+		// Archive is a single JSON-array file for the invocation.
 		const archive: string[] = [];
 		for await (const p of backend.list("archive/")) {
 			archive.push(p);
 		}
-		expect(archive.length).toBeGreaterThan(0);
-		expect(archive.every((p) => p.startsWith(`archive/${id}/`))).toBe(true);
+		expect(archive).toEqual([`archive/${id}.json`]);
+
+		const archived = JSON.parse(await backend.read(`archive/${id}.json`));
+		expect(Array.isArray(archived)).toBe(true);
+		expect(archived.length).toBe(rows.length);
+		expect(archived[0].kind).toBe("trigger.request");
+		expect(archived.at(-1).kind).toBe("trigger.response");
 	});
 
 	it("recovery synthesizes a trigger.error and archives orphaned events", async () => {
@@ -169,7 +175,7 @@ describe("end-to-end event flow", () => {
 			name: "ping",
 		};
 		await backend.write(
-			`pending/${orphan.id}_${orphan.seq}.json`,
+			`pending/${orphan.id}/${orphan.seq.toString().padStart(6, "0")}.json`,
 			JSON.stringify(orphan),
 		);
 
@@ -178,7 +184,7 @@ describe("end-to-end event flow", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store]);
 
-		await recover({ backend }, bus);
+		await recover({ backend, eventStore: store, logger }, bus);
 
 		// The synthesized trigger.error should be in the events table.
 		const rows = await store.query
@@ -192,5 +198,118 @@ describe("end-to-end event flow", () => {
 			pending.push(p);
 		}
 		expect(pending).toEqual([]);
+	});
+
+	it("recovery is archive-authoritative: complete archive + partial pending → pending cleaned, archive preserved", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		// Seed a complete archive — simulates a successful terminal handling that
+		// was followed by a crash during removePrefix.
+		const id = "evt_a";
+		const archived: InvocationEvent[] = [
+			{
+				kind: "trigger.request",
+				id,
+				seq: 0,
+				ref: null,
+				ts: 100,
+				workflow: "demo",
+				workflowSha: MANIFEST.sha,
+				name: "ping",
+				input: { hello: "world" },
+			} as InvocationEvent,
+			{
+				kind: "system.request",
+				id,
+				seq: 1,
+				ref: 0,
+				ts: 101,
+				workflow: "demo",
+				workflowSha: MANIFEST.sha,
+				name: "host.validate",
+			} as InvocationEvent,
+			{
+				kind: "system.response",
+				id,
+				seq: 2,
+				ref: 1,
+				ts: 102,
+				workflow: "demo",
+				workflowSha: MANIFEST.sha,
+				name: "host.validate",
+				output: {},
+			} as InvocationEvent,
+			{
+				kind: "trigger.response",
+				id,
+				seq: 3,
+				ref: 0,
+				ts: 103,
+				workflow: "demo",
+				workflowSha: MANIFEST.sha,
+				name: "ping",
+				output: { status: 200 },
+			} as InvocationEvent,
+		];
+		const archiveContent = JSON.stringify(archived);
+		await backend.write(`archive/${id}.json`, archiveContent);
+
+		// Seed stale pending leftovers (some seqs already removed, others not).
+		await backend.write(
+			`pending/${id}/000001.json`,
+			JSON.stringify(archived[1]),
+		);
+		await backend.write(
+			`pending/${id}/000003.json`,
+			JSON.stringify(archived[3]),
+		);
+
+		// Bootstrap event store from archive (this populates DuckDB before
+		// recovery runs — matching main.ts startup order).
+		store = await createEventStore({ persistence: { backend }, logger });
+		await store.initialized;
+
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		await recover({ backend, eventStore: store, logger }, bus);
+
+		// Archive untouched (same byte content).
+		const archiveAfter = await backend.read(`archive/${id}.json`);
+		expect(archiveAfter).toBe(archiveContent);
+
+		// Pending fully cleared.
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) {
+			pending.push(p);
+		}
+		expect(pending).toEqual([]);
+
+		// Event store still holds exactly the archive rows — no duplicates, no
+		// synthetic trigger.error.
+		const rows = await store.query
+			.where("id", "=", id)
+			.selectAll()
+			.orderBy("seq", "asc")
+			.execute();
+		expect(rows).toHaveLength(4);
+		expect(rows.map((r) => r.kind)).toEqual([
+			"trigger.request",
+			"system.request",
+			"system.response",
+			"trigger.response",
+		]);
+		expect(
+			rows.find(
+				(r) =>
+					r.kind === "trigger.error" &&
+					typeof r.error === "object" &&
+					r.error !== null &&
+					"kind" in r.error &&
+					(r.error as { kind?: string }).kind === "engine_crashed",
+			),
+		).toBeUndefined();
 	});
 });
