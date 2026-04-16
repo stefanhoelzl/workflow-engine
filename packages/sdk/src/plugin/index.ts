@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { createContext, runInContext } from "node:vm";
 import { createGzip } from "node:zlib";
+import { iifeName } from "@workflow-engine/core";
 import { pack as tarPack } from "tar-stream";
 import ts from "typescript";
 import { build, type Plugin, type ResolvedConfig } from "vite";
@@ -58,33 +57,6 @@ function typecheckWorkflows(workflows: string[], root: string): void {
 		throw new Error(`TypeScript errors in workflows:\n${formatted}`);
 	}
 }
-
-const pluginDir = dirname(fileURLToPath(import.meta.url));
-const pluginRequire = createRequire(import.meta.url);
-
-const globalsPackage = "@workflow-engine/sandbox-globals";
-const globalsSetupPackage = "@workflow-engine/sandbox-globals-setup";
-
-// Virtual polyfill packages the plugin resolves to files shipped alongside it.
-// The runtime sandbox bridges host methods like `__hostFetch`; the Web API
-// polyfills below map XHR/fetch/Blob/streams onto that bridge so workflow code
-// authored against browser-style globals runs unchanged inside QuickJS.
-const virtualPackages: Record<string, string> = {
-	[globalsPackage]: join(pluginDir, "sandbox-globals.js"),
-	[globalsSetupPackage]: join(pluginDir, "sandbox-globals-setup.js"),
-};
-
-const polyfillPackages = new Set([
-	"mock-xmlhttprequest",
-	"whatwg-fetch",
-	"url-polyfill",
-	"fast-text-encoding",
-	"abort-controller",
-	"blob-polyfill",
-	"abab",
-	"@ungap/structured-clone",
-	"web-streams-polyfill",
-]);
 
 const EMPTY_VIRTUAL_ID = "\0workflow-engine:empty";
 
@@ -196,110 +168,76 @@ interface BuildOneWorkflowArgs {
 async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
 	const { workflowPath, filestem, outDir, root, ctx } = args;
 
-	const bundleSource = await bundleWorkflow(workflowPath, root);
+	const bundleIifeName = iifeName(filestem);
+	const bundleSource = await bundleWorkflow(workflowPath, root, bundleIifeName);
 
-	// Evaluate the bundle in this Node process by writing it to a temp .mjs
-	// file and dynamic-importing it. The SDK factory calls inside the bundle
-	// produce real branded action/workflow/trigger objects; we walk the
-	// module's exports to assemble the manifest.
-	const tmpDir = await mkdtemp(join(tmpdir(), "wf-vite-plugin-"));
-	try {
-		const tmpFile = join(tmpDir, `${filestem}.mjs`);
-		await writeFile(tmpFile, bundleSource, "utf8");
-		const mod = await importBundled(tmpFile, filestem, ctx);
-		const sha = createHash("sha256").update(bundleSource).digest("hex");
-		const manifest = buildManifest(mod, filestem, sha, ctx);
+	// Evaluate the IIFE bundle in a Node vm context to discover branded
+	// exports. The bundle assigns its exports to `globalThis[bundleIifeName]`
+	// of the sandbox context, so we read that global from the context after
+	// script execution — no temp file needed.
+	const mod = runIifeInVmContext(bundleSource, bundleIifeName, filestem, ctx);
+	const sha = createHash("sha256").update(bundleSource).digest("hex");
+	const manifest = buildManifest(mod, filestem, sha, ctx);
 
-		const outWorkflowDir = join(outDir, manifest.name);
-		await mkdir(outWorkflowDir, { recursive: true });
-		await writeFile(
-			join(outWorkflowDir, `${manifest.name}.js`),
-			bundleSource,
-			"utf8",
-		);
-		await writeFile(
-			join(outWorkflowDir, "manifest.json"),
-			`${JSON.stringify(manifest, null, 2)}\n`,
-			"utf8",
-		);
+	const outWorkflowDir = join(outDir, manifest.name);
+	await mkdir(outWorkflowDir, { recursive: true });
+	await writeFile(
+		join(outWorkflowDir, `${manifest.name}.js`),
+		bundleSource,
+		"utf8",
+	);
+	await writeFile(
+		join(outWorkflowDir, "manifest.json"),
+		`${JSON.stringify(manifest, null, 2)}\n`,
+		"utf8",
+	);
 
-		// Pack a .tar.gz containing manifest.json + <name>.js for the upload
-		// pipeline (POST /api/workflows). The dev script and CI can POST this
-		// file directly instead of tarring at upload time.
-		const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
-		const tarGzPath = join(outWorkflowDir, "bundle.tar.gz");
-		await packTarGz(tarGzPath, [
-			{ name: "manifest.json", content: manifestJson },
-			{ name: `${manifest.name}.js`, content: bundleSource },
-		]);
+	// Pack a .tar.gz containing manifest.json + <name>.js for the upload
+	// pipeline (POST /api/workflows). The dev script and CI can POST this
+	// file directly instead of tarring at upload time.
+	const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
+	const tarGzPath = join(outWorkflowDir, "bundle.tar.gz");
+	await packTarGz(tarGzPath, [
+		{ name: "manifest.json", content: manifestJson },
+		{ name: `${manifest.name}.js`, content: bundleSource },
+	]);
 
-		// biome-ignore lint/suspicious/noConsole: intentional build output
-		console.log(
-			`Workflow "${manifest.name}": ${manifest.actions.length} action(s), ${manifest.triggers.length} trigger(s) bundled`,
-		);
-	} finally {
-		await rm(tmpDir, { recursive: true, force: true });
-	}
+	// biome-ignore lint/suspicious/noConsole: intentional build output
+	console.log(
+		`Workflow "${manifest.name}": ${manifest.actions.length} action(s), ${manifest.triggers.length} trigger(s) bundled`,
+	);
 }
 
-// The bundled workflow inlines sandbox-globals (polyfills for QuickJS:
-// XMLHttpRequest, fetch, TextEncoder, etc.). When we import the bundle
-// in Node to discover brand-marked exports, those polyfills self-install
-// on globalThis, overwriting Node's native fetch (et al.) with versions
-// that delegate to __hostFetch — which doesn't exist in Node. Save and
-// restore the affected globals so the host process isn't corrupted.
-const POLYFILL_GLOBALS = [
-	"XMLHttpRequest",
-	"fetch",
-	"Headers",
-	"Request",
-	"Response",
-	"atob",
-	"btoa",
-	"Blob",
-	"File",
-	"structuredClone",
-	"ReadableStream",
-	"WritableStream",
-	"TransformStream",
-	"queueMicrotask",
-	"self",
-	"global",
-] as const;
-
-async function importBundled(
-	tmpFile: string,
+function runIifeInVmContext(
+	bundleSource: string,
+	iifeName: string,
 	filestem: string,
 	ctx: PluginContext,
-): Promise<Record<string, unknown>> {
-	const saved = new Map<string, unknown>();
-	const g = globalThis as Record<string, unknown>;
-	for (const key of POLYFILL_GLOBALS) {
-		if (key in g) {
-			saved.set(key, g[key]);
-		}
-	}
+): Record<string, unknown> {
+	// The IIFE bundle is a script that declares `var <iifeName> = (...)(...)`.
+	// Running it via vm.createContext()/vm.runInContext() gives the script a
+	// dedicated global object that we can inspect (and discard) afterwards —
+	// `var` bindings bind to that sandbox's global, not this process's.
+	//
+	// Branded objects still work across contexts because the SDK uses
+	// `Symbol.for(...)` for its brand keys, which are shared between all
+	// V8 contexts in the same process.
+	const sandboxGlobal: Record<string, unknown> = {};
+	const context = createContext(sandboxGlobal);
 	try {
-		return (await import(pathToFileURL(tmpFile).href)) as Record<
-			string,
-			unknown
-		>;
+		runInContext(bundleSource, context, { filename: `${filestem}.js` });
 	} catch (error: unknown) {
-		// ctx.error always throws (Rollup contract) — the return is
-		// unreachable but satisfies the TS return-type checker.
 		ctx.error(
 			`Failed to evaluate bundled workflow "${filestem}": ${errorMessage(error)}`,
 		);
-		throw error;
-	} finally {
-		for (const key of POLYFILL_GLOBALS) {
-			if (saved.has(key)) {
-				g[key] = saved.get(key);
-			} else {
-				delete g[key];
-			}
-		}
 	}
+	const ns = sandboxGlobal[iifeName];
+	if (typeof ns !== "object" || ns === null) {
+		ctx.error(
+			`Bundled workflow "${filestem}": IIFE did not assign exports to globalThis.${iifeName}`,
+		);
+	}
+	return ns as Record<string, unknown>;
 }
 
 function errorMessage(err: unknown): string {
@@ -540,43 +478,22 @@ function isEmptyObjectSchema(schema: unknown): boolean {
 async function bundleWorkflow(
 	workflowPath: string,
 	root: string,
+	iifeName: string,
 ): Promise<string> {
 	const result = await build({
 		configFile: false,
 		logLevel: "silent",
 		root,
-		plugins: [
-			{
-				name: "workflow-engine:bundle",
-				enforce: "pre",
-				resolveId(id) {
-					if (id in virtualPackages) {
-						return virtualPackages[id];
-					}
-					if (polyfillPackages.has(id)) {
-						return pluginRequire.resolve(id);
-					}
-					const pkgName = id.startsWith("@")
-						? id.split("/").slice(0, 2).join("/")
-						: id.split("/")[0];
-					if (pkgName && polyfillPackages.has(pkgName) && pkgName !== id) {
-						return pluginRequire.resolve(id);
-					}
-				},
-				transform(code, id) {
-					if (id === workflowPath) {
-						return `import "${globalsPackage}";\n${code}`;
-					}
-				},
-			},
-		],
 		build: {
 			write: false,
 			minify: false,
 			ssr: true,
 			rollupOptions: {
 				input: workflowPath,
-				output: { format: "es" },
+				output: {
+					format: "iife",
+					name: iifeName,
+				},
 			},
 		},
 		ssr: {

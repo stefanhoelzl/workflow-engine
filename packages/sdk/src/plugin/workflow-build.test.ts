@@ -13,8 +13,10 @@ const ERR_AT_MOST_ONE_DEFINE = /at most one defineWorkflow/;
 const ERR_ACTION_MULTI_NAME = /exported under multiple names/;
 const ERR_MISSING_HANDLER = /missing a handler function/;
 const ERR_NOT_ZOD_SCHEMA = /is not a Zod schema/;
-const EXPORT_ON_EVENT_RE = /export\s*\{[^}]*onEvent/;
-const EXPORT_SEND_NOTIFICATION_RE = /export\s*\{[^}]*sendNotification/;
+// The IIFE bundle assigns its exports as properties on the namespace object,
+// so the bundle source contains lines like `exports.onEvent = ...` / `exports.sendNotification = ...`.
+const EXPORT_ON_EVENT_RE = /exports\.onEvent\s*=/;
+const EXPORT_SEND_NOTIFICATION_RE = /exports\.sendNotification\s*=/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 // The fixtures below import `@workflow-engine/sdk` by name. For Vite to

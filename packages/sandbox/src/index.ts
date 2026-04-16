@@ -36,6 +36,19 @@ interface SandboxOptions {
 	// uses these to label `system.*` events (e.g. `__hostCallAction` →
 	// `host.validateAction`). Without an entry, the method name itself is used.
 	methodEventNames?: Record<string, string>;
+	// Name of the IIFE global namespace object that carries the bundle's
+	// exports. The sandbox reads `globalThis[iifeNamespace][exportName]` to
+	// locate each runnable function. Defaults to `__workflowExports`.
+	iifeNamespace?: string;
+	// Maximum memory (in bytes) the QuickJS runtime is allowed to allocate.
+	// Exceeding it triggers an OOM error inside the guest. Passed directly
+	// to QuickJS.create({ memoryLimit }).
+	memoryLimit?: number;
+	// TODO(quickjs-wasi): clock / random / interruptHandler overrides cannot
+	// be sent across postMessage because they're host-side functions that
+	// need WASM-memory access at VM creation time. Future work: parameterize
+	// them via serializable descriptors (fixed time, byte-fill seed, deadline
+	// ms) that the worker reconstitutes on its side.
 }
 
 interface Sandbox {
@@ -51,6 +64,8 @@ const DEFAULT_RUN_OPTIONS: RunOptions = {
 	workflowSha: "",
 };
 
+const DEFAULT_IIFE_NAMESPACE = "__workflowExports";
+
 const RESERVED_BUILTIN_GLOBALS = new Set([
 	"console",
 	"performance",
@@ -61,6 +76,15 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"clearInterval",
 	"__hostFetch",
 	"__emitEvent",
+	"fetch",
+	"URL",
+	"URLSearchParams",
+	"TextEncoder",
+	"TextDecoder",
+	"atob",
+	"btoa",
+	"structuredClone",
+	"Headers",
 ]);
 
 function collisionName(
@@ -140,10 +164,22 @@ async function sandbox(
 	options?: SandboxOptions,
 ): Promise<Sandbox> {
 	const filename = options?.filename ?? "action.js";
+	const iifeNamespace = options?.iifeNamespace ?? DEFAULT_IIFE_NAMESPACE;
 	const methodNames = Object.keys(methods);
 	const reserved = new Set<string>(methodNames);
 	for (const name of RESERVED_BUILTIN_GLOBALS) {
 		reserved.add(name);
+	}
+	reserved.add(iifeNamespace);
+
+	// Also check construction-time methods against reserved globals (the IIFE
+	// namespace is a fresh addition).
+	for (const name of methodNames) {
+		if (RESERVED_BUILTIN_GLOBALS.has(name) || name === iifeNamespace) {
+			throw new Error(
+				`method name '${name}' collides with a reserved global or the IIFE namespace`,
+			);
+		}
 	}
 
 	const worker = new Worker(resolveWorkerUrl());
@@ -277,6 +313,10 @@ async function sandbox(
 				: {}),
 			filename,
 			forwardFetch: forwardFetch !== undefined,
+			iifeNamespace,
+			...(options?.memoryLimit === undefined
+				? {}
+				: { memoryLimit: options.memoryLimit }),
 		};
 		worker.postMessage(initMsg);
 	});
@@ -430,4 +470,4 @@ export type { Logger, SandboxFactory } from "./factory.js";
 export { createSandboxFactory } from "./factory.js";
 export type { MethodMap } from "./install-host-methods.js";
 export type { RunOptions, RunResult, Sandbox, SandboxOptions };
-export { sandbox };
+export { DEFAULT_IIFE_NAMESPACE, sandbox };

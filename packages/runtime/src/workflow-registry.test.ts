@@ -44,22 +44,27 @@ const VALID_MANIFEST = {
 	],
 };
 
+// IIFE bundle: the vite-plugin outputs `format: "iife"` with `extend: true`,
+// assigning exports to `globalThis.__wf_<name>`. The runtime's
+// `toIifeNamespace("demo")` returns "__wf_demo".
 const BUNDLE_SOURCE = `
-const __ACTIONS = {};
-export const doIt = Object.assign(
-  async (input) => globalThis.__dispatchAction(
-    "doIt",
-    input,
-    async (i) => ({ echoed: i }),
-    { parse: (x) => x },
-  ),
-  { __setActionName: () => {} },
-);
-export const onPing = {
-  handler: async (payload) => ({ status: 200, body: { received: payload.body, action: await doIt({ x: 1 }) } }),
-  body: { parse: (x) => x },
-  schema: { parse: (x) => x },
-};
+var __wf_demo = (function(exports) {
+  exports.doIt = Object.assign(
+    async (input) => globalThis.__dispatchAction(
+      "doIt",
+      input,
+      async (i) => ({ echoed: i }),
+      { parse: (x) => x },
+    ),
+    { __setActionName: () => {} },
+  );
+  exports.onPing = {
+    handler: async (payload) => ({ status: 200, body: { received: payload.body, action: await exports.doIt({ x: 1 }) } }),
+    body: { parse: (x) => x },
+    schema: { parse: (x) => x },
+  };
+  return exports;
+})({});
 `;
 
 describe("workflow registry", () => {

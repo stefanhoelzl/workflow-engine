@@ -1,4 +1,4 @@
-import type { QuickJSHandle } from "quickjs-emscripten";
+import type { JSValueHandle } from "quickjs-wasi";
 import type { Bridge } from "./bridge-factory.js";
 
 type HostMethod = (...args: unknown[]) => Promise<unknown>;
@@ -7,7 +7,7 @@ type MethodMap = Record<string, HostMethod>;
 // biome-ignore lint/complexity/useMaxParams: bridge install signature mirrors b.async() — collapsing into options would just shuffle args
 function installHostMethod(
 	b: Bridge,
-	target: QuickJSHandle,
+	target: JSValueHandle,
 	name: string,
 	impl: HostMethod,
 	methodEventName?: string,
@@ -22,7 +22,7 @@ function installHostMethod(
 
 function installMethods(
 	b: Bridge,
-	target: QuickJSHandle,
+	target: JSValueHandle,
 	methods: MethodMap,
 ): void {
 	for (const [name, impl] of Object.entries(methods)) {
@@ -33,7 +33,7 @@ function installMethods(
 // biome-ignore lint/complexity/useMaxParams: bridge install signature mirrors b.async() — collapsing into options would just shuffle args
 function installRpcMethods(
 	b: Bridge,
-	target: QuickJSHandle,
+	target: JSValueHandle,
 	names: readonly string[],
 	sendRequest: (method: string, args: unknown[]) => Promise<unknown>,
 	methodEventNames?: Record<string, string>,

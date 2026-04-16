@@ -1,14 +1,25 @@
 import { parentPort } from "node:worker_threads";
 import type { EventKind, InvocationEvent } from "@workflow-engine/core";
 import {
-	getQuickJS,
-	type QuickJSContext,
-	type QuickJSHandle,
-	type QuickJSRuntime,
-} from "quickjs-emscripten";
+	JSException,
+	type JSValueHandle,
+	QuickJS,
+	type QuickJSOptions,
+} from "quickjs-wasi";
+import { base64Extension } from "quickjs-wasi/base64";
+import { cryptoExtension } from "quickjs-wasi/crypto";
+import { encodingExtension } from "quickjs-wasi/encoding";
+import { headersExtension } from "quickjs-wasi/headers";
+import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
+import { urlExtension } from "quickjs-wasi/url";
 import { bridgeHostFetch } from "./bridge.js";
 import { type Bridge, createBridge } from "./bridge-factory.js";
-import { setupGlobals, type TimerCleanup } from "./globals.js";
+import {
+	CRYPTO_PROMISE_SHIM,
+	FETCH_SHIM,
+	setupGlobals,
+	type TimerCleanup,
+} from "./globals.js";
 import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
 import type {
 	MainToWorker,
@@ -38,16 +49,24 @@ function serializeError(err: unknown): SerializedError {
 	return { name: "Error", message: msg, stack: "" };
 }
 
-function dumpVmError(
-	vm: QuickJSContext,
-	handle: QuickJSHandle,
-): SerializedError {
-	const err = vm.dump(handle);
+function dumpVmError(vm: QuickJS, handle: JSValueHandle): SerializedError {
+	const err = vm.dump(handle) as
+		| { name?: string; message?: string; stack?: string }
+		| null
+		| undefined;
 	handle.dispose();
 	return {
 		name: String(err?.name ?? "Error"),
 		message: String(err?.message ?? err),
 		stack: String(err?.stack ?? ""),
+	};
+}
+
+function serializeJsException(err: JSException): SerializedError {
+	return {
+		name: err.name ?? "Error",
+		message: err.message ?? String(err),
+		stack: err.stack ?? "",
 	};
 }
 
@@ -124,12 +143,9 @@ function installEmitEvent(bridge: Bridge): void {
 		}
 		const kind = raw?.kind as EventKind | undefined;
 		if (!(kind && ALLOWED_EMIT_KINDS.has(kind))) {
-			return {
-				error: bridge.vm.newError({
-					name: "TypeError",
-					message: `__emitEvent: invalid kind '${String(raw?.kind)}' (only action.* allowed)`,
-				}),
-			};
+			throw new TypeError(
+				`__emitEvent: invalid kind '${String(raw?.kind)}' (only action.* allowed)`,
+			);
 		}
 		const name = String(raw?.name ?? "");
 		const seqValue = bridge.nextSeq();
@@ -173,11 +189,10 @@ function installEmitEvent(bridge: Bridge): void {
 // --- Sandbox state (lives for the life of this worker) ---
 
 interface SandboxState {
-	vm: QuickJSContext;
-	runtime: QuickJSRuntime;
+	vm: QuickJS;
 	bridge: Bridge;
 	timers: TimerCleanup;
-	moduleNamespace: QuickJSHandle;
+	iifeNamespace: string;
 	constructionMethodNames: string[];
 	constructionMethodEventNames: Record<string, string>;
 	currentAbort: AbortController | null;
@@ -189,12 +204,35 @@ let state: SandboxState | null = null;
 async function handleInit(
 	msg: Extract<MainToWorker, { type: "init" }>,
 ): Promise<void> {
-	const module = await getQuickJS();
-	const runtime = module.newRuntime();
-	const vm = runtime.newContext();
-	const bridge = createBridge(vm, runtime);
+	const createOptions: QuickJSOptions = {
+		extensions: [
+			base64Extension,
+			cryptoExtension,
+			encodingExtension,
+			headersExtension,
+			structuredCloneExtension,
+			urlExtension,
+		],
+	};
+	if (msg.memoryLimit !== undefined) {
+		createOptions.memoryLimit = msg.memoryLimit;
+	}
+	// TODO(quickjs-wasi): wire clock/random/interruptHandler once we have a
+	// way to serialize them across postMessage (likely via factory descriptors
+	// resolved on the worker side).
+
+	const vm = await QuickJS.create(createOptions);
+
+	const bridge = createBridge(vm);
 	bridge.setSink((event) => post({ type: "event", event }));
 	const timers = setupGlobals(bridge);
+
+	// Install crypto.subtle Promise shim AFTER globals so the ordering is
+	// consistent with how the fetch shim is layered (shim eval runs once the
+	// VM is ready). Must run before workflow code that touches crypto.subtle;
+	// the workflow source is evaluated further below.
+	const cryptoShimResult = vm.evalCode(CRYPTO_PROMISE_SHIM, "<crypto-shim>");
+	cryptoShimResult.dispose();
 
 	const fetchImpl: typeof globalThis.fetch = msg.forwardFetch
 		? ((async (input, init) => {
@@ -227,6 +265,11 @@ async function handleInit(
 		: globalThis.fetch;
 	bridgeHostFetch(bridge, fetchImpl, () => state?.currentAbort?.signal);
 
+	// After __hostFetch is installed, evaluate the fetch shim so guest code
+	// can call standard fetch(url, init).
+	const fetchShimResult = vm.evalCode(FETCH_SHIM, "<fetch-shim>");
+	fetchShimResult.dispose();
+
 	installEmitEvent(bridge);
 
 	installRpcMethods(
@@ -237,23 +280,29 @@ async function handleInit(
 		msg.methodEventNames,
 	);
 
-	const evalResult = vm.evalCode(msg.source, msg.filename, { type: "module" });
-	if (evalResult.error) {
-		const err = dumpVmError(vm, evalResult.error);
+	try {
+		const evalResult = vm.evalCode(msg.source, msg.filename);
+		evalResult.dispose();
+	} catch (err) {
+		const serialized =
+			err instanceof JSException
+				? serializeJsException(err)
+				: serializeError(err);
+		if (err instanceof JSException) {
+			err.dispose();
+		}
 		timers.dispose();
 		bridge.dispose();
 		vm.dispose();
-		runtime.dispose();
-		post({ type: "init-error", error: err });
+		post({ type: "init-error", error: serialized });
 		process.exit(0);
 	}
 
 	state = {
 		vm,
-		runtime,
 		bridge,
 		timers,
-		moduleNamespace: evalResult.value,
+		iifeNamespace: msg.iifeNamespace,
 		constructionMethodNames: [...msg.methodNames],
 		constructionMethodEventNames: { ...(msg.methodEventNames ?? {}) },
 		currentAbort: null,
@@ -305,7 +354,67 @@ function emitTriggerEvent(
 	return seqValue;
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrates context setup, install/invoke/cleanup, and trigger event emission as one unit
+function readExportFromIife(
+	vm: QuickJS,
+	iifeNamespace: string,
+	exportName: string,
+): JSValueHandle | null {
+	const nsHandle = vm.global.getProp(iifeNamespace);
+	if (nsHandle.isUndefined || nsHandle.isNull) {
+		nsHandle.dispose();
+		return null;
+	}
+	const fnHandle = nsHandle.getProp(exportName);
+	nsHandle.dispose();
+	if (fnHandle.isUndefined || fnHandle.isNull) {
+		fnHandle.dispose();
+		return null;
+	}
+	return fnHandle;
+}
+
+// Invoke `fnHandle(ctx)` inside the VM, resolve the returned promise, and
+// translate the outcome to a RunResultPayload. Dumps the returned value on
+// success (via vm.dump) and serialises the error on failure (JSException on
+// sync throw, dumped VM error on promise rejection).
+async function callGuestFunction(
+	vm: QuickJS,
+	fnHandle: JSValueHandle,
+	ctx: unknown,
+): Promise<RunResultPayload> {
+	const ctxHandle = vm.hostToHandle(ctx);
+	let callResultHandle: JSValueHandle;
+	try {
+		callResultHandle = vm.callFunction(fnHandle, vm.undefined, ctxHandle);
+	} catch (err) {
+		ctxHandle.dispose();
+		if (err instanceof JSException) {
+			const serialized = serializeJsException(err);
+			err.dispose();
+			return {
+				ok: false,
+				error: { message: serialized.message, stack: serialized.stack },
+			};
+		}
+		throw err;
+	}
+	ctxHandle.dispose();
+	const resolved = vm.resolvePromise(callResultHandle);
+	callResultHandle.dispose();
+	vm.executePendingJobs();
+	const actionResult = await resolved;
+	if ("error" in actionResult) {
+		const serialized = dumpVmError(vm, actionResult.error);
+		return {
+			ok: false,
+			error: { message: serialized.message, stack: serialized.stack },
+		};
+	}
+	const resultValue = vm.dump(actionResult.value);
+	actionResult.value.dispose();
+	return { ok: true, result: resultValue };
+}
+
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
 ): Promise<void> {
@@ -319,7 +428,7 @@ async function handleRun(
 		});
 		return;
 	}
-	const { vm, bridge, timers, moduleNamespace } = state;
+	const { vm, bridge, timers, iifeNamespace } = state;
 
 	bridge.setRunContext({
 		invocationId: msg.invocationId,
@@ -336,47 +445,27 @@ async function handleRun(
 
 	let payload: RunResultPayload;
 	try {
-		const fnHandle = vm.getProp(moduleNamespace, msg.exportName);
-		const ctxHandle = bridge.marshal.json(msg.ctx);
-
-		const callResult = vm.callFunction(fnHandle, vm.undefined, ctxHandle);
-		ctxHandle.dispose();
-		fnHandle.dispose();
-
-		if (callResult.error) {
-			const err = dumpVmError(vm, callResult.error);
-			emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
-				error: { message: err.message, stack: err.stack },
-			});
+		const fnHandle = readExportFromIife(vm, iifeNamespace, msg.exportName);
+		if (fnHandle) {
+			payload = await callGuestFunction(vm, fnHandle, msg.ctx);
+			fnHandle.dispose();
+		} else {
 			payload = {
 				ok: false,
-				error: { message: err.message, stack: err.stack },
+				error: {
+					message: `export '${msg.exportName}' not found on IIFE namespace '${iifeNamespace}'`,
+					stack: "",
+				},
 			};
+		}
+		if (payload.ok) {
+			emitTriggerEvent(bridge, "trigger.response", msg.exportName, {
+				output: payload.result,
+			});
 		} else {
-			const resolved = vm.resolvePromise(callResult.value);
-			callResult.value.dispose();
-			vm.runtime.executePendingJobs();
-			const actionResult = await resolved;
-			if (actionResult.error) {
-				const err = dumpVmError(vm, actionResult.error);
-				emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
-					error: { message: err.message, stack: err.stack },
-				});
-				payload = {
-					ok: false,
-					error: { message: err.message, stack: err.stack },
-				};
-			} else {
-				const resultValue = vm.dump(actionResult.value);
-				actionResult.value.dispose();
-				emitTriggerEvent(bridge, "trigger.response", msg.exportName, {
-					output: resultValue,
-				});
-				payload = {
-					ok: true,
-					result: resultValue,
-				};
-			}
+			emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
+				error: { message: payload.error.message, stack: payload.error.stack },
+			});
 		}
 	} catch (err) {
 		const e = serializeError(err);
