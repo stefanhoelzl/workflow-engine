@@ -5,7 +5,7 @@
 	"private": true,
 	"scripts": {
 		"build": "vite build",
-		"dev": "vite-node --watch src/main.ts",
+		"dev": "vite-node src/main.ts",
 		"start": "vite-node src/main.ts"
 	},
 	"dependencies": {
