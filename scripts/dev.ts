@@ -13,6 +13,12 @@ const PID_PATTERN = /\d+/;
 
 const rootDir = resolve(import.meta.dirname, "..");
 const workflowsDir = resolve(rootDir, "workflows");
+const runtimeWatchDirs = [
+	resolve(rootDir, "packages/runtime/src"),
+	resolve(rootDir, "packages/core/src"),
+	resolve(rootDir, "packages/sandbox/src"),
+	resolve(rootDir, "packages/sdk/src"),
+];
 
 function parseArgs(): { randomPort: boolean; kill: boolean } {
 	return {
@@ -149,7 +155,21 @@ function spawnRuntime(port: number): ChildProcess {
 	return spawn("pnpm", ["--filter", "@workflow-engine/runtime", "dev"], {
 		stdio: "inherit",
 		env: runtimeEnv(port),
+		detached: true,
 	});
+}
+
+function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
+	if (proc.killed || proc.pid === undefined) {
+		return;
+	}
+	try {
+		process.kill(-proc.pid, signal);
+	} catch {
+		if (!proc.killed) {
+			proc.kill(signal);
+		}
+	}
 }
 
 function watchWorkflows(port: number): void {
@@ -171,20 +191,79 @@ function watchWorkflows(port: number): void {
 	});
 }
 
+async function waitForPortFree(port: number, timeoutMs: number): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (!(await isPortInUse(port))) {
+			return;
+		}
+		await sleep(PORT_POLL_INTERVAL_MS);
+	}
+	throw new Error(
+		`Timed out after ${String(timeoutMs)}ms waiting for port ${String(port)} to free`,
+	);
+}
+
+function watchRuntime(
+	port: number,
+	getRuntime: () => ChildProcess,
+	setRuntime: (proc: ChildProcess) => void,
+): void {
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let restarting = false;
+
+	const restart = async () => {
+		if (restarting) {
+			return;
+		}
+		restarting = true;
+		try {
+			console.log("Runtime source changed, restarting...");
+			const current = getRuntime();
+			const exited = new Promise<void>((res) => {
+				current.once("exit", () => res());
+			});
+			killProcessTree(current, "SIGTERM");
+			await exited;
+			await waitForPortFree(port, PORT_POLL_TIMEOUT_MS);
+			const next = spawnRuntime(port);
+			setRuntime(next);
+			await waitForPort(port, PORT_POLL_TIMEOUT_MS);
+			await runUpload(port);
+		} catch (error) {
+			console.error(
+				`Runtime restart failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			restarting = false;
+		}
+	};
+
+	for (const dir of runtimeWatchDirs) {
+		watch(dir, { recursive: true }, (_event, filename) => {
+			if (!filename?.endsWith(".ts")) {
+				return;
+			}
+			if (debounceTimer) {
+				clearTimeout(debounceTimer);
+			}
+			debounceTimer = setTimeout(restart, DEBOUNCE_MS);
+		});
+	}
+}
+
 async function main(): Promise<void> {
 	const args = parseArgs();
 	const port = args.randomPort ? await getFreePort() : DEFAULT_PORT;
 
 	await ensurePortAvailable(port, args.kill);
 
-	const runtime = spawnRuntime(port);
+	let runtime = spawnRuntime(port);
 
 	console.log(`Runtime server starting on http://localhost:${String(port)}`);
 
 	const cleanup = () => {
-		if (!runtime.killed) {
-			runtime.kill();
-		}
+		killProcessTree(runtime, "SIGTERM");
 	};
 	process.on("SIGINT", () => {
 		cleanup();
@@ -205,6 +284,13 @@ async function main(): Promise<void> {
 
 	await runUpload(port);
 	watchWorkflows(port);
+	watchRuntime(
+		port,
+		() => runtime,
+		(next) => {
+			runtime = next;
+		},
+	);
 }
 
 main();
