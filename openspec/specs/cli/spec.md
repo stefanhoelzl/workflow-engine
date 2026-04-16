@@ -42,9 +42,12 @@ The CLI SHALL exit with a non-zero status and print `no workflows found in src/`
 
 ### Requirement: Build pipeline
 
-The CLI SHALL build workflows using its bundled default vite configuration and the `@workflow-engine/vite-plugin`. Build output SHALL be written to `<cwd>/dist/<name>/bundle.tar.gz` for each discovered workflow.
+The CLI SHALL build workflows using the vite plugin imported from `@workflow-engine/sdk/plugin` (previously `@workflow-engine/vite-plugin`). Build output SHALL be written to `<cwd>/dist/<name>/bundle.tar.gz` for each workflow. The CLI SHALL NOT support a user-authored `vite.config.ts`; any such file in `cwd` SHALL be ignored.
 
-The CLI SHALL NOT support a user-authored `vite.config.ts`. Any such file in `cwd` SHALL be ignored.
+#### Scenario: CLI uses SDK-internal plugin
+
+- **WHEN** the CLI's vite-config module imports the plugin
+- **THEN** it imports from the SDK's internal plugin module (not a separate package)
 
 #### Scenario: Build produces bundles for all discovered workflows
 
@@ -55,6 +58,20 @@ The CLI SHALL NOT support a user-authored `vite.config.ts`. Any such file in `cw
 
 - **WHEN** `wfe upload` is invoked in a directory containing a user-authored `vite.config.ts`
 - **THEN** the CLI SHALL use its bundled default vite config regardless
+
+### Requirement: CLI code lives in SDK
+
+The CLI source code SHALL live inside `@workflow-engine/sdk` at `src/cli/`. The standalone `@workflow-engine/cli` package SHALL be deleted. The `wfe` binary is provided by SDK's `bin` field.
+
+#### Scenario: Standalone package removed
+
+- **WHEN** inspecting the packages directory
+- **THEN** `packages/cli/` does not exist
+
+#### Scenario: CLI source lives in SDK
+
+- **WHEN** inspecting the SDK package
+- **THEN** `packages/sdk/src/cli/` contains the CLI source files (cli.ts, build.ts, upload.ts, vite-config.ts)
 
 ### Requirement: Target URL resolution
 
@@ -155,9 +172,14 @@ After all bundles have been attempted, the CLI SHALL print a summary to stderr: 
 
 ### Requirement: Programmatic API
 
-The `@workflow-engine/cli` package SHALL export a programmatic `upload(options)` function with signature equivalent to the `wfe upload` command. The function SHALL accept at least `{ cwd: string, url: string }` and return a promise that resolves to the same exit-code-equivalent status the CLI would produce.
+The SDK SHALL export `build`, `upload`, `NoWorkflowsFoundError`, `UploadOptions`, and `UploadResult` from the `./cli` subpath export. The `scripts/dev.ts` and any other programmatic consumers SHALL import from `@workflow-engine/sdk/cli`.
 
-The `scripts/dev.ts` orchestrator SHALL consume this exported function directly, without spawning the `wfe` binary as a subprocess.
+The programmatic `upload(options)` function has a signature equivalent to the `wfe upload` command. The function SHALL accept at least `{ cwd: string, url: string }` and return a promise that resolves to the same exit-code-equivalent status the CLI would produce. The `scripts/dev.ts` orchestrator SHALL consume this exported function directly, without spawning the `wfe` binary as a subprocess.
+
+#### Scenario: Importing programmatic API
+
+- **WHEN** a script imports `{ upload } from "@workflow-engine/sdk/cli"`
+- **THEN** it receives the same `upload` function as the previous `@workflow-engine/cli` package
 
 #### Scenario: Programmatic call matches CLI behavior
 

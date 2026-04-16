@@ -18,12 +18,18 @@ The project SHALL use a `pnpm-workspace.yaml` at the repository root that declar
 ### Requirement: Runtime package layout
 
 The monorepo SHALL contain the following packages under `packages/`:
-- `packages/runtime` — the workflow engine runtime (`@workflow-engine/runtime`)
-- `packages/sdk` — the workflow-author-facing types and factories (`@workflow-engine/sdk`)
-- `packages/vite-plugin` — the workflow build plugin (`@workflow-engine/vite-plugin`)
-- `packages/sandbox` — the QuickJS WASM sandbox (`@workflow-engine/sandbox`)
+- `packages/core` — `@workflow-engine/core` (internal, private)
+- `packages/runtime` — `@workflow-engine/runtime`
+- `packages/sdk` — `@workflow-engine/sdk`
+- `packages/sandbox` — `@workflow-engine/sandbox`
 
 Each package SHALL have a valid `package.json` and follow the conventions established by this capability (ESM, scoped npm name under `@workflow-engine/`, TypeScript source as entry point where applicable).
+
+#### Scenario: Package directory listing
+
+- **WHEN** listing directories under `packages/`
+- **THEN** exactly `core`, `runtime`, `sdk`, and `sandbox` exist
+- **THEN** `vite-plugin` and `cli` directories do not exist
 
 #### Scenario: Runtime package directory exists
 
