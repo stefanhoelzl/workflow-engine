@@ -68,20 +68,60 @@ function collisionName(
 	}
 }
 
+const RESERVED_ERROR_KEYS = new Set(["name", "message", "stack", "issues"]);
+
+function isJsonSafe(value: unknown): boolean {
+	try {
+		JSON.stringify(value);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function errorFromSerialized(err: SerializedError): Error {
 	const e = new Error(err.message);
 	e.name = err.name;
 	e.stack = err.stack;
+	if (err.issues !== undefined) {
+		(e as Error & { issues?: unknown }).issues = err.issues;
+	}
+	if (err.data) {
+		for (const [key, value] of Object.entries(err.data)) {
+			(e as unknown as Record<string, unknown>)[key] = value;
+		}
+	}
 	return e;
 }
 
 function serializeError(err: unknown): SerializedError {
 	if (err instanceof Error) {
-		return {
+		const base: SerializedError = {
 			name: err.name,
 			message: err.message,
 			stack: err.stack ?? "",
 		};
+		const source = err as unknown as Record<string, unknown>;
+		if ("issues" in source && isJsonSafe(source.issues)) {
+			base.issues = source.issues;
+		}
+		const extras: Record<string, unknown> = {};
+		let hasExtras = false;
+		for (const key of Object.keys(source)) {
+			if (RESERVED_ERROR_KEYS.has(key)) {
+				continue;
+			}
+			const value = source[key];
+			if (!isJsonSafe(value)) {
+				continue;
+			}
+			extras[key] = value;
+			hasExtras = true;
+		}
+		if (hasExtras) {
+			base.data = extras;
+		}
+		return base;
 	}
 	const msg = String(err);
 	return { name: "Error", message: msg, stack: "" };

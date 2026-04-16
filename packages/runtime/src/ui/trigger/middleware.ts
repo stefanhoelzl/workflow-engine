@@ -1,65 +1,41 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
-import { html } from "hono/html";
-import { PayloadValidationError } from "../../context/errors.js";
-import type { EventSource } from "../../event-source.js";
-import type { Middleware } from "../../triggers/http.js";
+import type { HttpTriggerRegistry, Middleware } from "../../triggers/http.js";
 import { renderTriggerPage } from "./page.js";
 
-function renderSuccessBanner() {
-	return html`<div class="banner success">Event emitted</div>`;
+// ---------------------------------------------------------------------------
+// /trigger/* — operator UI for manually firing registered HTTP triggers
+// ---------------------------------------------------------------------------
+//
+// Renders a GET-only UI listing every registered HTTP trigger as a
+// collapsible form (body JSON Schema -> jedison form). The "Submit" button
+// POSTs (or whatever method the trigger declares) directly to the
+// `/webhooks/<path>` ingress — the same public path an external caller
+// would use. This deliberately keeps the UI a thin wrapper around the
+// webhook plane: no trigger-UI-specific backend path, no parallel
+// validation, one code path for real invocations and UI-driven ones.
+//
+// SECURITY (§4): mounted under `/trigger/*`, which oauth2-proxy protects
+// at Traefik via forward-auth — unauthenticated users are redirected to
+// sign-in. The runtime itself does NOT enforce auth on `/trigger/*`; the
+// infrastructure layer does. CLAUDE.md documents this invariant. Adding a
+// new UI route under a different prefix requires a matching oauth2-proxy
+// forward-auth rule.
+
+interface TriggerMiddlewareDeps {
+	readonly triggerRegistry: HttpTriggerRegistry;
 }
 
-function renderErrorBanner(
-	eventType: string,
-	issues: { path: string; message: string }[],
-) {
-	const issueList =
-		issues.length > 0
-			? issues.map(
-					(i) =>
-						html`<li><strong>${i.path || "(root)"}</strong>: ${i.message}</li>`,
-				)
-			: html`<li>Invalid payload for event <strong>${eventType}</strong></li>`;
-	return html`<div class="banner error"><ul>${issueList}</ul></div>`;
-}
-
-function triggerMiddleware(
-	schemaSource: { readonly jsonSchemas: Record<string, object> },
-	source: EventSource,
-): Middleware {
+function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
 
-	app.get("/", (c) => {
+	const render = (c: Context) => {
 		const user = c.req.header("X-Auth-Request-User") ?? "";
 		const email = c.req.header("X-Auth-Request-Email") ?? "";
-		return c.html(renderTriggerPage(schemaSource.jsonSchemas, user, email));
-	});
-
-	app.post("/:eventType", async (c) => {
-		const eventType = c.req.param("eventType");
-
-		let body: unknown;
-		try {
-			body = await c.req.json();
-		} catch {
-			return c.html(
-				renderErrorBanner(eventType, [
-					{ path: "", message: "Invalid JSON body" },
-				]),
-			);
-		}
-
-		try {
-			await source.create(eventType, body, "trigger-ui");
-		} catch (error) {
-			if (error instanceof PayloadValidationError) {
-				return c.html(renderErrorBanner(error.eventType, error.issues));
-			}
-			throw error;
-		}
-
-		return c.html(renderSuccessBanner());
-	});
+		return c.html(renderTriggerPage(deps.triggerRegistry.list(), user, email));
+	};
+	app.get("/", render);
+	app.get("", render);
 
 	return {
 		match: "/trigger/*",
@@ -67,4 +43,5 @@ function triggerMiddleware(
 	};
 }
 
+export type { TriggerMiddlewareDeps };
 export { triggerMiddleware };

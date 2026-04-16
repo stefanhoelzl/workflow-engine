@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the shared service contract, graceful shutdown coordination, and error-triggered process termination for long-running runtime components.
+Define the shared service contract, graceful shutdown coordination, error-triggered process termination, and the startup sequence for the runtime.
 
 ## Requirements
 
@@ -29,15 +29,15 @@ The runtime entrypoint SHALL register handlers for SIGINT and SIGTERM that trigg
 
 #### Scenario: SIGINT triggers shutdown
 
-- **GIVEN** a running runtime with scheduler and server services
+- **GIVEN** a running runtime with server service
 - **WHEN** the process receives SIGINT
-- **THEN** `stop()` is called on both services
-- **AND** the process waits for both `stop()` promises to settle
+- **THEN** `stop()` is called on the service
+- **AND** the process waits for the `stop()` promise to settle
 - **AND** the process exits with code 0
 
 #### Scenario: SIGTERM triggers shutdown
 
-- **GIVEN** a running runtime with scheduler and server services
+- **GIVEN** a running runtime with server service
 - **WHEN** the process receives SIGTERM
 - **THEN** the same shutdown sequence as SIGINT is triggered
 
@@ -52,18 +52,11 @@ The runtime entrypoint SHALL register handlers for SIGINT and SIGTERM that trigg
 
 The runtime entrypoint SHALL catch rejections from any service's `start()` promise and trigger a full shutdown of all services with exit code 1.
 
-#### Scenario: Scheduler failure shuts down server
+#### Scenario: Server failure triggers shutdown
 
-- **GIVEN** a running runtime with scheduler and server services
-- **WHEN** the scheduler's `start()` promise rejects
-- **THEN** `stop()` is called on both services
-- **AND** the process exits with code 1
-
-#### Scenario: Server failure shuts down scheduler
-
-- **GIVEN** a running runtime with scheduler and server services
+- **GIVEN** a running runtime with server service
 - **WHEN** the server's `start()` promise rejects (e.g., port in use)
-- **THEN** `stop()` is called on both services
+- **THEN** `stop()` is called on all services
 - **AND** the process exits with code 1
 
 ### Requirement: Entrypoint uses main function
@@ -77,3 +70,31 @@ The runtime entrypoint SHALL wrap all setup and service orchestration in a `func
 - **AND** services are created via factory functions
 - **AND** services are started with error handlers attached
 - **AND** signal handlers are registered
+
+### Requirement: Startup sequence wires executor and recovery
+
+The runtime startup sequence SHALL execute in this order: (1) initialize storage backend, (2) initialize bus and consumers (EventStore consumer bootstraps from `archive/` directly), (3) load workflow manifests and instantiate one `WorkflowRunner` per workflow (each with its own QuickJS sandbox), (4) build the HTTP trigger registry from manifests, (5) construct the executor with `{ bus, sandboxFactory }`, (6) run `recover(persistence, bus)` to sweep crashed pendings, (7) start the Hono HTTP server and bind triggers.
+
+The HTTP server SHALL NOT bind its port before recovery completes.
+
+#### Scenario: Server bound only after recovery
+
+- **WHEN** the runtime starts
+- **THEN** `recover()` SHALL complete before the HTTP server begins accepting requests
+- **AND** no `/webhooks/*` request SHALL be processed until the executor and HTTP middleware are wired
+
+#### Scenario: Executor receives bus and sandboxFactory
+
+- **WHEN** the executor is constructed
+- **THEN** the runtime SHALL pass `{ bus, sandboxFactory }` from the initialized services
+- **AND** the executor SHALL not receive a persistence reference directly (persistence is reached only via the bus)
+
+### Requirement: Scheduler service is removed
+
+The runtime SHALL NOT include a separate scheduler service. The executor (combined with per-workflow runQueue and the HTTP trigger middleware as the dispatch driver) replaces the scheduler. There SHALL be no background loop dequeuing from a work queue.
+
+#### Scenario: No scheduler service in startup
+
+- **WHEN** the runtime starts
+- **THEN** no service named `scheduler` SHALL be initialized
+- **AND** there SHALL be no `WorkQueue` instance in the runtime

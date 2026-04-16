@@ -4,6 +4,12 @@ interface SerializedError {
 	name: string;
 	message: string;
 	stack: string;
+	// Optional structured fields copied from the host-side thrown Error.
+	// `issues` preserves Zod `.issues` arrays across the bridge; other own
+	// JSON-serializable properties are captured in `data`. Both are
+	// reconstructed as own properties on the Error re-thrown into the guest.
+	issues?: unknown;
+	data?: Record<string, unknown>;
 }
 
 type RunResultPayload =

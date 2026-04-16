@@ -24,8 +24,16 @@ const AS_RE = /\s+as\s+/;
 function collectNamedImports(src: string): string[] {
 	const names: string[] = [];
 	for (const match of src.matchAll(IMPORT_RE)) {
-		for (const raw of match[1].split(",")) {
-			const name = raw.trim().split(AS_RE)[0].trim();
+		const group = match[1];
+		if (!group) {
+			continue;
+		}
+		for (const raw of group.split(",")) {
+			const before = raw.trim().split(AS_RE)[0];
+			if (!before) {
+				continue;
+			}
+			const name = before.trim();
 			if (name) {
 				names.push(name);
 			}

@@ -1,370 +1,249 @@
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFsStorage } from "../storage/fs.js";
 import type { StorageBackend } from "../storage/index.js";
-import type { RuntimeEvent } from "./index.js";
-import { createPersistence } from "./persistence.js";
+import type { InvocationLifecycleEvent } from "./index.js";
+import {
+	archivePath,
+	createPersistence,
+	type InvocationRecord,
+	pendingPath,
+	scanArchive,
+	scanPending,
+} from "./persistence.js";
 
 let testDir: string;
 let backend: StorageBackend;
-
-function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
-	return {
-		id: `evt_${crypto.randomUUID()}`,
-		type: "test.event",
-		payload: { data: "test" },
-		correlationId: "corr_test",
-		createdAt: new Date(),
-		emittedAt: new Date(),
-		state: "pending",
-		sourceType: "trigger",
-		sourceName: "test-trigger",
-		...overrides,
-	} as RuntimeEvent;
-}
 
 beforeEach(async () => {
 	testDir = join(tmpdir(), `persistence-test-${crypto.randomUUID()}`);
 	await mkdir(testDir, { recursive: true });
 	backend = createFsStorage(testDir);
+	await backend.init();
 });
 
 afterEach(async () => {
 	await rm(testDir, { recursive: true, force: true });
 });
 
-describe("persistence handle", () => {
-	it("writes files for each state transition with eager archival", async () => {
+function startedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "started" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "started",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:00.000Z"),
+		input: { foo: "bar" },
+		...overrides,
+	};
+}
+
+function completedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "completed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "completed",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		result: { status: 200, body: "", headers: {} },
+		...overrides,
+	};
+}
+
+function failedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "failed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "failed",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		error: { message: "boom", stack: "at ..." },
+		...overrides,
+	};
+}
+
+async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+	const out: T[] = [];
+	for await (const entry of iter) {
+		out.push(entry);
+	}
+	return out;
+}
+
+describe("persistence consumer", () => {
+	it("started writes pending/<id>.json with the start record", async () => {
 		const persistence = createPersistence(backend);
-		// Initialize directories via recover
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
+		await persistence.handle(startedEvent({ id: "evt_abc" }));
 
-		const event = makeEvent({ id: "evt_abc" });
-		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "processing" });
-		await persistence.handle({ ...event, state: "done", result: "succeeded" });
+		const raw = await backend.read(pendingPath("evt_abc"));
+		const record = JSON.parse(raw) as InvocationRecord;
 
-		// Wait a tick for fire-and-forget archive
-		await new Promise((r) => setTimeout(r, 50));
-
-		const pendingFiles = (
-			await readdir(join(testDir, "events/pending"))
-		).filter((f) => f.endsWith(".json"));
-		const archiveFilesResult = (
-			await readdir(join(testDir, "events/archive"))
-		).filter((f) => f.endsWith(".json"));
-
-		// pending/ should be empty (processing archived pending, done wrote to archive + archived processing)
-		expect(pendingFiles.length).toBe(0);
-		// All 3 files should be in archive
-		expect(archiveFilesResult.length).toBe(3);
+		expect(record.id).toBe("evt_abc");
+		expect(record.status).toBe("pending");
+		expect(record.workflow).toBe("w1");
+		expect(record.trigger).toBe("t1");
+		expect(record.input).toEqual({ foo: "bar" });
+		expect(record.startedAt).toBe("2026-01-01T00:00:00.000Z");
 	});
 
-	it("increments counter for each write", async () => {
+	it("completed writes archive/<id>.json and removes pending/<id>.json", async () => {
 		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
+		await persistence.handle(startedEvent({ id: "evt_complete" }));
+		await persistence.handle(completedEvent({ id: "evt_complete" }));
+
+		const pendingList = await collect(backend.list("pending/"));
+		expect(pendingList).toEqual([]);
+
+		const archiveRaw = await backend.read(archivePath("evt_complete"));
+		const record = JSON.parse(archiveRaw) as InvocationRecord;
+		expect(record.status).toBe("succeeded");
+		if (record.status !== "succeeded") {
+			throw new Error("unexpected status");
 		}
-
-		const event1 = makeEvent({ id: "evt_aaa" });
-		const event2 = makeEvent({ id: "evt_bbb" });
-		await persistence.handle(event1);
-		await persistence.handle(event2);
-
-		const files: string[] = [];
-		for await (const path of backend.list("events/pending/")) {
-			files.push(path);
-		}
-		files.sort();
-
-		expect(files[0]).toContain("000001_");
-		expect(files[1]).toContain("000002_");
+		expect(record.result).toEqual({ status: 200, body: "", headers: {} });
+		expect(record.startedAt).toBe("2026-01-01T00:00:00.000Z");
+		expect(record.completedAt).toBe("2026-01-01T00:00:01.000Z");
+		expect(record.input).toEqual({ foo: "bar" });
 	});
 
-	it("terminal state writes directly to archive and archives pending files", async () => {
+	it("failed writes archive/<id>.json with status failed + error, clears pending", async () => {
 		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
+		await persistence.handle(startedEvent({ id: "evt_fail" }));
+		await persistence.handle(
+			failedEvent({
+				id: "evt_fail",
+				error: { message: "boom", stack: "at ...", kind: "user_code" },
+			}),
+		);
+
+		const pendingList = await collect(backend.list("pending/"));
+		expect(pendingList).toEqual([]);
+
+		const archiveRaw = await backend.read(archivePath("evt_fail"));
+		const record = JSON.parse(archiveRaw) as InvocationRecord;
+		expect(record.status).toBe("failed");
+		if (record.status !== "failed") {
+			throw new Error("unexpected status");
 		}
-
-		const event = makeEvent({ id: "evt_term" });
-		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "done", result: "succeeded" });
-
-		// Wait for fire-and-forget archive to complete
-		await new Promise((r) => setTimeout(r, 50));
-
-		const pending: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			pending.push(p);
-		}
-		const archive: string[] = [];
-		for await (const p of backend.list("events/archive/")) {
-			archive.push(p);
-		}
-
-		expect(pending.length).toBe(0);
-		expect(archive.length).toBe(2);
+		expect(record.error.message).toBe("boom");
+		expect(record.error.kind).toBe("user_code");
+		expect(record.input).toEqual({ foo: "bar" });
 	});
 
-	it("archives on failed state", async () => {
+	it("engine_crashed failure (without prior started in-process) reads snapshot from disk", async () => {
+		// Simulate a prior-session pending file left on disk.
+		const priorRecord = {
+			id: "evt_crashed",
+			workflow: "w1",
+			trigger: "t1",
+			input: { prior: true },
+			startedAt: "2025-12-31T23:59:59.000Z",
+			status: "pending",
+		};
+		await backend.write(
+			pendingPath("evt_crashed"),
+			JSON.stringify(priorRecord),
+		);
+
 		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
+		await persistence.handle(
+			failedEvent({
+				id: "evt_crashed",
+				error: { kind: "engine_crashed" },
+			}),
+		);
+
+		const pending = await collect(backend.list("pending/"));
+		expect(pending).toEqual([]);
+
+		const archiveRaw = await backend.read(archivePath("evt_crashed"));
+		const record = JSON.parse(archiveRaw) as InvocationRecord;
+		if (record.status !== "failed") {
+			throw new Error("unexpected status");
 		}
-
-		const event = makeEvent({ id: "evt_fail" });
-		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({
-			...event,
-			state: "done",
-			result: "failed",
-			error: { message: "boom", stack: "" },
-		});
-
-		await new Promise((r) => setTimeout(r, 50));
-
-		const archive: string[] = [];
-		for await (const p of backend.list("events/archive/")) {
-			archive.push(p);
-		}
-		expect(archive.length).toBe(2);
+		expect(record.error.kind).toBe("engine_crashed");
+		expect(record.input).toEqual({ prior: true });
+		expect(record.startedAt).toBe("2025-12-31T23:59:59.000Z");
 	});
 
-	it("archives on skipped state", async () => {
-		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
+	it("handles delegate to StorageBackend for I/O", async () => {
+		const fakeBackend: StorageBackend = {
+			init: vi.fn(async () => undefined),
+			write: vi.fn(async () => undefined),
+			read: vi.fn(async () => "{}"),
+			list: vi.fn(async function* () {
+				// empty
+			}),
+			remove: vi.fn(async () => undefined),
+			move: vi.fn(async () => undefined),
+		};
+		const persistence = createPersistence(fakeBackend);
+		await persistence.handle(startedEvent({ id: "evt_io" }));
+		await persistence.handle(completedEvent({ id: "evt_io" }));
 
-		const event = makeEvent({ id: "evt_skip" });
-		await persistence.handle({ ...event, state: "pending" });
-		await persistence.handle({ ...event, state: "done", result: "skipped" });
-
-		await new Promise((r) => setTimeout(r, 50));
-
-		const archive: string[] = [];
-		for await (const p of backend.list("events/archive/")) {
-			archive.push(p);
-		}
-		expect(archive.length).toBe(2);
-	});
-
-	it("writes full event data to file", async () => {
-		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
-
-		const event = makeEvent({
-			id: "evt_full",
-			type: "order.received",
-			payload: { orderId: "123" },
-			correlationId: "corr_xyz",
-			state: "pending",
-		});
-		await persistence.handle(event);
-
-		const files: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			files.push(p);
-		}
-
-		// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-		const content = JSON.parse(await backend.read(files[0]!));
-
-		expect(content.id).toBe("evt_full");
-		expect(content.type).toBe("order.received");
-		expect(content.payload).toEqual({ orderId: "123" });
-		expect(content.correlationId).toBe("corr_xyz");
-		expect(content.state).toBe("pending");
-	});
-
-	it("logs archive errors without throwing", async () => {
-		const errorSpy = vi.fn();
-		const persistence = createPersistence(backend, {
-			logger: { error: errorSpy },
-		});
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
-
-		const event = makeEvent({ id: "evt_err" });
-		await persistence.handle({ ...event, state: "pending" });
-
-		// Remove the pending dir to cause archive to fail when listing files
-		await rm(join(testDir, "events/pending"), { recursive: true });
-		await mkdir(join(testDir, "events/pending"), { recursive: true });
-
-		// This should not throw even though archive will fail
-		await persistence.handle({ ...event, state: "done", result: "succeeded" });
-
-		// Wait for fire-and-forget
-		await new Promise((r) => setTimeout(r, 50));
-	});
-
-	it("bootstrap is a no-op", async () => {
-		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
-
-		await persistence.bootstrap([makeEvent()], { pending: true });
-
-		const pending: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			pending.push(p);
-		}
-		expect(pending.filter((f) => f.endsWith(".json")).length).toBe(0);
+		expect(fakeBackend.write).toHaveBeenCalledWith(
+			pendingPath("evt_io"),
+			expect.any(String),
+		);
+		expect(fakeBackend.write).toHaveBeenCalledWith(
+			archivePath("evt_io"),
+			expect.any(String),
+		);
+		expect(fakeBackend.remove).toHaveBeenCalledWith(pendingPath("evt_io"));
 	});
 });
 
-describe("persistence recover", () => {
-	it("recovers pending events", async () => {
-		await backend.init();
-		await mkdir(join(testDir, "events/pending"), { recursive: true });
-		await mkdir(join(testDir, "events/archive"), { recursive: true });
-
-		const event = makeEvent({ id: "evt_pend", state: "pending" });
-		await backend.write(
-			"events/pending/000001_evt_pend.json",
-			JSON.stringify(event),
-		);
-
+describe("scanPending / scanArchive", () => {
+	it("scanPending yields each pending record", async () => {
 		const persistence = createPersistence(backend);
-		const allEvents: RuntimeEvent[] = [];
-		for await (const { events } of persistence.recover()) {
-			allEvents.push(...events);
-		}
+		await persistence.handle(startedEvent({ id: "evt_one" }));
+		await persistence.handle(startedEvent({ id: "evt_two" }));
 
-		expect(allEvents.length).toBe(1);
-		expect(allEvents[0]?.id).toBe("evt_pend");
-		expect(allEvents[0]?.state).toBe("pending");
+		const records = await collect(scanPending(backend));
+		const ids = records.map((r) => r.id).sort();
+		expect(ids).toEqual(["evt_one", "evt_two"]);
+		for (const record of records) {
+			expect(record.status).toBe("pending");
+		}
 	});
 
-	it("recovers processing events (crash recovery) — takes latest state", async () => {
-		await backend.init();
-		await mkdir(join(testDir, "events/pending"), { recursive: true });
-		await mkdir(join(testDir, "events/archive"), { recursive: true });
-
-		const event = makeEvent({ id: "evt_proc" });
-		await backend.write(
-			"events/pending/000001_evt_proc.json",
-			JSON.stringify({ ...event, state: "pending" }),
-		);
-		await backend.write(
-			"events/pending/000002_evt_proc.json",
-			JSON.stringify({ ...event, state: "processing" }),
-		);
-
+	it("scanArchive yields each archived record", async () => {
 		const persistence = createPersistence(backend);
-		const pendingEvents: RuntimeEvent[] = [];
-		for await (const { events, pending } of persistence.recover()) {
-			if (pending) {
-				pendingEvents.push(...events);
-			}
+		for (const id of ["a", "b", "c"]) {
+			// biome-ignore lint/performance/noAwaitInLoops: each invocation must started-then-completed in order; parallelization would race the in-memory `starts` map
+			await persistence.handle(startedEvent({ id: `evt_${id}` }));
+			await persistence.handle(completedEvent({ id: `evt_${id}` }));
 		}
 
-		expect(pendingEvents.length).toBe(1);
-		expect(pendingEvents[0]?.state).toBe("processing");
+		const records = await collect(scanArchive(backend));
+		const ids = records.map((r) => r.id).sort();
+		expect(ids).toEqual(["evt_a", "evt_b", "evt_c"]);
+		for (const record of records) {
+			expect(record.status).toBe("succeeded");
+		}
 	});
 
-	it("handles crash case — deduplicates and moves older to archive", async () => {
-		await backend.init();
-		await mkdir(join(testDir, "events/pending"), { recursive: true });
-		await mkdir(join(testDir, "events/archive"), { recursive: true });
-
-		const event = makeEvent({ id: "evt_crash" });
-		await backend.write(
-			"events/pending/000001_evt_crash.json",
-			JSON.stringify({ ...event, state: "pending" }),
-		);
-		await backend.write(
-			"events/pending/000002_evt_crash.json",
-			JSON.stringify({ ...event, state: "processing" }),
-		);
-
-		const persistence = createPersistence(backend);
-		for await (const _batch of persistence.recover()) {
-			// consume
-		}
-
-		const pending: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			pending.push(p);
-		}
-		const archive: string[] = [];
-		for await (const p of backend.list("events/archive/")) {
-			archive.push(p);
-		}
-
-		expect(pending.length).toBe(1);
-		expect(pending[0]).toContain("000002_");
-		expect(archive.length).toBe(1);
-		expect(archive[0]).toContain("000001_");
+	it("scanPending is empty when pending/ is empty", async () => {
+		const records = await collect(scanPending(backend));
+		expect(records).toEqual([]);
 	});
 
-	it("recovers counter from existing files", async () => {
-		await backend.init();
-		await mkdir(join(testDir, "events/pending"), { recursive: true });
-		await mkdir(join(testDir, "events/archive"), { recursive: true });
-
-		const event = makeEvent({ id: "evt_cnt" });
-		await backend.write(
-			"events/archive/000042_evt_old.json",
-			JSON.stringify({
-				...event,
-				id: "evt_old",
-				state: "done",
-				result: "succeeded",
-			}),
-		);
-		await backend.write(
-			"events/pending/000043_evt_cnt.json",
-			JSON.stringify({ ...event, state: "pending" }),
-		);
-
-		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
-
-		await persistence.handle(makeEvent({ id: "evt_new" }));
-
-		const pending: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			pending.push(p);
-		}
-		const newFile = pending.find((f) => f.includes("evt_new"));
-		expect(newFile).toContain("000044_");
-	});
-
-	it("handles empty directories", async () => {
-		const persistence = createPersistence(backend);
-		const allEvents: RuntimeEvent[] = [];
-		for await (const { events } of persistence.recover()) {
-			allEvents.push(...events);
-		}
-
-		expect(allEvents.length).toBe(0);
-	});
-
-	it("starts counter at 0 for empty directories", async () => {
-		const persistence = createPersistence(backend);
-		for await (const _ of persistence.recover()) {
-			/* drain */
-		}
-
-		await persistence.handle(makeEvent({ id: "evt_first" }));
-
-		const pending: string[] = [];
-		for await (const p of backend.list("events/pending/")) {
-			pending.push(p);
-		}
-		expect(pending[0]).toContain("000001_");
+	it("scanArchive is empty when archive/ is empty", async () => {
+		const records = await collect(scanArchive(backend));
+		expect(records).toEqual([]);
 	});
 });

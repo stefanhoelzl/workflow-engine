@@ -66,19 +66,26 @@ sections must append (§7 and onward), not renumber.
   │   │ Webhook      │    │ UI (dashboard│   │ API handlers │   │
   │   │ handlers     │    │  + trigger)  │   │              │   │
   │   └──────┬───────┘    └──────────────┘   └──────────────┘   │
-  │          │                                                  │
+  │          │ parse + validate payload (Ajv)                   │
   │          ▼                                                  │
-  │   ┌──────────────┐   EventBus   ┌──────────────────────┐    │
-  │   │ Event source │─────────────►│ Action scheduler     │    │
-  │   └──────────────┘              └──────────┬───────────┘    │
-  │                                            │                │
-  │                                 ══════════ ▼ ══════════     │
-  │                                 Sandbox boundary (WASM)     │
-  │                                 ┌──────────────────────┐    │
-  │                                 │ QuickJS WASM context │    │
-  │                                 │  (UNTRUSTED action)  │    │
-  │                                 │   ctx.emit / fetch   │    │
-  │                                 └──────────────────────┘    │
+  │   ┌──────────────┐   EventBus    ┌─────────────────────┐    │
+  │   │   Executor   │──lifecycle──►│ Persistence +        │    │
+  │   │ (runQueue)   │              │ EventStore + Logging │    │
+  │   └──────┬───────┘              └─────────────────────┘     │
+  │          │                                                  │
+  │          │ invokeHandler(trigger, payload)                  │
+  │          ▼                                                  │
+  │          ═══════════════════════════════════════            │
+  │          Sandbox boundary (QuickJS WASM + worker)           │
+  │          ┌───────────────────────────────────────┐          │
+  │          │ Trigger handler (UNTRUSTED)           │          │
+  │          │   └─► await action(input)             │          │
+  │          │       ├─► __hostCallAction(name, in)  │          │
+  │          │       │   (host: Ajv validate + audit)│          │
+  │          │       └─► action.handler(input)       │          │
+  │          │       └─► Zod validate output         │          │
+  │          │   └─► fetch(url, …) → __hostFetch     │          │
+  │          └───────────────────────────────────────┘          │
   └─────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -91,7 +98,7 @@ sections must append (§7 and onward), not renumber.
 
 | # | Surface | Trust level | Entry points | Auth mechanism | Section |
 |---|---------|-------------|--------------|----------------|---------|
-| 1 | Sandbox | **UNTRUSTED** (user-authored action code) | `sandbox.spawn(source, ctx)` | Isolation, not auth | §2 |
+| 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox(source, methods).run(handlerName, payload)` | Isolation, not auth | §2 |
 | 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/{name}` | None — payload-schema validation only | §3 |
 | 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/api/*` | oauth2-proxy (GitHub) for UI; Bearer (GitHub) for API | §4 |
 | 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Traefik | K8s RBAC, pod network | §5 |
@@ -149,17 +156,55 @@ new capability across the sandbox boundary?*
   `crypto.*` (full WebCrypto), `setTimeout` / `setInterval` /
   `clearTimeout` / `clearInterval`, `__hostFetch` (for the workflow
   bundle's fetch polyfill chain), plus the host methods registered via
-  `methods` and `extraMethods` (the runtime installs `emit` as a
-  per-run extra method that closes over the currently-dispatched
-  event).
-- `ctx` is the runtime's JSON-composed view of event and env:
-  `{ event: { name, payload }, env }`. It is a snapshot passed as the
-  first argument to the exported handler. The SDK's
-  `workflow.action({...})` builder wraps each handler at authoring
-  time to inject a typed `ctx.emit` method that closes over the per-run
-  `emit` global. `ctx.emit` is the single workflow-author-facing path
-  for emitting events; payload validation happens host-side via
-  `EventSource.derive` (see the Mitigations section).
+  `methods` and `extraMethods`. The runtime passes `__hostCallAction`
+  as a construction-time method in `methods` — it is a convention, not
+  a hardcoded built-in; the sandbox package itself does not know about
+  manifests, Zod, or action dispatch.
+- **Action dispatch model (design D11).** The author writes
+  `await sendNotification(input)` against the SDK-returned callable.
+  That callable is a sandbox-side wrapper (defined in
+  `packages/sdk/src/index.ts`) that runs entirely inside the
+  QuickJS context and does three things, in order:
+  1. Notifies the host via `__hostCallAction(name, input)`. The host
+     looks up the action by name in the workflow's manifest, validates
+     `input` against the declared JSON Schema (Ajv on the host side),
+     and emits an audit-log entry. The host then returns `undefined`
+     — it does NOT dispatch the user's handler.
+  2. Invokes the author's handler as a plain JS function call in the
+     same QuickJS context (no nested `sandbox.run()`).
+  3. Validates the handler's return value against the action's output
+     Zod schema using the Zod bundle that ships inlined in the
+     workflow bundle.
+  This means action code runs inside the sandbox's QuickJS boundary
+  at all times — the host bridge is reached only for input validation
+  + audit logging. Validation errors from either end propagate across
+  the bridge (when thrown host-side) or propagate directly (when
+  thrown sandbox-side, step 3) as JS `Error` rejections. On the
+  host-thrown path, the guest-side error carries the Zod-shaped
+  `issues` array preserved as a JSON-marshaled own property.
+- If the runtime does not pass `__hostCallAction` in `methods`, it is
+  not installed — the SDK wrapper's first step throws "is not a
+  function" and the author's handler MUST NOT execute.
+- **Bridge surface inventory** (the total set of guest-visible globals
+  beyond standard JS built-ins):
+  - **Built-ins** (hardcoded in `packages/sandbox/src/globals.ts`):
+    `console`, `setTimeout`, `setInterval`, `clearTimeout`,
+    `clearInterval`, `performance`, `crypto`, `__hostFetch`.
+  - **Runtime-passed** (via `methods` at `sandbox(source, methods)`
+    construction time): `__hostCallAction`. Not a hardcoded built-in —
+    the sandbox package has no knowledge of manifests or actions; it
+    simply installs whatever methods the runtime provides.
+  The sandbox boundary regression test
+  (`packages/sandbox/src/host-call-action.test.ts` > "host-bridge
+  surface inventory") asserts this exact inventory.
+- Handlers receive `(payload)` (trigger) or `(input)` (action) — no
+  `ctx` parameter. Workflow-level env is declared on
+  `defineWorkflow({env})` and is referenced via the imported
+  `workflow.env` record (module-scoped, frozen at load time). Env
+  values are resolved from `process.env` on the host at bundle load
+  and shipped into the sandbox as JSON; no per-action scoping, no
+  cross-workflow leakage (each workflow has its own sandbox + its own
+  env record).
 - No other globals are present. `process`, `require`, `fs`, and Node
   APIs are absent.
 
@@ -171,26 +216,28 @@ new capability across the sandbox boundary?*
 | S2 | Action consumes unbounded memory in the WASM heap, starving the host | DoS |
 | S3 | Action runs an infinite loop, blocking the host event loop on the `vm.evalCode` call | DoS |
 | S4 | Action schedules infinite timers to keep the host pumping jobs | DoS |
-| S5 | Action uses `ctx.fetch` / `__hostFetch` to reach internal K8s services, cloud metadata endpoints, or private network ranges (SSRF) | Information disclosure / EoP |
-| S6 | Action reads secrets via `ctx.env` that were declared by another workflow's action | Information disclosure |
-| S7 | Action exfiltrates event data or secrets via `ctx.emit` payloads that are later indexed, logged, or stored | Information disclosure |
-| S8 | Action generates cryptographic material and exports it through `ctx.emit` or `ctx.fetch` | Information disclosure |
+| S5 | Action uses `fetch()` / `__hostFetch` to reach internal K8s services, cloud metadata endpoints, or private network ranges (SSRF) | Information disclosure / EoP |
+| S6 | Action reads secrets via `workflow.env` that were declared by another workflow | Information disclosure |
+| S7 | Action exfiltrates trigger payload data or secrets by returning them from the trigger handler (visible in HTTP response + archive record) or by passing them as action input (audit-logged + written to archive on failure) | Information disclosure |
+| S8 | Action generates cryptographic material and exports it through the handler return value or an outbound `fetch()` | Information disclosure |
 | S9 | A new host-bridge API is added that accepts a raw host-object reference, allowing reflection / mutation of host state | Elevation of privilege |
+| S10 | Guest code calls `__hostCallAction` with a payload that triggers prototype pollution on the host (`__proto__`, `constructor.prototype`) | Tampering / EoP |
 
 ### Mitigations (current)
 
 - **Fresh context per workflow module load.** `newRuntime()` +
-  `newContext()` are called once when the scheduler first dispatches an
-  event to a workflow. The context is reused across all subsequent
-  `run()` calls for that workflow. Module-level state and the internal
-  opaque-reference store persist across runs within the same workflow.
-  Disposal happens on workflow reload/unload via `Sandbox.dispose()`.
-  (`packages/sandbox/src/index.ts`, `packages/runtime/src/services/scheduler.ts`)
+  `newContext()` are called once when the workflow registry first
+  instantiates a workflow. The context is reused across all subsequent
+  `run()` / handler-invoke calls for that workflow. Module-level state
+  and the internal opaque-reference store persist across runs within
+  the same workflow. Disposal happens on workflow reload/unload via
+  `Sandbox.dispose()`.
+  (`packages/sandbox/src/index.ts`, `packages/runtime/src/workflow-registry.ts`)
 - **Cross-workflow isolation preserved.** Each workflow gets its own
   `Sandbox` instance with its own QuickJS context. State leaking within
   a workflow is self-leakage (same trust domain — one author, one
   manifest, one deploy). Cross-workflow leakage is physically
-  impossible: separate VMs, separate opaque stores.
+  impossible: separate VMs, separate opaque stores, separate env records.
 - **No Node.js surface.** QuickJS WASM has no built-in `process`,
   `require`, `fs`, `child_process`, or network APIs. Only the explicit
   globals set in `packages/sandbox/src/globals.ts` and the construction-time
@@ -202,18 +249,39 @@ new capability across the sandbox boundary?*
   sandbox package and cannot be reached by consumers.
 - **JSON-only host/sandbox boundary.** Arguments and return values of
   host-provided methods are JSON-marshalled. Host object references,
-  closures, and proxies cannot cross. `ctx.event` and `ctx.env` are
-  JSON values composed by the runtime (see
-  `packages/runtime/src/services/scheduler.ts`).
-- **Per-action env scoping.** `ctx.env` exposes only the keys declared by
-  that action's `env` record. Other workflows' env vars are not reachable
-  (mitigates S6 at the host side).
-- **Emit payload validation.** The runtime's `emit` extra-method closes
-  over the current event and calls `EventSource.derive(event, type,
-  payload, actionName)`, which validates the payload against the
-  declared Zod schema before the event is published (limits S7 to
-  schema-shaped data).
-  (`packages/runtime/src/event-source.ts`)
+  closures, and proxies cannot cross. Trigger payloads, action input
+  and output, and `workflow.env` all cross the boundary as JSON values.
+- **Per-workflow env scoping.** `workflow.env` exposes only the keys
+  declared in that workflow's `defineWorkflow({env})`. Other workflows'
+  env vars are not reachable — each workflow has its own sandbox with
+  its own env record (mitigates S6 structurally, not just by policy).
+- **Action input validation at the host bridge.** When a handler does
+  `await sendNotification(input)`, the SDK wrapper calls
+  `__hostCallAction("sendNotification", input)`. The runtime's
+  dispatcher (`workflow-registry.ts`'s `buildHostCallAction()`) looks
+  up the action in the manifest, runs `input` through a pre-compiled
+  Ajv validator against the manifest's JSON Schema, and audit-logs the
+  invocation. The host does NOT dispatch the handler — the SDK wrapper
+  does, in-sandbox, immediately after the bridge returns. Validation
+  failures throw back into the guest with the Zod/Ajv `issues` array
+  preserved as a JSON-marshaled own property on the Error. This makes
+  input validation authoritative (the manifest schemas live on the
+  host) even if the guest-side Zod bundle is compromised.
+  (`packages/runtime/src/workflow-registry.ts`,
+  `packages/runtime/src/triggers/http.ts`)
+- **Action output validation in-sandbox.** The SDK wrapper validates
+  the handler's return value against the output Zod schema using the
+  Zod bundle inlined in the workflow bundle. A single bridge crossing
+  covers input; output validation stays guest-side because the return
+  is already a guest value. If the guest tampers with its own Zod
+  copy, the self-harm is contained — input validation (the canonical
+  contract, host-side) remains authoritative.
+- **Trigger payload validation on ingress.** Before the executor
+  is invoked, the HTTP trigger middleware validates the request body
+  against the trigger's JSON Schema (Ajv, compiled once per trigger at
+  registry load). Validation failure → 422 response, no sandbox entry,
+  no archive record.
+  (`packages/runtime/src/triggers/http.ts`)
 - **Static analysis.** TypeScript strict mode and Biome `all` rules are
   enabled to catch unsafe bridge patterns early.
 - **Worker-thread isolation of the host-bridge layer.** The QuickJS
@@ -224,18 +292,25 @@ new capability across the sandbox boundary?*
   observe Node internals (QuickJS is the primary boundary), and the
   worker has no additional permissions (same `process.env`, same file
   system). What it does buy is that long synchronous guest CPU work
-  (S3) no longer freezes the main event loop — derived emit handling,
-  trigger ingestion, and the dashboard stay responsive. Unexpected
-  worker termination is surfaced as a `Sandbox.onDied` callback; the
-  factory evicts and respawns on next `create(source)`.
+  (S3) no longer freezes the main event loop — trigger ingestion and
+  the operator UI stay responsive. Unexpected worker termination is
+  surfaced as a `Sandbox.onDied` callback; the factory evicts and
+  respawns on next `create(source)`.
   (`packages/sandbox/src/worker.ts`, `packages/sandbox/src/factory.ts`)
 - **Cancel-on-run-end.** When a guest's exported function resolves
   (or throws), the worker clears every `setTimeout`/`setInterval`
   registered during that run and aborts the per-run `AbortController`
   that wraps in-flight `__hostFetch` calls. Un-awaited background
   work does not outlive the run. This closes a latent bug where a
-  guest's `setTimeout(() => emit(...), N)` could fire during a later
-  run against the wrong event context.
+  guest's `setTimeout(() => fetch(...), N)` could fire after the
+  trigger handler returned and touch the response headers of a later
+  invocation.
+- **Per-workflow runQueue serialization.** The executor serializes one
+  trigger invocation at a time per workflow (cross-workflow invocations
+  remain parallel). Combined with cancel-on-run-end, this eliminates
+  a whole class of module-state race conditions between concurrent
+  invocations against the same sandbox.
+  (`packages/runtime/src/executor/run-queue.ts`)
 
 ### Residual risks
 
@@ -249,7 +324,7 @@ exists. Each item should be tracked as a follow-up security task.
 | R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap | S4 unmitigated | v1 limitation |
 | R-S4 | `__hostFetch` has **no URL allowlist/denylist** at the app layer — the sandbox can reach any public URL the pod can reach. Infrastructure half (RFC1918 + cloud metadata) closed by K8s NetworkPolicy (§5). Public URL allowlist is a pending app-layer control. | S5 partial | **High priority** (app-layer half) |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress | S5 in-cluster / metadata half mitigated | **Resolved** (see §5 R-I1 / R-I9) |
-| R-S6 | Action `env` is resolved at build time; secrets baked into the action's declared env appear in event logs if emitted back out via `ctx.emit` | S7 partial | Behavioural; document per-action |
+| R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret baked into `workflow.env` that a handler deliberately returns, echoes into an action input, or logs will appear in the archive record / pino logs | S7 partial | Behavioural; author responsibility |
 | R-S7 | Per-workflow opaque-reference store grows unboundedly over sandbox lifetime (crypto-heavy workflows generating many `CryptoKey` values) | Memory growth | v1 limitation; monitor in production |
 
 ### Rules for AI agents
@@ -268,7 +343,7 @@ exists. Each item should be tracked as a follow-up security task.
    workflow, reuse is permitted and expected — module-level state
    persists across `run()` calls for the same workflow. Disposal happens
    on workflow reload/unload; always call `Sandbox.dispose()` when
-   evicting from the scheduler's sandbox map.
+   evicting from the workflow registry.
 5. **NEVER return a host `Promise`'s original reference to the sandbox.**
    The sandbox-internal Bridge primitive handles deferred-promise
    translation via `vm.newPromise()`; consumers provide plain async
@@ -279,15 +354,22 @@ exists. Each item should be tracked as a follow-up security task.
    methods only via `methods` (construction-time) and `extraMethods`
    (per-run). All arguments and return values on the public boundary
    are JSON.
-7. **When adding an outbound capability (fetch, emit, etc.), explicitly
-   consider SSRF and exfiltration.** If there is no URL allowlist today,
-   say so in the change proposal; do not claim the sandbox "prevents"
-   the action from reaching an internal service.
+7. **When adding an outbound capability (fetch, action call, etc.),
+   explicitly consider SSRF and exfiltration.** If there is no URL
+   allowlist today, say so in the change proposal; do not claim the
+   sandbox "prevents" the action from reaching an internal service.
 8. **Sandbox-related changes MUST include security tests** (per
    `openspec/config.yaml` task rules) covering: escape attempts, global
    visibility, sandbox disposal, cross-sandbox opaque-ref isolation,
    extraMethods collision rejection, and any new bridge API's failure
    modes.
+9. **Every new runtime-passed method in `methods` MUST validate its
+   input on the host side before acting on it.** The host is the
+   authoritative validation boundary (the guest's Zod copy is
+   untrusted). `__hostCallAction` compiles Ajv validators from the
+   manifest at registry load and runs every input through one before
+   audit-logging or returning. New methods SHALL follow the same
+   pattern and SHALL be covered by a prototype-pollution test.
 
 ### File references
 
@@ -297,10 +379,12 @@ exists. Each item should be tracked as a follow-up security task.
 - Host-method installer (internal): `packages/sandbox/src/install-host-methods.ts`
 - Globals allowlist: `packages/sandbox/src/globals.ts`
 - WebCrypto bridge: `packages/sandbox/src/crypto.ts`
-- Scheduler (owns per-workflow sandbox map + installs per-run `emit`): `packages/runtime/src/services/scheduler.ts`
-- Payload validation: `packages/runtime/src/event-source.ts`
+- Workflow registry (owns per-workflow sandbox map + `__hostCallAction` dispatcher): `packages/runtime/src/workflow-registry.ts`
+- HTTP trigger middleware (payload validation + executor delegation): `packages/runtime/src/triggers/http.ts`
+- Executor (per-workflow runQueue + lifecycle emission): `packages/runtime/src/executor/`
+- SDK (authoring API + in-sandbox action wrapper): `packages/sdk/src/index.ts`
 - OpenSpec spec: `openspec/specs/sandbox/spec.md`
-- OpenSpec spec: `openspec/specs/context/spec.md`
+- OpenSpec spec: `openspec/specs/sdk/spec.md`
 
 ## §3 Webhook Ingress
 
@@ -318,39 +402,57 @@ timing.
 
 ### Entry points
 
-- `POST /webhooks/{trigger_name}` with JSON body.
-- Path matching via URLPattern; supports `:param` path segments. Static
-  segments are prioritized over parameterized
-  (`packages/runtime/src/triggers/http.ts` lines 86–121).
-- Request data delivered to the action as `ctx.event.payload`:
+- `POST /webhooks/{trigger_path}` (or whatever `method` the trigger
+  declares; default POST) with JSON body.
+- Path matching via URLPattern; supports `:param` path segments and
+  `*wildcard` tail segments. Static segments are prioritized over
+  parameterized (`packages/runtime/src/triggers/http.ts`).
+- Request data delivered to the trigger handler as the `payload`
+  argument:
 
   ```typescript
   { body, headers, url, method, params, query }
   ```
 
+  `body` is a JSON-parsed object validated against the trigger's JSON
+  Schema (Ajv) before the sandbox is entered. `headers`, `url`, `method`,
+  `params`, and `query` are attacker-controlled metadata — the sandbox
+  sees them as data, not as authentication.
+
 ### Threats
 
 | ID | Threat | Category |
 |----|--------|----------|
-| W1 | Attacker sends malformed JSON or schema-violating payload to crash the handler or poison the event store | Tampering |
+| W1 | Attacker sends malformed JSON or schema-violating payload to crash the handler or poison the invocation store | Tampering |
 | W2 | Attacker sends a very large payload, exhausting memory or stream buffers | DoS |
 | W3 | Attacker floods an endpoint with high-rate requests | DoS |
 | W4 | Attacker impersonates a legitimate upstream (e.g. GitHub, Stripe) — no signature verification | Spoofing |
-| W5 | Attacker injects headers (`Authorization`, `Cookie`, `X-Forwarded-*`) that action code treats as trusted | Spoofing / information disclosure |
+| W5 | Attacker injects headers (`Authorization`, `Cookie`, `X-Forwarded-*`) that handler code treats as trusted | Spoofing / information disclosure |
 | W6 | Attacker probes path variants to discover registered trigger names | Information disclosure |
-| W7 | Attacker sends a payload that matches schema but triggers expensive downstream fan-out (event storm) | DoS |
-| W8 | Query-string or URL-parameter injection, passed unsanitized into action code | Tampering |
+| W7 | Attacker sends a payload that matches schema but forces an expensive handler path (e.g. unbounded Promise.all over action calls) | DoS |
+| W8 | Query-string or URL-parameter injection, passed unsanitized into handler code | Tampering |
 
 ### Mitigations (current)
 
-- **Zod runtime validation** on the `body` against the trigger's
-  declared event schema. Invalid payloads return **422** with issue
-  details and never reach the sandbox.
-  (`packages/runtime/src/event-source.ts` lines 37–68;
-  `packages/runtime/src/triggers/http.ts` lines 186–197)
-- **Payload scope reaches the sandbox only via events**, so any
-  downstream code that consumes the payload runs in the sandbox with no
-  host APIs (see §2).
+- **Ajv JSON Schema validation** of the request body against the
+  trigger's manifest schema. Invalid payloads return **422** with
+  structured issues and never reach the sandbox or the executor.
+  No matching trigger → **404**. Handler throws → **500** + a `failed`
+  archive record.
+  (`packages/runtime/src/triggers/http.ts`)
+- **Structural JSON round-trip** of the body before validation
+  (`structuredCloneJson()` in the workflow registry) strips
+  `__proto__` and `constructor` keys from the attacker-supplied object,
+  so prototype-pollution payloads cannot poison the validator or the
+  downstream handler object.
+- **Sole invocation path is `executor.invoke(workflow, trigger, payload)`.**
+  The middleware's only job after validation is to delegate to the
+  executor and serialize the returned `HttpTriggerResult`. The executor
+  owns runQueue serialization + lifecycle emission; the middleware does
+  not call into the sandbox directly.
+- **Payload scope reaches the sandbox only as the handler's `payload`
+  argument** — a JSON snapshot. Any downstream code that consumes the
+  payload runs in the sandbox with no host APIs (see §2).
 - **TLS termination at Traefik** (HTTPS only on the websecure
   entrypoint).
 - **Deterministic path matching** via URLPattern; static segments beat
@@ -366,51 +468,56 @@ timing.
 | R-W1 | **No signature verification** on incoming payloads (HMAC, GitHub signature, Stripe signature, etc.) | W4 unmitigated | v1 limitation; add per-integration |
 | R-W2 | **No payload size limit** configured at the application or Traefik level | W2 unmitigated | v1 limitation |
 | R-W3 | **No rate limiting** at the application or Traefik level | W3, W7 unmitigated | v1 limitation |
-| R-W4 | **All request headers are forwarded verbatim** into the event payload's `headers` field, including any `Authorization` / `Cookie` the caller sent | W5 unmitigated | **High priority** — move to per-trigger header allowlist |
+| R-W4 | **All request headers are forwarded verbatim** into the payload's `headers` field, including any `Authorization` / `Cookie` the caller sent | W5 unmitigated | **High priority** — move to per-trigger header allowlist |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |
-| R-W6 | Query-string and path parameters are placed unsanitized into `ctx.event.payload.query` / `.params` | W8 partial | Mitigated by sandbox (§2), but authors must still treat as untrusted |
+| R-W6 | Query-string and path parameters are placed unsanitized into `payload.query` / `payload.params` | W8 partial | Mitigated by sandbox (§2), but handlers must still treat as untrusted |
 
 ### Implementation guidance for signed webhooks
 
 When adding signature verification for a specific integration (e.g.
 GitHub webhooks, Stripe webhooks), implement the verifier as a
-**pre-validation step in the handler** — before Zod validation — and
-reject unsigned or incorrectly signed requests with 401 before any
-event is emitted. Store the signing secret as a K8s Secret per §5,
-never in the trigger definition. The verifier must not skip the Zod
-schema check; a valid signature on a schema-violating payload still
-returns 422.
+**pre-validation step in the HTTP trigger middleware** — before the
+Ajv body-schema check and before `executor.invoke` — and reject
+unsigned or incorrectly signed requests with 401 before any sandbox
+entry. Store the signing secret as a K8s Secret per §5, never in the
+trigger definition. The verifier must not skip the schema check; a
+valid signature on a schema-violating payload still returns 422.
 
 ### Rules for AI agents
 
 1. **NEVER add authentication to `/webhooks/*` without an explicit
    OpenSpec proposal.** Public ingress is deliberate.
-2. **NEVER strip the Zod validation step** between the incoming request
-   and event emission. It is the only pre-sandbox filter.
+2. **NEVER strip the Ajv body-schema validation step** between the
+   incoming request and `executor.invoke`. It is the only pre-sandbox
+   filter.
 3. **NEVER treat webhook payload metadata (headers, IP, query string)
    as authenticated.** Even if a caller sets `Authorization: Bearer
    …`, that header is just user input on this surface.
-4. **ALWAYS define a Zod schema for new webhook event types.** A
-   trigger without a schema is a trigger that accepts arbitrary
-   untrusted JSON.
+4. **ALWAYS define a Zod `body` schema for new HTTP triggers.** The
+   vite-plugin derives the manifest's JSON Schema from it; a trigger
+   without a `body` schema accepts arbitrary untrusted JSON.
 5. **When adding signature verification for a specific integration**,
    follow the "Implementation guidance for signed webhooks" above —
-   verifier in the handler, before Zod, never in action code.
+   verifier in the HTTP trigger middleware, before the body-schema
+   check, never in handler code.
 6. **DO NOT extend the webhook payload shape** (`body` / `headers` /
    `url` / `method` / `params` / `query`) without updating this section
-   and the `triggers` spec. New fields expand what untrusted data
+   and the `http-trigger` spec. New fields expand what untrusted data
    reaches the sandbox.
 7. **When adding a new trigger type**, decide its trust level first:
    public (like HTTP webhooks) → §3 rules apply; authenticated
-   (scheduled, internal) → document separately.
+   (scheduled, internal) → document separately. Each concrete trigger
+   type also gets its own SDK factory (`httpTrigger({...})`-style),
+   its own brand symbol, and its own spec file.
 
 ### File references
 
-- Webhook handler: `packages/runtime/src/triggers/http.ts`
-- Event source / payload validation: `packages/runtime/src/event-source.ts`
-- Trigger registry: `packages/runtime/src/triggers/`
+- Webhook middleware + registry: `packages/runtime/src/triggers/http.ts`
+- Payload validation entry + body-shape normalization: `packages/runtime/src/workflow-registry.ts`
+- Executor (post-validation invocation path): `packages/runtime/src/executor/`
 - Traefik routing: `infrastructure/modules/workflow-engine/modules/routing/routing.tf`
 - OpenSpec spec: `openspec/specs/triggers/spec.md`
+- OpenSpec spec: `openspec/specs/http-trigger/spec.md`
 - OpenSpec spec: `openspec/specs/payload-validation/spec.md`
 
 ## §4 Authentication

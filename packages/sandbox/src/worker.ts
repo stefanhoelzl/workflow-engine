@@ -83,6 +83,14 @@ function handleResponse(
 		const err = new Error(error?.message ?? "unknown RPC error");
 		err.name = error?.name ?? "Error";
 		err.stack = error?.stack ?? "";
+		if (error?.issues !== undefined) {
+			(err as Error & { issues?: unknown }).issues = error.issues;
+		}
+		if (error?.data) {
+			for (const [key, value] of Object.entries(error.data)) {
+				(err as unknown as Record<string, unknown>)[key] = value;
+			}
+		}
 		pending.reject(err);
 	}
 }

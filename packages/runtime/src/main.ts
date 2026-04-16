@@ -1,7 +1,7 @@
-import { createSandboxFactory } from "@workflow-engine/sandbox";
+import { readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { apiMiddleware } from "./api/index.js";
 import { createConfig } from "./config.js";
-import { createActionContext } from "./context/index.js";
 import { createEventStore } from "./event-bus/event-store.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -10,12 +10,11 @@ import {
 	createPersistence,
 	type PersistenceConsumer,
 } from "./event-bus/persistence.js";
-import { createWorkQueue } from "./event-bus/work-queue.js";
-import { createEventSource } from "./event-source.js";
+import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
+import { recover } from "./recovery.js";
 import type { Service } from "./services/index.js";
-import { createScheduler } from "./services/scheduler.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
@@ -25,7 +24,7 @@ import { httpTriggerMiddleware } from "./triggers/http.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
-import { createWorkflowRegistry } from "./workflow-registry.js";
+import { createWorkflowRegistry, loadWorkflows } from "./workflow-registry.js";
 
 function createStorageBackend(
 	config: ReturnType<typeof createConfig>,
@@ -50,16 +49,46 @@ function createStorageBackend(
 
 function initPersistence(
 	backend: StorageBackend | undefined,
-	config: ReturnType<typeof createConfig>,
 	logger: ReturnType<typeof createLogger>,
 ): PersistenceConsumer | undefined {
 	if (!backend) {
 		return;
 	}
-	return createPersistence(backend, {
-		concurrency: config.fileIoConcurrency,
-		logger,
-	});
+	return createPersistence(backend, { logger });
+}
+
+// Discover manifest files under `<workflowsDir>/<name>/manifest.json`. Does
+// not recurse beyond one level — the v1 Vite plugin emits exactly that
+// layout.
+async function discoverManifests(
+	workflowsDir: string,
+	logger: ReturnType<typeof createLogger>,
+): Promise<string[]> {
+	let entries: string[];
+	try {
+		entries = await readdir(workflowsDir);
+	} catch (err) {
+		logger.warn("workflows.dir-not-found", {
+			workflowsDir,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return [];
+	}
+	const found: string[] = [];
+	for (const entry of entries) {
+		const child = join(workflowsDir, entry);
+		// biome-ignore lint/performance/noAwaitInLoops: sequential stat per entry is fine for small dirs; workflows count is tiny
+		const s = await stat(child).catch(() => undefined);
+		if (!s?.isDirectory()) {
+			continue;
+		}
+		const manifestPath = join(child, "manifest.json");
+		const manifestStat = await stat(manifestPath).catch(() => undefined);
+		if (manifestStat?.isFile()) {
+			found.push(manifestPath);
+		}
+	}
+	return found;
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: entry-point initialization wires all components
@@ -79,49 +108,64 @@ async function init() {
 		runtimeLogger.warn("api-auth.open");
 	}
 
-	// 1. Init storage backend
+	// 1. Init storage backend.
 	const storageBackend = createStorageBackend(config);
 	if (storageBackend) {
 		await storageBackend.init();
 	}
 
-	// 2. Init event bus + consumers
-	const workQueue = createWorkQueue();
-	const eventStore = await createEventStore({ logger: runtimeLogger });
-	const persistence = initPersistence(storageBackend, config, runtimeLogger);
+	// 2. Init event bus + consumers. EventStore bootstraps from archive at
+	//    consumer init; await `initialized` before proceeding.
+	const eventStore = await createEventStore({
+		logger: runtimeLogger,
+		...(storageBackend ? { persistence: { backend: storageBackend } } : {}),
+	});
+	await eventStore.initialized;
+	const persistence = initPersistence(storageBackend, runtimeLogger);
 	const logging = createLoggingConsumer(eventLogger);
 	const consumers: BusConsumer[] = [];
 	if (persistence) {
 		consumers.push(persistence);
 	}
-	consumers.push(workQueue, eventStore, logging);
-	const eventBus = createEventBus(consumers);
+	consumers.push(eventStore, logging);
+	const eventBus: EventBus = createEventBus(consumers);
 
-	// 3. Recover events
-	if (persistence) {
-		await recover(persistence, eventBus);
+	// 3. Workflow registry. Empty by default — workflows arrive via
+	//    POST /api/workflows (see `api/upload.ts`). When the
+	//    `WORKFLOWS_DIR` env var is set AND the directory exists,
+	//    additionally preload every manifest found in it at startup
+	//    (useful for local dev + test harnesses that build bundles to a
+	//    known location). In production, workflows land via the upload
+	//    endpoint after the runtime is reachable.
+	const registry = createWorkflowRegistry({ logger: runtimeLogger });
+	// biome-ignore lint/style/noProcessEnv: entry-point config read
+	const workflowsDirEnv = process.env.WORKFLOWS_DIR;
+	if (workflowsDirEnv) {
+		const workflowsDir = resolve(workflowsDirEnv);
+		const manifests = await discoverManifests(workflowsDir, runtimeLogger);
+		if (manifests.length > 0) {
+			await loadWorkflows(registry, manifests, { logger: runtimeLogger });
+		}
+		runtimeLogger.info("workflows.loaded", {
+			count: registry.runners.length,
+			workflowsDir,
+		});
+	} else {
+		runtimeLogger.info("workflows.dir-unset.awaiting-upload");
 	}
 
-	// 4. Load workflows from storage backend
-	const registry = createWorkflowRegistry({
-		backend: storageBackend,
-		logger: runtimeLogger,
-	});
-	await registry.recover();
+	// 4. Create the executor (serializes per-workflow invocations; emits
+	//    started/completed/failed through the bus).
+	const executor = createExecutor({ bus: eventBus });
 
-	// Wire up event source and scheduler using registry getters
-	const source = createEventSource(registry, eventBus);
-	const createContext = createActionContext();
+	// 5. Sweep crashed pending invocations before binding the HTTP port.
+	if (storageBackend) {
+		await recover({ backend: storageBackend }, eventBus);
+	}
 
-	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
-	const scheduler = createScheduler(
-		workQueue,
-		source,
-		registry,
-		createContext,
-		{ sandboxFactory },
-	);
-
+	// 6. Wire the HTTP server. Order matters: secure-headers → logger →
+	//    health → static → webhooks (httpTrigger) → /dashboard (UI) →
+	//    /trigger (UI) → /api.
 	const server = createServer(
 		config.port,
 		secureHeadersMiddleware({
@@ -130,26 +174,18 @@ async function init() {
 		}),
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
-		httpTriggerMiddleware(registry, source),
 		staticMiddleware(),
-		dashboardMiddleware(eventStore),
-		triggerMiddleware(registry, source),
-		apiMiddleware({ registry, githubAuth: config.githubAuth }),
+		httpTriggerMiddleware(registry, executor),
+		dashboardMiddleware({ eventStore }),
+		triggerMiddleware({ triggerRegistry: registry.triggerRegistry }),
+		apiMiddleware({
+			githubAuth: config.githubAuth,
+			registry,
+			logger: runtimeLogger,
+		}),
 	);
 
-	return { runtimeLogger, scheduler, server };
-}
-
-async function recover(
-	persistence: PersistenceConsumer,
-	eventBus: EventBus,
-): Promise<void> {
-	let total = 0;
-	for await (const { events, pending } of persistence.recover()) {
-		await eventBus.bootstrap(events, { pending });
-		total += events.length;
-	}
-	await eventBus.bootstrap([], { finished: true, total });
+	return { runtimeLogger, server };
 }
 
 function start(
@@ -184,11 +220,10 @@ function start(
 }
 
 async function main() {
-	const { runtimeLogger, scheduler, server } = await init();
+	const { runtimeLogger, server } = await init();
 	runtimeLogger.info("main.initialized");
 
-	// 5. Start scheduler + server
-	start(runtimeLogger, scheduler, server);
+	start(runtimeLogger, server);
 	runtimeLogger.info("main.started");
 }
 

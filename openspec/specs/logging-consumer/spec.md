@@ -1,6 +1,6 @@
 ## Purpose
 
-Provide a dedicated bus consumer that centralizes all event lifecycle logging in a single location, replacing scattered log calls across individual components.
+Provide a dedicated bus consumer that centralizes all invocation lifecycle logging in a single location.
 
 ## Requirements
 
@@ -12,72 +12,39 @@ The system SHALL provide a `LoggingConsumer` that implements the `BusConsumer` i
 
 - **GIVEN** a Logger instance
 - **WHEN** `createLoggingConsumer(logger)` is called
-- **THEN** the returned object implements `handle()` and `bootstrap()`
+- **THEN** the returned object implements `handle()`
 
-### Requirement: handle() logs events at appropriate levels
+### Requirement: Logging consumer logs invocation lifecycle
 
-The `handle(event)` method SHALL log every emitted event. The log level SHALL depend on the event state:
-- `pending` → info level, message `"event.created"`
-- `processing` → trace level, message `"event.processing"`
-- `done` with `result: "succeeded"` → trace level, message `"event.done"`
-- `done` with `result: "skipped"` → trace level, message `"event.done"`
-- `done` with `result: "failed"` → error level, message `"event.failed"`
+The logging consumer SHALL implement `BusConsumer` and SHALL emit one structured pino log entry per invocation lifecycle event. Each log entry SHALL include the invocation `id`, `workflow`, `trigger`, `kind` (`started | completed | failed`), and timestamp. `failed` entries SHALL additionally include the serialized error.
 
-Each log entry SHALL include: `correlationId`, `eventId` (the event's `id`), `type`, `state`.
-When present, the entry SHALL also include: `targetAction`, `result`, `error`.
+#### Scenario: Started event logged
 
-#### Scenario: New pending event logged at info
+- **WHEN** the consumer receives `{ kind: "started", id: "evt_a", workflow: "w", trigger: "t", ts }`
+- **THEN** the consumer SHALL log a structured entry at `info` level containing `id`, `workflow`, `trigger`, `kind: "started"`, `ts`
 
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `handle({ id: "evt_001", state: "pending", type: "order.received", correlationId: "corr_abc", ... })` is called
-- **THEN** the logger is called at info level with message `"event.created"` and data containing `correlationId: "corr_abc"`, `eventId: "evt_001"`, `type: "order.received"`
+#### Scenario: Failed event logged with error
 
-#### Scenario: Processing event logged at trace
+- **WHEN** the consumer receives `{ kind: "failed", id: "evt_a", error: { message: "boom", stack } }`
+- **THEN** the consumer SHALL log a structured entry at `error` level including the serialized error
 
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `handle({ state: "processing", ... })` is called
-- **THEN** the logger is called at trace level with message `"event.processing"`
+### Requirement: Logging consumer never throws
 
-#### Scenario: Succeeded event logged at trace
+The logging consumer's `handle()` SHALL never throw. Any internal logging-library error SHALL be caught and swallowed (logged to stderr at most).
 
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `handle({ state: "done", result: "succeeded", ... })` is called
-- **THEN** the logger is called at trace level with message `"event.done"` and data containing `result: "succeeded"`
+#### Scenario: Logger backend failure does not propagate
 
-#### Scenario: Failed event logged at error
-
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `handle({ state: "done", result: "failed", error: "timeout", ... })` is called
-- **THEN** the logger is called at error level with message `"event.failed"` and data containing `result: "failed"`, `error: "timeout"`
-
-#### Scenario: targetAction included when present
-
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `handle({ targetAction: "sendEmail", state: "pending", ... })` is called
-- **THEN** the log data includes `targetAction: "sendEmail"`
-
-### Requirement: bootstrap() logs recovery summary
-
-The `bootstrap(events, options)` method SHALL log a summary at info level with message `"events.recovered"` and the count of events in the batch.
-
-#### Scenario: Bootstrap logs event count
-
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `bootstrap([evt1, evt2, evt3])` is called
-- **THEN** the logger is called at info level with message `"events.recovered"` and data containing `count: 3`
-
-#### Scenario: Bootstrap with empty batch
-
-- **GIVEN** a LoggingConsumer with a Logger
-- **WHEN** `bootstrap([])` is called
-- **THEN** the logger is called at info level with message `"events.recovered"` and data containing `count: 0`
+- **GIVEN** a logger whose write fails
+- **WHEN** `handle(event)` is called
+- **THEN** the consumer SHALL NOT propagate the error
+- **AND** subsequent bus emissions SHALL be unaffected
 
 ### Requirement: Consumer ordering in bus
 
-The LoggingConsumer SHALL be placed **after** the PersistenceConsumer, WorkQueue, and EventStore in the bus consumer array. This ensures logs confirm what has already been persisted and indexed.
+The LoggingConsumer SHALL be placed **after** the PersistenceConsumer and EventStore in the bus consumer array. This ensures logs confirm what has already been persisted and indexed.
 
 #### Scenario: Logging consumer is last
 
-- **GIVEN** a bus created with `[persistence, workQueue, eventStore, logging]`
+- **GIVEN** a bus created with `[persistence, eventStore, logging]`
 - **WHEN** `bus.emit(event)` is called
 - **THEN** `persistence.handle()` is called before `logging.handle()`

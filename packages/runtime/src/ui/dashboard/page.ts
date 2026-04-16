@@ -1,79 +1,95 @@
 import { html } from "hono/html";
 import { renderLayout } from "../layout.js";
 
-function renderPage(user: string, email: string) {
-	const bodyAttrs = `x-data="dashboardTooltip"`;
+const MS_PER_SECOND = 1000;
+const SECOND_FRACTION_DIGITS = 2;
 
+interface InvocationRow {
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly status: string;
+	readonly startedAt: string | Date;
+	readonly completedAt: string | Date | null;
+}
+
+function formatTimestamp(ts: string | Date): string {
+	const d = ts instanceof Date ? ts : new Date(ts);
+	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
+}
+
+function formatDuration(
+	startedAt: string | Date,
+	completedAt: string | Date | null,
+): string {
+	if (completedAt === null) {
+		return "—";
+	}
+	const start =
+		startedAt instanceof Date
+			? startedAt.getTime()
+			: Date.parse(String(startedAt));
+	const end =
+		completedAt instanceof Date
+			? completedAt.getTime()
+			: Date.parse(String(completedAt));
+	if (Number.isNaN(start) || Number.isNaN(end)) {
+		return "—";
+	}
+	const ms = Math.max(0, end - start);
+	if (ms < MS_PER_SECOND) {
+		return `${ms}ms`;
+	}
+	return `${(ms / MS_PER_SECOND).toFixed(SECOND_FRACTION_DIGITS)}s`;
+}
+
+function renderRow(row: InvocationRow) {
+	const statusClass = `status-${row.status}`;
+	return html`<tr class="invocation-row">
+    <td class="invocation-workflow">${row.workflow}</td>
+    <td class="invocation-trigger">${row.trigger}</td>
+    <td class="invocation-status"><span class="${statusClass}">${row.status}</span></td>
+    <td class="invocation-started">${formatTimestamp(row.startedAt)}</td>
+    <td class="invocation-duration">${formatDuration(row.startedAt, row.completedAt)}</td>
+  </tr>`;
+}
+
+function renderDashboardPage(
+	invocations: readonly InvocationRow[],
+	user: string,
+	email: string,
+) {
 	const content = html`
-  <div class="tooltip"
-       x-show="tip"
-       x-transition.opacity.duration.150ms
-       :style="{ left: tipX + 'px', top: tipY + 'px' }"
-       @mouseenter="cancelHide()"
-       @mouseleave="scheduleHide()"
-       x-cloak>
-    <template x-if="tip">
-      <div>
-        <div class="tooltip-title">
-          <span class="dot" :style="{ background: tip.background }"></span>
-          <span x-text="tip.type"></span>
-          <span class="badge" :class="tip.state" x-text="tip.state"></span>
-        </div>
-        <div class="tooltip-payload"><button class="copy-btn" @click="copyEvent()" :title="_copied ? 'Copied!' : 'Copy JSON'"><svg x-show="!_copied" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg x-show="_copied" x-cloak xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button><span x-text="tip.event"></span></div>
-      </div>
-    </template>
-  </div>
-
   <div class="page-header">
     <h1>Dashboard</h1>
-    <div class="stats" id="header-stats"
-         hx-get="/dashboard/list?fragment=stats"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-    </div>
   </div>
 
-  <div class="filters" id="filter-bar" x-data="dashboardFilters">
-    <select class="filter-select" x-model="state" @change="load()">
-      <option value="">All states</option>
-      <option value="pending">Pending</option>
-      <option value="done">Done</option>
-      <option value="failed">Failed</option>
-    </select>
-    <select class="filter-select" x-ref="triggerFilter" x-model="type" @change="load()">
-      <option value="">All trigger types</option>
-    </select>
-    <div class="filter-dropdown">
-      <button type="button" class="filter-btn" @click="toggleEventTypes()"
-              :class="{ active: eventTypes.length > 0 }">
-        <span x-text="eventTypes.length ? eventTypes.length + ' event types' : 'All event types'"></span>
-        <span class="filter-btn-caret">&#9662;</span>
-      </button>
-      <div class="filter-dropdown-menu" x-show="eventTypeOpen" @click.outside="closeEventTypes()"
-           x-transition.opacity>
-        <div x-ref="eventTypeList" class="event-type-list"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="list">
-    <div id="entry-list"
-         hx-get="/dashboard/list"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-    </div>
+  <div class="dashboard-content">
+    ${
+			invocations.length > 0
+				? html`<table class="invocations-table">
+        <thead>
+          <tr>
+            <th>Workflow</th>
+            <th>Trigger</th>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${invocations.map(renderRow)}
+        </tbody>
+      </table>`
+				: html`<div class="empty-state">No invocations yet</div>`
+		}
   </div>`;
 
 	return renderLayout(
-		{
-			title: "Dashboard",
-			activePath: "/dashboard",
-			user,
-			email,
-			bodyAttrs,
-		},
+		{ title: "Dashboard", activePath: "/dashboard", user, email },
 		content,
 	);
 }
 
-export { renderPage };
+export type { InvocationRow };
+export { renderDashboardPage };

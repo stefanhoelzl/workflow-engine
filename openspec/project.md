@@ -2,92 +2,102 @@
 
 ## Purpose
 
-A lightweight, event-driven workflow automation service. Users author workflows as TypeScript projects that wire triggers, events, and actions together. User-provided action code runs in a sandboxed QuickJS WASM context. The system distributes every event through a bus of consumers for persistence, scheduling, indexing, and logging.
+A lightweight workflow automation service for service wiring. Users author workflows as TypeScript projects that wire triggers to actions via direct typed function calls. User-provided action code runs in a sandboxed QuickJS WASM context (one sandbox per workflow). Trigger handlers compose actions as typed callable functions and return the HTTP response directly from the handler's return value.
 
 ## Tech Stack
 
 - **Runtime**: Node.js (LTS)
 - **Language**: TypeScript (strict mode)
-- **Sandbox**: `quickjs-emscripten` via `@workflow-engine/sandbox` — QuickJS WASM. One sandbox per workflow module load; reused across events for that workflow; disposed on workflow unload.
+- **Sandbox**: `quickjs-emscripten` via `@workflow-engine/sandbox` — QuickJS WASM running inside a dedicated `worker_threads` Worker per sandbox instance. One sandbox per loaded workflow; reused across invocations; disposed on workflow unload.
 - **HTTP**: Hono with `@hono/node-server`
-- **Build**: Vite with Rolldown, custom plugin for per-action bundling and manifest generation
-- **Schema/Types**: Zod v4 for event schemas (compile-time type inference via `z.infer<>`, runtime payload validation)
-- **Event Store**: DuckDB in-memory via `@duckdb/node-api` + Kysely query builder
+- **Build**: Vite with Rolldown, `@workflow-engine/vite-plugin` for per-workflow bundling and manifest generation
+- **Schema/Types**: Zod v4 for action input/output and trigger payload schemas. Compile-time type inference via `z.infer<>`; runtime validation at trigger ingress (payload) and at the sandbox bridge (action input + output).
+- **Manifest validation**: JSON Schema via Ajv on the host side (the manifest carries JSON Schema derived from Zod at build time).
+- **Event Store**: DuckDB in-memory via `@duckdb/node-api` + Kysely query builder; indexes invocation lifecycle records.
 - **Logging**: pino, structured JSON to stdout, wrapped behind app-owned `Logger` interface
 - **Storage**: `StorageBackend` interface with filesystem and S3 implementations
 - **Package Manager**: pnpm (workspace monorepo)
-- **Dashboard**: Server-rendered HTML with HTMX, Alpine.js, and Jedison (JSON Schema forms)
+- **Dashboard**: Server-rendered HTML; jedison (JSON Schema forms) for the trigger UI
 
 ## Architecture Principles
 
-- **Four primitives**: Trigger → Event → Action → Event. Events are the connective tissue; triggers and actions are the nodes.
-- **Single source of truth**: `workflow.ts` defines all wiring. Actions are plain handler functions with no embedded metadata.
-- **Uniform async**: Every trigger is async. HTTP triggers return a static response immediately and emit events through the bus. No synchronous execution path.
-- **Fan-out**: When an event has multiple subscribers, the scheduler creates a targeted copy for each via `EventSource.fork()`. Subscribers run independently. One failure does not block others.
-- **Workflow-scoped isolation**: One QuickJS context per loaded workflow; reused across run() calls. Module-level state may persist across runs within the same workflow. Cross-workflow isolation is preserved by per-workflow sandbox instances.
-- **Controlled host API**: Actions can read `ctx.event` and `ctx.env`, and call the global `emit(type, payload)` and global `fetch()`. No direct fs, net, process, or require access. All host/sandbox method calls marshal arguments and return values via JSON.
-- **Append-only persistence**: Event state files are never modified. Each state transition writes a new file. Done events are archived. Files are independently useful for auditing.
-- **Interface-first**: Persistence is abstracted behind `StorageBackend` (FS and S3 implementations). Event distribution is abstracted behind `BusConsumer`. New backends can be added without changing the runtime.
+- **Two primitives**: Trigger and Action. Triggers are entry points; actions are typed callable functions. Wiring is by direct typed function calls (`await sendNotification(input)`) inside the trigger handler — no events, no `emit()`, no `on:`, no fan-out at the engine level. The trigger handler's return value is the HTTP response.
+- **Single source of truth**: `workflow.ts` defines all wiring. Each file is exactly one workflow; cross-references between actions and triggers are plain TypeScript imports/variables, refactor-safe.
+- **One handler per trigger**: Each trigger declares exactly one handler. Intra-handler parallelism uses `Promise.all([a(x), b(x)])` where genuinely needed. No subscriber model.
+- **Workflow-scoped isolation**: One QuickJS context per loaded workflow; reused across `invoke()` calls. Action handlers run inside the sandbox via the SDK-returned wrapper — the host bridge is reached once per action call for input validation + audit only; handler dispatch is in-sandbox (no nested `sandbox.run()`). Cross-workflow isolation is preserved by per-workflow sandbox instances.
+- **Controlled host API**: Handler signatures are `(input)` for actions and `(payload)` for triggers — no `ctx` parameter. Workflow-level env is declared on `defineWorkflow({env})` and referenced via the imported `workflow.env` record (module-scoped, frozen at load time). Cross-action calls compile to `__hostCallAction(name, input)` bridge round-trips for validation + audit. Global `fetch()` remains available via the sandbox-globals fetch polyfill layered over `__hostFetch`. No direct fs, net, process, or `require` access.
+- **Per-workflow serialization**: Each workflow has a runQueue that serializes trigger invocations (one invocation at a time per workflow). Cross-workflow invocations run in parallel.
+- **Append-only persistence**: Each trigger invocation records a lifecycle pair: `pending/<id>.json` is written at start and removed at completion; `archive/<id>.json` is written once at completion (success or failure). Files are independently useful for auditing.
+- **Interface-first**: Persistence is abstracted behind `StorageBackend` (FS and S3 implementations). Lifecycle distribution is abstracted behind `BusConsumer` with a single method `handle(event: InvocationLifecycleEvent)`. New backends and consumers can be added without changing the runtime.
 
 ## Project Conventions
 
 ### Code Style
 
 - Strict TypeScript with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`
-- Named exports preferred over default exports (except action handler files which use default export)
-- Explicit return types on all public functions
-- No classes unless required by external APIs (prefer plain functions and interfaces)
+- Named exports only. Separate `export type {}` from value exports.
+- Factory functions over classes. Closures for private state.
+- All relative imports use `.js` extensions (required by `verbatimModuleSyntax`).
+- Use `z.exactOptional()` not `.optional()` for optional Zod fields.
+- Explicit return types on all public functions.
+- `biome-ignore` comments must have a justification suffix.
 
 ### Naming
 
-- Event types: dot-separated lowercase (`order.received`, `system.error`)
-- Action files: camelCase matching the action name (`parseOrder.js`)
-- Event IDs: prefixed with `evt_`
-- Correlation IDs: prefixed with `corr_`
+- Action files / identifiers: camelCase; action identity = the exported name (`sendNotification`).
+- Trigger identifiers: camelCase; trigger name = the exported name (`cronitorWebhook`).
+- Workflow name: defaults to the file stem (`cronitor` from `cronitor.ts`); override with `defineWorkflow({name})`.
+- Invocation IDs: prefixed with `evt_`.
 
 ### Error Handling
 
-- Actions that fail are transitioned to `state: "done"`, `result: "failed"` with an `error` field (no retry in v1)
-- The `PayloadValidationError` type carries structured validation issues for invalid event payloads
-- HTTP triggers return 422 with structured error details on payload validation failure
-- Runtime errors (bus pipeline failures, sandbox crashes) are logged via structured logging
+- Action handlers that throw → the surrounding trigger invocation is marked `failed`. The SDK wrapper (or the host bridge on input-validation failure) surfaces the error to the caller; Zod/Ajv `issues` arrays are preserved across the sandbox bridge.
+- Trigger payload validation failure → 422 with structured Ajv issues before the sandbox is entered.
+- Unmatched webhook path → 404.
+- Trigger handler throw → 500 response + `failed` archive entry with the serialized error.
+- Trigger handler return shape: `{status?, body?, headers?}` (defaults `200`, `""`, `{}`); each field optional.
+- Runtime errors (bus pipeline failures, sandbox crashes) are logged via structured logging and surfaced through `Sandbox.onDied`.
+- **`z.void()` is not supported as an action output schema** because neither `z.void()` nor `z.undefined()` have a JSON Schema representation (the vite-plugin's `z.toJSONSchema` pass rejects them). The v1 idiom for fire-and-forget / no-return actions is `z.unknown()`: it serializes to a valid (empty) JSON Schema, `parse(undefined)` returns `undefined`, and the handler can simply omit a return statement. This is the documented pattern; do not add an SDK shorthand for v1.
 
 ### Testing Strategy
 
-- Unit tests for SDK (DSL builder, `defineEvent`, type inference)
-- Unit tests for runtime components (scheduler, event source, work queue, persistence)
-- Integration tests: build a sample workflow, run it end-to-end, assert event flow
-- Sandbox tests: verify WASM isolation boundary, ctx bridging, safe globals, context disposal
+- **SDK tests** (`packages/sdk/`): brand assignment on returned objects, callable actions, env resolution + defaults, missing-without-default errors, manifest schema validation.
+- **Vite plugin tests** (`packages/vite-plugin/`): brand-based export discovery, name derivation (filestem + explicit), JSON Schema generation from Zod, build-failure cases (multiple `defineWorkflow`, missing schemas, missing handlers, typecheck failure).
+- **Sandbox boundary tests** (`packages/sandbox/`): host-bridge surface inventory (only documented globals present; `__hostCallAction` is conventional, not built-in), escape attempts via `__hostCallAction`, prototype-pollution payloads rejected, error serialization round-trips `issues`.
+- **Runtime tests** (`packages/runtime/`): executor serialization per workflow; cross-workflow parallelism; persistence of `started → completed/failed`; EventStore bootstrap from archive; recovery sweeps crashed `pending/` to `failed: engine_crashed`.
+- **Integration tests**: workflow build → bundle load → registry register → webhook POST → executor.invoke → archive entry written → EventStore indexed.
+- **Cross-package test**: SDK declaration → vite-plugin build → runtime load → executor invoke end-to-end with a fixture workflow.
 
 ## Domain Context
 
 ### Workflow Model
 
-A **workflow** is a directed graph where:
-- **Triggers** are entry points that produce events from external stimuli (HTTP requests in v1).
-- **Events** are typed messages with Zod schemas flowing through the graph.
-- **Actions** are sandboxed JavaScript handlers that consume one event type and may emit zero or more event types.
+A **workflow** is a file (`workflows/*.ts`) exporting:
 
-The graph is defined declaratively in `workflow.ts` using a TypeScript DSL. At build time, Vite bundles each action into a standalone `.js` file per workflow subdirectory and produces a `manifest.json` describing the wiring. Each action's `env` (resolved environment variables) is captured in the manifest at build time.
+- Exactly one `defineWorkflow({name?, env?})` call as a module export — provides workflow-level config and a frozen `env` record derived from `process.env` at load time.
+- Zero or more `action({input, output, handler})` calls exported under their author-chosen names. Each action is a typed callable (`await sendNotification({message: "..."})`). Input and output are Zod schemas; the bundler derives JSON Schema for the manifest.
+- One or more `httpTrigger({path, method?, body?, query?, params?, handler})` calls exported under their author-chosen names. Each trigger has exactly one handler whose return value is the HTTP response.
+
+At build time the vite-plugin emits one bundle per workflow file (`dist/<name>/<name>.js`) plus a `manifest.json` describing the wiring. Export identity is resolved by **brand symbol check** on the export value, not by reference equality on the handler function — `defineWorkflow`, `action`, and `httpTrigger` return objects carrying `Symbol.for("@workflow-engine/<kind>")` brands. Action identity = export name (filled into the `__hostCallAction` placeholder in the action's callable body by the bundler).
 
 ### Security Model
 
 See `/SECURITY.md` for the authoritative threat model.
 
-### Event Pipeline
+### Invocation Pipeline
 
-Events flow through an `EventBus` that fans out to an ordered list of `BusConsumer` implementations:
+A trigger invocation flows through the runtime as follows:
 
-1. **Persistence** (optional): Append-only state files via `StorageBackend` (FS or S3). `pending/` for active events, `archive/` for terminal and historical events. Fire-and-forget archival on terminal states.
-2. **WorkQueue**: In-memory buffer of pending events. The scheduler dequeues from here.
-3. **EventStore**: DuckDB in-memory index. Append-only (every state transition inserts a new row). Powers dashboard queries via Kysely.
-4. **LoggingConsumer**: Centralized structured logging of all event lifecycle transitions.
+1. **HTTP request arrives** at `POST /webhooks/<path>` (public, unauthenticated — §3).
+2. **Trigger middleware** (`packages/runtime/src/triggers/http.ts`) parses the JSON body, validates it against the trigger's JSON Schema (Ajv, compiled once per trigger at registry load), and builds the payload object `{body, headers, url, method, params, query}`. Validation failure → 422.
+3. **`executor.invoke(workflow, trigger, payload)`** is called. The executor routes through the workflow's `runQueue` (per-workflow serializer) so one invocation runs at a time per workflow. Cross-workflow invocations run in parallel.
+4. **Sandbox handler dispatch**: the executor calls into the workflow's sandbox via the workflow registry's `invokeHandler` shim, which invokes the trigger's handler in-sandbox. The handler may call actions directly as typed functions (`await sendNotification(input)`); each such call reaches the host bridge once for input validation + audit-log (the host does NOT dispatch the handler), then the SDK wrapper dispatches the author's handler in-sandbox and validates the return value against the output Zod schema.
+5. **Lifecycle events**: the executor emits a `started` event at start and `completed` / `failed` at end via `await bus.emit(event)`. The bus dispatches synchronously through the ordered consumer list: persistence (writes `pending/<id>.json` on `started`, writes `archive/<id>.json` + removes pending on `completed`/`failed`), EventStore (DuckDB in-memory index update), logging (structured pino record).
+6. **HTTP response**: the trigger middleware takes the `HttpTriggerResult` returned by the handler (or constructs a 500 from the serialized error) and writes it to the Hono response.
 
-State transitions are performed by `EventSource.transition()`, which creates a new immutable `RuntimeEvent` and emits it through the bus. Events are never mutated.
+Startup runs `recover({backend}, bus)` once before binding the HTTP port: it scans `pending/`, emits a `failed: engine_crashed` lifecycle event for each entry, and lets the persistence + EventStore + logging consumers reconcile the index. The EventStore bootstraps its index from `archive/` directly at init.
 
-On startup, the persistence consumer's `recover()` method scans `pending/` and `archive/` directories, yielding batches that are bootstrapped into all consumers to rebuild in-memory state.
-
-No ordering guarantees. No retry in v1.
+Per-workflow serialization guarantees one-at-a-time handler execution per workflow (predictable sandbox state); cross-workflow parallelism preserves throughput.
 
 ## Infrastructure
 
@@ -100,44 +110,44 @@ No ordering guarantees. No retry in v1.
 
 Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a shared `workflow-engine` application module composing app, oauth2-proxy, and routing sub-modules.
 
-Infrastructure lives in `infrastructure/` with `modules/` (shared) and `dev/` (environment root).
+Infrastructure lives in `infrastructure/` with `modules/` (shared) and `local/` + `upcloud/` (environment roots).
 
 ## Monorepo Structure
 
 ```
 packages/
-├── sdk/              # @workflow-engine/sdk          (published)
-├── vite-plugin/      # @workflow-engine/vite-plugin  (published)
-├── cli/              # @workflow-engine/cli          (published, binary: wfe)
+├── sdk/              # @workflow-engine/sdk
+├── vite-plugin/      # @workflow-engine/vite-plugin
 ├── sandbox/          # @workflow-engine/sandbox
 └── runtime/          # @workflow-engine/runtime
 workflows/            # User-defined workflows (build target, not a package)
-infrastructure/       # OpenTofu IaC (modules + dev environment)
+infrastructure/       # OpenTofu IaC (modules + local + upcloud environments)
 ```
 
-- **sdk**: `createWorkflow` DSL builder, `http` trigger helper, `env()` helper, `ActionContext` type, ambient `emit()` global declaration, `ManifestSchema`, Zod re-exports.
-- **vite-plugin**: Vite plugin that auto-discovers workflow entries at `<root>/src/*.ts`, imports workflow DSL at build time, extracts manifest via `.compile()`, bundles each action as a standalone default-export `.js` file with npm polyfills via `@workflow-engine/sandbox-globals`, enforces TypeScript type checking on production builds.
-- **cli**: `wfe upload` — builds workflows in cwd (via shipped default vite config + vite-plugin) and POSTs each `dist/<name>/bundle.tar.gz` to `<url>/api/workflows`. Authenticates via `GITHUB_TOKEN` env var when set. Exports a programmatic `upload()` function consumed by `scripts/dev.ts`.
-- **sandbox**: QuickJS WASM VM lifecycle running inside a dedicated Node `worker_threads` Worker per sandbox instance (host-bridge + QuickJS context live in the worker; main thread holds a thin proxy). Host-bridged globals (console, timers, performance, crypto, `__hostFetch`), `sandbox(source, methods, options) → { run, dispose, onDied }` and `createSandboxFactory({ logger })` public API. JSON-only host/sandbox boundary; cancel-on-run-end for timers and in-flight fetches. Main Node event loop stays free during guest CPU work.
-- **runtime**: HTTP server (Hono), scheduler (injects a `SandboxFactory` — factory owns per-source sandbox caching, death monitoring, and operational logging), EventBus + consumers (persistence, work-queue, event-store, logging), event source, workflow loader, dashboard UI, trigger UI.
-- **workflows**: Workspace member containing user-authored `.ts` workflow files at `src/*.ts`. Built and uploaded by `@workflow-engine/cli`.
+- **sdk**: Declarative authoring API — `defineWorkflow`, `action`, `httpTrigger`, `env()` helper, brand symbols (`WORKFLOW_BRAND`, `ACTION_BRAND`, `HTTP_TRIGGER_BRAND`) + type guards, `ManifestSchema` (Zod), typed interfaces (`Workflow`, `Action`, `HttpTrigger`, `Trigger`, `HttpTriggerResult`), Zod v4 re-export. Action callables internally invoke `__hostCallAction(name, input)` (name is a placeholder filled in by the vite-plugin at build) before dispatching the author's handler in-sandbox and validating the return.
+- **vite-plugin**: Single-pass per-workflow Vite build. Emits `dist/<name>/<name>.js` + `dist/<name>/manifest.json`. Discovers `defineWorkflow` / `action` / `httpTrigger` exports by brand symbol equality on the export value. Resolves workflow name from `defineWorkflow({name})` or from the source file's filestem. Fills each action's `__hostCallAction(name, …)` placeholder from the export name. Derives input/output JSON Schema from the Zod schemas via `z.toJSONSchema()`. Enforces TypeScript type checking on production builds. Fails the build on: zero-or-many `defineWorkflow` exports, missing schemas, missing handlers, duplicate or unnamed action exports.
+- **sandbox**: QuickJS WASM VM lifecycle running inside a dedicated `worker_threads` Worker per sandbox instance (host-bridge + QuickJS context live in the worker; main thread holds a thin proxy). Host-bridged built-in globals (`console`, `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`, `performance`, `crypto`, `__hostFetch`). Runtime-passed methods (not built-ins) include `__hostCallAction` — the sandbox package is oblivious to manifests, Zod, and action dispatch; it just installs whatever methods the runtime hands it as guest globals via RPC. Public API: `sandbox(source, methods, options) → { run, dispose, onDied }` and `createSandboxFactory({ logger })`. JSON-only host/sandbox boundary; cancel-on-run-end for timers and in-flight fetches.
+- **runtime**: HTTP server (Hono), workflow registry (per-workflow manifest load → sandbox instantiation → action callable Ajv validator pre-compile → `__hostCallAction` dispatcher closure), executor (per-workflow runQueue, sandbox handler dispatch, lifecycle event emission), EventBus + consumers (persistence, event-store, logging), HTTP trigger middleware (parse + validate + delegate + shape response), trigger UI (`/trigger/*`), API (`/api/*` including `POST /api/workflows` upload), recovery (`recover()`), startup wiring (`main.ts`). No scheduler, no event-source, no work-queue, no context module.
+- **workflows**: Workspace member containing user-authored `.ts` workflow files. Built by the vite-plugin into `workflows/dist/<name>/manifest.json` + `<name>.js`.
 
 ## Important Constraints
 
-- **Single instance**: One service instance runs all loaded workflows. `WorkflowRuntime` components are instantiable objects for future multi-instance support.
-- **No hot-reload**: Restart the service to deploy workflow updates.
-- **No retry**: Failed actions transition to `done/failed`. Retry is a future addition.
-- **JSON only**: All data crossing the sandbox boundary must be JSON-serializable.
+- **Single instance**: One service instance runs all loaded workflows. Components are factory-constructed objects for future multi-instance support.
+- **No hot-reload**: Restart the service (or re-POST `/api/workflows`) to deploy workflow updates.
+- **No retry in v1**: Failed invocations are archived with `status: failed` and a serialized error; no auto-retry, no operator retry UI. `recover()` marks crashed in-flight invocations as `failed: engine_crashed` — it does not re-run them.
+- **No cross-workflow action calls**: each workflow is a sealed unit (own sandbox, own env, own bundle).
+- **JSON only**: All data crossing the sandbox boundary must be JSON-serializable. Trigger payloads and action input/output marshaling are JSON round-trips. Host object references, closures, and proxies never cross.
 - **Resource limits deferred**: QuickJS supports memory limits and interrupt handlers, but neither is wired in v1.
+- **Determinism polyfills deferred**: `Math.random` and `Date.now` are not virtualized in v1. When durable execution / replay lands, these move behind the bridge.
 
 ## External Dependencies
 
 - `quickjs-emscripten` + `@jitl/quickjs-wasmfile-release-sync` — QuickJS WASM sandbox
 - `zod` (v4) — Schema definition, type inference, and runtime validation
+- `ajv` — JSON Schema validation on the host side (manifest-sourced schemas)
 - `vite` — Build tooling with Rolldown bundler
 - `hono` + `@hono/node-server` — HTTP server framework
-- `@duckdb/node-api` + `kysely` — In-memory event store and query builder
+- `@duckdb/node-api` + `kysely` — In-memory invocation index and query builder
 - `pino` — Structured JSON logging
 - `@aws-sdk/client-s3` — S3 storage backend
-- `nanoid` — Event and correlation ID generation
-- `alpinejs` + `htmx.org` + `jedison` — Dashboard and trigger UI
+- `jedison` — JSON Schema forms for the trigger UI

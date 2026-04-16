@@ -2,18 +2,18 @@
 
 ## Purpose
 
-Provide an in-memory DuckDB-based event index that implements BusConsumer, enabling SQL queries over the event stream for dashboards, debugging, and analytics.
+Provide an in-memory DuckDB-based invocation index that implements BusConsumer, enabling SQL queries over invocation lifecycle records for the dashboard.
 
 ## Requirements
 
 ### Requirement: EventStore implements BusConsumer
 
-The EventStore SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function `createEventStore(options?: { logger? }): EventStore` that eagerly creates an in-memory DuckDB instance, runs DDL, and returns an object with `handle()`, `bootstrap()`, and a `query` property.
+The EventStore SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function `createEventStore(options?: { logger? }): EventStore` that eagerly creates an in-memory DuckDB instance, runs DDL, and returns an object with `handle()` and a `query` property.
 
 #### Scenario: Factory creates EventStore
 
 - **WHEN** `createEventStore()` is called
-- **THEN** the returned object implements `BusConsumer` (handle + bootstrap)
+- **THEN** the returned object implements `BusConsumer` (handle)
 - **AND** exposes a `query` property (read-only SelectQueryBuilder)
 - **AND** the in-memory DuckDB instance is ready for queries
 
@@ -25,58 +25,53 @@ The EventStore SHALL use DuckDB in `:memory:` mode via `@duckdb/node-api`. The d
 
 - **GIVEN** a newly created EventStore
 - **WHEN** the process exits
-- **THEN** all indexed data is lost (expected — rebuilt from FS on next startup)
+- **THEN** all indexed data is lost (expected --- rebuilt from persistence on next startup)
 
-### Requirement: DDL from Zod schema
+### Requirement: EventStore indexes invocation lifecycle records
 
-The EventStore SHALL generate its DDL with columns matching RuntimeEventSchema fields: `id`, `type`, `payload`, `targetAction`, `correlationId`, `parentEventId`, `createdAt`, `sourceType`, `sourceName`, `emittedAt`, `startedAt`, `doneAt`, `state`, `result`, `error`. The `emittedAt`, `startedAt`, and `doneAt` columns SHALL be nullable `TIMESTAMPTZ` to handle events from older persisted formats. The table SHALL have no explicit primary key and no indexes.
+The EventStore SHALL implement `BusConsumer` and SHALL maintain a DuckDB in-memory table indexing invocation lifecycle. Each invocation SHALL be represented by a single row that is inserted on `started` and updated on `completed` or `failed`. The schema SHALL include columns: `id`, `workflow`, `trigger`, `status` (`"pending" | "succeeded" | "failed"`), `startedAt`, `completedAt` (nullable), and serialized `error` (nullable).
 
-#### Scenario: Table schema matches updated RuntimeEventSchema
+#### Scenario: Started event inserts pending row
 
-- **GIVEN** a newly created EventStore
-- **WHEN** an event with all fields populated (including `sourceType`, `sourceName`, `emittedAt`, `startedAt`, `doneAt`) is inserted
-- **THEN** all fields are stored and queryable
+- **GIVEN** an EventStore with no rows
+- **WHEN** `handle({ kind: "started", id: "evt_a", workflow: "w", trigger: "t", ts, input })` is called
+- **THEN** a row SHALL be inserted with `id: "evt_a"`, `status: "pending"`, `startedAt = ts`, `completedAt = null`
 
-#### Scenario: Old events without new timestamp fields
+#### Scenario: Completed event updates row
 
-- **GIVEN** a newly created EventStore
-- **WHEN** an event without `emittedAt`, `startedAt`, or `doneAt` is inserted (from old persistence format)
-- **THEN** the row is stored with null values for the missing timestamp columns
+- **GIVEN** the row from the started scenario above
+- **WHEN** `handle({ kind: "completed", id: "evt_a", ts, result })` is called
+- **THEN** the existing row SHALL be updated to `status: "succeeded"`, `completedAt = ts`
 
-#### Scenario: Table has no primary key
+#### Scenario: Failed event updates row with error
 
-- **GIVEN** a newly created EventStore
-- **WHEN** two events with the same `id` but different `state` are inserted
-- **THEN** both rows exist in the table (append-only)
+- **GIVEN** a pending row for `evt_a`
+- **WHEN** `handle({ kind: "failed", id: "evt_a", ts, error })` is called
+- **THEN** the row SHALL be updated to `status: "failed"`, `completedAt = ts`, `error = serialize(error)`
 
-#### Scenario: Query events by sourceType
+### Requirement: EventStore bootstraps from persistence at init
 
-- **GIVEN** an EventStore with events from triggers and actions
-- **WHEN** `eventStore.query.where('sourceType', '=', 'trigger').selectAll().execute()` is called
-- **THEN** only events with `sourceType="trigger"` are returned
+The EventStore consumer factory SHALL accept a persistence reference and SHALL eagerly populate its index from `persistence.scanArchive()` at construction. The factory function SHALL be async or expose an `initialized` promise that callers can await.
 
-#### Scenario: Query events by sourceName
+#### Scenario: Index populated from archive at init
 
-- **GIVEN** an EventStore with events from triggers `"orders"` and `"payments"`
-- **WHEN** `eventStore.query.where('sourceName', '=', 'orders').selectAll().execute()` is called
-- **THEN** only events with `sourceName="orders"` are returned
+- **GIVEN** `archive/` containing 5 invocation records
+- **WHEN** `createEventStore({ persistence })` is called and the initialization completes
+- **THEN** the EventStore index SHALL contain 5 rows mirroring the archive records
 
-### Requirement: handle() inserts event row (non-fatal)
+### Requirement: Query API exposed for dashboard
 
-`handle(event)` SHALL INSERT a new row into the events table for every RuntimeEvent received, regardless of state. The insert SHALL be wrapped in a try/catch — errors SHALL be logged but NOT rethrown, so the bus pipeline continues.
+The EventStore SHALL expose a `query` property (a Kysely-style read-only SelectQueryBuilder) for the dashboard list view to filter and sort invocations.
 
-#### Scenario: Event is indexed
+#### Scenario: Query latest invocations
 
-- **GIVEN** an EventStore
-- **WHEN** `handle({ id: "evt_abc", state: "pending", correlationId: "corr_1", ... })` is called
-- **THEN** a row with `id="evt_abc"` and `state="pending"` exists in the events table
+- **GIVEN** an EventStore with multiple invocation rows
+- **WHEN** `eventStore.query.selectAll().orderBy('startedAt', 'desc').limit(50).execute()` is called
+- **THEN** the EventStore SHALL return the 50 most recently started invocations
 
-#### Scenario: State transition adds new row
+### Requirement: handle() inserts or updates event row (non-fatal)
 
-- **GIVEN** an EventStore with a row for `evt_abc` with `state="pending"`
-- **WHEN** `handle({ id: "evt_abc", state: "processing", ... })` is called
-- **THEN** a second row with `id="evt_abc"` and `state="processing"` exists
-- **AND** the original `state="pending"` row is unchanged
+`handle(event)` SHALL INSERT or UPDATE a row in the invocations table for every InvocationLifecycleEvent received. The operation SHALL be wrapped in a try/catch --- errors SHALL be logged but NOT rethrown, so the bus pipeline continues.
 
 #### Scenario: Insert failure does not crash pipeline
 
@@ -85,49 +80,21 @@ The EventStore SHALL generate its DDL with columns matching RuntimeEventSchema f
 - **THEN** the error is logged
 - **AND** `handle()` resolves without throwing
 
-### Requirement: bootstrap() bulk inserts events
-
-`bootstrap(events, options)` SHALL INSERT all provided events into the events table. The `pending` option SHALL be ignored — EventStore inserts all events regardless of whether they come from `pending/` or `archive/`.
-
-#### Scenario: Bootstrap inserts pending batch
-
-- **GIVEN** an EventStore
-- **WHEN** `bootstrap([evt1, evt2], { pending: true })` is called
-- **THEN** two rows exist in the events table
-
-#### Scenario: Bootstrap inserts archive batch
-
-- **GIVEN** an EventStore
-- **WHEN** `bootstrap([evt1, evt2, evt3], { pending: false })` is called
-- **THEN** three rows exist in the events table
-
-#### Scenario: Bootstrap with empty array
-
-- **GIVEN** an EventStore
-- **WHEN** `bootstrap([], { pending: true })` is called
-- **THEN** no rows are added
-
 ### Requirement: query property exposes read-only SelectQueryBuilder
 
-The EventStore SHALL expose a `query` property that returns a Kysely `SelectQueryBuilder` pre-scoped to the events table (i.e., `selectFrom('events')` is already applied). Consumers chain `.where()`, `.select()`, `.groupBy()`, `.execute()`, etc. The property SHALL NOT expose insert, update, or delete capabilities.
+The EventStore SHALL expose a `query` property that returns a Kysely `SelectQueryBuilder` pre-scoped to the invocations table. Consumers chain `.where()`, `.select()`, `.groupBy()`, `.execute()`, etc. The property SHALL NOT expose insert, update, or delete capabilities.
 
-#### Scenario: Query by correlationId
+#### Scenario: Query by workflow
 
-- **GIVEN** an EventStore with events for correlationIds "corr_A" and "corr_B"
-- **WHEN** `eventStore.query.where('correlationId', '=', 'corr_A').selectAll().execute()` is called
-- **THEN** only events with `correlationId="corr_A"` are returned
+- **GIVEN** an EventStore with invocations for workflows "foo" and "bar"
+- **WHEN** `eventStore.query.where('workflow', '=', 'foo').selectAll().execute()` is called
+- **THEN** only invocations for workflow "foo" are returned
 
 #### Scenario: Aggregation query
 
-- **GIVEN** an EventStore with 3 events for "corr_A" and 2 events for "corr_B"
+- **GIVEN** an EventStore with 3 invocations for "foo" and 2 for "bar"
 - **WHEN** a GROUP BY query with `eb.fn.count('id')` is executed
-- **THEN** results show corr_A=3, corr_B=2
-
-#### Scenario: Expression builder available via callback
-
-- **GIVEN** an EventStore
-- **WHEN** `eventStore.query.select(eb => [eb.fn.count('id').as('total')]).execute()` is called
-- **THEN** the query executes and returns the count
+- **THEN** results show foo=3, bar=2
 
 ### Requirement: Module re-exports Kysely utilities
 
@@ -150,26 +117,3 @@ The `event-bus/event-store.ts` module SHALL export:
 
 - **WHEN** a consumer imports from the event-store module
 - **THEN** `createEventStore`, `EventStore`, and `sql` are available
-
-### Requirement: Dashboard query patterns
-
-The EventStore SHALL support the query patterns required by the dashboard. The `LATEST_STATE_CTE` SHALL use `emittedAt` (instead of `createdAt`) for row ordering within partitions. Timeline queries SHALL order by `emittedAt`.
-
-#### Scenario: Latest state per event
-
-- **WHEN** the dashboard queries for current event states
-- **THEN** a `ROW_NUMBER() OVER (PARTITION BY id ORDER BY emittedAt DESC)` window function can be used to select the latest row per event `id`
-
-#### Scenario: Correlation summary query
-
-- **WHEN** the dashboard queries for correlation summaries
-- **THEN** the query can group by `correlationId` and compute: aggregate state, initial event type (where `parentEventId IS NULL`), distinct event count, and max `emittedAt`
-
-#### Scenario: Events by correlationId query
-
-- **WHEN** the dashboard queries for all events in a correlation chain
-- **THEN** the query can filter by `correlationId` and return the latest state per event with all fields including `emittedAt`, `startedAt`, `doneAt`
-
-#### Scenario: Distinct initial event types query
-- **WHEN** the dashboard queries for filter dropdown options
-- **THEN** the query can select distinct `type` values where `parentEventId IS NULL`

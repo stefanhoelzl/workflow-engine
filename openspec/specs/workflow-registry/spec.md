@@ -25,7 +25,7 @@ The runtime SHALL provide a `WorkflowRegistry` created with an optional `Storage
 - **WHEN** `register(files)` is called with files that have a valid manifest name but fail validation (e.g., missing action source)
 - **AND** a workflow with that name already exists in the registry
 - **THEN** the existing workflow SHALL be removed
-- **AND** the derived indexes SHALL be rebuilt
+- **AND** the derived indexes SHALL be rebuilt without "foo"'s contributions
 
 #### Scenario: Remove a workflow
 
@@ -81,10 +81,8 @@ The registry SHALL provide a `recover()` method that loads all workflows from th
 ### Requirement: Derived indexes rebuilt eagerly
 
 The registry SHALL maintain derived indexes that are rebuilt eagerly on every `register()` or `remove()` call:
-- `.actions` — flat array of all actions across all workflows
-- `.events` — merged record of all event schemas
-- `.jsonSchemas` — merged record of all JSON schemas
-- `.triggerRegistry` — merged HTTP trigger registry
+- `.actions` --- flat array of all actions across all workflows
+- `.triggerRegistry` --- merged HTTP trigger registry
 
 #### Scenario: Actions from multiple workflows
 
@@ -97,7 +95,6 @@ The registry SHALL maintain derived indexes that are rebuilt eagerly on every `r
 - **GIVEN** workflows "foo" and "bar" are registered
 - **WHEN** `remove("foo")` is called
 - **THEN** `registry.actions` SHALL contain only "bar"'s actions
-- **AND** `registry.events` SHALL contain only "bar"'s events
 
 ### Requirement: Trigger conflict override
 
@@ -107,5 +104,29 @@ When a workflow is registered with trigger paths that conflict with triggers fro
 
 - **GIVEN** workflow "foo" registers trigger path `/webhooks/orders` (POST)
 - **WHEN** workflow "bar" is registered with the same trigger path `/webhooks/orders` (POST)
-- **THEN** the trigger SHALL point to "bar"'s event type
+- **THEN** the trigger SHALL point to "bar"'s handler
 - **AND** "foo"'s trigger for that path SHALL be replaced
+
+### Requirement: WorkflowRegistry exposes workflows with actions and triggers
+
+The runtime SHALL provide a `WorkflowRegistry` that loads manifests at startup and exposes per-workflow `WorkflowRunner` objects. Each `WorkflowRunner` SHALL provide:
+- `name`: string
+- `env`: `Readonly<Record<string, string>>`
+- `sandbox`: the workflow's `Sandbox` instance
+- `actions`: array of action descriptors `{ name, input, output }`
+- `triggers`: array of typed trigger descriptors (e.g., `HttpTriggerDescriptor` with `name, type, path, method, body, params, query`)
+
+The registry SHALL NOT expose any event types or schemas.
+
+#### Scenario: Registry exposes loaded workflows
+
+- **GIVEN** two workflows loaded at startup
+- **WHEN** the registry is queried
+- **THEN** the registry SHALL expose two `WorkflowRunner` entries, each with `name`, `env`, `sandbox`, `actions`, `triggers`
+- **AND** no `events` field SHALL be present
+
+#### Scenario: Trigger descriptors typed by trigger kind
+
+- **GIVEN** a workflow with one HTTP trigger
+- **WHEN** the registry is queried
+- **THEN** the trigger entry SHALL be an `HttpTriggerDescriptor` with `type: "http"` and HTTP-specific fields

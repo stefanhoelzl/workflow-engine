@@ -77,33 +77,63 @@ function initForm(details) {
 	}
 }
 
-function submitEvent(btn, eventType) {
-	const details = btn.closest(".event-details");
+const HTML_ENTITIES = { "<": "&lt;", ">": "&gt;", "&": "&amp;" };
+
+function renderBanner(ok, message) {
+	const cls = ok ? "success" : "error";
+	const safe = String(message).replace(/[<>&]/g, (c) => HTML_ENTITIES[c] ?? c);
+	return `<div class="banner ${cls}">${safe}</div>`;
+}
+
+function submitTrigger(btn) {
+	const details = btn.closest(".trigger-details");
 	const jedison = details._jedison;
 	if (!jedison) {
 		return;
 	}
+	const formValue = jedison.getValue();
+	const url = btn.dataset.triggerUrl;
+	const method = btn.dataset.triggerMethod || "POST";
 	const target = details.querySelector(".banner-target");
-	fetch(`/trigger/${encodeURIComponent(eventType)}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(jedison.getValue()),
+
+	// The form renders a composite schema (body + headers + url + method +
+	// params). Extract the sub-fields and build the fetch call.
+	const requestBody = formValue.body;
+	const extraHeaders = formValue.headers || {};
+	const headers = {
+		"Content-Type": "application/json",
+		...extraHeaders,
+	};
+
+	fetch(url, {
+		method,
+		headers,
+		body: JSON.stringify(requestBody),
 	})
-		.then((r) => r.text())
-		.then((html) => {
-			target.innerHTML = html;
+		.then(async (r) => {
+			const text = await r.text();
+			if (r.ok) {
+				target.innerHTML = renderBanner(true, text || `OK (${r.status})`);
+			} else {
+				target.innerHTML = renderBanner(false, text || `HTTP ${r.status}`);
+			}
+		})
+		.catch((err) => {
+			target.innerHTML = renderBanner(false, err.message || String(err));
 		});
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-	for (const details of document.querySelectorAll(".event-details")) {
+	for (const details of document.querySelectorAll(".trigger-details")) {
 		details.addEventListener("toggle", () => {
 			initForm(details);
 		});
 	}
-	for (const btn of document.querySelectorAll(".submit-btn[data-event-type]")) {
+	for (const btn of document.querySelectorAll(
+		".submit-btn[data-trigger-url]",
+	)) {
 		btn.addEventListener("click", () => {
-			submitEvent(btn, btn.dataset.eventType);
+			submitTrigger(btn);
 		});
 	}
 });

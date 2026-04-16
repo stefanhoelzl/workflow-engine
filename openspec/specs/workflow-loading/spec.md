@@ -2,55 +2,34 @@
 
 ## Purpose
 
-Load workflow manifests + action modules from the storage backend and expose them to the scheduler via the WorkflowRegistry.
+Load workflow manifests + per-workflow bundles from storage and expose them to the executor via the WorkflowRegistry with one sandbox per workflow.
+
 ## Requirements
-### Requirement: Loaded workflows participate in dispatch
 
-All actions from loaded workflows SHALL be included in the scheduler's fan-out logic via the WorkflowRegistry. The scheduler SHALL read `registry.actions` on each tick. The scheduler SHALL pass each action's `env` to the context factory when creating `ActionContext` for that action.
+### Requirement: Workflow loading instantiates one sandbox per workflow
 
-The scheduler SHALL maintain a `Map<workflowName, Sandbox>` and lazily construct a `Sandbox` for each workflow on first event dispatch, using `sandbox(action.source, methods)` with `methods` empty in v1. For each event, the scheduler SHALL invoke `sb.run(action.name, ctx, { emit })` where `action.name` is the exported handler name in the workflow's action source (from the manifest's `actions[].export` field).
+The runtime SHALL load each workflow's manifest, read the per-workflow bundle file path from `manifest.module`, and instantiate exactly one `Sandbox` per workflow with that bundle source. The sandbox SHALL be created via `sandbox(source, methods)` where `methods` includes the `__hostCallAction` bridge implementation scoped to the workflow's actions.
 
-The workflow registry SHALL load the action module source from the manifest's top-level `module` field and attach it to each `Action` object. Each action SHALL carry an `exportName` field from the manifest's `actions[].export` field, which the scheduler uses as the `name` argument to `Sandbox.run()`.
+#### Scenario: One sandbox created per loaded workflow
 
-#### Scenario: Event matches actions from different workflows
+- **GIVEN** two workflows `cronitor` and `notify` discovered at startup
+- **WHEN** workflow loading completes
+- **THEN** exactly two `Sandbox` instances SHALL exist, one per workflow
+- **AND** each sandbox SHALL have the workflow's bundle evaluated
 
-- **WHEN** an event type matches actions from two different loaded workflows
-- **THEN** the scheduler SHALL emit targeted events for all matching actions
-- **AND** each action SHALL be dispatched via its own workflow's `Sandbox` instance
+#### Scenario: __hostCallAction bound to workflow's manifest
 
-#### Scenario: Action receives its declared env
+- **GIVEN** a workflow with actions `a` and `b` in its manifest
+- **WHEN** the sandbox is created
+- **THEN** `__hostCallAction(name, input)` SHALL look up `name` in the workflow's manifest action list
+- **AND** SHALL throw if `name` is not declared
 
-- **GIVEN** an action loaded with `env: { "API_KEY": "secret", "BASE_URL": "https://example.com" }`
-- **WHEN** the scheduler executes that action
-- **THEN** the ctx passed to `Sandbox.run()` SHALL have `env` set to `{ "API_KEY": "secret", "BASE_URL": "https://example.com" }`
+### Requirement: Workflow loading resolves env at load time
 
-#### Scenario: Action executed with correct export name
+The runtime SHALL apply the workflow's manifest `env` map to the loaded workflow object. The `env` resolution (reading `process.env`, applying defaults) happens at build time; the runtime simply reads the resolved values from the manifest.
 
-- **GIVEN** a workflow with `module: "actions.js"` and an action with `export: "sendMessage"`
-- **WHEN** the scheduler executes the `sendMessage` action
-- **THEN** the workflow's `Sandbox` SHALL be used (constructed from the content of `actions.js` on first use)
-- **AND** `sb.run("sendMessage", ctx, { emit })` SHALL be called
+#### Scenario: Env values match manifest
 
-### Requirement: Startup sequence ordering
-
-The runtime SHALL follow this startup sequence:
-1. Initialize storage backend (if configured)
-2. Initialize event bus and consumers (work queue, event store, persistence, logging)
-3. Recover events from storage backend (events fill work queue and event store; no action execution occurs)
-4. Recover workflows via `registry.recover()`
-5. Start scheduler and server
-
-#### Scenario: Events recovered before workflows loaded
-
-- **GIVEN** the storage backend contains persisted events and workflows
-- **WHEN** the runtime starts
-- **THEN** events SHALL be recovered into the work queue before workflows are loaded
-- **AND** the scheduler SHALL NOT execute any actions until step 5
-
-#### Scenario: Empty startup
-
-- **GIVEN** no storage backend is configured
-- **WHEN** the runtime starts
-- **THEN** the runtime SHALL start with empty event bus consumers and an empty WorkflowRegistry
-- **AND** the server SHALL accept upload requests immediately
-
+- **GIVEN** a manifest with `env: { URL: "https://..." }`
+- **WHEN** the workflow is loaded
+- **THEN** the workflow's `env.URL` (referenced by handlers as `workflow.env.URL`) SHALL equal `"https://..."`

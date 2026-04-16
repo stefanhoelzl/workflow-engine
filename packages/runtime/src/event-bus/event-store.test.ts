@@ -1,249 +1,239 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createFsStorage } from "../storage/fs.js";
+import type { StorageBackend } from "../storage/index.js";
 import { createEventStore, type EventStore, sql } from "./event-store.js";
-import type { RuntimeEvent } from "./index.js";
+import type { InvocationLifecycleEvent } from "./index.js";
+import { archivePath } from "./persistence.js";
 
-function makeEvent(overrides: Record<string, unknown> = {}): RuntimeEvent {
+function startedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "started" }>
+	> = {},
+): InvocationLifecycleEvent {
 	return {
-		id: `evt_${crypto.randomUUID()}`,
-		type: "test.event",
-		payload: { data: "test" },
-		correlationId: "corr_test",
-		createdAt: new Date("2025-01-01T12:00:00Z"),
-		emittedAt: new Date("2025-01-01T12:00:00Z"),
-		state: "pending",
-		sourceType: "trigger",
-		sourceName: "test-trigger",
+		kind: "started",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:00.000Z"),
+		input: {},
 		...overrides,
-	} as RuntimeEvent;
+	};
 }
 
-// Helper: simple query via a pass-through CTE — where(1, "=", 1) is a no-op filter
-function queryAll(store: EventStore) {
-	return store.with("q", (e) => e.selectAll()).where(sql`1`, "=", 1);
+function completedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "completed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "completed",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		result: { status: 200, body: "", headers: {} },
+		...overrides,
+	};
 }
 
-let store: EventStore;
+function failedEvent(
+	overrides: Partial<
+		Extract<InvocationLifecycleEvent, { kind: "failed" }>
+	> = {},
+): InvocationLifecycleEvent {
+	return {
+		kind: "failed",
+		id: "evt_abc",
+		workflow: "w1",
+		trigger: "t1",
+		ts: new Date("2026-01-01T00:00:01.000Z"),
+		error: { message: "boom", stack: "at ..." },
+		...overrides,
+	};
+}
 
-beforeEach(async () => {
-	store = await createEventStore();
+async function selectAll(store: EventStore, id: string) {
+	return store.query.where("id", "=", id).selectAll().execute();
+}
+
+describe("EventStore handle()", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+		await store.initialized;
+	});
+
+	it("started inserts a pending row", async () => {
+		await store.handle(
+			startedEvent({ id: "evt_1", workflow: "wf", trigger: "tr" }),
+		);
+
+		const rows = await selectAll(store, "evt_1");
+		expect(rows).toHaveLength(1);
+		const row = rows[0];
+		expect(row?.id).toBe("evt_1");
+		expect(row?.workflow).toBe("wf");
+		expect(row?.trigger).toBe("tr");
+		expect(row?.status).toBe("pending");
+		expect(row?.completedAt).toBeNull();
+		expect(row?.error).toBeNull();
+	});
+
+	it("completed updates row to succeeded", async () => {
+		await store.handle(startedEvent({ id: "evt_2" }));
+		await store.handle(completedEvent({ id: "evt_2" }));
+
+		const rows = await selectAll(store, "evt_2");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.status).toBe("succeeded");
+		expect(rows[0]?.completedAt).not.toBeNull();
+		expect(rows[0]?.error).toBeNull();
+	});
+
+	it("failed updates row to failed with serialized error", async () => {
+		await store.handle(startedEvent({ id: "evt_3" }));
+		await store.handle(
+			failedEvent({
+				id: "evt_3",
+				error: { message: "boom", stack: "at ...", kind: "user_code" },
+			}),
+		);
+
+		const rows = await selectAll(store, "evt_3");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.status).toBe("failed");
+		expect(rows[0]?.completedAt).not.toBeNull();
+		const errorValue = rows[0]?.error;
+		const parsed =
+			typeof errorValue === "string" ? JSON.parse(errorValue) : errorValue;
+		expect(parsed.message).toBe("boom");
+		expect(parsed.kind).toBe("user_code");
+	});
+
+	it("failed without prior started inserts a row (recovery path)", async () => {
+		await store.handle(
+			failedEvent({ id: "evt_crash", error: { kind: "engine_crashed" } }),
+		);
+
+		const rows = await selectAll(store, "evt_crash");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.status).toBe("failed");
+		const errorValue = rows[0]?.error;
+		const parsed =
+			typeof errorValue === "string" ? JSON.parse(errorValue) : errorValue;
+		expect(parsed.kind).toBe("engine_crashed");
+	});
 });
 
-describe("EventStore", () => {
-	describe("handle", () => {
-		it("inserts event into the store", async () => {
-			const event = makeEvent({ id: "evt_abc" });
-			await store.handle(event);
+describe("EventStore bootstrap from archive", () => {
+	let dir: string;
+	let backend: StorageBackend;
 
-			const rows = await store
-				.with("q", (e) => e.selectAll())
-				.where("id", "=", "evt_abc")
-				.selectAll()
-				.execute();
-			expect(rows).toHaveLength(1);
-			expect(rows[0]?.id).toBe("evt_abc");
-			expect(rows[0]?.state).toBe("pending");
-		});
-
-		it("is append-only — same event ID with different states creates multiple rows", async () => {
-			const event = makeEvent({ id: "evt_multi" });
-			await store.handle({ ...event, state: "pending" });
-			await store.handle({ ...event, state: "processing" });
-			await store.handle({ ...event, state: "done", result: "succeeded" });
-
-			const rows = await store
-				.with("q", (e) => e.selectAll())
-				.where("id", "=", "evt_multi")
-				.selectAll()
-				.execute();
-			expect(rows).toHaveLength(3);
-			expect(
-				// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
-				rows.map((r: any) => r.state),
-			).toEqual(["pending", "processing", "done"]);
-		});
-
-		it("stores all RuntimeEvent fields", async () => {
-			const event: RuntimeEvent = {
-				id: "evt_full",
-				type: "order.received",
-				payload: { orderId: "123" },
-				correlationId: "corr_xyz",
-				parentEventId: "evt_parent",
-				targetAction: "processOrder",
-				createdAt: new Date("2025-01-01T12:00:00Z"),
-				emittedAt: new Date("2025-01-01T12:00:01Z"),
-				startedAt: new Date("2025-01-01T12:00:00.500Z"),
-				doneAt: new Date("2025-01-01T12:00:01Z"),
-				state: "done",
-				result: "failed",
-				error: { message: "timeout", stack: "" },
-				sourceType: "trigger",
-				sourceName: "orders",
-			};
-			await store.handle(event);
-
-			const rows = await store
-				.with("q", (e) => e.selectAll())
-				.where("id", "=", "evt_full")
-				.selectAll()
-				.execute();
-			expect(rows).toHaveLength(1);
-			// biome-ignore lint/style/noNonNullAssertion: test assertion guarantees element exists
-			// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
-			const row = rows[0]! as any;
-			expect(row.type).toBe("order.received");
-			expect(row.correlationId).toBe("corr_xyz");
-			expect(row.parentEventId).toBe("evt_parent");
-			expect(row.targetAction).toBe("processOrder");
-			expect(row.state).toBe("done");
-			expect(row.result).toBe("failed");
-			expect(row.payload).toEqual({ orderId: "123" });
-			expect(row.error).toEqual({ message: "timeout", stack: "" });
-		});
-
-		it("does not throw on error (non-fatal)", async () => {
-			const errorSpy = vi.fn();
-			const errorStore = await createEventStore({
-				logger: { error: errorSpy },
-			});
-
-			await errorStore.handle(makeEvent());
-			expect(errorSpy).not.toHaveBeenCalled();
-		});
+	beforeEach(async () => {
+		dir = join(tmpdir(), `store-test-${crypto.randomUUID()}`);
+		await mkdir(dir, { recursive: true });
+		backend = createFsStorage(dir);
+		await backend.init();
 	});
 
-	describe("bootstrap", () => {
-		it("bulk inserts all events", async () => {
-			const events = [
-				makeEvent({ id: "evt_1", correlationId: "corr_A" }),
-				makeEvent({ id: "evt_2", correlationId: "corr_A" }),
-				makeEvent({ id: "evt_3", correlationId: "corr_B" }),
-			];
-			await store.bootstrap(events);
-
-			const rows = await queryAll(store).selectAll().execute();
-			expect(rows).toHaveLength(3);
-		});
-
-		it("inserts all events regardless of pending flag", async () => {
-			const events: RuntimeEvent[] = [
-				makeEvent({ id: "evt_1", state: "pending" }),
-				makeEvent({ id: "evt_1", state: "processing" }),
-				{ ...makeEvent({ id: "evt_1" }), state: "done", result: "succeeded" },
-			];
-			await store.bootstrap(events, { pending: false });
-
-			const rows = await queryAll(store).selectAll().execute();
-			expect(rows).toHaveLength(3);
-		});
-
-		it("inserts all events with pending: true", async () => {
-			const events: RuntimeEvent[] = [
-				{ ...makeEvent({ id: "evt_a" }), state: "done", result: "succeeded" },
-				makeEvent({ id: "evt_b", state: "pending" }),
-			];
-			await store.bootstrap(events, { pending: true });
-
-			const rows = await queryAll(store).selectAll().execute();
-			expect(rows).toHaveLength(2);
-		});
-
-		it("handles empty array", async () => {
-			await store.bootstrap([], { pending: true });
-			const rows = await queryAll(store).selectAll().execute();
-			expect(rows).toHaveLength(0);
-		});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
 	});
 
-	describe("with (CTE queries)", () => {
-		it("supports CTE with ROW_NUMBER for latest state", async () => {
-			await store.handle(
-				makeEvent({
-					id: "evt_1",
-					state: "pending",
-					createdAt: new Date("2025-01-01T10:00:00Z"),
-				}),
-			);
-			await store.handle(
-				makeEvent({
-					id: "evt_1",
-					state: "processing",
-					createdAt: new Date("2025-01-01T10:01:00Z"),
-				}),
-			);
-			await store.handle(
-				makeEvent({
-					id: "evt_1",
-					state: "done",
-					createdAt: new Date("2025-01-01T10:02:00Z"),
-				}),
-			);
-
-			const rows = await store
-				.with("latest", (events) =>
-					events
-						.selectAll()
-						.select(
-							sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as(
-								"rn",
-							),
-						),
-				)
-				.where("rn", "=", 1)
-				.selectAll()
-				.execute();
-
-			expect(rows).toHaveLength(1);
-			// biome-ignore lint/suspicious/noExplicitAny: untyped CTE query result
-			expect((rows[0] as any)?.state).toBe("done");
-		});
-
-		it("supports chained CTEs", async () => {
-			await store.handle(
-				makeEvent({
-					id: "evt_1",
-					correlationId: "corr_A",
-					state: "pending",
-					createdAt: new Date("2025-01-01T10:00:00Z"),
-				}),
-			);
-			await store.handle(
-				makeEvent({
-					id: "evt_1",
-					correlationId: "corr_A",
-					state: "done",
-					createdAt: new Date("2025-01-01T10:01:00Z"),
-				}),
-			);
-			await store.handle({
-				...makeEvent({
-					id: "evt_2",
-					correlationId: "corr_B",
-					createdAt: new Date("2025-01-01T10:02:00Z"),
-				}),
-				state: "done",
-				result: "failed",
+	it("loads archived invocations at init", async () => {
+		const records = [
+			{
+				id: "evt_a",
+				workflow: "w",
+				trigger: "t",
+				input: { a: 1 },
+				startedAt: "2026-01-01T00:00:00.000Z",
+				completedAt: "2026-01-01T00:00:01.000Z",
+				status: "succeeded",
+				result: { status: 200, body: "", headers: {} },
+			},
+			{
+				id: "evt_b",
+				workflow: "w",
+				trigger: "t",
+				input: { b: 2 },
+				startedAt: "2026-01-01T00:01:00.000Z",
+				completedAt: "2026-01-01T00:01:01.000Z",
+				status: "failed",
 				error: { message: "boom", stack: "" },
-			} as RuntimeEvent);
+			},
+		];
+		for (const record of records) {
+			// biome-ignore lint/performance/noAwaitInLoops: sequential fixture writes — file ordering matters for the sort-by-startedAt assertion below
+			await backend.write(archivePath(record.id), JSON.stringify(record));
+		}
 
-			const rows = await store
-				.with("latest", (events) =>
-					events
-						.selectAll()
-						.select(
-							sql`ROW_NUMBER() OVER (PARTITION BY id ORDER BY "createdAt" DESC)`.as(
-								"rn",
-							),
-						),
-				)
-				.with("current_events", (latest) =>
-					latest.selectAll().where("rn", "=", 1),
-				)
-				.where(sql`1`, "=", 1)
-				.select(["correlationId", "state"])
-				.execute();
+		const store = await createEventStore({ persistence: { backend } });
+		await store.initialized;
 
-			expect(rows).toHaveLength(2);
-		});
+		const rowsA = await selectAll(store, "evt_a");
+		expect(rowsA).toHaveLength(1);
+		expect(rowsA[0]?.status).toBe("succeeded");
+
+		const rowsB = await selectAll(store, "evt_b");
+		expect(rowsB).toHaveLength(1);
+		expect(rowsB[0]?.status).toBe("failed");
+	});
+
+	it("empty archive bootstraps to empty index", async () => {
+		const store = await createEventStore({ persistence: { backend } });
+		await store.initialized;
+
+		const rows = await store.query.selectAll().execute();
+		expect(rows).toHaveLength(0);
+	});
+});
+
+describe("EventStore query API", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+		await store.initialized;
+	});
+
+	it("supports orderBy + limit for dashboard list view", async () => {
+		for (const [i, id] of ["evt_1", "evt_2", "evt_3"].entries()) {
+			// biome-ignore lint/performance/noAwaitInLoops: must be sequential so each row is written to DuckDB before the next; the test asserts stable sort order
+			await store.handle(
+				startedEvent({
+					id,
+					ts: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+				}),
+			);
+		}
+
+		const rows = await store.query
+			.selectAll()
+			.orderBy("startedAt", "desc")
+			.limit(2)
+			.execute();
+
+		expect(rows).toHaveLength(2);
+		expect(rows[0]?.id).toBe("evt_3");
+		expect(rows[1]?.id).toBe("evt_2");
+	});
+
+	it("supports CTE-style queries (with)", async () => {
+		await store.handle(startedEvent({ id: "evt_1" }));
+		await store.handle(completedEvent({ id: "evt_1" }));
+
+		const rows = await store
+			.with("q", (t) => t.selectAll())
+			.where(sql`1`, "=", 1)
+			.selectAll()
+			.execute();
+
+		expect(rows.length).toBeGreaterThan(0);
 	});
 });

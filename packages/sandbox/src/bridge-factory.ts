@@ -152,6 +152,58 @@ function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
+// Reserved own-property keys on Error that are either (a) already carried by
+// `vm.newError({name, message})` or (b) handled explicitly during marshaling.
+// Everything else becomes a JSON-marshaled own property on the guest error.
+const RESERVED_HOST_ERROR_KEYS = new Set(["name", "message", "stack"]);
+
+function isJsonSafe(value: unknown): boolean {
+	try {
+		JSON.stringify(value);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+// Build a rich guest-side Error handle from a host Error. Preserves `name`,
+// `message`, `stack`, Zod `issues`, and any other JSON-serializable own
+// properties — all marshalled as JSON across the boundary. The returned handle
+// is owned by the caller (must be disposed).
+function newGuestErrorFromHost(
+	vm: QuickJSContext,
+	err: unknown,
+): QuickJSHandle {
+	const message = errorMessage(err);
+	if (!(err instanceof Error)) {
+		return vm.newError({ name: "Error", message });
+	}
+	const handle = vm.newError({ name: err.name, message });
+	if (err.stack) {
+		const stackHandle = vm.newString(err.stack);
+		vm.setProp(handle, "stack", stackHandle);
+		stackHandle.dispose();
+	}
+	const source = err as unknown as Record<string, unknown>;
+	for (const key of Object.keys(source)) {
+		if (RESERVED_HOST_ERROR_KEYS.has(key)) {
+			continue;
+		}
+		const value = source[key];
+		if (!isJsonSafe(value)) {
+			continue;
+		}
+		const result = vm.evalCode(`(${JSON.stringify(value)})`);
+		if (result.error) {
+			result.error.dispose();
+			continue;
+		}
+		vm.setProp(handle, key, result.value);
+		result.value.dispose();
+	}
+	return handle;
+}
+
 // --- Factory ---
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: sync/async bridge closures share vm, runtime, and logs state
@@ -214,7 +266,7 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 					ts,
 					durationMs,
 				});
-				return { error: vm.newError(msg) };
+				return { error: newGuestErrorFromHost(vm, err) };
 			}
 		});
 		vm.setProp(target, name, fn);
@@ -227,7 +279,7 @@ function createBridge(vm: QuickJSContext, runtime: QuickJSRuntime): Bridge {
 		entry: Omit<LogEntry, "status" | "error">,
 	): void {
 		const msg = errorMessage(err);
-		const errHandle = vm.newError(msg);
+		const errHandle = newGuestErrorFromHost(vm, err);
 		deferred.reject(errHandle);
 		errHandle.dispose();
 		logs.push({ ...entry, status: "failed", error: msg });

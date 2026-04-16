@@ -10,12 +10,12 @@ const logger = {
 	error: vi.fn(),
 	debug: vi.fn(),
 	trace: vi.fn(),
-	child: vi.fn(),
+	child: vi.fn(() => logger),
 };
 
 function mountApi(githubAuth: GitHubAuth) {
 	const registry = createWorkflowRegistry({ logger });
-	const middleware = apiMiddleware({ registry, githubAuth });
+	const middleware = apiMiddleware({ githubAuth, registry, logger });
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
 	return app;
@@ -23,10 +23,10 @@ function mountApi(githubAuth: GitHubAuth) {
 
 describe("apiMiddleware", () => {
 	describe("mode: disabled", () => {
-		it("returns 401 for every request, even with a valid Bearer header", async () => {
+		it("returns 401 for every /api/* request, even with a valid Bearer header", async () => {
 			const app = mountApi({ mode: "disabled" });
 
-			const res = await app.request("/api/workflows", {
+			const res = await app.request("/api/anything", {
 				method: "POST",
 				headers: { authorization: "Bearer some-token" },
 			});
@@ -35,7 +35,7 @@ describe("apiMiddleware", () => {
 			expect(await res.json()).toEqual({ error: "Unauthorized" });
 		});
 
-		it("returns 401 for unknown /api paths too", async () => {
+		it("returns 401 for GET paths too", async () => {
 			const app = mountApi({ mode: "disabled" });
 
 			const res = await app.request("/api/does-not-exist", { method: "GET" });
@@ -45,15 +45,15 @@ describe("apiMiddleware", () => {
 	});
 
 	describe("mode: open", () => {
-		it("reaches the upload handler without authentication", async () => {
+		it("reaches the Hono /api/* router without authentication", async () => {
 			const app = mountApi({ mode: "open" });
 
-			const res = await app.request("/api/workflows", {
-				method: "POST",
-				body: "not a gzip",
-			});
+			// No routes are registered at /api/does-not-exist; Hono returns 404.
+			// What matters for this test is that the auth layer did not
+			// short-circuit with 401.
+			const res = await app.request("/api/does-not-exist", { method: "GET" });
 
-			expect(res.status).toBe(415);
+			expect(res.status).toBe(404);
 		});
 	});
 
@@ -61,10 +61,21 @@ describe("apiMiddleware", () => {
 		it("rejects requests without an Authorization header with 401", async () => {
 			const app = mountApi({ mode: "restricted", users: ["stefan"] });
 
-			const res = await app.request("/api/workflows", { method: "POST" });
+			const res = await app.request("/api/anything", { method: "POST" });
 
 			expect(res.status).toBe(401);
 			expect(await res.json()).toEqual({ error: "Unauthorized" });
+		});
+
+		it("rejects an unauthenticated upload with 401 — body never reaches the registry", async () => {
+			const app = mountApi({ mode: "restricted", users: ["stefan"] });
+
+			const res = await app.request("/api/workflows", {
+				method: "POST",
+				body: "not-a-tarball",
+			});
+
+			expect(res.status).toBe(401);
 		});
 	});
 });

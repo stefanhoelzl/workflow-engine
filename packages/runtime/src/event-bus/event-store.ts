@@ -1,33 +1,39 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDbDialect } from "@oorabona/kysely-duckdb";
 import { CompiledQuery, Kysely, type SelectQueryBuilder } from "kysely";
-import type { BusConsumer, RuntimeEvent } from "./index.js";
+import type { StorageBackend } from "../storage/index.js";
+import type {
+	BusConsumer,
+	InvocationLifecycleEvent,
+	SerializedErrorPayload,
+} from "./index.js";
+import { scanArchive } from "./persistence.js";
 
-interface EventsTable {
+// ---------------------------------------------------------------------------
+// Invocation index — one row per invocation, updated in place.
+// ---------------------------------------------------------------------------
+//
+// `status` is "pending" while the invocation is in flight, flipping to
+// "succeeded" or "failed" on terminal events. `completedAt` and `error`
+// are null while pending.
+
+interface InvocationsTable {
 	id: string;
-	type: string;
-	correlationId: string;
-	parentEventId: string | null;
-	targetAction: string | null;
-	state: string;
-	result: string | null;
-	payload: unknown;
+	workflow: string;
+	trigger: string;
+	status: string;
+	startedAt: string;
+	completedAt: string | null;
 	error: unknown;
-	logs: unknown;
-	createdAt: string;
-	sourceType: string;
-	sourceName: string;
-	emittedAt: string;
-	startedAt: string | null;
-	doneAt: string | null;
 }
 
 interface Database {
-	events: EventsTable;
+	invocations: InvocationsTable;
 }
 
 interface EventStoreOptions {
 	logger?: { error(msg: string, data: Record<string, unknown>): void };
+	persistence?: { backend: StorageBackend };
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Kysely CTE builder types are deeply generic — constraining them further adds complexity without safety
@@ -41,28 +47,20 @@ interface CteChain {
 }
 
 interface EventStore extends BusConsumer {
-	readonly query: SelectQueryBuilder<Database, "events", object>;
+	readonly query: SelectQueryBuilder<Database, "invocations", object>;
 	with(name: string, fn: CteCallback): CteChain;
+	readonly initialized: Promise<void>;
 }
 
 const CREATE_TABLE_DDL = `
-CREATE TABLE IF NOT EXISTS events (
-	id TEXT NOT NULL,
-	type TEXT NOT NULL,
-	correlationId TEXT NOT NULL,
-	parentEventId TEXT,
-	targetAction TEXT,
-	state TEXT NOT NULL,
-	result TEXT,
-	payload JSON,
-	error JSON,
-	logs JSON,
-	createdAt TIMESTAMPTZ NOT NULL,
-	sourceType TEXT NOT NULL,
-	sourceName TEXT NOT NULL,
-	emittedAt TIMESTAMPTZ NOT NULL,
-	startedAt TIMESTAMPTZ,
-	doneAt TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS invocations (
+	id TEXT PRIMARY KEY,
+	workflow TEXT NOT NULL,
+	trigger TEXT NOT NULL,
+	status TEXT NOT NULL,
+	startedAt TIMESTAMPTZ NOT NULL,
+	completedAt TIMESTAMPTZ,
+	error JSON
 )`;
 
 function createCteChain(
@@ -84,7 +82,16 @@ function createCteChain(
 	};
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled event store logic
+function serializeError(
+	error: SerializedErrorPayload | undefined,
+): string | null {
+	if (error === undefined) {
+		return null;
+	}
+	return JSON.stringify(error);
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DDL, insert/update helpers, and bootstrap
 async function createEventStore(
 	options?: EventStoreOptions,
 ): Promise<EventStore> {
@@ -96,70 +103,177 @@ async function createEventStore(
 
 	const logger = options?.logger;
 
-	function toRow(event: RuntimeEvent) {
-		return {
-			id: event.id,
-			type: event.type,
-			correlationId: event.correlationId,
-			parentEventId: event.parentEventId ?? null,
-			targetAction: event.targetAction ?? null,
-			state: event.state,
-			result: event.state === "done" ? event.result : null,
-			payload:
-				event.payload === undefined ? null : JSON.stringify(event.payload),
-			error:
-				event.state === "done" && event.result === "failed"
-					? JSON.stringify(event.error)
-					: null,
-			logs:
-				event.logs && event.logs.length > 0 ? JSON.stringify(event.logs) : null,
-			createdAt: event.createdAt.toISOString(),
-			sourceType: event.sourceType,
-			sourceName: event.sourceName,
-			emittedAt: event.emittedAt.toISOString(),
-			startedAt: event.startedAt?.toISOString() ?? null,
-			doneAt: event.doneAt?.toISOString() ?? null,
-		};
+	async function bootstrapFromArchive(backend: StorageBackend): Promise<void> {
+		const rows: InvocationsTable[] = [];
+		for await (const record of scanArchive(backend)) {
+			if (record.status === "pending") {
+				// Shouldn't happen (pending lives elsewhere) but skip defensively
+				// rather than crashing the whole bootstrap.
+				continue;
+			}
+			rows.push({
+				id: record.id,
+				workflow: record.workflow,
+				trigger: record.trigger,
+				status: record.status,
+				startedAt: record.startedAt,
+				completedAt: record.completedAt,
+				error: record.status === "failed" ? serializeError(record.error) : null,
+			});
+		}
+		if (rows.length === 0) {
+			return;
+		}
+		try {
+			await db.insertInto("invocations").values(rows).execute();
+		} catch (err) {
+			logger?.error("event-store.bootstrap-failed", {
+				count: rows.length,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	const initialized = options?.persistence
+		? bootstrapFromArchive(options.persistence.backend)
+		: Promise.resolve();
+
+	async function handleStarted(
+		event: Extract<InvocationLifecycleEvent, { kind: "started" }>,
+	): Promise<void> {
+		try {
+			await db
+				.insertInto("invocations")
+				.values({
+					id: event.id,
+					workflow: event.workflow,
+					trigger: event.trigger,
+					status: "pending",
+					startedAt: event.ts.toISOString(),
+					completedAt: null,
+					error: null,
+				})
+				.execute();
+		} catch (err) {
+			logger?.error("event-store.insert-failed", {
+				id: event.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	async function rowExists(id: string): Promise<boolean> {
+		const row = await db
+			.selectFrom("invocations")
+			.select("id")
+			.where("id", "=", id)
+			.executeTakeFirst();
+		return row !== undefined;
+	}
+
+	async function handleCompleted(
+		event: Extract<InvocationLifecycleEvent, { kind: "completed" }>,
+	): Promise<void> {
+		try {
+			// Upsert-style: start row may be missing if the `started` event was
+			// never seen by this process. Two-step (select-then-update-or-insert)
+			// because DuckDB's Kysely dialect does not expose `numUpdatedRows`
+			// reliably across versions.
+			if (await rowExists(event.id)) {
+				await db
+					.updateTable("invocations")
+					.set({
+						status: "succeeded",
+						completedAt: event.ts.toISOString(),
+						error: null,
+					})
+					.where("id", "=", event.id)
+					.execute();
+			} else {
+				await db
+					.insertInto("invocations")
+					.values({
+						id: event.id,
+						workflow: event.workflow,
+						trigger: event.trigger,
+						status: "succeeded",
+						startedAt: event.ts.toISOString(),
+						completedAt: event.ts.toISOString(),
+						error: null,
+					})
+					.execute();
+			}
+		} catch (err) {
+			logger?.error("event-store.update-failed", {
+				id: event.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	async function handleFailed(
+		event: Extract<InvocationLifecycleEvent, { kind: "failed" }>,
+	): Promise<void> {
+		const errorJson = serializeError(event.error);
+		try {
+			if (await rowExists(event.id)) {
+				await db
+					.updateTable("invocations")
+					.set({
+						status: "failed",
+						completedAt: event.ts.toISOString(),
+						error: errorJson,
+					})
+					.where("id", "=", event.id)
+					.execute();
+			} else {
+				await db
+					.insertInto("invocations")
+					.values({
+						id: event.id,
+						workflow: event.workflow,
+						trigger: event.trigger,
+						status: "failed",
+						startedAt: event.ts.toISOString(),
+						completedAt: event.ts.toISOString(),
+						error: errorJson,
+					})
+					.execute();
+			}
+		} catch (err) {
+			logger?.error("event-store.update-failed", {
+				id: event.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	return {
-		query: db.selectFrom("events") as SelectQueryBuilder<
+		initialized,
+
+		query: db.selectFrom("invocations") as SelectQueryBuilder<
 			Database,
-			"events",
+			"invocations",
 			object
 		>,
 
-		async handle(event: RuntimeEvent): Promise<void> {
-			try {
-				await db.insertInto("events").values(toRow(event)).execute();
-			} catch (err) {
-				logger?.error("event-store.index-failed", {
-					eventId: event.id,
-					error: err instanceof Error ? err.message : String(err),
-				});
-			}
-		},
-
-		async bootstrap(
-			events: RuntimeEvent[],
-			_options?: { pending?: boolean },
-		): Promise<void> {
-			if (events.length === 0) {
+		async handle(event: InvocationLifecycleEvent): Promise<void> {
+			if (event.kind === "started") {
+				await handleStarted(event);
 				return;
 			}
-			try {
-				await db.insertInto("events").values(events.map(toRow)).execute();
-			} catch (err) {
-				logger?.error("event-store.bootstrap-failed", {
-					count: events.length,
-					error: err instanceof Error ? err.message : String(err),
-				});
+			if (event.kind === "completed") {
+				await handleCompleted(event);
+				return;
 			}
+			await handleFailed(event);
 		},
 
 		with(name: string, fn: CteCallback): CteChain {
 			// biome-ignore lint/suspicious/noExplicitAny: Kysely QueryCreator type in CTE callback
-			const builder = db.with(name, (qb: any) => fn(qb.selectFrom("events")));
+			const builder = db.with(name, (qb: any) =>
+				fn(qb.selectFrom("invocations")),
+			);
 			return createCteChain(builder, name);
 		},
 	};
@@ -167,5 +281,5 @@ async function createEventStore(
 
 // biome-ignore lint/performance/noBarrelFile: intentional re-export — consumers must not import kysely directly
 export { sql } from "kysely";
-export type { CteCallback, CteChain, Database, EventStore, EventsTable };
+export type { CteCallback, CteChain, Database, EventStore, InvocationsTable };
 export { createEventStore };

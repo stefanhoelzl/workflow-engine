@@ -1,226 +1,287 @@
+import type { HttpTriggerResult } from "@workflow-engine/sdk";
 import type { StorageBackend } from "../storage/index.js";
-import type { BusConsumer, RuntimeEvent } from "./index.js";
-import { RuntimeEventSchema } from "./index.js";
+import type {
+	BusConsumer,
+	InvocationLifecycleEvent,
+	SerializedErrorPayload,
+} from "./index.js";
 
-const FILE_PATTERN = /^(\d+)_evt_(.+)\.json$/;
-const EVT_PREFIX_PATTERN = /^evt_/;
-const COUNTER_PAD_LENGTH = 6;
+// ---------------------------------------------------------------------------
+// Invocation records (on-disk shape)
+// ---------------------------------------------------------------------------
+//
+// Pending: written at `started` time, removed when the invocation terminates.
+// Archive: written exactly once at `completed` or `failed` time.
+//
+// The record is the wire shape for scanArchive/scanPending consumers
+// (recovery, event-store bootstrap). It's intentionally looser than the
+// lifecycle event union — any future fields added here will surface to
+// consumers without bus involvement.
 
-function stripNulls(_key: string, value: unknown): unknown {
-	return value === null ? undefined : value;
+interface PendingRecord {
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly input: unknown;
+	readonly startedAt: string;
+	readonly status: "pending";
 }
 
-function parseFilename(
-	filename: string,
-): { counter: number; eventId: string } | undefined {
-	const match = FILE_PATTERN.exec(filename);
-	if (!match) {
-		return;
-	}
-	return { counter: Number(match[1]), eventId: `evt_${match[2]}` };
+interface SucceededRecord {
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly input: unknown;
+	readonly startedAt: string;
+	readonly completedAt: string;
+	readonly status: "succeeded";
+	readonly result: HttpTriggerResult;
 }
 
-function formatFilename(counter: number, eventId: string): string {
-	const id = eventId.replace(EVT_PREFIX_PATTERN, "");
-	return `${String(counter).padStart(COUNTER_PAD_LENGTH, "0")}_evt_${id}.json`;
+interface FailedRecord {
+	readonly id: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly input: unknown;
+	readonly startedAt: string;
+	readonly completedAt: string;
+	readonly status: "failed";
+	readonly error: SerializedErrorPayload;
 }
 
-function extractFilename(path: string): string {
-	const slashIndex = path.lastIndexOf("/");
-	return slashIndex === -1 ? path : path.slice(slashIndex + 1);
+type InvocationRecord = PendingRecord | SucceededRecord | FailedRecord;
+type ArchiveRecord = SucceededRecord | FailedRecord;
+
+const PENDING_PREFIX = "pending/";
+const ARCHIVE_PREFIX = "archive/";
+
+function pendingPath(id: string): string {
+	return `${PENDING_PREFIX}${id}.json`;
 }
 
-interface FileGroup {
-	path: string;
-	filename: string;
-	counter: number;
+function archivePath(id: string): string {
+	return `${ARCHIVE_PREFIX}${id}.json`;
 }
 
-interface RecoveryBatch {
-	events: RuntimeEvent[];
-	pending: boolean;
-}
-
-interface PersistenceConsumer extends BusConsumer {
-	recover(): AsyncIterable<RecoveryBatch>;
+interface StartSnapshot {
+	readonly input: unknown;
+	readonly startedAt: string;
 }
 
 interface PersistenceOptions {
-	concurrency?: number;
-	logger?: { error(msg: string, data: Record<string, unknown>): void };
+	readonly logger?: {
+		error(msg: string, data: Record<string, unknown>): void;
+	};
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups tightly coupled persistence logic
+// Remember start-time data between `started` and terminal events so the
+// archive record can include them without requiring the terminal event to
+// carry the full history. If the process dies between `started` and
+// terminal, the pending/ file still contains the start fields for recovery.
+interface PersistenceDeps {
+	readonly backend: StorageBackend;
+	readonly starts: Map<string, StartSnapshot>;
+	readonly logger?: PersistenceOptions["logger"];
+}
+
+interface PersistenceConsumer extends BusConsumer {
+	// Marker type — nothing extra in v1; kept as a named alias so callers
+	// (recovery, main bootstrap) can express "I want the consumer" clearly.
+}
+
+async function handleStarted(
+	deps: PersistenceDeps,
+	event: Extract<InvocationLifecycleEvent, { kind: "started" }>,
+): Promise<void> {
+	const record: PendingRecord = {
+		id: event.id,
+		workflow: event.workflow,
+		trigger: event.trigger,
+		input: event.input,
+		startedAt: event.ts.toISOString(),
+		status: "pending",
+	};
+	deps.starts.set(event.id, {
+		input: event.input,
+		startedAt: record.startedAt,
+	});
+	await deps.backend.write(
+		pendingPath(event.id),
+		JSON.stringify(record, null, 2),
+	);
+}
+
+async function handleCompleted(
+	deps: PersistenceDeps,
+	event: Extract<InvocationLifecycleEvent, { kind: "completed" }>,
+): Promise<void> {
+	const snapshot =
+		deps.starts.get(event.id) ?? (await readPendingSnapshot(deps, event));
+	const record: SucceededRecord = {
+		id: event.id,
+		workflow: event.workflow,
+		trigger: event.trigger,
+		input: snapshot.input,
+		startedAt: snapshot.startedAt,
+		completedAt: event.ts.toISOString(),
+		status: "succeeded",
+		result: event.result,
+	};
+	await deps.backend.write(
+		archivePath(event.id),
+		JSON.stringify(record, null, 2),
+	);
+	await removePending(deps, event.id);
+	deps.starts.delete(event.id);
+}
+
+async function handleFailed(
+	deps: PersistenceDeps,
+	event: Extract<InvocationLifecycleEvent, { kind: "failed" }>,
+): Promise<void> {
+	const snapshot =
+		deps.starts.get(event.id) ?? (await readPendingSnapshot(deps, event));
+	const record: FailedRecord = {
+		id: event.id,
+		workflow: event.workflow,
+		trigger: event.trigger,
+		input: snapshot.input,
+		startedAt: snapshot.startedAt,
+		completedAt: event.ts.toISOString(),
+		status: "failed",
+		error: event.error,
+	};
+	await deps.backend.write(
+		archivePath(event.id),
+		JSON.stringify(record, null, 2),
+	);
+	await removePending(deps, event.id);
+	deps.starts.delete(event.id);
+}
+
+async function readPendingSnapshot(
+	deps: PersistenceDeps,
+	event: InvocationLifecycleEvent,
+): Promise<StartSnapshot> {
+	// Terminal event arrived without a prior `started` in this process —
+	// typically the recovery path, where the pending file already exists
+	// from a prior session. Read from disk; fall back to a conservative
+	// default if the file is gone.
+	try {
+		const raw = await deps.backend.read(pendingPath(event.id));
+		const parsed = JSON.parse(raw) as PendingRecord;
+		return {
+			input: parsed.input,
+			startedAt: parsed.startedAt,
+		};
+	} catch (err) {
+		deps.logger?.error("persistence.read-pending-failed", {
+			id: event.id,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return { input: null, startedAt: event.ts.toISOString() };
+	}
+}
+
+async function removePending(deps: PersistenceDeps, id: string): Promise<void> {
+	try {
+		await deps.backend.remove(pendingPath(id));
+	} catch (err) {
+		// A missing pending file is expected on recovery (the file may have
+		// been the source we just promoted to archive, or may already have
+		// been swept). Log everything else at error-level.
+		deps.logger?.error("persistence.remove-pending-failed", {
+			id,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
 function createPersistence(
 	backend: StorageBackend,
 	options?: PersistenceOptions,
 ): PersistenceConsumer {
-	const logger = options?.logger;
-	const concurrency = options?.concurrency ?? 10;
-	// NOTE: This counter is single-threaded. If parallel scheduling is introduced,
-	// this must be replaced with an atomic counter or file-based lock.
-	let counter = 0;
-	const pendingIndex = new Map<string, FileGroup>();
-
-	return {
-		async handle(event: RuntimeEvent): Promise<void> {
-			counter++;
-			const filename = formatFilename(counter, event.id);
-			const isTerminal = event.state === "done";
-
-			// Terminal states go directly to archive/; others go to pending/
-			const prefix = isTerminal ? "events/archive/" : "events/pending/";
-			await backend.write(
-				`${prefix}${filename}`,
-				JSON.stringify(event, null, 2),
-			);
-
-			// Archive older pending file for this event (fire-and-forget)
-			const oldFile = pendingIndex.get(event.id);
-			if (oldFile) {
-				backend
-					.move(oldFile.path, `events/archive/${oldFile.filename}`)
-					.catch((err) => {
-						logger?.error("archive-failed", {
-							eventId: event.id,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-			}
-
-			// Update index
-			if (isTerminal) {
-				pendingIndex.delete(event.id);
-			} else {
-				pendingIndex.set(event.id, {
-					path: `${prefix}${filename}`,
-					filename,
-					counter,
-				});
-			}
-		},
-
-		async bootstrap(
-			_events: RuntimeEvent[],
-			_options?: { pending?: boolean },
-		): Promise<void> {
-			// No-op: persistence is the bootstrap source, not a consumer of bootstrap data
-		},
-
-		async *recover(): AsyncIterable<RecoveryBatch> {
-			await backend.init();
-			await cleanupPending();
-
-			yield* batch(readAll(pendingIndex.values()), true);
-			yield* batch(readAll(parseEventPaths("events/archive/")), false);
-		},
+	const deps: PersistenceDeps = {
+		backend,
+		starts: new Map(),
+		...(options?.logger ? { logger: options.logger } : {}),
 	};
-
-	async function cleanupPending(): Promise<void> {
-		for await (const path of backend.list("events/pending/")) {
-			const filename = extractFilename(path);
-			const parsed = parseFilename(filename);
-			if (!parsed) {
-				continue;
-			}
-
-			const existing = pendingIndex.get(parsed.eventId);
-			if (existing) {
-				// Files are sorted by counter (ascending), so existing has lower counter — archive it
-				await backend.move(
-					existing.path,
-					`events/archive/${existing.filename}`,
-				);
-			}
-			pendingIndex.set(parsed.eventId, {
-				path,
-				filename,
-				counter: parsed.counter,
-			});
-		}
-	}
-
-	async function* parseEventPaths(
-		prefix: string,
-	): AsyncGenerator<{ path: string; counter: number }> {
-		for await (const path of backend.list(prefix)) {
-			const parsed = parseFilename(extractFilename(path));
-			if (parsed) {
-				yield { path, counter: parsed.counter };
-			}
-		}
-	}
-
-	async function readAndParse(path: string): Promise<RuntimeEvent> {
-		const content = await backend.read(path);
-		return RuntimeEventSchema.parse(JSON.parse(content, stripNulls));
-	}
-
-	async function* readAll(
-		source:
-			| AsyncIterable<{ path: string; counter: number }>
-			| Iterable<{ path: string; counter: number }>,
-	): AsyncGenerator<RuntimeEvent> {
-		const iter = toAsyncIterator(source);
-		const queue: Promise<RuntimeEvent>[] = [];
-		let done = false;
-
-		async function pull(): Promise<void> {
-			const result = await iter.next();
-			if (result.done) {
-				done = true;
+	return {
+		async handle(event: InvocationLifecycleEvent): Promise<void> {
+			if (event.kind === "started") {
+				await handleStarted(deps, event);
 				return;
 			}
-			if (result.value.counter > counter) {
-				counter = result.value.counter;
+			if (event.kind === "completed") {
+				await handleCompleted(deps, event);
+				return;
 			}
-			queue.push(readAndParse(result.value.path));
-		}
+			await handleFailed(deps, event);
+		},
+	};
+}
 
-		// Fill initial buffer — starts `concurrency` reads immediately
-		while (!done && queue.length < concurrency) {
-			// biome-ignore lint/performance/noAwaitInLoops: sequential fill of initial read buffer
-			await pull();
-		}
+const ID_FROM_PATH = /(?:^|\/)([^/]+)\.json$/;
 
-		// Drain: yield one, refill one — keeps reads in flight
-		while (queue.length > 0) {
-			// biome-ignore lint/style/noNonNullAssertion: length check guarantees element exists
-			// biome-ignore lint/performance/noAwaitInLoops: sequential drain of prefetched read queue
-			yield await queue.shift()!;
-			if (!done) {
-				await pull();
-			}
-		}
-	}
+function idFromPath(path: string): string | undefined {
+	const match = ID_FROM_PATH.exec(path);
+	return match?.[1];
+}
 
-	async function* batch(
-		source: AsyncIterable<RuntimeEvent>,
-		pending: boolean,
-	): AsyncGenerator<RecoveryBatch> {
-		let events: RuntimeEvent[] = [];
-		for await (const event of source) {
-			events.push(event);
-			if (events.length >= concurrency) {
-				yield { events, pending };
-				events = [];
-			}
+async function* scanPrefix(
+	backend: StorageBackend,
+	prefix: string,
+): AsyncGenerator<InvocationRecord> {
+	for await (const path of backend.list(prefix)) {
+		const id = idFromPath(path);
+		if (!id) {
+			continue;
 		}
-		if (events.length > 0) {
-			yield { events, pending };
+		let raw: string;
+		try {
+			raw = await backend.read(path);
+		} catch {
+			continue;
+		}
+		try {
+			yield JSON.parse(raw) as InvocationRecord;
+		} catch {
+			// Skip malformed records; callers receive a partial view rather
+			// than crashing on corruption. Recovery writes a failed archive
+			// entry for any pending id it sees, so a corrupt file still gets
+			// archived via its filename-derived id.
 		}
 	}
 }
 
-function toAsyncIterator<T>(
-	source: AsyncIterable<T> | Iterable<T>,
-): AsyncIterator<T> {
-	if (Symbol.asyncIterator in (source as object)) {
-		return (source as AsyncIterable<T>)[Symbol.asyncIterator]();
-	}
-	const iter = (source as Iterable<T>)[Symbol.iterator]();
-	return { next: async () => iter.next() };
+function scanPending(
+	backend: StorageBackend,
+): AsyncGenerator<InvocationRecord> {
+	return scanPrefix(backend, PENDING_PREFIX);
 }
 
-export type { PersistenceConsumer, RecoveryBatch };
-export { createPersistence };
+function scanArchive(
+	backend: StorageBackend,
+): AsyncGenerator<InvocationRecord> {
+	return scanPrefix(backend, ARCHIVE_PREFIX);
+}
+
+export type {
+	ArchiveRecord,
+	FailedRecord,
+	InvocationRecord,
+	PendingRecord,
+	PersistenceConsumer,
+	PersistenceOptions,
+	SucceededRecord,
+};
+export {
+	ARCHIVE_PREFIX,
+	archivePath,
+	createPersistence,
+	idFromPath,
+	PENDING_PREFIX,
+	pendingPath,
+	scanArchive,
+	scanPending,
+};

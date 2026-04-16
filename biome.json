@@ -8,8 +8,7 @@
 			"!.persistence",
 			"!**/.terraform",
 			"!packages/vite-plugin/src/sandbox-globals-setup.js",
-			"!packages/vite-plugin/src/sandbox-globals.js",
-			"!packages/vite-plugin/src/sdk-stub.js"
+			"!packages/vite-plugin/src/sandbox-globals.js"
 		]
 	},
 	"linter": {

@@ -12,33 +12,46 @@ const logger = {
 	error: vi.fn(),
 	debug: vi.fn(),
 	trace: vi.fn(),
-	child: vi.fn(),
+	child: vi.fn(() => logger),
 };
 
 const INVALID_MANIFEST_PREFIX = /^invalid manifest/;
 
+// v1 manifest shape: { name, module, env, actions, triggers }.
 const MANIFEST = {
 	name: "test-workflow",
-	module: "actions.js",
-	events: [
+	module: "test-workflow.js",
+	env: {},
+	actions: [],
+	triggers: [
 		{
-			name: "test.event",
-			schema: { type: "object", properties: {}, required: [] },
-		},
-	],
-	triggers: [],
-	actions: [
-		{
-			name: "handle",
-			export: "handle",
-			on: "test.event",
-			emits: [],
-			env: {},
+			name: "ping",
+			type: "http",
+			path: "ping",
+			method: "POST",
+			body: { type: "object" },
+			params: [],
+			schema: { type: "object" },
 		},
 	],
 };
 
-const ACTION_SOURCE = "export default async (ctx) => {}";
+// Minimal valid bundle: declares a trigger export matching the manifest.
+// The workflow-registry evaluates this inside a sandbox — keep it tiny
+// and free of host dependencies.
+const BUNDLE_SOURCE_V1 = `
+const HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger");
+const passThrough = { parse: (x) => x };
+export const ping = Object.freeze({
+	[HTTP_TRIGGER_BRAND]: true,
+	path: "ping",
+	method: "POST",
+	body: passThrough,
+	params: passThrough,
+	query: undefined,
+	handler: async () => ({ status: 200, body: "pong-v1" }),
+});
+`;
 
 async function createGzipTar(files: Record<string, string>): Promise<Blob> {
 	const packer = tarPack();
@@ -58,29 +71,29 @@ async function createGzipTar(files: Record<string, string>): Promise<Blob> {
 function createApp() {
 	const registry = createWorkflowRegistry({ logger });
 	const app = new Hono();
-	app.post("/api/workflows", createUploadHandler(registry));
+	app.post("/api/workflows", createUploadHandler({ registry, logger }));
 	return { app, registry };
 }
 
 describe("extractTarGz", () => {
-	it("extracts files from tar.gz buffer", async () => {
+	it("extracts files from a gzip tar buffer", async () => {
 		const blob = await createGzipTar({
 			"manifest.json": '{"name":"test"}',
-			"actions.js": "code",
+			"test.js": "code",
 		});
 		const files = await extractTarGz(await blob.arrayBuffer());
 		expect(files.size).toBe(2);
 		expect(files.get("manifest.json")).toBe('{"name":"test"}');
-		expect(files.get("actions.js")).toBe("code");
+		expect(files.get("test.js")).toBe("code");
 	});
 });
 
 describe("upload handler", () => {
-	it("returns 204 for valid upload", async () => {
+	it("returns 204 and registers the workflow on a valid upload", async () => {
 		const { app, registry } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": JSON.stringify(MANIFEST),
-			"actions.js": ACTION_SOURCE,
+			"test-workflow.js": BUNDLE_SOURCE_V1,
 		});
 
 		const res = await app.request("/api/workflows", {
@@ -89,11 +102,49 @@ describe("upload handler", () => {
 		});
 
 		expect(res.status).toBe(204);
-		expect(registry.actions).toHaveLength(1);
-		expect(registry.actions[0]?.name).toBe("handle");
+		expect(registry.runners).toHaveLength(1);
+		expect(registry.runners[0]?.name).toBe("test-workflow");
+		expect(registry.triggerRegistry.size).toBe(1);
 	});
 
-	it("returns 415 with error body for non-gzip body", async () => {
+	it("replaces an existing workflow on re-upload — old triggers removed", async () => {
+		const { app, registry } = createApp();
+		const upload = async (src: string) => {
+			const body = await createGzipTar({
+				"manifest.json": JSON.stringify(MANIFEST),
+				"test-workflow.js": src,
+			});
+			return app.request("/api/workflows", { method: "POST", body });
+		};
+
+		await upload(BUNDLE_SOURCE_V1);
+		expect(registry.runners).toHaveLength(1);
+		expect(registry.triggerRegistry.size).toBe(1);
+
+		const BUNDLE_SOURCE_V2 = BUNDLE_SOURCE_V1.replace("pong-v1", "pong-v2");
+		await upload(BUNDLE_SOURCE_V2);
+		expect(registry.runners).toHaveLength(1);
+		// Trigger count stays at 1 (old registration is cleared before the
+		// new one is added).
+		expect(registry.triggerRegistry.size).toBe(1);
+
+		// The new bundle's trigger handler should now respond with "pong-v2".
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("no runner after replace");
+		}
+		const result = await runner.invokeHandler("ping", {
+			body: {},
+			headers: {},
+			url: "",
+			method: "POST",
+			params: {},
+			query: {},
+		});
+		expect(result.body).toBe("pong-v2");
+	});
+
+	it("returns 415 with an error body for a non-gzip payload", async () => {
 		const { app } = createApp();
 
 		const res = await app.request("/api/workflows", {
@@ -107,10 +158,10 @@ describe("upload handler", () => {
 		});
 	});
 
-	it("returns 422 with specific error when manifest.json is missing", async () => {
+	it("returns 422 with a specific error when manifest.json is missing", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
-			"actions.js": ACTION_SOURCE,
+			"test-workflow.js": BUNDLE_SOURCE_V1,
 		});
 
 		const res = await app.request("/api/workflows", {
@@ -124,7 +175,7 @@ describe("upload handler", () => {
 		});
 	});
 
-	it("returns 422 with issues when manifest fails validation", async () => {
+	it("returns 422 with Zod issues when the manifest fails validation", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": '{"invalid": true}',
@@ -145,7 +196,7 @@ describe("upload handler", () => {
 		expect(json.issues?.length ?? 0).toBeGreaterThan(0);
 	});
 
-	it("returns 422 with specific error when action source file is missing", async () => {
+	it("returns 422 when the bundle file declared by the manifest is missing", async () => {
 		const { app } = createApp();
 		const body = await createGzipTar({
 			"manifest.json": JSON.stringify(MANIFEST),
@@ -158,26 +209,7 @@ describe("upload handler", () => {
 
 		expect(res.status).toBe(422);
 		await expect(res.json()).resolves.toEqual({
-			error: "missing action module: actions.js",
+			error: "missing action module: test-workflow.js",
 		});
-	});
-
-	it("replaces existing workflow on re-upload", async () => {
-		const { app, registry } = createApp();
-
-		const upload = async (source: string) => {
-			const body = await createGzipTar({
-				"manifest.json": JSON.stringify(MANIFEST),
-				"actions.js": source,
-			});
-			return app.request("/api/workflows", { method: "POST", body });
-		};
-
-		await upload("export default async () => { /* v1 */ }");
-		expect(registry.actions[0]?.source).toContain("v1");
-
-		await upload("export default async () => { /* v2 */ }");
-		expect(registry.actions).toHaveLength(1);
-		expect(registry.actions[0]?.source).toContain("v2");
 	});
 });
