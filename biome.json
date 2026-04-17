@@ -107,10 +107,14 @@
 			}
 		},
 		{
-			"includes": ["packages/sandbox/src/polyfills/**/*.ts"],
+			"includes": [
+				"packages/sandbox/src/polyfills/**/*.ts",
+				"packages/sandbox/test/wpt/harness/preamble/**/*.ts"
+			],
 			"linter": {
 				"rules": {
 					"performance": {
+						"noDelete": "off",
 						"noNamespaceImport": "off"
 					},
 					"style": {

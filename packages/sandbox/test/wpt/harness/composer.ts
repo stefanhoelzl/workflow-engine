@@ -1,5 +1,5 @@
+import { ENTRY, POST_HARNESS, PREAMBLE } from "virtual:wpt-preamble";
 import { IIFE_NAMESPACE } from "@workflow-engine/core";
-import { ENTRY, POST_HARNESS, PREAMBLE } from "./preamble.js";
 
 // Assemble the complete source evaluated inside a WPT sandbox. Eval order:
 //   PREAMBLE  — stub browser globals

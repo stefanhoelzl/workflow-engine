@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
+import { wptPreamble } from "./packages/sandbox/test/wpt/harness/preamble/vite-plugin.js";
 
 export default defineConfig({
+	plugins: [wptPreamble()],
 	test: {
 		include: [
 			"packages/*/src/**/*.{test,spec}.ts",
