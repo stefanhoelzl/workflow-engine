@@ -89,7 +89,7 @@ async function runSuite(): Promise<void> {
 	// Register.
 	for (const { path, reason } of skipped) {
 		describe(path, () => {
-			it(`(skipped: ${reason})`, () => {});
+			it.skip(`(skipped: ${reason})`, () => {});
 		});
 	}
 	for (const [path, entry, subtestResults] of results) {
@@ -106,12 +106,12 @@ function registerFileTests(
 		for (const { name, status, message } of subtestResults) {
 			const sub = findMostSpecific(spec, `${path}:${name}`);
 			if (sub?.expected === "skip") {
-				it(`${name} — ${sub.reason}`, () => {});
+				it.skip(`${name} — ${sub.reason}`, () => {});
 				continue;
 			}
 			const manifestSkip = entry.skippedSubtests?.[name];
 			if (manifestSkip !== undefined) {
-				it(`${name} — ${manifestSkip}`, () => {});
+				it.skip(`${name} — ${manifestSkip}`, () => {});
 				continue;
 			}
 			it(name, () => {
