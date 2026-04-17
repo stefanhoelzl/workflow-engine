@@ -23,5 +23,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm validate
+      - run: pnpm test:wpt
       - run: git diff --exit-code infrastructure/envs/local/.terraform.lock.hcl infrastructure/envs/upcloud/cluster/.terraform.lock.hcl infrastructure/envs/upcloud/persistence/.terraform.lock.hcl
       - run: pnpm build

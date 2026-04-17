@@ -8,7 +8,8 @@
 			"!.persistence",
 			"!**/.terraform",
 			"!packages/sdk/src/plugin/sandbox-globals-setup.js",
-			"!packages/sdk/src/plugin/sandbox-globals.js"
+			"!packages/sdk/src/plugin/sandbox-globals.js",
+			"!packages/sandbox/test/wpt/vendor"
 		]
 	},
 	"linter": {
@@ -86,14 +87,45 @@
 			"includes": ["scripts/**/*.ts"],
 			"linter": {
 				"rules": {
+					"complexity": {
+						"noExcessiveCognitiveComplexity": "off"
+					},
 					"performance": {
 						"noAwaitInLoops": "off"
 					},
 					"suspicious": {
-						"noConsole": "off"
+						"noConsole": "off",
+						"noEvolvingTypes": "off",
+						"noImplicitAnyLet": "off",
+						"useAwait": "off"
 					},
 					"style": {
 						"noProcessEnv": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["packages/sandbox/test/wpt/**/*.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off",
+						"useTopLevelRegex": "off"
+					},
+					"style": {
+						"noDefaultExport": "off",
+						"noMagicNumbers": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						"noEmptyBlockStatements": "off",
+						"noSkippedTests": "off",
+						"useAwait": "off"
 					}
 				}
 			}

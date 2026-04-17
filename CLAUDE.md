@@ -9,7 +9,9 @@
 
 - `pnpm lint` — Biome linter
 - `pnpm check` — TypeScript type checking
-- `pnpm test` — Vitest test suite
+- `pnpm test` — Vitest test suite (unit + integration, excludes WPT)
+- `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`)
+- `pnpm test:wpt:refresh` — regenerate `packages/sandbox/test/wpt/vendor/` from upstream WPT
 - `pnpm build` — Build runtime + workflows
 - `pnpm start` — Build workflows and start runtime
 
@@ -92,7 +94,7 @@ Accessible at `https://workflow-engine.webredirect.org` (Let's Encrypt TLS, cert
 
 Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive code.
 
-- **NEVER** add a global, host-bridge API, or Node.js surface to the QuickJS sandbox (§2).
+- **NEVER** add a global, host-bridge API, or Node.js surface to the QuickJS sandbox without extending the §2 allowlist in the same PR (§2).
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
 - **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).

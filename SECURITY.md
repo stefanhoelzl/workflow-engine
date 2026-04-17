@@ -187,7 +187,11 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   worker event loop), `fetch` (JS shim inside the sandbox that routes
   through `__hostFetch`), `__hostFetch` (async host bridge the fetch
   shim calls into), `__emitEvent` (write-only telemetry channel for
-  `action.*` events; see below), plus the host methods registered via
+  `action.*` events; see below), `self` (identity shim,
+  `self === globalThis`), `navigator` (frozen object with a single
+  `userAgent: "WorkflowEngine/<version>"` string), `reportError` (JS
+  shim serializing Error-shaped values and forwarding to the
+  `__reportError` host bridge), plus the host methods registered via
   `methods` and `extraMethods`. WASM extensions contribute the
   additional standard globals `URL`, `URLSearchParams`, `TextEncoder`,
   `TextDecoder`, `atob`, `btoa`, `structuredClone`, and `Headers` —
@@ -196,7 +200,21 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   construction-time method in `methods` and appends `__dispatchAction`
   as plain JS source after the workflow bundle — both are conventions,
   not hardcoded built-ins; the sandbox package itself does not know
-  about manifests, Zod, or action dispatch.
+  about manifests, Zod, or action dispatch. Consumers that want
+  `reportError` to actually capture errors pass `__reportError` as a
+  construction-time host method (write-only, JSON-marshalled, no host
+  state returned to guest — risk class equivalent to `console.log`);
+  per-run `extraMethods.__reportError` overrides the construction-time
+  impl for the scope of that run.
+- **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
+  `packages/sandbox/test/wpt/` installs `__wptReport` as a **per-run**
+  extraMethod (`sandbox.run(…, { extraMethods: { __wptReport } })`) to
+  collect testharness.js subtest outcomes. `__wptReport` is never passed
+  to production sandbox construction; its presence is scoped to the WPT
+  test runner only. Vendored WPT files, the harness adapter (preamble,
+  composer, runner), and `scripts/wpt-refresh.ts` are test-time artifacts
+  and do not extend the production sandbox surface. See
+  `packages/sandbox/test/wpt/README.md`.
 - **`__emitEvent(event)`** — write-only telemetry channel installed
   directly on `globalThis` via `vm.newFunction` (NOT through
   `bridge.sync()` / `bridge.async()`, so it does not itself appear in
@@ -411,9 +429,12 @@ exists. Each item should be tracked as a follow-up security task.
 
 ### Rules for AI agents
 
-1. **NEVER add a new global to the sandbox without updating this section
-   and the threat list.** New globals expand the attack surface by
-   definition.
+1. **NEVER add a global, host-bridge API, or Node.js surface to the
+   QuickJS sandbox without extending the allowlist in this section in the
+   same PR**, with a written rationale and threat assessment per surface
+   added. The enumeration in "Globals exposed inside the sandbox" above is
+   the exhaustive set of surfaces the sandbox exposes; anything not listed
+   is forbidden. New globals expand the attack surface by definition.
 2. **NEVER pass a live host-object reference into the sandbox.** Only
    JSON-serializable snapshots cross the boundary. If a new bridge API
    needs to accept data from the sandbox, receive it as a string or

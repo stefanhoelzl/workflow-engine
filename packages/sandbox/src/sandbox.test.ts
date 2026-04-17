@@ -1,6 +1,33 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InvocationEvent } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
 import { type RunResult, sandbox } from "./index.js";
+
+function readPackageVersion(): string {
+	let dir = dirname(fileURLToPath(import.meta.url));
+	for (let i = 0; i < 10; i++) {
+		const candidate = resolve(dir, "package.json");
+		if (existsSync(candidate)) {
+			const parsed = JSON.parse(readFileSync(candidate, "utf8")) as {
+				name?: string;
+				version?: string;
+			};
+			if (parsed.name === "@workflow-engine/sandbox" && parsed.version) {
+				return parsed.version;
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir) {
+			break;
+		}
+		dir = parent;
+	}
+	throw new Error("sandbox test: could not locate package.json");
+}
+
+const PACKAGE_VERSION = readPackageVersion();
 
 const ONLY_ACTION_RE = /only action.\* allowed/;
 const JSON_PARSE_ERROR_RE = /JSON|Unexpected|parse/i;
@@ -469,6 +496,207 @@ describe("sandbox memory limit", () => {
 			}
 		} finally {
 			sb.dispose();
+		}
+	});
+});
+
+describe("MCA shims", () => {
+	it("self === globalThis", async () => {
+		const { result } = await runSource(
+			defaultHandler("return self === globalThis;"),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toBe(true);
+		}
+	});
+
+	it("navigator.userAgent matches package version", async () => {
+		const { result } = await runSource(
+			defaultHandler("return navigator.userAgent;"),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toBe(`WorkflowEngine/${PACKAGE_VERSION}`);
+		}
+	});
+
+	it("navigator is frozen", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				'use strict';
+				try {
+					navigator.foo = 'x';
+					return { threw: false, foo: navigator.foo };
+				} catch (e) {
+					return { threw: true, foo: navigator.foo };
+				}
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect((result.result as { foo: unknown }).foo).toBeUndefined();
+		}
+	});
+
+	it("reportError serializes Error and forwards to __reportError", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				const e = new Error("boom");
+				e.stack = "mock-stack";
+				reportError(e);
+				return "ok";
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(captured).toHaveLength(1);
+		const payload = captured[0] as {
+			name: string;
+			message: string;
+			stack?: string;
+		};
+		expect(payload.name).toBe("Error");
+		expect(payload.message).toBe("boom");
+		expect(payload.stack).toBe("mock-stack");
+	});
+
+	it("reportError serializes non-Error values", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`reportError("a plain string"); return "ok";`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		const payload = captured[0] as {
+			name: string;
+			message: string;
+			stack?: unknown;
+		};
+		expect(payload.name).toBe("Error");
+		expect(payload.message).toBe("a plain string");
+		expect(payload.stack).toBeUndefined();
+	});
+
+	it("reportError serializes error cause recursively", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				const inner = new Error("inner");
+				const outer = new Error("outer", { cause: inner });
+				reportError(outer);
+				return "ok";
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		const payload = captured[0] as {
+			message: string;
+			cause?: { message: string };
+		};
+		expect(payload.message).toBe("outer");
+		expect(payload.cause?.message).toBe("inner");
+	});
+
+	it("per-run extraMethods.__reportError overrides construction-time methods.__reportError", async () => {
+		const constructionCaptured: unknown[] = [];
+		const runCaptured: unknown[] = [];
+		const sb = await sandbox(defaultHandler(`reportError(new Error("hi"));`), {
+			__reportError: async (payload: unknown) => {
+				constructionCaptured.push(payload);
+			},
+		});
+		try {
+			await sb.run(
+				"default",
+				{},
+				{
+					...RUN_OPTS,
+					extraMethods: {
+						__reportError: async (payload: unknown) => {
+							runCaptured.push(payload);
+						},
+					},
+				},
+			);
+			expect(runCaptured).toHaveLength(1);
+			expect(constructionCaptured).toHaveLength(0);
+		} finally {
+			sb.dispose();
+		}
+	});
+
+	it("reportError swallows getter-throws instead of propagating into guest", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				const evil = {};
+				Object.defineProperty(evil, "message", {
+					get() { throw new Error("getter-throw"); },
+				});
+				Object.defineProperty(evil, "stack", {
+					get() { throw new Error("stack-throw"); },
+				});
+				reportError(evil);
+				return "ok";
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toBe("ok");
+		}
+		expect(captured).toHaveLength(1);
+		const payload = captured[0] as {
+			name: string;
+			message: string;
+			stack?: unknown;
+		};
+		expect(payload.name).toBe("Error");
+		expect(typeof payload.message).toBe("string");
+	});
+
+	it("__reportError absent throws ReferenceError when called directly", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				try {
+					__reportError({ message: "x" });
+					return { threw: false };
+				} catch (e) {
+					return { threw: true, name: e.name };
+				}
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const r = result.result as { threw: boolean; name?: string };
+			expect(r.threw).toBe(true);
+			expect(r.name).toBe("ReferenceError");
 		}
 	});
 });

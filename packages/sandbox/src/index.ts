@@ -71,6 +71,9 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"__hostFetch",
 	"__emitEvent",
 	"fetch",
+	"reportError",
+	"self",
+	"navigator",
 	"URL",
 	"URLSearchParams",
 	"TextEncoder",
@@ -159,16 +162,15 @@ async function sandbox(
 ): Promise<Sandbox> {
 	const filename = options?.filename ?? "action.js";
 	const methodNames = Object.keys(methods);
-	const reserved = new Set<string>(methodNames);
-	for (const name of RESERVED_BUILTIN_GLOBALS) {
-		reserved.add(name);
-	}
-	reserved.add(IIFE_NAMESPACE);
+	// extraMethods collision set contains only true built-ins + the IIFE
+	// namespace. Extra-methods MAY override construction-time methods (the
+	// per-run override pattern used by __reportError in tests).
+	const extraMethodsReserved = new Set<string>(RESERVED_BUILTIN_GLOBALS);
+	extraMethodsReserved.add(IIFE_NAMESPACE);
 
-	// Also check construction-time methods against reserved globals (the IIFE
-	// namespace is a fresh addition).
+	// Check construction-time method names against the same built-in set.
 	for (const name of methodNames) {
-		if (RESERVED_BUILTIN_GLOBALS.has(name) || name === IIFE_NAMESPACE) {
+		if (extraMethodsReserved.has(name)) {
 			throw new Error(
 				`method name '${name}' collides with a reserved global or the IIFE namespace`,
 			);
@@ -333,11 +335,11 @@ async function sandbox(
 		}
 
 		const extraMethods = runOptions.extraMethods ?? {};
-		const collision = collisionName(reserved, extraMethods);
+		const collision = collisionName(extraMethodsReserved, extraMethods);
 		if (collision) {
 			return Promise.reject(
 				new Error(
-					`extraMethods name '${collision}' collides with a reserved global or construction-time method`,
+					`extraMethods name '${collision}' collides with a reserved global or the IIFE namespace`,
 				),
 			);
 		}

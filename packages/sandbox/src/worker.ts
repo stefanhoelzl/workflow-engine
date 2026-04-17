@@ -21,8 +21,10 @@ import { type Bridge, createBridge } from "./bridge-factory.js";
 import {
 	CRYPTO_PROMISE_SHIM,
 	FETCH_SHIM,
+	REPORT_ERROR_SHIM,
 	setupGlobals,
 	type TimerCleanup,
+	TRIVIAL_SHIMS,
 } from "./globals.js";
 import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
 import type {
@@ -283,6 +285,19 @@ async function handleInit(
 		msg.methodEventNames,
 	);
 
+	// MCA shims: self, navigator.userAgent, reportError. TRIVIAL_SHIMS carries
+	// no host capability; REPORT_ERROR_SHIM defines reportError to call
+	// __reportError, which the host installs via methods/extraMethods.
+	// Installed after RPC methods so __reportError is already on the global
+	// when the shim is defined (matches FETCH_SHIM-after-bridgeHostFetch).
+	const trivialShimsResult = vm.evalCode(TRIVIAL_SHIMS, "<trivial-shims>");
+	trivialShimsResult.dispose();
+	const reportErrorShimResult = vm.evalCode(
+		REPORT_ERROR_SHIM,
+		"<report-error-shim>",
+	);
+	reportErrorShimResult.dispose();
+
 	try {
 		const evalResult = vm.evalCode(msg.source, msg.filename);
 		evalResult.dispose();
@@ -416,6 +431,7 @@ async function callGuestFunction(
 	return { ok: true, result: resultValue };
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrator threads abort signal, installs per-run extras, invokes the exported function, and emits trigger events — splitting obscures the sequence
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
 ): Promise<void> {
@@ -437,7 +453,13 @@ async function handleRun(
 		workflowSha: msg.workflowSha,
 	});
 	state.currentAbort = new AbortController();
-	const extraNames = msg.extraNames;
+	// Per-run extraMethods that share a name with a construction-time method
+	// must NOT re-register a QuickJS host callback (quickjs-wasi throws on
+	// double-registration). The main-thread dispatch (allMethods = {...methods,
+	// ...extraMethods}) routes the call to the extra impl for the run's
+	// duration, so the existing guest binding already forwards correctly.
+	const constructionNames = new Set(state.constructionMethodNames);
+	const extraNames = msg.extraNames.filter((n) => !constructionNames.has(n));
 	installRpcMethods(bridge, bridge.vm.global, extraNames, sendRequest);
 
 	emitTriggerEvent(bridge, "trigger.request", msg.exportName, {
