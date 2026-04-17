@@ -43,6 +43,17 @@ interface PendingTimer {
 	name: TimerName;
 }
 
+// HTML spec: timeout is a WebIDL `long` (ToInt32), then clamped to 0 if
+// negative. Without this, host Node prints TimeoutNaN/Negative/Overflow
+// warnings when guests pass NaN, <0, or >=2^31.
+const INT32_MAX = 2_147_483_647;
+function normalizeDelay(raw: number): number {
+	if (!Number.isFinite(raw) || raw < 0 || raw > INT32_MAX) {
+		return 0;
+	}
+	return Math.trunc(raw);
+}
+
 function setupGlobals(b: Bridge): TimerCleanup {
 	setupConsole(b);
 	return setupTimers(b);
@@ -133,7 +144,7 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
 		(callbackHandle, delayHandle) => {
-			const delay = delayHandle.toNumber();
+			const delay = normalizeDelay(delayHandle.toNumber());
 			const cb = callbackHandle.dup();
 
 			const id = setTimeout(() => {
@@ -172,7 +183,7 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setIntervalFn = b.vm.newFunction(
 		"setInterval",
 		(callbackHandle, delayHandle) => {
-			const delay = delayHandle.toNumber();
+			const delay = normalizeDelay(delayHandle.toNumber());
 			const cb = callbackHandle.dup();
 
 			const id = setInterval(() => {
