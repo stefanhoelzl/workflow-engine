@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { userMiddleware } from "../../auth/user.js";
 import type { HttpTriggerRegistry, Middleware } from "../../triggers/http.js";
 import { renderTriggerPage } from "./page.js";
 
@@ -28,11 +29,17 @@ interface TriggerMiddlewareDeps {
 
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
+	app.use("*", userMiddleware());
 
 	const render = (c: Context) => {
-		const user = c.req.header("X-Auth-Request-User") ?? "";
-		const email = c.req.header("X-Auth-Request-Email") ?? "";
-		return c.html(renderTriggerPage(deps.triggerRegistry.list(), user, email));
+		const user = c.get("user");
+		return c.html(
+			renderTriggerPage(
+				deps.triggerRegistry.list(),
+				user?.name ?? "",
+				user?.mail ?? "",
+			),
+		);
 	};
 	app.get("/", render);
 	app.get("", render);

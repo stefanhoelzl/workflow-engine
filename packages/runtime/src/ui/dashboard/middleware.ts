@@ -1,6 +1,7 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { userMiddleware } from "../../auth/user.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
 import type { Middleware } from "../../triggers/http.js";
@@ -47,9 +48,8 @@ function statusFromTerminal(kind: string | undefined): string {
 }
 
 function renderShell(c: Context) {
-	const user = c.req.header("X-Auth-Request-User") ?? "";
-	const email = c.req.header("X-Auth-Request-Email") ?? "";
-	return c.html(renderDashboardPage(user, email));
+	const user = c.get("user");
+	return c.html(renderDashboardPage(user?.name ?? "", user?.mail ?? ""));
 }
 
 async function fetchInvocationRows(
@@ -147,6 +147,7 @@ function parseJsonField(value: unknown): unknown {
 
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
+	app.use("*", userMiddleware());
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 
