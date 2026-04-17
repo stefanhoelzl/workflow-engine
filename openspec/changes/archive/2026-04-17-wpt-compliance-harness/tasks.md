@@ -78,4 +78,4 @@
 
 - [x] 9.1 Delete the `/spike/` directory (verification artifacts) once pattern lock-in is landed
 - [x] 9.2 Verify `pnpm validate` passes (lint + typecheck + tests + tofu checks)
-- [ ] 9.3 Update `openspec/project.md` if the project context description becomes stale after this change lands (e.g., mention WPT compliance measurement as a capability of the sandbox package)
+- [x] 9.3 Update `openspec/project.md` if the project context description becomes stale after this change lands — N/A: this change adds test-time infrastructure + 3 small sandbox shims; project.md's capability/architecture description remains accurate.
