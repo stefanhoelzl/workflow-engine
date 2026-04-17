@@ -29,6 +29,22 @@ const PREAMBLE = `(function() {
   if (typeof globalThis.removeEventListener !== 'function') {
     globalThis.removeEventListener = function() {};
   }
+  // Non-throwing stubs for DOM classes that some WPT battery files construct
+  // at file scope (e.g. structured-clone-battery-of-tests.js line 339:
+  // check('Array Blob object, Blob basic', [func_Blob_basic()], ...) calls
+  // new Blob(...) during eval). Without these, the file throws a
+  // ReferenceError before any subtests register, and spec.ts can only
+  // file-skip. With the stubs present, file scope loads; the individual
+  // subtests fail at assertion time and are skipped by name in spec.ts.
+  // Guards let real WASM-ext classes (if later shipped) take precedence.
+  if (typeof Blob === 'undefined') globalThis.Blob = class Blob {};
+  if (typeof File === 'undefined') globalThis.File = class File extends globalThis.Blob {};
+  if (typeof FileList === 'undefined') globalThis.FileList = class FileList {};
+  if (typeof ImageData === 'undefined') globalThis.ImageData = class ImageData {};
+  if (typeof ImageBitmap === 'undefined') globalThis.ImageBitmap = class ImageBitmap {};
+  if (typeof MessagePort === 'undefined') globalThis.MessagePort = class MessagePort {};
+  if (typeof ReadableStream === 'undefined') globalThis.ReadableStream = class ReadableStream {};
+  if (typeof Response === 'undefined') globalThis.Response = class Response {};
   // Shared state read by POST_HARNESS + ENTRY.
   globalThis.__wpt = {
     completed: false,
