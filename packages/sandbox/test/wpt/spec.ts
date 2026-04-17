@@ -31,15 +31,42 @@ const spec: Record<string, Expectation> = {
 	"encoding/api-invalid-label.any.js": { expected: "pass" },
 	"encoding/api-replacement-encodings.any.js": { expected: "pass" },
 	"encoding/api-surrogates-utf8.any.js": { expected: "pass" },
+	"encoding/encodeInto.any.js": { expected: "pass" },
+	"encoding/textdecoder-arguments.any.js": { expected: "pass" },
 	"encoding/textdecoder-byte-order-marks.any.js": { expected: "pass" },
+	"encoding/textdecoder-copy.any.js": { expected: "pass" },
 	"encoding/textdecoder-fatal.any.js": { expected: "pass" },
 	"encoding/textdecoder-fatal-streaming.any.js": { expected: "pass" },
 	"encoding/textdecoder-ignorebom.any.js": { expected: "pass" },
+	"encoding/textdecoder-streaming.any.js": { expected: "pass" },
 	"encoding/textdecoder-utf16-surrogates.any.js": { expected: "pass" },
 	"encoding/textencoder-utf16-surrogates.any.js": { expected: "pass" },
-	"encoding/**": {
+	// Remaining encoding files — each blocked by a distinct gap.
+	"encoding/textdecoder-eof.any.js": {
 		expected: "skip",
-		reason: "first-run triage pending (legacy encodings + fetch-for-vectors)",
+		reason: "needs wasm-ext Big5 (inline Big5 TextDecoder in both subtests)",
+	},
+	"encoding/textdecoder-labels.any.js": {
+		expected: "skip",
+		reason: "needs wasm-ext legacy encoders (iterates every WHATWG label)",
+	},
+	"encoding/textdecoder-mistakes.any.js": {
+		expected: "skip",
+		reason:
+			"needs wasm-ext legacy encoders (majority of subtests reference windows-*, gbk, gb18030, big5, shift_jis, euc-*, iso-2022-jp, koi8-*, iso-8859-*, macintosh, x-mac-cyrillic, x-user-defined)",
+	},
+	"encoding/textencoder-constructor-non-utf.any.js": {
+		expected: "skip",
+		reason: "needs wasm-ext legacy decoders (iterates every WHATWG encoding)",
+	},
+	"encoding/textdecoder-fatal-single-byte.any.js": {
+		expected: "skip",
+		reason:
+			"needs wasm-ext legacy single-byte decoders (IBM866, ISO-8859-*, KOI8-*, macintosh, windows-*, x-mac-cyrillic)",
+	},
+	"encoding/unsupported-encodings.any.js": {
+		expected: "skip",
+		reason: "needs XMLHttpRequest polyfill (decoding-helpers.js uses XHR)",
 	},
 	"url/historical.any.js": { expected: "pass" },
 	"url/url-searchparams.any.js": {
@@ -155,6 +182,173 @@ const spec: Record<string, Expectation> = {
 		expected: "skip",
 		reason: "needs wasm-ext JWK export",
 	},
+
+	// `common/sab.js`'s createBuffer() probes `WebAssembly.Memory({shared:true})`
+	// to obtain the SharedArrayBuffer constructor; the sandbox doesn't expose
+	// `WebAssembly`, so every SharedArrayBuffer-parameterized subtest below
+	// fails during setup. The matching ArrayBuffer variants do pass.
+	"encoding/textdecoder-copy.any.js:Modify buffer after passing it in (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-8, 1 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-8, 2 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-8, 3 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-8, 4 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-8, 5 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16le, 1 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16le, 2 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16le, 3 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16le, 4 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16le, 5 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16be, 1 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16be, 2 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16be, 3 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16be, 4 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: utf-16be, 5 byte window (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/textdecoder-streaming.any.js:Streaming decode: UTF-8 chunk tests (SharedArrayBuffer)":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+
+	// encodeInto SharedArrayBuffer data-matrix (7 inputs × 6 destination configs).
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with \uFFFD\uFFFD\uFFFDA\uFFFD\uFFFD\uFFFDA¥Hi and destination length 10, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with A\uFFFD\uFFFD\uFFFD and destination length 4, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler 0":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler 128":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler random":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+
+	// encodeInto invalid-destination SharedArrayBuffer variants.
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: DataView, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Int8Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Int16Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Int32Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Uint16Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Uint32Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Uint8ClampedArray, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: BigInt64Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: BigUint64Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Float16Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Float32Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: Float64Array, backed by: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+	"encoding/encodeInto.any.js:Invalid encodeInto() destination: SharedArrayBuffer":
+		{ expected: "skip", reason: "needs WebAssembly shim for common/sab.js" },
+
+	"encoding/encodeInto.any.js:encodeInto() and a detached output buffer": {
+		expected: "skip",
+		reason: "needs MessageChannel polyfill (test detaches via postMessage)",
+	},
+
+	// QuickJS TextDecoder throws TypeError on a detached ArrayBuffer argument;
+	// the spec expects it to coerce to an empty view and return "".
+	"encoding/textdecoder-arguments.any.js:TextDecoder decode() with array buffer detached during arg conversion":
+		{
+			expected: "skip",
+			reason:
+				"wasm-ext TextDecoder throws on detached ArrayBuffer instead of returning empty string",
+		},
 
 	// First-run narrow skips for individual files whose setup or timing
 	// doesn't match our sandbox (setup throws on missing globals, watchdog
