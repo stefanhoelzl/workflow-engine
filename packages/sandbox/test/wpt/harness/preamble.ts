@@ -23,12 +23,8 @@ const PREAMBLE = `(function() {
     isWorker: function() { return true; },
     isShadowRealm: function() { return false; },
   };
-  if (typeof globalThis.addEventListener !== 'function') {
-    globalThis.addEventListener = function() {};
-  }
-  if (typeof globalThis.removeEventListener !== 'function') {
-    globalThis.removeEventListener = function() {};
-  }
+  // (addEventListener/removeEventListener/dispatchEvent are now provided by
+  // the sandbox EventTarget polyfill; no stubs needed here.)
   // Non-throwing stubs for DOM classes that some WPT battery files construct
   // at file scope (e.g. structured-clone-battery-of-tests.js line 339:
   // check('Array Blob object, Blob basic', [func_Blob_basic()], ...) calls

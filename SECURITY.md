@@ -185,18 +185,41 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   so `crypto.subtle.*` returns Promises per spec), `setTimeout` /
   `setInterval` / `clearTimeout` / `clearInterval` (host bridges,
   scheduled on the worker event loop), `fetch` (JS shim inside the
-  sandbox, locked via `Object.defineProperty({writable: false,
-  configurable: false})`), `self` (identity shim, `self === globalThis`),
+  sandbox that captures `__hostFetch` into an IIFE closure, locked via
+  `Object.defineProperty({writable: false, configurable: false})`),
+  `self` (identity shim, `self === globalThis`; additionally inherits
+  `EventTarget.prototype`, with `addEventListener` / `removeEventListener`
+  / `dispatchEvent` installed as non-enumerable bound own-properties
+  routed to a private EventTarget instance — `Object.keys(globalThis)`
+  is unchanged, but `globalThis instanceof EventTarget === true`),
   `navigator` (frozen object with a single
   `userAgent: "WorkflowEngine/<version>"` string), `reportError` (JS
-  shim serializing Error-shaped values), `__dispatchAction` (runtime-
-  appended action dispatcher, locked via `Object.defineProperty
-  ({writable: false, configurable: false})`), plus the host methods
-  registered via `methods` and `extraMethods`. WASM extensions
-  contribute the additional standard globals `URL`, `URLSearchParams`,
-  `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`, and
-  `Headers` — these are implemented in C/WASM inside the WASM linear
-  memory, not as host bridges.
+  shim that captures `__reportError` into an IIFE closure, then
+  constructs a cancelable `ErrorEvent`, dispatches it on `globalThis`,
+  and — unless a listener calls `event.preventDefault()` — serializes
+  the error and forwards to the captured bridge), `queueMicrotask`
+  (JS wrap around the native implementation that catches uncaught
+  microtask exceptions and routes them through `reportError` above),
+  `EventTarget` and `Event` (pure-JS polyfills sourced from
+  `event-target-shim@6`, resolved by the `sandboxPolyfills()` Vite
+  plugin as the `virtual:sandbox-polyfills` module and inlined as an
+  IIFE string into `dist/src/worker.js` by
+  `packages/sandbox/vite.config.ts` at sandbox build time), `ErrorEvent`
+  (pure-JS class extending `Event`, carries
+  `message`/`filename`/`lineno`/`colno`/`error`), `AbortController` and
+  `AbortSignal` (hand-written pure-JS classes on top of
+  `event-target-shim`'s EventTarget; `AbortSignal` includes the static
+  factories `abort(reason?)`, `timeout(ms)` — which uses the
+  allowlisted `setTimeout` bridge — and `any(signals)`; default abort
+  reasons are native `DOMException`s), `__dispatchAction` (runtime-
+  appended action dispatcher, locked via
+  `Object.defineProperty({writable: false, configurable: false})`),
+  plus the host methods registered via `methods` and `extraMethods`.
+  WASM extensions contribute the additional standard globals `URL`,
+  `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`,
+  `structuredClone`, `Headers`, and `DOMException` — these are
+  implemented in C/WASM inside the WASM linear memory, not as host
+  bridges.
 
   The host-bridged names `__hostFetch`, `__emitEvent`, `__hostCallAction`,
   and `__reportError` are each installed on `globalThis` briefly at
@@ -211,13 +234,31 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `__reportError` is bound at construction time only (no per-run
   override). The sandbox package itself has no knowledge of manifests,
   Zod, or action dispatch; it exposes `__hostFetch` and `__emitEvent`
-  as built-ins (captured by `FETCH_SHIM` and the runtime dispatcher
-  shim respectively) and installs whatever additional methods the host
-  provides via `methods` / `extraMethods`. The runtime passes
-  `__hostCallAction` (and optionally `__reportError`) as construction-
-  time methods and appends the action-dispatcher shim that captures
-  `__hostCallAction` + `__emitEvent`, installs the locked
-  `__dispatchAction`, and deletes the two captured names.
+  as built-ins (captured by `packages/sandbox/src/polyfills/fetch.ts`
+  and the runtime dispatcher shim respectively) and installs whatever
+  additional methods the host provides via `methods` / `extraMethods`.
+  The runtime passes `__hostCallAction` (and optionally
+  `__reportError`) as construction-time methods and appends the
+  action-dispatcher shim that captures `__hostCallAction` +
+  `__emitEvent`, installs the locked `__dispatchAction`, and deletes
+  the two captured names.
+- **EventTarget/Event/ErrorEvent/AbortController/AbortSignal
+  residual risks**: event dispatch is purely in-guest — no host bridge.
+  Listener chains are bounded by the existing QuickJS memory cap;
+  dispatch re-entrancy is bounded by the existing stack cap. All
+  guest-constructed events have `event.isTrusted === false` by
+  construction — there is no pathway to `true`.
+  `AbortSignal.timeout` extends reachability only via the already
+  allowlisted `setTimeout` bridge; it adds no new host surface. A
+  guest listener that calls `event.preventDefault()` on a `reportError`
+  ErrorEvent suppresses the `__reportError` host forwarding for that
+  report; this grants no new attacker capability (malicious guest code
+  could already choose not to call `reportError`). The polyfill IIFE is
+  built from `packages/sandbox/src/polyfills/entry.ts` by the
+  `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
+  the polyfill source files under `packages/sandbox/src/polyfills/`
+  (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
+  `fetch.ts`) and the pinned `event-target-shim@^6` dependency.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` as a **per-run**
   extraMethod (`sandbox.run(…, { extraMethods: { __wptReport } })`) to

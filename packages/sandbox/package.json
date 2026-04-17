@@ -7,10 +7,17 @@
 		".": "./src/index.ts"
 	},
 	"scripts": {
-		"build": "tsc --build"
+		"build": "vite build"
 	},
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",
+		"event-target-shim": "^6.0.2",
 		"quickjs-wasi": "^2.2.0"
+	},
+	"devDependencies": {
+		"@rollup/plugin-node-resolve": "^16.0.0",
+		"@rollup/plugin-replace": "^6.0.2",
+		"rollup": "^4.30.1",
+		"rollup-plugin-esbuild": "^6.2.1"
 	}
 }

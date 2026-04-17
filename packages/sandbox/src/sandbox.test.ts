@@ -1103,6 +1103,7 @@ describe("MCA shims", () => {
 	});
 });
 
+
 describe("private bridge names hidden post-init", () => {
 	it("underscore bridge names are not on globalThis after init", async () => {
 		const source = `${iife(`
@@ -1167,6 +1168,7 @@ describe("private bridge names hidden post-init", () => {
 				methods: {
 					__reportError: async (payload: unknown) => {
 						captured.push(payload);
+						return;
 					},
 				},
 			},
@@ -1175,5 +1177,222 @@ describe("private bridge names hidden post-init", () => {
 		expect(captured).toHaveLength(1);
 		const payload = captured[0] as { name: string; message: string };
 		expect(payload.message).toBe("original");
+	});
+});
+
+describe("DOMException availability (quickjs-wasi native)", () => {
+	it("typeof DOMException is function; instances carry name, message, instanceof Error", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const e = new DOMException("oops", "AbortError");
+				return {
+					typeOf: typeof DOMException,
+					name: e.name,
+					message: e.message,
+					isError: e instanceof Error,
+					isDOM: e instanceof DOMException,
+				};
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				typeOf: "function",
+				name: "AbortError",
+				message: "oops",
+				isError: true,
+				isDOM: true,
+			});
+		}
+	});
+});
+
+describe("self as EventTarget (hybrid install)", () => {
+	it("self === globalThis and self instanceof EventTarget", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				return {
+					identity: self === globalThis,
+					isET: self instanceof EventTarget,
+				};
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({ identity: true, isET: true });
+		}
+	});
+
+	it("EventTarget methods on globalThis are non-enumerable own-properties", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const keys = Object.keys(globalThis);
+				const own = Object.getOwnPropertyNames(globalThis);
+				return {
+					keysHasAdd: keys.includes("addEventListener"),
+					keysHasDispatch: keys.includes("dispatchEvent"),
+					ownHasAdd: own.includes("addEventListener"),
+					ownHasDispatch: own.includes("dispatchEvent"),
+				};
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				keysHasAdd: false,
+				keysHasDispatch: false,
+				ownHasAdd: true,
+				ownHasDispatch: true,
+			});
+		}
+	});
+
+	it("self.addEventListener receives events from self.dispatchEvent", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				let n = 0;
+				self.addEventListener("x", () => n++);
+				self.dispatchEvent(new Event("x"));
+				return n;
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toBe(1);
+		}
+	});
+});
+
+describe("reportError evolved — ErrorEvent dispatch + host forwarding", () => {
+	it("dispatches ErrorEvent to self listener AND forwards to __reportError", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				const seen = [];
+				self.addEventListener("error", (e) => {
+					seen.push({ msg: e.message, errMsg: e.error && e.error.message });
+				});
+				reportError(new Error("oops"));
+				return seen;
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+						return;
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual([{ msg: "oops", errMsg: "oops" }]);
+		}
+		expect(captured).toHaveLength(1);
+		expect(captured[0]).toMatchObject({ name: "Error", message: "oops" });
+	});
+
+	it("preventDefault() suppresses __reportError host forwarding", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				self.addEventListener("error", (e) => e.preventDefault());
+				reportError(new Error("silent"));
+				return "ok";
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+						return;
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(captured).toHaveLength(0);
+	});
+
+	it("without listener, still forwards to host (no preventDefault path)", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`reportError("a string"); return "ok";`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+						return;
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]).toMatchObject({ name: "Error", message: "a string" });
+	});
+});
+
+describe("queueMicrotask wrap — routes exceptions through reportError", () => {
+	it("exception in microtask dispatches ErrorEvent to global listener", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const seen = [];
+				self.addEventListener("error", (e) => {
+					e.preventDefault();  // suppress host forwarding
+					seen.push(e.error && e.error.message);
+				});
+				queueMicrotask(() => { throw new Error("boom"); });
+				await new Promise(r => setTimeout(r, 10));
+				return seen;
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual(["boom"]);
+		}
+	});
+});
+
+describe("security invariants", () => {
+	it("Event.isTrusted is always false for guest-constructed events", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const e1 = new Event("x");
+				const e2 = new ErrorEvent("error");
+				const et = new EventTarget();
+				let received;
+				et.addEventListener("y", (ev) => { received = ev.isTrusted; });
+				et.dispatchEvent(new Event("y"));
+				return { e1: e1.isTrusted, e2: e2.isTrusted, received };
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({ e1: false, e2: false, received: false });
+		}
+	});
+
+	it("reserved globals reject extraMethods that would shadow EventTarget / AbortController / DOMException", async () => {
+		const reservedNames = [
+			"EventTarget",
+			"Event",
+			"ErrorEvent",
+			"AbortController",
+			"AbortSignal",
+			"DOMException",
+		];
+		const attempts = await Promise.all(
+			reservedNames.map((reserved) =>
+				runSource(defaultHandler("return 1;"), {
+					methods: { [reserved]: async () => undefined },
+				}).then(
+					() => ({ reserved, threw: false }),
+					() => ({ reserved, threw: true }),
+				),
+			),
+		);
+		for (const a of attempts) {
+			expect(a.threw).toBe(true);
+		}
 	});
 });
