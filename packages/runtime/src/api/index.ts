@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { userMiddleware } from "../auth/user.js";
 import type { GitHubAuth } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { Middleware } from "../triggers/http.js";
@@ -34,6 +35,7 @@ function apiMiddleware(options: ApiOptions): Middleware {
 				"/*",
 				githubAuthMiddleware({ githubUsers: options.githubAuth.users }),
 			);
+			app.use("/*", userMiddleware());
 			break;
 		case "disabled":
 			app.use("/*", rejectAllMiddleware());
