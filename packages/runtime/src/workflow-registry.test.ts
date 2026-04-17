@@ -154,4 +154,134 @@ describe("workflow registry", () => {
 		expect(validateReq).toBeDefined();
 		expect(actionResponse?.ref).toBe(actionRequest?.seq);
 	});
+
+	it("__hostCallAction and __emitEvent are not on globalThis after workflow load", async () => {
+		const probeBundle = `
+			var __wfe_exports__ = (function(exports) {
+				exports.doIt = Object.assign(
+					async (input) => globalThis.__dispatchAction(
+						"doIt", input, async (i) => i, { parse: (x) => x },
+					),
+					{ __setActionName: () => {} },
+				);
+				exports.onPing = {
+					handler: async (payload) => ({
+						status: 200,
+						body: {
+							hostCallAction: typeof globalThis.__hostCallAction,
+							emitEvent: typeof globalThis.__emitEvent,
+							hostFetch: typeof globalThis.__hostFetch,
+							reportErrorBridge: typeof globalThis.__reportError,
+							dispatcher: typeof globalThis.__dispatchAction,
+						},
+					}),
+					body: { parse: (x) => x },
+					schema: { parse: (x) => x },
+				};
+				return exports;
+			})({});
+		`;
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({ logger });
+		const manifestPath = join(dir, "manifest.json");
+		await writeFile(manifestPath, JSON.stringify(VALID_MANIFEST), "utf8");
+		await writeFile(join(dir, "demo.js"), probeBundle, "utf8");
+		await loadWorkflows(registry, [manifestPath], { logger });
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("expected at least one runner");
+		}
+		const result = await runner.invokeHandler("evt_probe", "onPing", {
+			body: {},
+		});
+		expect(result.status).toBe(200);
+		expect(result.body).toEqual({
+			hostCallAction: "undefined",
+			emitEvent: "undefined",
+			hostFetch: "undefined",
+			reportErrorBridge: "undefined",
+			dispatcher: "function",
+		});
+	});
+
+	it("__dispatchAction is non-writable and non-configurable after workflow load", async () => {
+		const probeBundle = `
+			var __wfe_exports__ = (function(exports) {
+				exports.doIt = Object.assign(
+					async (input) => globalThis.__dispatchAction(
+						"doIt", input, async (i) => ({ echoed: i }), { parse: (x) => x },
+					),
+					{ __setActionName: () => {} },
+				);
+				exports.onPing = {
+					handler: async (payload) => {
+						"use strict";
+						const descriptor = Object.getOwnPropertyDescriptor(
+							globalThis, "__dispatchAction"
+						);
+						let assignError = null;
+						try { globalThis.__dispatchAction = () => "pwned"; }
+						catch (e) { assignError = e.name; }
+						let deleteError = null;
+						let deleteReturn = null;
+						try { deleteReturn = delete globalThis.__dispatchAction; }
+						catch (e) { deleteError = e.name; }
+						const stillFunction = typeof globalThis.__dispatchAction;
+						const result = await exports.doIt({ x: 1 });
+						return {
+							status: 200,
+							body: {
+								writable: descriptor && descriptor.writable,
+								configurable: descriptor && descriptor.configurable,
+								assignError, deleteError, deleteReturn, stillFunction,
+								actionResult: result,
+							},
+						};
+					},
+					body: { parse: (x) => x },
+					schema: { parse: (x) => x },
+				};
+				return exports;
+			})({});
+		`;
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({ logger });
+		const manifestPath = join(dir, "manifest.json");
+		await writeFile(manifestPath, JSON.stringify(VALID_MANIFEST), "utf8");
+		await writeFile(join(dir, "demo.js"), probeBundle, "utf8");
+		await loadWorkflows(registry, [manifestPath], { logger });
+		const runner = registry.runners[0];
+		if (!runner) {
+			throw new Error("expected at least one runner");
+		}
+		const result = await runner.invokeHandler("evt_lock", "onPing", {
+			body: {},
+		});
+		expect(result.status).toBe(200);
+		const body = result.body as {
+			writable: boolean;
+			configurable: boolean;
+			assignError: string | null;
+			deleteError: string | null;
+			deleteReturn: unknown;
+			stillFunction: string;
+			actionResult: unknown;
+		};
+		expect(body.writable).toBe(false);
+		expect(body.configurable).toBe(false);
+		// In strict mode a silent assignment or delete throws TypeError. In
+		// sloppy mode the assignment is a no-op and delete returns false. We
+		// accept either behavior — what matters is that __dispatchAction is
+		// untouched afterwards.
+		if (body.assignError !== null) {
+			expect(body.assignError).toBe("TypeError");
+		}
+		if (body.deleteError === null) {
+			expect(body.deleteReturn).toBe(false);
+		} else {
+			expect(body.deleteError).toBe("TypeError");
+		}
+		expect(body.stillFunction).toBe("function");
+		expect(body.actionResult).toEqual({ echoed: { x: 1 } });
+	});
 });

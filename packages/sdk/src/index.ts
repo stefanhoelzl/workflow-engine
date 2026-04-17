@@ -204,7 +204,7 @@ function attachActionMetadata<I, O>(meta: ActionMetadata<I, O>): Action<I, O> {
 		value: meta.setName,
 		enumerable: false,
 		writable: false,
-		configurable: false,
+		configurable: true,
 	});
 	return callable as unknown as Action<I, O>;
 }

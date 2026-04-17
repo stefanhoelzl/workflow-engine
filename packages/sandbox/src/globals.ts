@@ -250,6 +250,12 @@ const TRIVIAL_SHIMS = `(function() {
 })();`;
 
 const REPORT_ERROR_SHIM = `(function() {
+  // Capture __reportError into the IIFE closure at install time. If the host
+  // did not provide a construction-time __reportError, the captured value is
+  // undefined; the try/catch in the reportError wrapper below makes that a
+  // silent no-op path. After capture, we delete the global so guest code
+  // cannot read or overwrite the underlying bridge.
+  var _report = globalThis.__reportError;
   // Each property read is try/guarded so a throwing getter (e.g.
   // \`Object.defineProperty(obj, 'message', { get() { throw ... } })\`) on
   // the reported value doesn't itself escape from reportError() into guest
@@ -293,9 +299,10 @@ const REPORT_ERROR_SHIM = `(function() {
   }
   globalThis.reportError = function(err) {
     try {
-      __reportError(serialize(err, new Set()));
+      _report(serialize(err, new Set()));
     } catch (e) { /* never propagate into guest */ }
   };
+  delete globalThis.__reportError;
 })();`;
 
 // JS shim that wraps crypto.subtle methods so they return Promises, matching
@@ -318,8 +325,11 @@ const CRYPTO_PROMISE_SHIM = `(function() {
 
 // JS shim that provides a standard fetch() implementation on top of the
 // host-installed __hostFetch. Must be evaluated AFTER bridgeHostFetch has
-// installed __hostFetch on the global.
+// installed __hostFetch on the global. The shim captures __hostFetch into
+// its IIFE closure at evaluation time and then deletes the global so guest
+// code cannot read or overwrite the underlying bridge.
 const FETCH_SHIM = `(function() {
+  var _hostFetch = globalThis.__hostFetch;
   function normalizeHeaders(init) {
     if (!init) return {};
     if (typeof Headers !== 'undefined' && init instanceof Headers) {
@@ -372,18 +382,15 @@ const FETCH_SHIM = `(function() {
     var method = (init && init.method) || 'GET';
     var headers = normalizeHeaders(init && init.headers);
     var body = normalizeBody(init && init.body);
-    return __hostFetch(method, url, headers, body).then(makeResponse);
+    return _hostFetch(method, url, headers, body).then(makeResponse);
   }
-  // Lock fetch down so guest code cannot reassign it to point somewhere
-  // else. The shim routes through __hostFetch (which the host controls),
-  // so a rogue override could only break the workflow's own fetch calls,
-  // but freezing the binding removes an avenue for accidental confusion.
   Object.defineProperty(globalThis, 'fetch', {
     value: fetch,
     writable: false,
     configurable: false,
     enumerable: true,
   });
+  delete globalThis.__hostFetch;
 })();`;
 
 export type { TimerCleanup };
