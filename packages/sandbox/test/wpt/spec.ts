@@ -359,10 +359,311 @@ const spec: Record<string, Expectation> = {
 		reason:
 			"testharness setup() call triggered; revisit when EventTarget ships",
 	},
-	"html/webappapis/structured-clone/structured-clone.any.js": {
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob basic": {
 		expected: "skip",
-		reason: "setup throws on missing globals (ImageBitmap, DOMRect etc.)",
+		reason: "needs Blob polyfill",
 	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob unpaired high surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob unpaired low surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob paired surrogates (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob empty": {
+		expected: "skip",
+		reason: "needs Blob polyfill",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Blob NUL": {
+		expected: "skip",
+		reason: "needs Blob polyfill",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob basic":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob unpaired high surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob unpaired low surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob paired surrogates (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob empty":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, Blob NUL":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Blob object, two Blobs":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob basic":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob unpaired high surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob unpaired low surrogate (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob paired surrogates (invalid utf-8)":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob empty":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Blob object, Blob NUL":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:File basic": {
+		expected: "skip",
+		reason: "needs File polyfill",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Transferring a non-transferable platform object fails":
+		{
+			expected: "skip",
+			reason: "needs transferable Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:MessagePort": {
+		expected: "skip",
+		reason: "needs MessagePort polyfill",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:A detached platform object cannot be transferred":
+		{
+			expected: "skip",
+			reason: "needs MessagePort polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:An object whose interface is deleted from the global object must still be received":
+		{
+			expected: "skip",
+			reason: "needs MessagePort polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:A subclass instance will be received as its closest transferable superclass":
+		{
+			expected: "skip",
+			reason: "needs ReadableStream polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Serializing a non-serializable platform object fails":
+		{
+			expected: "skip",
+			reason: "needs Response polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:A subclass instance will deserialize as its closest serializable superclass":
+		{
+			expected: "skip",
+			reason: "needs File polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:An object whose interface is deleted from the global must still deserialize":
+		{
+			expected: "skip",
+			reason: "needs Blob polyfill",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Boolean true": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Boolean false": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Boolean objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Boolean objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:String empty string":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:String lone high surrogate":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:String lone low surrogate":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:String NUL": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:String astral character":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array String objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object String objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number 0.2": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number 0": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number -0": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number NaN": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number Infinity": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number -Infinity": {
+		expected: "skip",
+		reason: "structuredClone engine: wrapped primitive unwrapped",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number 9007199254740992":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number -9007199254740992":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number 9007199254740994":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Number -9007199254740994":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array Number objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Object Number objects":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:BigInt -9007199254740994n":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: wrapped primitive unwrapped",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array sparse": {
+		expected: "skip",
+		reason: "structuredClone engine: sparse array loses holes",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:Array with non-index property":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: drops non-index own properties",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Empty Error object":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: Error wrapper not preserved",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:ArrayBuffer": {
+		expected: "skip",
+		reason: "structuredClone engine: transfer-list not supported",
+	},
+	"html/webappapis/structured-clone/structured-clone.any.js:A detached ArrayBuffer cannot be transferred":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: transfer-list not supported",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Resizable ArrayBuffer is transferable":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: transfer-list not supported",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Length-tracking TypedArray is transferable":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: transfer-list not supported",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Length-tracking DataView is transferable":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: transfer-list not supported",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Resizable ArrayBuffer":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: resizable AB maxByteLength lost",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Growable SharedArrayBuffer":
+		{
+			expected: "skip",
+			reason:
+				"structuredClone engine: SharedArrayBuffer.prototype.grow missing",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Serializing OOB TypedArray throws":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: DataCloneError not a DOMException",
+		},
+	"html/webappapis/structured-clone/structured-clone.any.js:Serializing OOB DataView throws":
+		{
+			expected: "skip",
+			reason: "structuredClone engine: DataCloneError not a DOMException",
+		},
 	"html/webappapis/timers/evil-spec-example.any.js": {
 		expected: "skip",
 		reason: "watchdog trips; requires nested-event-loop semantics",
