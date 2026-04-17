@@ -9,6 +9,7 @@
 			"!**/.terraform",
 			"!packages/sdk/src/plugin/sandbox-globals-setup.js",
 			"!packages/sdk/src/plugin/sandbox-globals.js",
+			"!packages/sandbox/dist",
 			"!packages/sandbox/test/wpt/vendor"
 		]
 	},
@@ -101,6 +102,24 @@
 					},
 					"style": {
 						"noProcessEnv": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["packages/sandbox/src/polyfills/**/*.ts"],
+			"linter": {
+				"rules": {
+					"performance": {
+						"noNamespaceImport": "off"
+					},
+					"style": {
+						"noDefaultExport": "off",
+						"noMagicNumbers": "off",
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						"noExplicitAny": "off"
 					}
 				}
 			}

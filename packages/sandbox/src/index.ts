@@ -92,6 +92,12 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"btoa",
 	"structuredClone",
 	"Headers",
+	"EventTarget",
+	"Event",
+	"ErrorEvent",
+	"AbortController",
+	"AbortSignal",
+	"DOMException",
 ]);
 
 function collisionName(

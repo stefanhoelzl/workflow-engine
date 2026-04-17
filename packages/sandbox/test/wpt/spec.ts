@@ -9,12 +9,6 @@ import type { Expectation } from "./harness/match.js";
 // the polyfill backlog.
 
 const spec: Record<string, Expectation> = {
-	// --- Catchall baseline ---
-	// Any test not otherwise matched is "unclassified" and shows as skipped
-	// in the vitest report. New upstream tests appearing in a scanned dir
-	// with no narrower pattern land here.
-	"**": { expected: "skip", reason: "not yet classified" },
-
 	// --- Tier-1: shipped APIs, expected to pass ---
 	// First-run narrow baseline. Several dirs are triage-pending:
 	// - url/** and fetch/api/** rely on fetch-to-local-file for test vectors
@@ -119,18 +113,10 @@ const spec: Record<string, Expectation> = {
 	// --- Missing-polyfill skips (directory-wide) ---
 	"html/webappapis/microtask-queuing/**": { expected: "pass" },
 	"html/webappapis/microtask-queuing/queue-microtask-exceptions.any.js": {
-		expected: "skip",
-		reason:
-			"relies on self.addEventListener('error') to observe microtask exceptions — preamble stubs addEventListener as no-op",
+		expected: "pass",
 	},
-	"dom/abort/**": {
-		expected: "skip",
-		reason: "needs AbortController/AbortSignal polyfill",
-	},
-	"dom/events/**": {
-		expected: "skip",
-		reason: "needs EventTarget/Event polyfill",
-	},
+	"dom/abort/**": { expected: "pass" },
+	"dom/events/**": { expected: "pass" },
 	"fetch/api/**": {
 		expected: "skip",
 		reason: "needs Request/Response class polyfills (Headers alone shipped)",
@@ -226,11 +212,7 @@ const spec: Record<string, Expectation> = {
 	// doesn't match our sandbox (setup throws on missing globals, watchdog
 	// trips on long-deadline spec examples, setInterval-with-no-interval
 	// follows a different spec path than the host setInterval).
-	"html/webappapis/atob/base64.any.js:atob() setup.": {
-		expected: "skip",
-		reason:
-			"testharness setup() call triggered; revisit when EventTarget ships",
-	},
+	"html/webappapis/atob/base64.any.js:atob() setup.": { expected: "pass" },
 	"html/webappapis/structured-clone/structured-clone.any.js:Blob basic": {
 		expected: "skip",
 		reason: "needs Blob polyfill",

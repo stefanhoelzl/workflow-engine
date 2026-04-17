@@ -1,4 +1,5 @@
 import { parentPort } from "node:worker_threads";
+import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
 import {
 	type EventKind,
 	IIFE_NAMESPACE,
@@ -20,11 +21,8 @@ import { bridgeHostFetch } from "./bridge.js";
 import { type Bridge, createBridge } from "./bridge-factory.js";
 import {
 	CRYPTO_PROMISE_SHIM,
-	FETCH_SHIM,
-	REPORT_ERROR_SHIM,
 	setupGlobals,
 	type TimerCleanup,
-	TRIVIAL_SHIMS,
 } from "./globals.js";
 import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
 import type {
@@ -286,11 +284,6 @@ async function handleInit(
 		: globalThis.fetch;
 	bridgeHostFetch(bridge, fetchImpl, () => state?.currentAbort?.signal);
 
-	// After __hostFetch is installed, evaluate the fetch shim so guest code
-	// can call standard fetch(url, init).
-	const fetchShimResult = vm.evalCode(FETCH_SHIM, "<fetch-shim>");
-	fetchShimResult.dispose();
-
 	installEmitEvent(bridge);
 
 	installRpcMethods(
@@ -301,18 +294,30 @@ async function handleInit(
 		msg.methodEventNames,
 	);
 
-	// MCA shims: self, navigator.userAgent, reportError. TRIVIAL_SHIMS carries
-	// no host capability; REPORT_ERROR_SHIM defines reportError to call
-	// __reportError, which the host installs via methods/extraMethods.
-	// Installed after RPC methods so __reportError is already on the global
-	// when the shim is defined (matches FETCH_SHIM-after-bridgeHostFetch).
-	const trivialShimsResult = vm.evalCode(TRIVIAL_SHIMS, "<trivial-shims>");
-	trivialShimsResult.dispose();
-	const reportErrorShimResult = vm.evalCode(
-		REPORT_ERROR_SHIM,
-		"<report-error-shim>",
+	// Consolidated guest-side polyfill bundle — installs (in order):
+	//   trivial (self, navigator), event-target (EventTarget/Event/ErrorEvent/
+	//   AbortController/AbortSignal + globalThis-as-EventTarget hybrid install),
+	//   report-error (ErrorEvent dispatch + __reportError host forwarding),
+	//   microtask (queueMicrotask wrap routing errors through reportError),
+	//   fetch (fetch shim on __hostFetch).
+	// Evaluated AFTER __hostFetch (from bridgeHostFetch above) and __reportError
+	// (from installRpcMethods). Generated at consumer build time by
+	// `sandboxPolyfills()` vite plugin; see packages/sandbox/src/polyfills/.
+	const polyfillResult = vm.evalCode(SANDBOX_POLYFILLS, "<sandbox-polyfills>");
+	polyfillResult.dispose();
+
+	// Init-assertion: guard against future quickjs-wasi upgrades breaking the
+	// hybrid globalThis-as-EventTarget install. Evaluated in the guest heap.
+	const assertResult = vm.evalCode(
+		`(function(){
+			if (typeof globalThis.addEventListener !== 'function')
+				throw new Error('sandbox init: globalThis.addEventListener missing');
+			if (!(globalThis instanceof EventTarget))
+				throw new Error('sandbox init: globalThis is not an EventTarget');
+		})();`,
+		"<sandbox-polyfill-assert>",
 	);
-	reportErrorShimResult.dispose();
+	assertResult.dispose();
 
 	try {
 		const evalResult = vm.evalCode(msg.source, msg.filename);
