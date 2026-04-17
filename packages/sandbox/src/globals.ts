@@ -1,5 +1,34 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { JSValueHandle } from "quickjs-wasi";
 import type { Bridge } from "./bridge-factory.js";
+
+function readPackageVersion(): string {
+	let dir = dirname(fileURLToPath(import.meta.url));
+	for (let i = 0; i < 10; i++) {
+		const candidate = resolve(dir, "package.json");
+		if (existsSync(candidate)) {
+			const parsed = JSON.parse(readFileSync(candidate, "utf8")) as {
+				name?: string;
+				version?: string;
+			};
+			if (parsed.name === "@workflow-engine/sandbox" && parsed.version) {
+				return parsed.version;
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir) {
+			break;
+		}
+		dir = parent;
+	}
+	throw new Error(
+		"@workflow-engine/sandbox: could not locate package.json for version",
+	);
+}
+
+const PACKAGE_VERSION = readPackageVersion();
 
 interface TimerCleanup {
 	dispose(): void;
@@ -129,6 +158,67 @@ function setupTimers(b: Bridge): TimerCleanup {
 	};
 }
 
+// Three WinterCG Minimum Common API globals that libraries feature-detect.
+// None carry host capability: self is identity, navigator exposes only a
+// static version-stamped string, reportError is a partial shim that forwards
+// to __reportError (installed via construction-time methods / per-run
+// extraMethods). Documented in SECURITY.md §2.
+const TRIVIAL_SHIMS = `(function() {
+  globalThis.self = globalThis;
+  globalThis.navigator = Object.freeze({
+    userAgent: 'WorkflowEngine/${PACKAGE_VERSION}'
+  });
+})();`;
+
+const REPORT_ERROR_SHIM = `(function() {
+  // Each property read is try/guarded so a throwing getter (e.g.
+  // \`Object.defineProperty(obj, 'message', { get() { throw ... } })\`) on
+  // the reported value doesn't itself escape from reportError() into guest
+  // code. On any field-read failure we substitute a sentinel string.
+  function readField(value, key) {
+    try {
+      var v = value[key];
+      return typeof v === 'string' ? v : undefined;
+    } catch (e) {
+      return undefined;
+    }
+  }
+  function readCause(value) {
+    try {
+      return value.cause;
+    } catch (e) {
+      return undefined;
+    }
+  }
+  function serialize(value, seen) {
+    if (value == null) return { name: 'Error', message: String(value) };
+    if (typeof value !== 'object') {
+      return { name: 'Error', message: String(value) };
+    }
+    if (seen.has(value)) return { name: 'Error', message: '[circular]' };
+    seen.add(value);
+    var name = readField(value, 'name');
+    var message = readField(value, 'message');
+    var stack = readField(value, 'stack');
+    var out = {
+      name: name == null ? 'Error' : name,
+      message: message == null ? safeStringify(value) : message,
+    };
+    if (stack != null) out.stack = stack;
+    var cause = readCause(value);
+    if (cause !== undefined) out.cause = serialize(cause, seen);
+    return out;
+  }
+  function safeStringify(value) {
+    try { return String(value); } catch (e) { return '[unstringifiable]'; }
+  }
+  globalThis.reportError = function(err) {
+    try {
+      __reportError(serialize(err, new Set()));
+    } catch (e) { /* never propagate into guest */ }
+  };
+})();`;
+
 // JS shim that wraps crypto.subtle methods so they return Promises, matching
 // the standard WebCrypto spec. The WASM crypto extension returns synchronously
 // — this shim runs inside the VM to wrap each method.
@@ -218,4 +308,10 @@ const FETCH_SHIM = `(function() {
 })();`;
 
 export type { TimerCleanup };
-export { CRYPTO_PROMISE_SHIM, FETCH_SHIM, setupGlobals };
+export {
+	CRYPTO_PROMISE_SHIM,
+	FETCH_SHIM,
+	REPORT_ERROR_SHIM,
+	setupGlobals,
+	TRIVIAL_SHIMS,
+};

@@ -13,6 +13,8 @@
 		"lint": "biome check --error-on-warnings .",
 		"format": "biome check --write . && tofu fmt -recursive infrastructure/",
 		"test": "tsc --build && vitest run",
+		"test:wpt": "tsc --build && vitest run --config packages/sandbox/test/wpt/vitest.config.ts",
+		"test:wpt:refresh": "tsx scripts/wpt-refresh.ts",
 		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val-local,tofu-val-upcloud,tofu-val-persistence \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/envs/local validate\" \"tofu -chdir=infrastructure/envs/upcloud/cluster validate\" \"tofu -chdir=infrastructure/envs/upcloud/persistence validate\"",
 		"dev": "tsx scripts/dev.ts",
 		"postinstall": "(tofu -chdir=infrastructure/envs/local init || true) && (tofu -chdir=infrastructure/envs/upcloud/cluster init -backend=false || true) && (tofu -chdir=infrastructure/envs/upcloud/persistence init -backend=false || true)",
