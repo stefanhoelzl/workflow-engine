@@ -41,10 +41,33 @@ const spec: Record<string, Expectation> = {
 		expected: "skip",
 		reason: "first-run triage pending (legacy encodings + fetch-for-vectors)",
 	},
+	"url/historical.any.js": { expected: "pass" },
+	"url/url-searchparams.any.js": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/url-setters-stripping.any.js": { expected: "pass" },
+	"url/url-statics-canparse.any.js": { expected: "pass" },
+	"url/url-statics-parse.any.js": {
+		expected: "skip",
+		reason: "needs URL.parse static method in quickjs-wasi URL extension",
+	},
+	"url/url-tojson.any.js": { expected: "pass" },
+	"url/urlsearchparams-append.any.js": { expected: "pass" },
+	"url/urlsearchparams-constructor.any.js": { expected: "pass" },
+	"url/urlsearchparams-delete.any.js": { expected: "pass" },
+	"url/urlsearchparams-foreach.any.js": { expected: "pass" },
+	"url/urlsearchparams-get.any.js": { expected: "pass" },
+	"url/urlsearchparams-getall.any.js": { expected: "pass" },
+	"url/urlsearchparams-has.any.js": { expected: "pass" },
+	"url/urlsearchparams-set.any.js": { expected: "pass" },
+	"url/urlsearchparams-size.any.js": { expected: "pass" },
+	"url/urlsearchparams-sort.any.js": { expected: "pass" },
+	"url/urlsearchparams-stringifier.any.js": { expected: "pass" },
 	"url/**": {
 		expected: "skip",
 		reason:
-			"first-run triage pending (needs Request/Response + fetch-for-vectors)",
+			"fetch-for-vectors + Request/Response + IDL harness not yet shipped",
 	},
 	"WebCryptoAPI/**": {
 		expected: "skip",
@@ -155,6 +178,143 @@ const spec: Record<string, Expectation> = {
 			expected: "skip",
 			reason:
 				"host setInterval(fn) without delay treats undefined differently than spec",
+		},
+	"url/urlsearchparams-constructor.any.js:URLSearchParams constructor, DOMException as argument":
+		{
+			expected: "skip",
+			reason: "needs DOMException polyfill",
+		},
+	"url/urlsearchparams-constructor.any.js:URLSearchParams constructor, FormData.":
+		{
+			expected: "skip",
+			reason: "needs FormData polyfill",
+		},
+	"url/urlsearchparams-constructor.any.js:Basic URLSearchParams construction": {
+		expected: "skip",
+		reason: "needs URLSearchParams iterable ctor in quickjs-wasi",
+	},
+	"url/urlsearchparams-constructor.any.js:URLSearchParams constructor, object.":
+		{
+			expected: "skip",
+			reason: "needs URLSearchParams iterable ctor in quickjs-wasi",
+		},
+	"url/urlsearchparams-constructor.any.js:Constructor with sequence of sequences of strings":
+		{
+			expected: "skip",
+			reason: "needs URLSearchParams iterable ctor in quickjs-wasi",
+		},
+	"url/urlsearchparams-constructor.any.js:Custom [Symbol.iterator]": {
+		expected: "skip",
+		reason: "needs URLSearchParams iterable ctor in quickjs-wasi",
+	},
+	"url/historical.any.js:URL: no structured serialize/deserialize support": {
+		expected: "skip",
+		reason: "quickjs-wasi structuredClone lacks URL DataCloneError branding",
+	},
+	"url/historical.any.js:URLSearchParams: no structured serialize/deserialize support":
+		{
+			expected: "skip",
+			reason:
+				"quickjs-wasi structuredClone lacks URLSearchParams DataCloneError branding",
+		},
+	"url/urlsearchparams-delete.any.js:Deleting all params removes ? from URL": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-delete.any.js:Removing non-existent param removes ? from URL":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-delete.any.js:Changing the query of a URL with an opaque path with trailing spaces":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-delete.any.js:Changing the query of a URL with an opaque path with trailing spaces and a fragment":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-foreach.any.js:For-of Check": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-foreach.any.js:empty": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-foreach.any.js:delete next param during iteration": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-foreach.any.js:delete current param during iteration": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-foreach.any.js:delete every param seen during iteration":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-size.any.js:URLSearchParams's size when obtained from a URL":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-size.any.js:URLSearchParams's size when obtained from a URL and using .search":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: z=b&a=b&z=a&a=a": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: \uFFFD=x&\uFFFC&\uFFFD=a":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: \uFB03&\u{1F308}": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: \u00E9&e\uFFFD&e\u0301":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: z=z&a=a&z=y&a=b&z=x&a=c&z=w&a=d&z=v&a=e&z=u&a=f&z=t&a=g":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: bbb&bb&aaa&aa=x&aa=y": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: z=z&=f&=t&=x": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-sort.any.js:URL parse and sort: a\u{1F308}&a\u{1F4A9}": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-sort.any.js:Sorting non-existent params removes ? from URL":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+		},
+	"url/urlsearchparams-stringifier.any.js:URLSearchParams connected to URL": {
+		expected: "skip",
+		reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
+	},
+	"url/urlsearchparams-stringifier.any.js:URLSearchParams must not do newline normalization":
+		{
+			expected: "skip",
+			reason: "needs URL.searchParams getter in quickjs-wasi URL extension",
 		},
 };
 
