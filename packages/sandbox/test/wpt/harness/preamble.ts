@@ -45,6 +45,20 @@ const PREAMBLE = `(function() {
   if (typeof MessagePort === 'undefined') globalThis.MessagePort = class MessagePort {};
   if (typeof ReadableStream === 'undefined') globalThis.ReadableStream = class ReadableStream {};
   if (typeof Response === 'undefined') globalThis.Response = class Response {};
+  // common/sab.js derives its SharedArrayBuffer constructor from
+  // new WebAssembly.Memory({shared:true}).buffer.constructor. Expose just
+  // enough of that path; SAB is native in quickjs-wasi.
+  if (typeof globalThis.WebAssembly === 'undefined') {
+    globalThis.WebAssembly = {
+      Memory: function(opts) {
+        if (!opts || !opts.shared) {
+          throw new Error('WebAssembly.Memory stub: shared:true required');
+        }
+        var pages = (opts.initial | 0);
+        return { buffer: new SharedArrayBuffer(pages * 65536) };
+      },
+    };
+  }
   // Shared state read by POST_HARNESS + ENTRY.
   globalThis.__wpt = {
     completed: false,
