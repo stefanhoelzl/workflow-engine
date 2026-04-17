@@ -24,6 +24,14 @@ function percent(numerator: number, denominator: number): string {
 	return denominator > 0 ? ((numerator / denominator) * 100).toFixed(1) : "0.0";
 }
 
+function sumBy<T>(items: T[], pick: (item: T) => number | undefined): number {
+	let total = 0;
+	for (const item of items) {
+		total += pick(item) ?? 0;
+	}
+	return total;
+}
+
 function collectTests(task: RunnerTask, out: RunnerTask[]): void {
 	if (task.type === "test") {
 		out.push(task);
@@ -128,7 +136,22 @@ class WptReporter extends DefaultReporter {
 				`${leakCount} leak${leakCount > 1 ? "s" : ""}`,
 			);
 		}
-		this.log(padTitle("Duration"), formatDuration(this.end - this.start));
+		const transform = this.ctx.state.transformTime;
+		const setup = sumBy(files, (f) => f.setupDuration);
+		const importTime = sumBy(files, (f) => f.collectDuration);
+		const testsTime = sumBy(files, (f) => f.result?.duration);
+		const environment = sumBy(files, (f) => f.environmentLoad);
+		const breakdown = [
+			`transform ${formatDuration(transform)}`,
+			`setup ${formatDuration(setup)}`,
+			`import ${formatDuration(importTime)}`,
+			`tests ${formatDuration(testsTime)}`,
+			`environment ${formatDuration(environment)}`,
+		].join(", ");
+		this.log(
+			padTitle("Duration"),
+			`${formatDuration(this.end - this.start)} (${breakdown})`,
+		);
 		this.log();
 	}
 }
