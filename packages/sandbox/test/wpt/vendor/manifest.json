@@ -1,6 +1,6 @@
 {
-	"wptSha": "eb7ca18aea0ca505adfde47f11d663f10bcef5c9",
-	"vendoredAt": "2026-04-17T09:35:52.210Z",
+	"wptSha": "eab2c2cec1b4f827ea50ebfcde890d4b4e2de51e",
+	"vendoredAt": "2026-04-17T12:29:27.303Z",
 	"tests": {
 		"FileAPI/FileReaderSync.worker.js": {
 			"skip": {
@@ -1223,51 +1223,34 @@
 			}
 		},
 		"WebCryptoAPI/crypto_key_cached_slots.https.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/argon2.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/derive_bits_keys/argon2_vectors.js",
-				"WebCryptoAPI/derive_bits_keys/argon2.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_fixtures.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_fixtures.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_fixtures.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_keys.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_fixtures.js",
-				"WebCryptoAPI/derive_bits_keys/cfrg_curves_keys.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.js": {
 			"scripts": [
@@ -1277,565 +1260,344 @@
 			]
 		},
 		"WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/derived_bits_length.js",
-				"WebCryptoAPI/derive_bits_keys/derived_bits_length_vectors.js",
-				"WebCryptoAPI/derive_bits_keys/derived_bits_length_testcases.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/ecdh_bits.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/ecdh_bits.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/ecdh_keys.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/derive_bits_keys/ecdh_keys.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/hkdf.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/derive_bits_keys/hkdf_vectors.js",
-				"WebCryptoAPI/derive_bits_keys/hkdf.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/derive_bits_keys/pbkdf2_vectors.js",
-				"WebCryptoAPI/derive_bits_keys/pbkdf2.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/digest/cshake.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/digest/digest.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/digest/kangarootwelve.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/digest/sha3.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/digest/turboshake.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encap_decap/encap_decap_bits.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/encap_decap/ml_kem_vectors.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encap_decap/encap_decap_keys.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/encap_decap/ml_kem_vectors.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/aes_cbc.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_cbc_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/aes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/aes_ctr.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_ctr_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/aes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/aes_gcm.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_gcm_96_iv_fixtures.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_gcm_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/aes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/aes_gcm_256_iv.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_gcm_256_iv_fixtures.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_gcm_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/aes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/aes_ocb.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_ocb_fixtures.js",
-				"WebCryptoAPI/encrypt_decrypt/aes_ocb_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/aes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/chacha20_poly1305.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/encrypt_decrypt/rsa_oaep.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/encrypt_decrypt/rsa_vectors.js",
-				"WebCryptoAPI/encrypt_decrypt/rsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_AES-CBC.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_AES-CTR.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_AES-GCM.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_AES-KW.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_AES-OCB.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_ECDH.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_ECDSA.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_Ed25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_Ed448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_HMAC.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_ML-DSA.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_ML-KEM.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_RSA-OAEP.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_RSA-PSS.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_RSASSA-PKCS1-v1_5.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_X25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_X448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_chacha20_poly1305.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/failures_kmac.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/generateKey/failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_AES-CBC.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_AES-CTR.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_AES-GCM.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_AES-KW.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_AES-OCB.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_ECDH.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_ECDSA.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_Ed25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_Ed448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_HMAC.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_ML-DSA.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_ML-KEM.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_RSA-OAEP.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_RSA-PSS.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_RSASSA-PKCS1-v1_5.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_X25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_X448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_chacha20_poly1305.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/generateKey/successes_kmac.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"common/subset-tests.js",
-				"WebCryptoAPI/generateKey/successes.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/getPublicKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/getRandomValues.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/historical.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/idlharness.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"resources/idlharness.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/idlharness.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"resources/idlharness.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/AES-OCB_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/symmetric_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/Argon2_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/symmetric_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/ChaCha20-Poly1305_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/symmetric_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/KMAC_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/symmetric_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/ML-DSA_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/ML-DSA_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/ML-DSA_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/ML-KEM_importKey.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/ML-KEM_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/ML-KEM_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/crashtests/importKey-unsettled-promise.https.any.js": {
 			"scripts": [
@@ -1845,128 +1607,79 @@
 			"timeout": "long"
 		},
 		"WebCryptoAPI/import_export/ec_importKey.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/ec_importKey_failures_ECDH.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/ec_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/ec_importKey_failures_ECDSA.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/ec_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/okp_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_Ed448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/okp_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_X25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/okp_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_X448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_fixtures.js",
-				"WebCryptoAPI/import_export/okp_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_failures_Ed25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_failures_Ed448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_failures_X25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/okp_importKey_failures_X448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/okp_importKey_failures_fixtures.js",
-				"WebCryptoAPI/import_export/importKey_failures.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/raw_format_aliases.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/rsa_importKey.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/import_export/symmetric_importKey.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/import_export/symmetric_importKey.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/normalize-algorithm-name.https.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/randomUUID.https.any.js": {
 			"scripts": [
@@ -1974,91 +1687,54 @@
 			]
 		},
 		"WebCryptoAPI/sign_verify/ecdsa.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/ecdsa_vectors.js",
-				"WebCryptoAPI/sign_verify/ecdsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/eddsa_vectors.js",
-				"WebCryptoAPI/sign_verify/eddsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/eddsa_curve448.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/eddsa_vectors.js",
-				"WebCryptoAPI/sign_verify/eddsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/eddsa_small_order_points.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/eddsa_vectors.js",
-				"WebCryptoAPI/sign_verify/eddsa_small_order_points.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/hmac.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/hmac_vectors.js",
-				"WebCryptoAPI/sign_verify/hmac.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/kmac.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/kmac_vectors.js",
-				"WebCryptoAPI/sign_verify/kmac.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/mldsa.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/mldsa_vectors.js",
-				"WebCryptoAPI/sign_verify/mldsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/rsa_pkcs.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/rsa_pkcs_vectors.js",
-				"WebCryptoAPI/sign_verify/rsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/sign_verify/rsa_pss.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js",
-				"WebCryptoAPI/sign_verify/rsa_pss_vectors.js",
-				"WebCryptoAPI/sign_verify/rsa.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/supports.tentative.https.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"WebCryptoAPI/util/helpers.js"
-			]
+			"skip": {
+				"reason": "quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors"
+			}
 		},
 		"WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.js": {
 			"scripts": [
@@ -2671,36 +2347,90 @@
 			"scripts": [
 				"resources/testharness.js",
 				"common/sab.js"
-			]
+			],
+			"skippedSubtests": {
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with Hi and destination length 0, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A and destination length 10, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆 and destination length 4, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with 𝌆A and destination length 3, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ���A���A¥Hi and destination length 10, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with A��� and destination length 4, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler 0": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler 128": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 0, filler random": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() into SharedArrayBuffer with ¥¥ and destination length 4, offset 4, filler random": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: DataView, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Int8Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Int16Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Int32Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Uint16Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Uint32Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Uint8ClampedArray, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: BigInt64Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: BigUint64Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Float16Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Float32Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: Float64Array, backed by: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"Invalid encodeInto() destination: SharedArrayBuffer": "needs WebAssembly shim for common/sab.js",
+				"encodeInto() and a detached output buffer": "needs MessageChannel polyfill (test detaches via postMessage)"
+			}
 		},
 		"encoding/idlharness.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"resources/idlharness.js"
-			]
+			"skip": {
+				"reason": "not yet classified"
+			}
 		},
 		"encoding/iso-2022-jp-decoder.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "not yet classified"
+			}
 		},
 		"encoding/legacy-mb-schinese/gb18030/gb18030-decoder.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"encoding/legacy-mb-schinese/gb18030/resources/ranges.js"
-			]
+			"skip": {
+				"reason": "not yet classified"
+			}
 		},
 		"encoding/legacy-mb-schinese/gbk/gbk-decoder.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "not yet classified"
+			}
 		},
 		"encoding/replacement-encodings.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"encoding/resources/encodings.js",
-				"encoding/resources/decoding-helpers.js"
-			]
+			"skip": {
+				"reason": "not yet classified"
+			}
 		},
 		"encoding/streams/backpressure.any.js": {
 			"skip": {
@@ -2760,7 +2490,10 @@
 		"encoding/textdecoder-arguments.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"TextDecoder decode() with array buffer detached during arg conversion": "wasm-ext TextDecoder throws on detached ArrayBuffer instead of returning empty string"
+			}
 		},
 		"encoding/textdecoder-byte-order-marks.any.js": {
 			"scripts": [
@@ -2771,19 +2504,20 @@
 			"scripts": [
 				"resources/testharness.js",
 				"common/sab.js"
-			]
+			],
+			"skippedSubtests": {
+				"Modify buffer after passing it in (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js"
+			}
 		},
 		"encoding/textdecoder-eof.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "needs wasm-ext Big5 (inline Big5 TextDecoder in both subtests)"
+			}
 		},
 		"encoding/textdecoder-fatal-single-byte.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"common/subset-tests.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "needs wasm-ext legacy single-byte decoders (IBM866, ISO-8859-*, KOI8-*, macintosh, windows-*, x-mac-cyrillic)"
+			}
 		},
 		"encoding/textdecoder-fatal-streaming.any.js": {
 			"scripts": [
@@ -2801,23 +2535,39 @@
 			]
 		},
 		"encoding/textdecoder-labels.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"encoding/resources/encodings.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "needs wasm-ext legacy encoders (iterates every WHATWG label)"
+			}
 		},
 		"encoding/textdecoder-mistakes.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "needs wasm-ext legacy encoders (majority of subtests reference windows-*, gbk, gb18030, big5, shift_jis, euc-*, iso-2022-jp, koi8-*, iso-8859-*, macintosh, x-mac-cyrillic, x-user-defined)"
+			}
 		},
 		"encoding/textdecoder-streaming.any.js": {
 			"scripts": [
 				"resources/testharness.js",
 				"encoding/resources/encodings.js",
 				"common/sab.js"
-			]
+			],
+			"skippedSubtests": {
+				"Streaming decode: utf-8, 1 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-8, 2 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-8, 3 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-8, 4 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-8, 5 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16le, 1 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16le, 2 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16le, 3 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16le, 4 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16le, 5 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16be, 1 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16be, 2 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16be, 3 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16be, 4 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: utf-16be, 5 byte window (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js",
+				"Streaming decode: UTF-8 chunk tests (SharedArrayBuffer)": "needs WebAssembly shim for common/sab.js"
+			}
 		},
 		"encoding/textdecoder-utf16-surrogates.any.js": {
 			"scripts": [
@@ -2825,10 +2575,9 @@
 			]
 		},
 		"encoding/textencoder-constructor-non-utf.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"encoding/resources/encodings.js"
-			]
+			"skip": {
+				"reason": "needs wasm-ext legacy decoders (iterates every WHATWG encoding)"
+			}
 		},
 		"encoding/textencoder-utf16-surrogates.any.js": {
 			"scripts": [
@@ -2836,10 +2585,9 @@
 			]
 		},
 		"encoding/unsupported-encodings.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"encoding/resources/decoding-helpers.js"
-			]
+			"skip": {
+				"reason": "needs XMLHttpRequest polyfill (decoding-helpers.js uses XHR)"
+			}
 		},
 		"event-timing/idlharness.any.js": {
 			"skip": {
@@ -3018,7 +2766,7 @@
 		},
 		"fetch/api/abort/cache.https.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/abort/general.any.js": {
@@ -3028,42 +2776,42 @@
 		},
 		"fetch/api/abort/request.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/accept-header.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/conditional-get.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/error-after-response.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/gc.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/header-value-combining.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/header-value-null-byte.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/historical.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/http-response-code.any.js": {
@@ -3093,37 +2841,37 @@
 		},
 		"fetch/api/basic/request-forbidden-headers.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-head.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-headers-case.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-headers-nonascii.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-headers.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-private-network-headers.tentative.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-referrer.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/request-upload.any.js": {
@@ -3138,7 +2886,7 @@
 		},
 		"fetch/api/basic/response-null-body.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/response-url.sub.any.js": {
@@ -3148,7 +2896,7 @@
 		},
 		"fetch/api/basic/scheme-about.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/scheme-blob.sub.any.js": {
@@ -3158,7 +2906,7 @@
 		},
 		"fetch/api/basic/scheme-data.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/scheme-others.sub.any.js": {
@@ -3168,32 +2916,32 @@
 		},
 		"fetch/api/basic/status.h2.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/stream-response.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/stream-safe-creation.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/basic/text-utf8.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/body/formdata.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/body/mime-type.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/cors/cors-basic.any.js": {
@@ -3293,12 +3041,12 @@
 		},
 		"fetch/api/crashtests/huge-fetch.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/credentials/authentication-basic.any.js": {
 			"skip": {
-				"reason": "no browser credential model"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/credentials/authentication-redirection.any.js": {
@@ -3308,72 +3056,72 @@
 		},
 		"fetch/api/credentials/cookies.any.js": {
 			"skip": {
-				"reason": "no browser credential model"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/header-setcookie.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/header-values-normalize.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/header-values.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-basic.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-casing.any.js": {
-			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"fetch/api/headers/headers-combine.any.js": {
-			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"fetch/api/headers/headers-errors.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-forbidden-override.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-no-cors.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-normalize.any.js": {
-			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"fetch/api/headers/headers-record.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/headers/headers-structure.any.js": {
-			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"fetch/api/idlharness.https.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-back-to-original-origin.any.js": {
@@ -3383,27 +3131,27 @@
 		},
 		"fetch/api/redirect/redirect-count.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-empty-location.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-location-escape.tentative.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-location.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-method.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/redirect/redirect-mode.any.js": {
@@ -3443,12 +3191,12 @@
 		},
 		"fetch/api/request/forbidden-method.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-bad-port.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-cache-default-conditional.any.js": {
@@ -3488,52 +3236,52 @@
 		},
 		"fetch/api/request/request-constructor-init-body-override.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-consume-empty.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-consume.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-disturbed.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-error.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-headers.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-init-002.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-init-contenttype.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-init-priority.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-init-stream.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/request/request-keepalive.any.js": {
@@ -3543,127 +3291,127 @@
 		},
 		"fetch/api/request/request-structure.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/json.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-cancel-stream.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-clone.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-consume-empty.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-consume-stream.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-error-from-stream.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-error.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-from-stream.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-headers-guard.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-init-001.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-init-002.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-init-contenttype.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-static-error.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-static-json.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-static-redirect.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-bad-chunk.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-1.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-2.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-3.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-4.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-5.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-6.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-disturbed-by-pipe.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/api/response/response-stream-with-broken-then.any.js": {
 			"skip": {
-				"reason": "needs Request/Response/Headers class polyfills"
+				"reason": "needs Request/Response class polyfills (Headers alone shipped)"
 			}
 		},
 		"fetch/content-encoding/br/big-br-body.https.any.js": {
@@ -9354,17 +9102,20 @@
 		"html/webappapis/atob/base64.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"atob() setup.": "testharness setup() call triggered; revisit when EventTarget ships"
+			}
 		},
 		"html/webappapis/microtask-queuing/queue-microtask-exceptions.any.js": {
 			"skip": {
-				"reason": "needs queueMicrotask polyfill"
+				"reason": "relies on self.addEventListener('error') to observe microtask exceptions — preamble stubs addEventListener as no-op"
 			}
 		},
 		"html/webappapis/microtask-queuing/queue-microtask.any.js": {
-			"skip": {
-				"reason": "needs queueMicrotask polyfill"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"html/webappapis/scripting/events/event-handler-processing-algorithm-error/synthetic-errorevent-click.worker.js": {
 			"skip": {
@@ -9413,7 +9164,73 @@
 				"html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
 				"html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
 				"html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js"
-			]
+			],
+			"skippedSubtests": {
+				"Blob basic": "needs Blob polyfill",
+				"Blob unpaired high surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Blob unpaired low surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Blob paired surrogates (invalid utf-8)": "needs Blob polyfill",
+				"Blob empty": "needs Blob polyfill",
+				"Blob NUL": "needs Blob polyfill",
+				"Array Blob object, Blob basic": "needs Blob polyfill",
+				"Array Blob object, Blob unpaired high surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Array Blob object, Blob unpaired low surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Array Blob object, Blob paired surrogates (invalid utf-8)": "needs Blob polyfill",
+				"Array Blob object, Blob empty": "needs Blob polyfill",
+				"Array Blob object, Blob NUL": "needs Blob polyfill",
+				"Array Blob object, two Blobs": "needs Blob polyfill",
+				"Object Blob object, Blob basic": "needs Blob polyfill",
+				"Object Blob object, Blob unpaired high surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Object Blob object, Blob unpaired low surrogate (invalid utf-8)": "needs Blob polyfill",
+				"Object Blob object, Blob paired surrogates (invalid utf-8)": "needs Blob polyfill",
+				"Object Blob object, Blob empty": "needs Blob polyfill",
+				"Object Blob object, Blob NUL": "needs Blob polyfill",
+				"File basic": "needs File polyfill",
+				"Transferring a non-transferable platform object fails": "needs transferable Blob polyfill",
+				"MessagePort": "needs MessagePort polyfill",
+				"A detached platform object cannot be transferred": "needs MessagePort polyfill",
+				"An object whose interface is deleted from the global object must still be received": "needs MessagePort polyfill",
+				"A subclass instance will be received as its closest transferable superclass": "needs ReadableStream polyfill",
+				"Serializing a non-serializable platform object fails": "needs Response polyfill",
+				"A subclass instance will deserialize as its closest serializable superclass": "needs File polyfill",
+				"An object whose interface is deleted from the global must still deserialize": "needs Blob polyfill",
+				"Boolean true": "structuredClone engine: wrapped primitive unwrapped",
+				"Boolean false": "structuredClone engine: wrapped primitive unwrapped",
+				"Array Boolean objects": "structuredClone engine: wrapped primitive unwrapped",
+				"Object Boolean objects": "structuredClone engine: wrapped primitive unwrapped",
+				"String empty string": "structuredClone engine: wrapped primitive unwrapped",
+				"String lone high surrogate": "structuredClone engine: wrapped primitive unwrapped",
+				"String lone low surrogate": "structuredClone engine: wrapped primitive unwrapped",
+				"String NUL": "structuredClone engine: wrapped primitive unwrapped",
+				"String astral character": "structuredClone engine: wrapped primitive unwrapped",
+				"Array String objects": "structuredClone engine: wrapped primitive unwrapped",
+				"Object String objects": "structuredClone engine: wrapped primitive unwrapped",
+				"Number 0.2": "structuredClone engine: wrapped primitive unwrapped",
+				"Number 0": "structuredClone engine: wrapped primitive unwrapped",
+				"Number -0": "structuredClone engine: wrapped primitive unwrapped",
+				"Number NaN": "structuredClone engine: wrapped primitive unwrapped",
+				"Number Infinity": "structuredClone engine: wrapped primitive unwrapped",
+				"Number -Infinity": "structuredClone engine: wrapped primitive unwrapped",
+				"Number 9007199254740992": "structuredClone engine: wrapped primitive unwrapped",
+				"Number -9007199254740992": "structuredClone engine: wrapped primitive unwrapped",
+				"Number 9007199254740994": "structuredClone engine: wrapped primitive unwrapped",
+				"Number -9007199254740994": "structuredClone engine: wrapped primitive unwrapped",
+				"Array Number objects": "structuredClone engine: wrapped primitive unwrapped",
+				"Object Number objects": "structuredClone engine: wrapped primitive unwrapped",
+				"BigInt -9007199254740994n": "structuredClone engine: wrapped primitive unwrapped",
+				"Array sparse": "structuredClone engine: sparse array loses holes",
+				"Array with non-index property": "structuredClone engine: drops non-index own properties",
+				"Empty Error object": "structuredClone engine: Error wrapper not preserved",
+				"ArrayBuffer": "structuredClone engine: transfer-list not supported",
+				"A detached ArrayBuffer cannot be transferred": "structuredClone engine: transfer-list not supported",
+				"Resizable ArrayBuffer is transferable": "structuredClone engine: transfer-list not supported",
+				"Length-tracking TypedArray is transferable": "structuredClone engine: transfer-list not supported",
+				"Length-tracking DataView is transferable": "structuredClone engine: transfer-list not supported",
+				"Resizable ArrayBuffer": "structuredClone engine: resizable AB maxByteLength lost",
+				"Growable SharedArrayBuffer": "structuredClone engine: SharedArrayBuffer.prototype.grow missing",
+				"Serializing OOB TypedArray throws": "quickjs-wasi structuredClone throws TypeError 'ArrayBuffer is detached or resized' instead of DataCloneError DOMException",
+				"Serializing OOB DataView throws": "quickjs-wasi structuredClone throws TypeError 'ArrayBuffer is detached or resized' instead of DataCloneError DOMException"
+			}
 		},
 		"html/webappapis/system-state-and-capabilities/the-navigator-object/navigator.any.js": {
 			"skip": {
@@ -9436,14 +9253,17 @@
 			]
 		},
 		"html/webappapis/timers/evil-spec-example.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "watchdog trips; requires nested-event-loop semantics"
+			}
 		},
 		"html/webappapis/timers/missing-timeout-setinterval.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"Calling setInterval with no interval should be the same as if called with 0 interval": "host setInterval(fn) without delay treats undefined differently than spec"
+			}
 		},
 		"html/webappapis/timers/negative-setinterval.any.js": {
 			"scripts": [
@@ -10583,30 +10403,31 @@
 		"url/historical.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"URL: no structured serialize/deserialize support": "quickjs-wasi structuredClone lacks URL DataCloneError branding",
+				"URLSearchParams: no structured serialize/deserialize support": "quickjs-wasi structuredClone lacks URLSearchParams DataCloneError branding"
+			}
 		},
 		"url/idlharness.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"resources/idlharness.js"
-			]
+			"skip": {
+				"reason": "fetch-for-vectors + Request/Response + IDL harness not yet shipped"
+			}
 		},
 		"url/url-constructor.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"common/subset-tests-by-key.js"
-			],
-			"timeout": "long"
+			"skip": {
+				"reason": "fetch-for-vectors + Request/Response + IDL harness not yet shipped"
+			}
 		},
 		"url/url-origin.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "fetch-for-vectors + Request/Response + IDL harness not yet shipped"
+			}
 		},
 		"url/url-searchparams.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"url/url-setters-stripping.any.js": {
 			"scripts": [
@@ -10614,10 +10435,9 @@
 			]
 		},
 		"url/url-setters.any.js": {
-			"scripts": [
-				"resources/testharness.js",
-				"common/subset-tests-by-key.js"
-			]
+			"skip": {
+				"reason": "fetch-for-vectors + Request/Response + IDL harness not yet shipped"
+			}
 		},
 		"url/url-statics-canparse.any.js": {
 			"scripts": [
@@ -10625,9 +10445,9 @@
 			]
 		},
 		"url/url-statics-parse.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "needs URL.parse static method in quickjs-wasi URL extension"
+			}
 		},
 		"url/url-tojson.any.js": {
 			"scripts": [
@@ -10635,9 +10455,9 @@
 			]
 		},
 		"url/urlencoded-parser.any.js": {
-			"scripts": [
-				"resources/testharness.js"
-			]
+			"skip": {
+				"reason": "fetch-for-vectors + Request/Response + IDL harness not yet shipped"
+			}
 		},
 		"url/urlsearchparams-append.any.js": {
 			"scripts": [
@@ -10647,17 +10467,38 @@
 		"url/urlsearchparams-constructor.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"URLSearchParams constructor, DOMException as argument": "URLSearchParams ctor doesn't consume iterable (test iterates DOMException's legacy numeric-code map)",
+				"URLSearchParams constructor, FormData.": "needs FormData polyfill",
+				"Basic URLSearchParams construction": "needs URLSearchParams iterable ctor in quickjs-wasi",
+				"URLSearchParams constructor, object.": "needs URLSearchParams iterable ctor in quickjs-wasi",
+				"Constructor with sequence of sequences of strings": "needs URLSearchParams iterable ctor in quickjs-wasi",
+				"Custom [Symbol.iterator]": "needs URLSearchParams iterable ctor in quickjs-wasi"
+			}
 		},
 		"url/urlsearchparams-delete.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"Deleting all params removes ? from URL": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"Removing non-existent param removes ? from URL": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"Changing the query of a URL with an opaque path with trailing spaces": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"Changing the query of a URL with an opaque path with trailing spaces and a fragment": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"url/urlsearchparams-foreach.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"For-of Check": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"empty": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"delete next param during iteration": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"delete current param during iteration": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"delete every param seen during iteration": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"url/urlsearchparams-get.any.js": {
 			"scripts": [
@@ -10682,17 +10523,36 @@
 		"url/urlsearchparams-size.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"URLSearchParams's size when obtained from a URL": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URLSearchParams's size when obtained from a URL and using .search": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"url/urlsearchparams-sort.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"URL parse and sort: z=b&a=b&z=a&a=a": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: �=x&￼&�=a": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: ﬃ&🌈": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: é&e�&é": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: z=z&a=a&z=y&a=b&z=x&a=c&z=w&a=d&z=v&a=e&z=u&a=f&z=t&a=g": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: bbb&bb&aaa&aa=x&aa=y": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: z=z&=f&=t&=x": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URL parse and sort: a🌈&a💩": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"Sorting non-existent params removes ? from URL": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"url/urlsearchparams-stringifier.any.js": {
 			"scripts": [
 				"resources/testharness.js"
-			]
+			],
+			"skippedSubtests": {
+				"URLSearchParams connected to URL": "needs URL.searchParams getter in quickjs-wasi URL extension",
+				"URLSearchParams must not do newline normalization": "needs URL.searchParams getter in quickjs-wasi URL extension"
+			}
 		},
 		"urlpattern/urlpattern-compare.tentative.any.js": {
 			"skip": {
@@ -11700,29 +11560,29 @@
 			}
 		},
 		"webidl/ecmascript-binding/es-exceptions/DOMException-constants.any.js": {
-			"skip": {
-				"reason": "not yet classified"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"webidl/ecmascript-binding/es-exceptions/DOMException-constructor-and-prototype.any.js": {
-			"skip": {
-				"reason": "not yet classified"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"webidl/ecmascript-binding/es-exceptions/DOMException-constructor-behavior.any.js": {
-			"skip": {
-				"reason": "not yet classified"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.js": {
-			"skip": {
-				"reason": "not yet classified"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"webidl/ecmascript-binding/es-exceptions/DOMException-is-error.any.js": {
-			"skip": {
-				"reason": "not yet classified"
-			}
+			"scripts": [
+				"resources/testharness.js"
+			]
 		},
 		"webidl/ecmascript-binding/global-immutable-prototype.any.js": {
 			"skip": {

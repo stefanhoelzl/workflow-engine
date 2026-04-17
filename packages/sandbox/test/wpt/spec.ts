@@ -99,24 +99,24 @@ const spec: Record<string, Expectation> = {
 	"WebCryptoAPI/**": {
 		expected: "skip",
 		reason:
-			"first-run triage pending — mostly needs DOMException polyfill (for promise_rejects_dom / assert_throws_quotaexceedederror) + JWK export + external vectors",
+			"quickjs-wasi crypto ext covers core algos only — no JWK export, no argon2/cshake/sha3/ML-KEM/ML-DSA/chacha20/kmac, and most files fetch external test vectors",
 	},
 	"WebCryptoAPI/randomUUID.https.any.js": { expected: "pass" },
-	"WebCryptoAPI/historical.any.js": {
-		expected: "skip",
-		reason:
-			"sandbox does not model secure-context — crypto.subtle/SubtleCrypto/CryptoKey always present",
+	"WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.js": {
+		expected: "pass",
 	},
-	"WebCryptoAPI/supports.tentative.https.any.js": {
-		expected: "skip",
-		reason:
-			"needs SubtleCrypto.supports() shim (not in globals.ts CRYPTO_PROMISE_SHIM method list)",
+	"WebCryptoAPI/import_export/crashtests/importKey-unsettled-promise.https.any.js":
+		{ expected: "pass" },
+	"WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.js": {
+		expected: "pass",
 	},
 
 	// --- Missing-polyfill skips (directory-wide) ---
-	"html/webappapis/microtask-queuing/**": {
+	"html/webappapis/microtask-queuing/**": { expected: "pass" },
+	"html/webappapis/microtask-queuing/queue-microtask-exceptions.any.js": {
 		expected: "skip",
-		reason: "needs queueMicrotask polyfill",
+		reason:
+			"relies on self.addEventListener('error') to observe microtask exceptions — preamble stubs addEventListener as no-op",
 	},
 	"dom/abort/**": {
 		expected: "skip",
@@ -128,8 +128,12 @@ const spec: Record<string, Expectation> = {
 	},
 	"fetch/api/**": {
 		expected: "skip",
-		reason: "needs Request/Response/Headers class polyfills",
+		reason: "needs Request/Response class polyfills (Headers alone shipped)",
 	},
+	"fetch/api/headers/headers-casing.any.js": { expected: "pass" },
+	"fetch/api/headers/headers-combine.any.js": { expected: "pass" },
+	"fetch/api/headers/headers-normalize.any.js": { expected: "pass" },
+	"fetch/api/headers/headers-structure.any.js": { expected: "pass" },
 	"streams/**": {
 		expected: "skip",
 		reason: "needs web-streams-polyfill",
@@ -150,9 +154,29 @@ const spec: Record<string, Expectation> = {
 		expected: "skip",
 		reason: "needs TextEncoderStream polyfill",
 	},
-	"webidl/ecmascript-binding/DOMException-*": {
+	"webidl/ecmascript-binding/es-exceptions/**": { expected: "pass" },
+	"webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.js:message property descriptor":
+		{
+			expected: "skip",
+			reason:
+				"quickjs-wasi DOMException prototype getter is non-enumerable (WebIDL requires enumerable)",
+		},
+	"webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.js:name property descriptor":
+		{
+			expected: "skip",
+			reason:
+				"quickjs-wasi DOMException prototype getter is non-enumerable (WebIDL requires enumerable)",
+		},
+	"webidl/ecmascript-binding/es-exceptions/DOMException-custom-bindings.any.js:code property descriptor":
+		{
+			expected: "skip",
+			reason:
+				"quickjs-wasi DOMException prototype getter is non-enumerable (WebIDL requires enumerable)",
+		},
+	"webidl/ecmascript-binding/es-exceptions/DOMException-is-error.any.js": {
 		expected: "skip",
-		reason: "needs DOMException polyfill",
+		reason:
+			"quickjs-wasi DOMException lacks [[ErrorData]] internal slot — Error.isError() returns false",
 	},
 	"url/urlpattern.any.js": {
 		expected: "skip",
@@ -167,22 +191,6 @@ const spec: Record<string, Expectation> = {
 	"**/idlharness-*.any.js": {
 		expected: "skip",
 		reason: "requires browser-style IDL introspection",
-	},
-	"fetch/api/cors/**": {
-		expected: "skip",
-		reason: "no browser origin model in sandbox",
-	},
-	"fetch/api/credentials/**": {
-		expected: "skip",
-		reason: "no browser credential model",
-	},
-	"fetch/api/integrity/**": {
-		expected: "skip",
-		reason: "requires subresource integrity semantics",
-	},
-	"fetch/api/policies/**": {
-		expected: "skip",
-		reason: "no browser policy model",
 	},
 	"xhr/formdata/constructor-formdata-element.any.js": {
 		expected: "skip",
@@ -669,12 +677,14 @@ const spec: Record<string, Expectation> = {
 	"html/webappapis/structured-clone/structured-clone.any.js:Serializing OOB TypedArray throws":
 		{
 			expected: "skip",
-			reason: "structuredClone engine: DataCloneError not a DOMException",
+			reason:
+				"quickjs-wasi structuredClone throws TypeError 'ArrayBuffer is detached or resized' instead of DataCloneError DOMException",
 		},
 	"html/webappapis/structured-clone/structured-clone.any.js:Serializing OOB DataView throws":
 		{
 			expected: "skip",
-			reason: "structuredClone engine: DataCloneError not a DOMException",
+			reason:
+				"quickjs-wasi structuredClone throws TypeError 'ArrayBuffer is detached or resized' instead of DataCloneError DOMException",
 		},
 	"html/webappapis/timers/evil-spec-example.any.js": {
 		expected: "skip",
@@ -689,7 +699,8 @@ const spec: Record<string, Expectation> = {
 	"url/urlsearchparams-constructor.any.js:URLSearchParams constructor, DOMException as argument":
 		{
 			expected: "skip",
-			reason: "needs DOMException polyfill",
+			reason:
+				"URLSearchParams ctor doesn't consume iterable (test iterates DOMException's legacy numeric-code map)",
 		},
 	"url/urlsearchparams-constructor.any.js:URLSearchParams constructor, FormData.":
 		{
