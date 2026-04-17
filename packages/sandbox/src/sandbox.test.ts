@@ -1103,7 +1103,6 @@ describe("MCA shims", () => {
 	});
 });
 
-
 describe("private bridge names hidden post-init", () => {
 	it("underscore bridge names are not on globalThis after init", async () => {
 		const source = `${iife(`

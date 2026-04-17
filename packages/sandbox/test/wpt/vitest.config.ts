@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { wptPreamble } from "./harness/preamble/vite-plugin.js";
 import { WptReporter } from "./harness/wpt-reporter.js";
 
 // Separate vitest config for the WPT suite. The suite is long-running
@@ -13,6 +14,7 @@ const FIVE_MINUTES_MS = 5 * 60_000;
 const ONE_MINUTE_MS = 60_000;
 
 export default defineConfig({
+	plugins: [wptPreamble()],
 	test: {
 		include: ["packages/sandbox/test/wpt/wpt.test.ts"],
 		testTimeout: FIVE_MINUTES_MS,
