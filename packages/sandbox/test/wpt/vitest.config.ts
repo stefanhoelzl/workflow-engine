@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { WptReporter } from "./harness/wpt-reporter.js";
 
 // Separate vitest config for the WPT suite. The suite is long-running
 // (1–3 min for the full MCA subset) and runs WPT test files inside the
@@ -16,5 +17,6 @@ export default defineConfig({
 		include: ["packages/sandbox/test/wpt/wpt.test.ts"],
 		testTimeout: FIVE_MINUTES_MS,
 		hookTimeout: ONE_MINUTE_MS,
+		reporters: [new WptReporter()],
 	},
 });
