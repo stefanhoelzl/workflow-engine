@@ -74,13 +74,15 @@ async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 			await bus.emit(event);
 		}
 
-		const lastSeq = events.at(-1)?.seq ?? -1;
+		const lastEvent = events.at(-1);
+		const lastSeq = lastEvent?.seq ?? -1;
 		const synthetic: InvocationEvent = {
 			kind: "trigger.error",
 			id,
 			seq: lastSeq + 1,
 			ref: 0,
-			ts: Date.now(),
+			at: new Date().toISOString(),
+			ts: lastEvent?.ts ?? 0,
 			workflow: firstEvent.workflow,
 			workflowSha: firstEvent.workflowSha,
 			name: firstEvent.name,

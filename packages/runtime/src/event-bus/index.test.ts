@@ -1,19 +1,17 @@
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent as baseMakeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { type BusConsumer, createEventBus } from "./index.js";
 
 function makeEvent(seq: number): InvocationEvent {
-	return {
+	return baseMakeEvent({
 		kind: "system.request",
-		id: "evt_test",
 		seq,
-		ref: null,
 		ts: 1000 + seq,
 		workflow: "wf",
-		workflowSha: "sha",
 		name: "console.log",
 		input: ["hello"],
-	};
+	});
 }
 
 describe("createEventBus", () => {

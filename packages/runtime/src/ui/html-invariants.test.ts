@@ -68,6 +68,8 @@ const sampleRows: readonly InvocationRow[] = [
 		status: "succeeded",
 		startedAt: "2026-01-01T00:00:00Z",
 		completedAt: "2026-01-01T00:00:01Z",
+		startedTs: 0,
+		completedTs: 1_000_000,
 	},
 	{
 		id: "evt_2",
@@ -76,6 +78,8 @@ const sampleRows: readonly InvocationRow[] = [
 		status: "pending",
 		startedAt: "2026-01-01T00:00:00Z",
 		completedAt: null,
+		startedTs: 0,
+		completedTs: null,
 	},
 ];
 

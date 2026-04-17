@@ -1,5 +1,10 @@
+import { performance } from "node:perf_hooks";
 import type { EventKind, InvocationEvent } from "@workflow-engine/core";
 import type { JSValueHandle, QuickJS } from "quickjs-wasi";
+import type { AnchorCell } from "./wasi.js";
+
+const NS_PER_MS = 1_000_000;
+const US_PER_MS = 1000;
 
 // --- Run context (set by worker before each run) ---
 
@@ -112,6 +117,9 @@ interface Bridge {
 	emit(event: InvocationEvent): void;
 	emitSystemCall(method: string, input: unknown, output: unknown): void;
 	setSink(sink: EventSink | null): void;
+	resetAnchor(): void;
+	anchorNs(): bigint;
+	tsUs(): number;
 	dispose(): void;
 }
 
@@ -202,11 +210,20 @@ function newGuestErrorFromHost(vm: QuickJS, err: unknown): JSValueHandle {
 // --- Factory ---
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-context state, and event emission as one cohesive unit
-function createBridge(vm: QuickJS): Bridge {
+function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	let runContext: RunContext | null = null;
 	let seq = 0;
 	const refStack: number[] = [];
 	let sink: EventSink | null = null;
+
+	function resetAnchor(): void {
+		anchor.ns = BigInt(Math.trunc(performance.now() * NS_PER_MS));
+	}
+
+	function tsUs(): number {
+		const anchorMs = Number(anchor.ns) / NS_PER_MS;
+		return Math.round((performance.now() - anchorMs) * US_PER_MS);
+	}
 
 	const marshal = {
 		string: (value: string) => vm.newString(value),
@@ -239,7 +256,8 @@ function createBridge(vm: QuickJS): Bridge {
 			id: runContext.invocationId,
 			seq: seqValue,
 			ref,
-			ts: Date.now(),
+			at: new Date().toISOString(),
+			ts: tsUs(),
 			workflow: runContext.workflow,
 			workflowSha: runContext.workflowSha,
 			name: method,
@@ -444,6 +462,11 @@ function createBridge(vm: QuickJS): Bridge {
 		setSink(s: EventSink | null) {
 			sink = s;
 		},
+		resetAnchor,
+		anchorNs() {
+			return anchor.ns;
+		},
+		tsUs,
 		dispose() {
 			/* nothing to release — keys live in WASM, not on the host */
 		},

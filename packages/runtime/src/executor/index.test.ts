@@ -1,4 +1,5 @@
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import { createEventBus, type EventBus } from "../event-bus/index.js";
 import { createExecutor } from "./index.js";
@@ -67,16 +68,14 @@ describe("executor", () => {
 		// onEvent should be wired exactly once across multiple invocations.
 		expect(registrations).toHaveLength(1);
 
-		const evt: InvocationEvent = {
+		const evt: InvocationEvent = makeEvent({
 			kind: "trigger.request",
 			id: "evt_x",
 			seq: 0,
 			ref: null,
 			ts: 1,
 			workflow: "wf",
-			workflowSha: "sha",
-			name: "t",
-		};
+		});
 		const cb = registrations[0];
 		if (!cb) {
 			throw new Error("expected onEvent to have been called");

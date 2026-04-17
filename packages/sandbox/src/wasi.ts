@@ -3,14 +3,19 @@ import { performance } from "node:perf_hooks";
 import type { Bridge } from "./bridge-factory.js";
 import type { WorkerToMain } from "./protocol.js";
 
+interface AnchorCell {
+	ns: bigint;
+}
+
 interface WasiState {
-	// Monotonic anchor in nanoseconds. Captured at worker init; re-captured at
-	// every bridge.setRunContext so each run sees performance.now() starting
-	// near zero.
-	anchorNs: bigint;
 	// Populated after createBridge; the wasi factory's closures read this to
 	// emit system.call events and to gate emission on an active run context.
 	bridge: Bridge | null;
+	// Shared monotonic anchor cell — written by bridge.resetAnchor(), read by
+	// wasiClockTimeGet for the MONOTONIC branch. Seeded at worker init (before
+	// QuickJS.create) so the WASI clock returns small values during VM init,
+	// which prevents QuickJS from caching a large reference for performance.now.
+	anchor: AnchorCell;
 	// Per-fd line buffers. fd_write hands us arbitrary byte slices; we only
 	// post a log message once a complete line accumulates.
 	fdLineBuffer: Map<number, string>;
@@ -18,8 +23,8 @@ interface WasiState {
 
 function createWasiState(): WasiState {
 	return {
-		anchorNs: 0n,
 		bridge: null,
+		anchor: { ns: 0n },
 		fdLineBuffer: new Map<number, string>(),
 	};
 }
@@ -56,7 +61,7 @@ function wasiClockTimeGet(
 		timeNs = BigInt(Date.now()) * NS_PER_MS;
 		clockLabel = "REALTIME";
 	} else if (clockId === WASI_CLOCK_MONOTONIC) {
-		timeNs = perfNowNs() - wState.anchorNs;
+		timeNs = perfNowNs() - wState.anchor.ns;
 		clockLabel = "MONOTONIC";
 	} else {
 		return WASI_ERRNO_NOSYS;
@@ -170,7 +175,7 @@ function createWasiFactory(
 	});
 }
 
-export type { WasiState };
+export type { AnchorCell, WasiState };
 export {
 	createWasiFactory,
 	createWasiState,

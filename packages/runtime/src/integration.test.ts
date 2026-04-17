@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -164,16 +165,17 @@ describe("end-to-end event flow", () => {
 		await backend.init();
 
 		// Pre-seed pending/ as if the process crashed mid-invocation.
-		const orphan: InvocationEvent = {
+		const orphan: InvocationEvent = makeEvent({
 			kind: "trigger.request",
 			id: "evt_crashed",
 			seq: 0,
 			ref: null,
-			ts: Date.now(),
+			at: new Date().toISOString(),
+			ts: 0,
 			workflow: "demo",
 			workflowSha: MANIFEST.sha,
 			name: "ping",
-		};
+		});
 		await backend.write(
 			`pending/${orphan.id}/${orphan.seq.toString().padStart(6, "0")}.json`,
 			JSON.stringify(orphan),
@@ -209,49 +211,53 @@ describe("end-to-end event flow", () => {
 		// was followed by a crash during removePrefix.
 		const id = "evt_a";
 		const archived: InvocationEvent[] = [
-			{
+			makeEvent({
 				kind: "trigger.request",
 				id,
 				seq: 0,
 				ref: null,
+				at: "2026-04-16T10:00:00.000Z",
 				ts: 100,
 				workflow: "demo",
 				workflowSha: MANIFEST.sha,
 				name: "ping",
 				input: { hello: "world" },
-			} as InvocationEvent,
-			{
+			}),
+			makeEvent({
 				kind: "system.request",
 				id,
 				seq: 1,
 				ref: 0,
+				at: "2026-04-16T10:00:00.001Z",
 				ts: 101,
 				workflow: "demo",
 				workflowSha: MANIFEST.sha,
 				name: "host.validate",
-			} as InvocationEvent,
-			{
+			}),
+			makeEvent({
 				kind: "system.response",
 				id,
 				seq: 2,
 				ref: 1,
+				at: "2026-04-16T10:00:00.002Z",
 				ts: 102,
 				workflow: "demo",
 				workflowSha: MANIFEST.sha,
 				name: "host.validate",
 				output: {},
-			} as InvocationEvent,
-			{
+			}),
+			makeEvent({
 				kind: "trigger.response",
 				id,
 				seq: 3,
 				ref: 0,
+				at: "2026-04-16T10:00:00.003Z",
 				ts: 103,
 				workflow: "demo",
 				workflowSha: MANIFEST.sha,
 				name: "ping",
 				output: { status: 200 },
-			} as InvocationEvent,
+			}),
 		];
 		const archiveContent = JSON.stringify(archived);
 		await backend.write(`archive/${id}.json`, archiveContent);

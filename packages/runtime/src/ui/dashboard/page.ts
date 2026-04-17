@@ -1,8 +1,10 @@
 import { html } from "hono/html";
 import { renderLayout } from "../layout.js";
 
-const MS_PER_SECOND = 1000;
-const SECOND_FRACTION_DIGITS = 2;
+const US_PER_MS = 1000;
+const US_PER_SECOND = 1_000_000;
+const US_PER_MINUTE = 60_000_000;
+const DURATION_FRACTION_DIGITS = 1;
 const SKELETON_CARD_COUNT = 3;
 
 interface InvocationRow {
@@ -12,6 +14,8 @@ interface InvocationRow {
 	readonly status: string;
 	readonly startedAt: string | Date;
 	readonly completedAt: string | Date | null;
+	readonly startedTs: number;
+	readonly completedTs: number | null;
 }
 
 function formatTimestamp(ts: string | Date): string {
@@ -19,32 +23,25 @@ function formatTimestamp(ts: string | Date): string {
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
 }
 
-function formatDuration(
-	startedAt: string | Date,
-	completedAt: string | Date | null,
-): string {
-	if (completedAt === null) {
-		return "—";
+function formatDurationUs(us: number): string {
+	const d = Math.max(0, us);
+	if (d < US_PER_MS) {
+		return `${d} µs`;
 	}
-	const start =
-		startedAt instanceof Date
-			? startedAt.getTime()
-			: Date.parse(String(startedAt));
-	const end =
-		completedAt instanceof Date
-			? completedAt.getTime()
-			: Date.parse(String(completedAt));
-	if (Number.isNaN(start) || Number.isNaN(end)) {
-		return "—";
+	if (d < US_PER_SECOND) {
+		return `${(d / US_PER_MS).toFixed(DURATION_FRACTION_DIGITS)} ms`;
 	}
-	const ms = Math.max(0, end - start);
-	if (ms < MS_PER_SECOND) {
-		return `${ms}ms`;
+	if (d < US_PER_MINUTE) {
+		return `${(d / US_PER_SECOND).toFixed(DURATION_FRACTION_DIGITS)} s`;
 	}
-	return `${(ms / MS_PER_SECOND).toFixed(SECOND_FRACTION_DIGITS)}s`;
+	return `${(d / US_PER_MINUTE).toFixed(DURATION_FRACTION_DIGITS)} min`;
 }
 
 function renderCard(row: InvocationRow) {
+	const duration =
+		row.completedTs === null
+			? "—"
+			: formatDurationUs(row.completedTs - row.startedTs);
 	return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
     <div class="entry-header">
       <span class="entry-workflow">${row.workflow}</span>
@@ -54,7 +51,7 @@ function renderCard(row: InvocationRow) {
     <div class="entry-meta">
       <span class="entry-started">${formatTimestamp(row.startedAt)}</span>
       <span class="entry-sep">·</span>
-      <span class="entry-duration">${formatDuration(row.startedAt, row.completedAt)}</span>
+      <span class="entry-duration">${duration}</span>
     </div>
   </div>`;
 }

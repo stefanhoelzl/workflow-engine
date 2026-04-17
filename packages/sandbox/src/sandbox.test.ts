@@ -354,6 +354,80 @@ describe("sandbox event streaming", () => {
 		expect(seqs[0]).toBe(0);
 	});
 
+	it("every event carries a valid ISO at and non-negative integer ts (µs)", async () => {
+		const { events } = await runSource(defaultHandler("return 1;"));
+		expect(events.length).toBeGreaterThan(0);
+		for (const e of events) {
+			expect(typeof e.at).toBe("string");
+			expect(Number.isNaN(Date.parse(e.at))).toBe(false);
+			expect(Number.isInteger(e.ts)).toBe(true);
+			expect(e.ts).toBeGreaterThanOrEqual(0);
+		}
+	});
+
+	it("trigger.request ts is near zero; terminal ts exceeds it on a non-trivial run", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				"let acc = 0; for (let i = 0; i < 50000; i++) acc += i; return acc;",
+			),
+		);
+		const req = events.find((e) => e.kind === "trigger.request");
+		const term = events.at(-1);
+		expect(req?.ts).toBeLessThan(100_000); // < 100ms in µs
+		expect(term?.ts ?? 0).toBeGreaterThan(req?.ts ?? 0);
+	});
+
+	it("guest performance.now() and bridge-sourced event ts are both run-anchored", async () => {
+		const { result, events } = await runSource(
+			defaultHandler(`
+				const g = performance.now();
+				return { g };
+			`),
+		);
+		if (!result.ok) {
+			throw new Error(`guest error: ${result.error.message}`);
+		}
+		const { g } = result.result as { g: number };
+		const term = events.at(-1);
+		const termTs = term?.ts ?? 0;
+		// Both readings are run-anchored: guest's `performance.now()` is
+		// anchored at VM init (QuickJS caches the monotonic reference on
+		// first read), while the terminal event's `ts` is anchored at
+		// the most recent handleRun reset. The small delta between the
+		// two anchors is the VM-init-to-run-start gap. Both stay small
+		// (absolute value under 1 s for any realistic sandbox run) and
+		// the terminal event is strictly after the guest's read.
+		expect(Math.abs(g)).toBeLessThan(1000); // < 1 s
+		expect(termTs).toBeGreaterThanOrEqual(0);
+		expect(termTs).toBeLessThan(1_000_000); // < 1 s in µs
+	});
+
+	it("guest cannot override at or ts on events emitted via __emitEvent", async () => {
+		// __emitEvent is the internal emission hook. Even if guest tampers with
+		// the event payload, the host-side `installEmitEvent` closure stamps
+		// `at` and `ts` itself and discards any guest-supplied values on the
+		// outer object. Here we call __emitEvent directly to verify this.
+		const { events } = await runSource(
+			defaultHandler(`
+				globalThis.__emitEvent({
+					kind: "action.request",
+					name: "x",
+					at: "1999-01-01T00:00:00.000Z",
+					ts: 999999999,
+				});
+				return 1;
+			`),
+		);
+		const injected = events.find(
+			(e) => e.kind === "action.request" && e.name === "x",
+		);
+		expect(injected).toBeDefined();
+		// Guest-supplied at/ts are ignored; host stamps its own values.
+		expect(injected?.at).not.toBe("1999-01-01T00:00:00.000Z");
+		expect(injected?.ts).not.toBe(999_999_999);
+		expect(Number.isNaN(Date.parse(injected?.at ?? ""))).toBe(false);
+	});
+
 	it("trigger.request has ref=null; matching trigger.response has ref=0", async () => {
 		const { events } = await runSource(defaultHandler("return 1;"));
 		const req = events.find((e) => e.kind === "trigger.request");

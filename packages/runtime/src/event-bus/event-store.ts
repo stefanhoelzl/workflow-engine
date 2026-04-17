@@ -15,7 +15,8 @@ interface EventsTable {
 	seq: number;
 	kind: string;
 	ref: number | null;
-	ts: string;
+	at: string;
+	ts: number;
 	workflow: string;
 	workflowSha: string;
 	name: string;
@@ -55,7 +56,8 @@ CREATE TABLE IF NOT EXISTS events (
 	seq INTEGER NOT NULL,
 	kind TEXT NOT NULL,
 	ref INTEGER,
-	ts TIMESTAMPTZ NOT NULL,
+	"at" TIMESTAMPTZ NOT NULL,
+	ts BIGINT NOT NULL,
 	workflow TEXT NOT NULL,
 	workflowSha TEXT NOT NULL,
 	name TEXT NOT NULL,
@@ -90,7 +92,8 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		seq: event.seq,
 		kind: event.kind,
 		ref: event.ref,
-		ts: new Date(event.ts).toISOString(),
+		at: event.at,
+		ts: event.ts,
 		workflow: event.workflow,
 		workflowSha: event.workflowSha,
 		name: event.name,

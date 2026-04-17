@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import {
@@ -14,19 +15,18 @@ import { recover } from "./recovery.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 
+const ISO_DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}T/;
+
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
 ): InvocationEvent {
-	return {
+	return makeEvent({
 		id: "evt_a",
-		seq: 0,
-		ref: null,
 		ts: 100,
 		workflow: "wf",
-		workflowSha: "sha",
 		name: "on-push",
 		...overrides,
-	} as InvocationEvent;
+	});
 }
 
 describe("recovery", () => {
@@ -89,6 +89,34 @@ describe("recovery", () => {
 		expect(synthetic?.workflow).toBe("wf");
 		expect(synthetic?.workflowSha).toBe("sha");
 		expect(synthetic?.error).toBeDefined();
+	});
+
+	it("synthetic terminal reuses the last replayed event's ts", async () => {
+		await backend.write(
+			"pending/evt_a/000000.json",
+			JSON.stringify(event({ kind: "trigger.request", seq: 0, ts: 0 })),
+		);
+		await backend.write(
+			"pending/evt_a/000001.json",
+			JSON.stringify(
+				event({ kind: "system.request", seq: 1, ref: 0, ts: 4200 }),
+			),
+		);
+
+		const seen: InvocationEvent[] = [];
+		const consumer: BusConsumer = {
+			handle: async (e: InvocationEvent) => {
+				seen.push(e);
+			},
+		};
+		const bus = createEventBus([consumer]);
+
+		await recover({ backend, eventStore }, bus);
+
+		const synthetic = seen.at(-1);
+		expect(synthetic?.kind).toBe("trigger.error");
+		expect(synthetic?.ts).toBe(4200);
+		expect(synthetic?.at).toMatch(ISO_DATE_PREFIX_RE);
 	});
 
 	it("groups by invocation id and recovers each independently", async () => {
