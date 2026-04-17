@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { type Sandbox, type SandboxOptions, sandbox } from "./index.js";
-
-interface Logger {
-	info(message: string, meta?: Record<string, unknown>): void;
-	warn(message: string, meta?: Record<string, unknown>): void;
-	error(message: string, meta?: Record<string, unknown>): void;
-}
+import {
+	type Logger,
+	type Sandbox,
+	type SandboxOptions,
+	sandbox,
+} from "./index.js";
 
 interface SandboxFactory {
 	create(source: string, options?: SandboxOptions): Promise<Sandbox>;
@@ -37,7 +36,7 @@ function createSandboxFactory(opts: { logger: Logger }): SandboxFactory {
 
 		const hash = sourceHash(source);
 		const start = performance.now();
-		const sb = await sandbox(source, {}, options);
+		const sb = await sandbox(source, {}, { ...options, logger });
 		const durationMs = Math.round(performance.now() - start);
 
 		sb.onDied((err) => {
@@ -71,5 +70,5 @@ function createSandboxFactory(opts: { logger: Logger }): SandboxFactory {
 	return { create, dispose };
 }
 
-export type { Logger, SandboxFactory };
+export type { SandboxFactory };
 export { createSandboxFactory };

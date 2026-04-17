@@ -26,14 +26,6 @@ type MainToWorker =
 			forwardFetch: boolean;
 			// Optional memoryLimit in bytes, passed to QuickJS.create.
 			memoryLimit?: number;
-			// TODO(quickjs-wasi): clock (WASI clock_time_get) and random
-			// (WASI random_get) overrides cannot be sent via postMessage because
-			// they're host functions that need access to the WASM memory at
-			// VM-creation time. Future work: sandbox-side factories that
-			// construct these from simple parameters (fixed time, seed, etc.).
-			// TODO(quickjs-wasi): interruptHandler also cannot cross postMessage
-			// — same limitation. Will require a sandbox-side factory (e.g. a
-			// deadline value that the worker turns into a real handler).
 	  }
 	| {
 			type: "run";
@@ -67,6 +59,12 @@ type WorkerToMain =
 			args: unknown[];
 	  }
 	| { type: "event"; event: InvocationEvent }
-	| { type: "done"; payload: RunResultPayload };
+	| { type: "done"; payload: RunResultPayload }
+	| {
+			type: "log";
+			level: "debug" | "info" | "warn" | "error";
+			message: string;
+			meta?: Record<string, unknown>;
+	  };
 
 export type { MainToWorker, RunResultPayload, SerializedError, WorkerToMain };

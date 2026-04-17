@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSandboxFactory, type Logger } from "./factory.js";
+import { createSandboxFactory } from "./factory.js";
+import type { Logger } from "./index.js";
 
 const RUN_OPTS = {
 	invocationId: "evt_test",
@@ -12,6 +13,7 @@ function makeLogger(): Logger {
 		info: vi.fn(),
 		warn: vi.fn(),
 		error: vi.fn(),
+		debug: vi.fn(),
 	};
 }
 
