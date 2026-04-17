@@ -37,13 +37,8 @@ function formatDurationUs(us: number): string {
 	return `${(d / US_PER_MINUTE).toFixed(DURATION_FRACTION_DIGITS)} min`;
 }
 
-function renderCard(row: InvocationRow) {
-	const duration =
-		row.completedTs === null
-			? "—"
-			: formatDurationUs(row.completedTs - row.startedTs);
-	return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
-    <div class="entry-header">
+function renderCardSummary(row: InvocationRow, duration: string) {
+	return html`<div class="entry-header">
       <span class="entry-workflow">${row.workflow}</span>
       <span class="entry-trigger">${row.trigger}</span>
       <span class="badge ${row.status}">${row.status}</span>
@@ -52,8 +47,34 @@ function renderCard(row: InvocationRow) {
       <span class="entry-started">${formatTimestamp(row.startedAt)}</span>
       <span class="entry-sep">·</span>
       <span class="entry-duration">${duration}</span>
-    </div>
+    </div>`;
+}
+
+function renderCard(row: InvocationRow) {
+	const duration =
+		row.completedTs === null
+			? "—"
+			: formatDurationUs(row.completedTs - row.startedTs);
+	const summary = renderCardSummary(row, duration);
+
+	if (row.status === "pending") {
+		return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
+    ${summary}
   </div>`;
+	}
+
+	const flamegraphUrl = `/dashboard/invocations/${row.id}/flamegraph`;
+	return html`<details class="entry entry-expandable"
+    id="inv-${row.id}"
+    hx-get="${flamegraphUrl}"
+    hx-trigger="toggle once"
+    hx-target="find .flame-slot"
+    hx-swap="innerHTML">
+    <summary class="entry-summary">
+      ${summary}
+    </summary>
+    <div class="flame-slot"></div>
+  </details>`;
 }
 
 function renderInvocationList(invocations: readonly InvocationRow[]) {
@@ -71,6 +92,8 @@ function renderSkeletonCards() {
 }
 
 function renderDashboardPage(user: string, email: string) {
+	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
+
 	const content = html`
   <div class="page-header">
     <h1>Dashboard</h1>
@@ -86,10 +109,10 @@ function renderDashboardPage(user: string, email: string) {
   </div>`;
 
 	return renderLayout(
-		{ title: "Dashboard", activePath: "/dashboard", user, email },
+		{ title: "Dashboard", activePath: "/dashboard", user, email, head },
 		content,
 	);
 }
 
 export type { InvocationRow };
-export { renderDashboardPage, renderInvocationList };
+export { formatDurationUs, renderDashboardPage, renderInvocationList };

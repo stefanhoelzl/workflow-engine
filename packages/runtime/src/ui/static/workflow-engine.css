@@ -805,3 +805,209 @@ body {
 	stroke-width: 2;
 	fill: none;
 }
+
+/* -------------------------------------------------------------------------
+ * Flamegraph
+ * ----------------------------------------------------------------------- */
+
+:root {
+	--kind-trigger: #3b82f6;
+	--kind-action: #6366f1;
+	--kind-system: #b45309;
+	--kind-timer: #14b8a6;
+}
+
+.flame-fragment {
+	padding: 8px 12px 12px;
+	color: var(--text);
+}
+
+.flame-summary {
+	font-size: 11px;
+	color: var(--text-secondary);
+	padding: 2px 0;
+	font-family: var(--font-mono);
+}
+
+.flame-ruler {
+	display: block;
+	width: 100%;
+	overflow: visible;
+	margin-bottom: 2px;
+}
+
+.flame-ruler-tick {
+	stroke: var(--border);
+}
+
+.flame-ruler-label {
+	font-family: var(--font-mono);
+	font-size: 9px;
+	fill: var(--text-muted);
+}
+
+.flame-container {
+	max-height: 40vh;
+	overflow-y: auto;
+	overflow-x: hidden;
+	border-top: 1px solid var(--border);
+	border-bottom: 1px solid var(--border);
+}
+
+.flame-graph {
+	display: block;
+	width: 100%;
+	overflow: visible;
+}
+
+.flame-bar {
+	cursor: pointer;
+}
+
+.kind-trigger {
+	fill: var(--kind-trigger);
+}
+.kind-action {
+	fill: var(--kind-action);
+}
+.kind-system {
+	fill: var(--kind-system);
+}
+.kind-timer {
+	fill: var(--kind-timer);
+}
+
+.bar-error {
+	stroke: var(--red);
+	stroke-width: 2;
+}
+
+.orphan {
+	fill: url(#flame-hatched);
+}
+
+.bar-label {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	fill: #ffffff;
+	dominant-baseline: middle;
+	pointer-events: none;
+}
+.bar-label-dim {
+	font-family: var(--font-mono);
+	font-size: 9px;
+	fill: rgba(255, 255, 255, 0.78);
+	dominant-baseline: middle;
+	pointer-events: none;
+}
+
+.bar-error-icon {
+	font-size: 11px;
+	fill: var(--red);
+	font-weight: 700;
+	dominant-baseline: middle;
+	pointer-events: none;
+}
+
+.marker-set {
+	fill: var(--kind-timer);
+	cursor: pointer;
+}
+.marker-clear-bg {
+	fill: var(--kind-timer);
+	cursor: pointer;
+}
+.marker-x {
+	stroke: #ffffff;
+	stroke-width: 1.5;
+	stroke-linecap: round;
+	pointer-events: none;
+}
+.marker-auto {
+	opacity: 0.55;
+}
+.marker-call {
+	fill: var(--kind-system);
+	cursor: pointer;
+}
+
+.timer-connector {
+	stroke: var(--kind-timer);
+	stroke-width: 1.3;
+	stroke-dasharray: 3 3;
+	fill: none;
+	opacity: 0.7;
+	pointer-events: none;
+}
+
+.flame-track-divider {
+	stroke: var(--border);
+	stroke-dasharray: 4 3;
+	pointer-events: none;
+}
+.flame-track-label {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	font-weight: 600;
+	fill: var(--text-muted);
+	pointer-events: none;
+}
+
+.flame-empty {
+	padding: 12px;
+	font-size: 13px;
+	color: var(--text-muted);
+	text-align: center;
+	font-style: italic;
+}
+
+.tid-hit {
+	filter: drop-shadow(0 0 2px rgba(20, 184, 166, 0.85))
+		drop-shadow(0 0 4px rgba(20, 184, 166, 0.55));
+}
+.tid-hit.timer-connector {
+	opacity: 1;
+	stroke-width: 2;
+}
+.tid-dim {
+	opacity: 0.22;
+}
+
+/* Expandable invocation row (<details>) styling */
+.entry-expandable {
+	cursor: default;
+}
+.entry-expandable > summary {
+	list-style: none;
+	cursor: pointer;
+	padding: 0;
+}
+.entry-expandable > summary::-webkit-details-marker {
+	display: none;
+}
+.entry-summary {
+	display: block;
+}
+
+/* Dialog result blocks (request + response, each with its own copy button) */
+.trigger-result-blocks {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+.trigger-result-block {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-height: 0;
+}
+.trigger-result-label {
+	font-size: 11px;
+	color: var(--text-secondary);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	margin: 0;
+}

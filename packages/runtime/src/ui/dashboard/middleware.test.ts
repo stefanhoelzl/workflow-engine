@@ -9,6 +9,9 @@ import {
 import { dashboardMiddleware } from "./middleware.js";
 
 const SUCCEEDED_BADGE_RE = /class="badge succeeded"[^>]*>succeeded</;
+const DETAILS_OK_RE = /<details[^>]*id="inv-evt_ok"/;
+const DETAILS_ERR_RE = /<details[^>]*id="inv-evt_err"/;
+const DETAILS_PENDING_RE = /<details[^>]*id="inv-evt_pending"/;
 
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
@@ -142,6 +145,73 @@ describe("dashboard middleware — fragment", () => {
 		expect(html.indexOf("tr_2")).toBeLessThan(html.indexOf("tr_0"));
 	});
 
+	it("succeeded row is expandable with HTMX lazy-load attributes", async () => {
+		await store.handle(
+			event({ id: "evt_ok", kind: "trigger.request", seq: 0, name: "t_ok" }),
+		);
+		await store.handle(
+			event({
+				id: "evt_ok",
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				output: { status: 200 },
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations");
+		const html = await res.text();
+		expect(html).toMatch(DETAILS_OK_RE);
+		expect(html).toContain('hx-get="/dashboard/invocations/evt_ok/flamegraph"');
+		expect(html).toContain('hx-trigger="toggle once"');
+		expect(html).toContain('hx-target="find .flame-slot"');
+		expect(html).toContain('class="flame-slot"');
+	});
+
+	it("failed row is expandable with the same HTMX attributes", async () => {
+		await store.handle(
+			event({ id: "evt_err", kind: "trigger.request", seq: 0, name: "t_err" }),
+		);
+		await store.handle(
+			event({
+				id: "evt_err",
+				kind: "trigger.error",
+				seq: 1,
+				ref: 0,
+				error: { message: "nope", stack: "" },
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations");
+		const html = await res.text();
+		expect(html).toMatch(DETAILS_ERR_RE);
+		expect(html).toContain(
+			'hx-get="/dashboard/invocations/evt_err/flamegraph"',
+		);
+	});
+
+	it("pending row has no expand affordance (no details, no hx-get flamegraph)", async () => {
+		await store.handle(
+			event({
+				id: "evt_pending",
+				kind: "trigger.request",
+				seq: 0,
+				name: "t_p",
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations");
+		const html = await res.text();
+		expect(html).not.toMatch(DETAILS_PENDING_RE);
+		expect(html).not.toContain("/dashboard/invocations/evt_pending/flamegraph");
+		// But the row is still rendered.
+		expect(html).toContain('id="inv-evt_pending"');
+	});
+
 	it("renders each invocation with a stable DOM id and status-colored label", async () => {
 		await store.handle(
 			event({
@@ -168,6 +238,76 @@ describe("dashboard middleware — fragment", () => {
 		expect(html).toContain('id="inv-evt_success"');
 		// Colored status label: badge.succeeded carries the status color + text
 		expect(html).toMatch(SUCCEEDED_BADGE_RE);
+	});
+
+	it("flamegraph fragment renders SVG for a completed invocation", async () => {
+		await store.handle(event({ kind: "trigger.request", seq: 0, ts: 0 }));
+		await store.handle(
+			event({
+				kind: "action.request",
+				seq: 1,
+				ref: 0,
+				ts: 100,
+				name: "sendEmail",
+			}),
+		);
+		await store.handle(
+			event({
+				kind: "action.response",
+				seq: 2,
+				ref: 1,
+				ts: 300,
+				name: "sendEmail",
+			}),
+		);
+		await store.handle(
+			event({
+				kind: "trigger.response",
+				seq: 3,
+				ref: 0,
+				ts: 1000,
+				output: { status: 200 },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations/evt_a/flamegraph");
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-fragment"');
+		expect(html).toContain('class="flame-graph"');
+		expect(html).toContain("kind-action");
+		expect(html).toContain("sendEmail");
+	});
+
+	it("flamegraph fragment returns empty state for unknown id with 200", async () => {
+		const app = await mount(store);
+		const res = await app.request(
+			"/dashboard/invocations/evt_missing/flamegraph",
+		);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-empty"');
+		expect(html).not.toContain('class="flame-graph"');
+	});
+
+	it("flamegraph fragment returns empty state for pending invocation with 200", async () => {
+		await store.handle(event({ kind: "trigger.request", seq: 0, ts: 0 }));
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations/evt_a/flamegraph");
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-empty"');
+		expect(html).not.toContain('class="flame-graph"');
+	});
+
+	it("flamegraph fragment handles URL-encoded ids without 4xx", async () => {
+		const app = await mount(store);
+		const res = await app.request(
+			"/dashboard/invocations/evt_with%20space/flamegraph",
+		);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-empty"');
 	});
 
 	it("formatDurationUs renders smart-unit bands at the four boundaries", async () => {

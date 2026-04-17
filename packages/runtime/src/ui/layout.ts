@@ -56,6 +56,7 @@ function renderLayout(
   <link rel="stylesheet" href="/static/workflow-engine.css">
   <script defer src="/static/alpine.js"></script>
   <script src="/static/htmx.js"></script>
+  <script defer src="/static/result-dialog.js"></script>
 ${head ?? ""}
 </head>
 <body${bodyAttrs ? raw(` ${bodyAttrs}`) : ""}>

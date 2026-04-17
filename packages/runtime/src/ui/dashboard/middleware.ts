@@ -1,7 +1,10 @@
+import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { EventStore } from "../../event-bus/event-store.js";
+import type { Logger } from "../../logger.js";
 import type { Middleware } from "../../triggers/http.js";
+import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
 import { renderDashboardPage, renderInvocationList } from "./page.js";
 
@@ -10,6 +13,7 @@ const DEFAULT_LIMIT = 100;
 interface DashboardMiddlewareDeps {
 	readonly eventStore: EventStore;
 	readonly limit?: number;
+	readonly logger?: Logger;
 }
 
 interface RawRequestRow {
@@ -90,15 +94,73 @@ async function fetchInvocationRows(
 	});
 }
 
+async function fetchInvocationEvents(
+	eventStore: EventStore,
+	id: string,
+): Promise<InvocationEvent[]> {
+	const rows = (await eventStore.query
+		.where("id", "=", id)
+		.selectAll()
+		.orderBy("seq", "asc")
+		.execute()) as Record<string, unknown>[];
+	return rows.map(rowToEvent);
+}
+
+function rowToEvent(row: Record<string, unknown>): InvocationEvent {
+	const base = {
+		kind: row.kind as InvocationEvent["kind"],
+		id: row.id as string,
+		seq: Number(row.seq),
+		ref: row.ref === null || row.ref === undefined ? null : Number(row.ref),
+		at: row.at as string,
+		ts: toNumber(row.ts as number | bigint),
+		workflow: row.workflow as string,
+		workflowSha: row.workflowSha as string,
+		name: row.name as string,
+	};
+	const input = parseJsonField(row.input);
+	const output = parseJsonField(row.output);
+	const error = parseJsonField(row.error) as
+		| InvocationEvent["error"]
+		| undefined;
+	return {
+		...base,
+		...(input === undefined ? {} : { input }),
+		...(output === undefined ? {} : { output }),
+		...(error === undefined ? {} : { error }),
+	};
+}
+
+function parseJsonField(value: unknown): unknown {
+	if (value === null || value === undefined) {
+		return;
+	}
+	if (typeof value !== "string") {
+		return value;
+	}
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
+}
+
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
 	const limit = deps.limit ?? DEFAULT_LIMIT;
+	const logger = deps.logger;
 
 	app.get("/", renderShell);
 	app.get("", renderShell);
 	app.get("/invocations", async (c) => {
 		const rows = await fetchInvocationRows(deps.eventStore, limit);
 		return c.html(renderInvocationList(rows));
+	});
+	app.get("/invocations/:id/flamegraph", async (c) => {
+		const id = c.req.param("id");
+		logger?.debug("dashboard.flamegraph.request", { id });
+		const events = await fetchInvocationEvents(deps.eventStore, id);
+		return c.html(renderFlamegraph(events));
 	});
 
 	return {
