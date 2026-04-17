@@ -1,6 +1,9 @@
+import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it } from "vitest";
 import type { WorkflowRunner } from "../executor/types.js";
 import type { HttpTriggerEntry } from "../triggers/http.js";
+import { renderFlamegraph } from "./dashboard/flamegraph.js";
 import {
 	type InvocationRow,
 	renderDashboardPage,
@@ -24,6 +27,8 @@ const INLINE_SCRIPT_RE =
 const EVENT_HANDLER_RE = /\bon\w+\s*=/i;
 const INLINE_STYLE_RE = /\bstyle\s*=/i;
 const JAVASCRIPT_URL_RE = /javascript\s*:/i;
+const DATA_TIMER_ID_7_RE = /data-timer-id="7"/;
+const DATA_EVENT_PAIR_0_6_RE = /data-event-pair="0-6"/;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -123,5 +128,70 @@ describe("HTML CSP invariants", () => {
 		expect(html).not.toMatch(EVENT_HANDLER_RE);
 		expect(html).not.toMatch(INLINE_STYLE_RE);
 		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+	});
+
+	it("renderFlamegraph (empty) output has no forbidden inline patterns", async () => {
+		const html = (await renderFlamegraph([])).toString();
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+	});
+
+	it("renderFlamegraph (populated) output has no forbidden inline patterns", async () => {
+		const events: InvocationEvent[] = [
+			makeEvent({ kind: "trigger.request", seq: 0, ts: 0 }),
+			makeEvent({
+				kind: "action.request",
+				seq: 1,
+				ref: 0,
+				ts: 100,
+				name: "sendEmail",
+			}),
+			makeEvent({
+				kind: "timer.set",
+				seq: 2,
+				ref: 1,
+				ts: 120,
+				name: "setTimeout",
+				input: { timerId: 7, delay: 50 },
+			}),
+			makeEvent({
+				kind: "action.response",
+				seq: 3,
+				ref: 1,
+				ts: 180,
+				name: "sendEmail",
+			}),
+			makeEvent({
+				kind: "timer.request",
+				seq: 4,
+				ref: null,
+				ts: 200,
+				name: "setTimeout",
+				input: { timerId: 7 },
+			}),
+			makeEvent({
+				kind: "timer.response",
+				seq: 5,
+				ref: 4,
+				ts: 250,
+				name: "setTimeout",
+				input: { timerId: 7 },
+			}),
+			makeEvent({ kind: "trigger.response", seq: 6, ref: 0, ts: 500 }),
+		];
+		const html = (await renderFlamegraph(events)).toString();
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+		// Kind classes + timer data attrs are present
+		expect(html).toContain("kind-trigger");
+		expect(html).toContain("kind-action");
+		expect(html).toContain("kind-timer");
+		expect(html).toMatch(DATA_TIMER_ID_7_RE);
+		// Paired bars carry data-event-pair
+		expect(html).toMatch(DATA_EVENT_PAIR_0_6_RE);
 	});
 });
