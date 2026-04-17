@@ -38,7 +38,12 @@ type EventKind =
 	| "action.error"
 	| "system.request"
 	| "system.response"
-	| "system.error";
+	| "system.error"
+	| "timer.set"
+	| "timer.request"
+	| "timer.response"
+	| "timer.error"
+	| "timer.clear";
 
 interface InvocationEventError {
 	message: string;

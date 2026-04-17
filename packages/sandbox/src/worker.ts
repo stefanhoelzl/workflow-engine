@@ -431,6 +431,25 @@ async function callGuestFunction(
 	return { ok: true, result: resultValue };
 }
 
+function emitTerminalTriggerEvent(
+	bridge: Bridge,
+	exportName: string,
+	payload: RunResultPayload,
+): void {
+	if (payload.ok) {
+		emitTriggerEvent(bridge, "trigger.response", exportName, {
+			output: payload.result,
+		});
+	} else {
+		emitTriggerEvent(bridge, "trigger.error", exportName, {
+			error: {
+				message: payload.error.message,
+				stack: payload.error.stack,
+			},
+		});
+	}
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrator threads abort signal, installs per-run extras, invokes the exported function, and emits trigger events — splitting obscures the sequence
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
@@ -466,7 +485,7 @@ async function handleRun(
 		input: msg.ctx,
 	});
 
-	let payload: RunResultPayload;
+	let payload: RunResultPayload | null = null;
 	try {
 		const fnHandle = readExportFromIife(vm, msg.exportName);
 		if (fnHandle) {
@@ -481,26 +500,19 @@ async function handleRun(
 				},
 			};
 		}
-		if (payload.ok) {
-			emitTriggerEvent(bridge, "trigger.response", msg.exportName, {
-				output: payload.result,
-			});
-		} else {
-			emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
-				error: { message: payload.error.message, stack: payload.error.stack },
-			});
-		}
 	} catch (err) {
 		const e = serializeError(err);
-		emitTriggerEvent(bridge, "trigger.error", msg.exportName, {
-			error: { message: e.message, stack: e.stack },
-		});
 		payload = {
 			ok: false,
 			error: { message: e.message, stack: e.stack },
 		};
 	} finally {
+		// Clear pending timers (emitting timer.clear events) BEFORE the terminal
+		// trigger event so those clear events land in the same archive flush.
 		timers.clearActive();
+		if (payload) {
+			emitTerminalTriggerEvent(bridge, msg.exportName, payload);
+		}
 		state.currentAbort?.abort();
 		state.currentAbort = null;
 		uninstallGlobals(bridge, extraNames);
