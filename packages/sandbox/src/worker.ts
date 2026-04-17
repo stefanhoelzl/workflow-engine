@@ -33,6 +33,12 @@ import type {
 	SerializedError,
 	WorkerToMain,
 } from "./protocol.js";
+import {
+	createWasiFactory,
+	createWasiState,
+	perfNowNs,
+	type WasiState,
+} from "./wasi.js";
 
 if (!parentPort) {
 	throw new Error("worker.ts must be loaded as a worker_threads Worker");
@@ -205,6 +211,10 @@ interface SandboxState {
 
 let state: SandboxState | null = null;
 
+// --- WASI overrides: observability for clock/random + fd_write routing ---
+
+const wasiState: WasiState = createWasiState();
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: init sets up VM, bridge, timers, fetch forwarding, and source eval as an atomic sequence
 async function handleInit(
 	msg: Extract<MainToWorker, { type: "init" }>,
@@ -222,13 +232,14 @@ async function handleInit(
 	if (msg.memoryLimit !== undefined) {
 		createOptions.memoryLimit = msg.memoryLimit;
 	}
-	// TODO(quickjs-wasi): wire clock/random/interruptHandler once we have a
-	// way to serialize them across postMessage (likely via factory descriptors
-	// resolved on the worker side).
+
+	wasiState.anchorNs = perfNowNs();
+	createOptions.wasi = createWasiFactory(wasiState, post);
 
 	const vm = await QuickJS.create(createOptions);
 
 	const bridge = createBridge(vm);
+	wasiState.bridge = bridge;
 	bridge.setSink((event) => post({ type: "event", event }));
 	const timers = setupGlobals(bridge);
 
@@ -466,6 +477,7 @@ async function handleRun(
 	}
 	const { vm, bridge, timers } = state;
 
+	wasiState.anchorNs = perfNowNs();
 	bridge.setRunContext({
 		invocationId: msg.invocationId,
 		workflow: msg.workflow,

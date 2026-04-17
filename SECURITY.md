@@ -295,6 +295,63 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
 - No other globals are present. `process`, `require`, `fs`, and Node
   APIs are absent.
 
+### WASI override inventory
+
+The QuickJS WASM module imports a small set of `wasi_snapshot_preview1`
+functions. Three are overridden by `packages/sandbox/src/wasi.ts` so
+host-reaching calls that bypass the explicit bridge are still
+observable. The others keep `quickjs-wasi`'s default shim.
+
+- **`clock_time_get(clockId, _precision, resultPtr)`** — drives
+  `Date.now()`, `new Date()`, `performance.now()`, and the one-time seed
+  of QuickJS's xorshift64\* PRNG (so `Math.random()` inherits from this
+  clock). `CLOCK_REALTIME` passes through to host `Date.now() × 1e6` ns.
+  `CLOCK_MONOTONIC` returns `(performance.now() × 1e6) − anchorNs`,
+  where `anchorNs` is captured at worker init and re-captured every
+  time `bridge.setRunContext` fires, so guest `performance.now()`
+  restarts near zero at the beginning of each run. While a run context
+  is active, each call emits one `system.call` InvocationEvent
+  (`name = "wasi.clock_time_get"`, `input = { clockId }`,
+  `output = { ns }`). Calls outside a run context (during
+  `QuickJS.create`, WASI libc init, guest source eval) pass through
+  silently without emitting.
+- **`random_get(bufPtr, bufLen)`** — drives `crypto.getRandomValues`,
+  `crypto.randomUUID`, and every internal entropy read made by the
+  WASM crypto extension (key generation, IV, nonces, HKDF seeds). The
+  override fills the requested buffer from host
+  `crypto.getRandomValues`. While a run context is active, each call
+  emits one `system.call` InvocationEvent
+  (`name = "wasi.random_get"`, `input = { bufLen }`,
+  `output = { bufLen, sha256First16 }`). The `sha256First16` field is
+  the hex encoding of the first 16 bytes of the SHA-256 digest of the
+  returned bytes. **The raw entropy bytes MUST NEVER appear in any
+  emitted event or log** — only the size and this bounded fingerprint.
+  Calls outside a run context pass through silently.
+- **`fd_write(fd, iovsPtr, iovsLen, nwrittenPtr)`** — receives bytes
+  QuickJS engine-internal paths write to stdout/stderr (rare — mostly
+  mbedTLS notices and engine panic paths). Guest `console.log` does
+  NOT reach `fd_write`; it uses the `console.*` bridge installed by
+  `globals.ts`. The override decodes bytes as UTF-8, line-buffers per
+  fd, and on each completed line posts a
+  `WorkerToMain { type: "log", level: "debug", message:
+  "quickjs.fd_write", meta: { fd, text } }` message. The main thread
+  routes the message to the sandbox's injected `Logger.debug` (or
+  silently drops it when no logger is injected). **`fd_write` bytes
+  never become InvocationEvents** — engine plumbing belongs in the
+  operational log, not the workflow event stream. Host `process.stdout`
+  and `process.stderr` receive nothing: the default shim's
+  pass-through is fully replaced.
+
+**Residual observability gap.** Operations inside the WASM crypto
+extension (`crypto.subtle.digest`, `crypto.subtle.generateKey`,
+`crypto.subtle.encrypt`, and so on) run entirely inside the extension's
+WASM memory without crossing a boundary this project instruments. The
+extension's entropy consumption is observable via the `wasi.random_get`
+events above, but the higher-level operation (e.g. "a private key was
+generated") is not directly observable. Closing that gap would require
+separate instrumentation at the crypto extension ABI layer and is out
+of scope here.
+
 ### Threats
 
 | ID | Threat | Category |

@@ -31,6 +31,7 @@ const PACKAGE_VERSION = readPackageVersion();
 
 const ONLY_ACTION_RE = /only action.\* allowed/;
 const JSON_PARSE_ERROR_RE = /JSON|Unexpected|parse/i;
+const SHA256_FIRST_16_RE = /^[0-9a-f]{32}$/;
 
 const RUN_OPTS = {
 	invocationId: "evt_test",
@@ -642,6 +643,110 @@ describe("sandbox timer instrumentation", () => {
 				prefixed: "undefined",
 			});
 		}
+	});
+});
+
+describe("sandbox WASI observability", () => {
+	it("in-run Date.now() emits one wasi.clock_time_get system.call event", async () => {
+		const { events } = await runSource(defaultHandler("return Date.now();"));
+		const clockEvents = events.filter(
+			(e) => e.kind === "system.call" && e.name === "wasi.clock_time_get",
+		);
+		expect(clockEvents.length).toBeGreaterThanOrEqual(1);
+		const first = clockEvents[0] as InvocationEvent;
+		expect(first.kind).toBe("system.call");
+		expect(first.input).toEqual({ clockId: "REALTIME" });
+		expect(typeof (first.output as { ns?: number })?.ns).toBe("number");
+		// system.call is a leaf event parented to whatever is on the refStack.
+		// Pure-guest Date.now() parents to the trigger.request (seq 0).
+		expect(first.ref).toBe(0);
+	});
+
+	it("in-run crypto.getRandomValues emits wasi.random_get with bufLen + sha256First16, no raw bytes", async () => {
+		const { events } = await runSource(
+			defaultHandler(`
+				const buf = new Uint8Array(32);
+				crypto.getRandomValues(buf);
+				return buf.length;
+			`),
+		);
+		const randomEvents = events.filter(
+			(e) => e.kind === "system.call" && e.name === "wasi.random_get",
+		);
+		expect(randomEvents.length).toBeGreaterThanOrEqual(1);
+		// Find the one with bufLen 32 (libc init may have requested other sizes
+		// during VM creation, but those are pre-run and SHALL NOT emit).
+		const target = randomEvents.find(
+			(e) => (e.input as { bufLen?: number })?.bufLen === 32,
+		);
+		expect(target).toBeDefined();
+		const output = target?.output as {
+			bufLen: number;
+			sha256First16: string;
+		};
+		expect(output.bufLen).toBe(32);
+		expect(output.sha256First16).toMatch(SHA256_FIRST_16_RE);
+	});
+
+	it("performance.now() starts near zero and increases within a run", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const a = performance.now();
+				// Consume a bit of time: a trivial busy loop keeps everything
+				// deterministic without relying on a timer.
+				let acc = 0;
+				for (let i = 0; i < 1000; i++) acc += i;
+				const b = performance.now();
+				return { a, b, acc };
+			`),
+		);
+		if (!result.ok) {
+			throw new Error(`guest error: ${result.error.message}`);
+		}
+		const { a, b } = result.result as { a: number; b: number };
+		// Anchor is re-set at setRunContext; guest's first read should be tiny.
+		expect(a).toBeLessThan(100);
+		expect(b).toBeGreaterThanOrEqual(a);
+	});
+
+	it("cached sandbox: performance.now() at start of run 2 is less than end of run 1", async () => {
+		const sb = await sandbox(
+			defaultHandler(`
+				const start = performance.now();
+				let acc = 0;
+				for (let i = 0; i < 5000; i++) acc += i;
+				const end = performance.now();
+				return { start, end, acc };
+			`),
+			{},
+		);
+		try {
+			const r1 = await sb.run("default", null, RUN_OPTS);
+			const r2 = await sb.run("default", null, RUN_OPTS);
+			if (!(r1.ok && r2.ok)) {
+				throw new Error("run failed");
+			}
+			const end1 = (r1.result as { end: number }).end;
+			const start2 = (r2.result as { start: number }).start;
+			expect(start2).toBeLessThan(end1);
+		} finally {
+			sb.dispose();
+		}
+	});
+
+	it("trigger.request remains the first emitted event (pre-run WASI reads do not emit)", async () => {
+		const { events } = await runSource(defaultHandler("return 1;"));
+		expect(events[0]?.kind).toBe("trigger.request");
+		expect(events[0]?.seq).toBe(0);
+		// No wasi.* event may appear before the trigger.request seq.
+		const wasiBeforeTrigger = events.filter(
+			(e) =>
+				e.kind === "system.call" &&
+				typeof e.name === "string" &&
+				e.name.startsWith("wasi.") &&
+				e.seq < (events[0]?.seq ?? 0),
+		);
+		expect(wasiBeforeTrigger).toHaveLength(0);
 	});
 });
 

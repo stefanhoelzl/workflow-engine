@@ -29,6 +29,12 @@ interface HttpTriggerPayload<
 // Invocation events
 // ---------------------------------------------------------------------------
 
+/**
+ * `system.call` is a single-record kind: the event carries both `input` and
+ * `output` and has no paired counterpart. Used for instant synchronous
+ * sub-bridge host reads (WASI clock/random). Every other kind follows the
+ * paired `*.request` / `*.response` / `*.error` contract.
+ */
 type EventKind =
 	| "trigger.request"
 	| "trigger.response"
@@ -39,6 +45,7 @@ type EventKind =
 	| "system.request"
 	| "system.response"
 	| "system.error"
+	| "system.call"
 	| "timer.set"
 	| "timer.request"
 	| "timer.response"

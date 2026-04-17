@@ -110,6 +110,7 @@ interface Bridge {
 		extra: { input?: unknown; output?: unknown; error?: unknown },
 	): InvocationEvent | null;
 	emit(event: InvocationEvent): void;
+	emitSystemCall(method: string, input: unknown, output: unknown): void;
 	setSink(sink: EventSink | null): void;
 	dispose(): void;
 }
@@ -306,6 +307,22 @@ function createBridge(vm: QuickJS): Bridge {
 		}
 	}
 
+	function emitSystemCall(
+		method: string,
+		input: unknown,
+		output: unknown,
+	): void {
+		const seqValue = seq++;
+		const ref = refStack.at(-1) ?? null;
+		const evt = buildEvent("system.call", seqValue, ref, method, {
+			input,
+			output,
+		});
+		if (evt) {
+			emit(evt);
+		}
+	}
+
 	function sync<Args extends readonly AnyExtractor[], R>(
 		target: JSValueHandle,
 		name: string,
@@ -423,6 +440,7 @@ function createBridge(vm: QuickJS): Bridge {
 		},
 		buildEvent,
 		emit,
+		emitSystemCall,
 		setSink(s: EventSink | null) {
 			sink = s;
 		},

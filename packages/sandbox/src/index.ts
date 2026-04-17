@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { IIFE_NAMESPACE, type InvocationEvent } from "@workflow-engine/core";
 import type { MethodMap } from "./install-host-methods.js";
+import { dispatchLog } from "./log-dispatch.js";
 import type {
 	MainToWorker,
 	RunResultPayload,
@@ -29,6 +30,13 @@ interface RunOptions {
 	readonly extraMethods?: MethodMap;
 }
 
+interface Logger {
+	info(message: string, meta?: Record<string, unknown>): void;
+	warn(message: string, meta?: Record<string, unknown>): void;
+	error(message: string, meta?: Record<string, unknown>): void;
+	debug(message: string, meta?: Record<string, unknown>): void;
+}
+
 interface SandboxOptions {
 	filename?: string;
 	fetch?: typeof globalThis.fetch;
@@ -40,11 +48,9 @@ interface SandboxOptions {
 	// Exceeding it triggers an OOM error inside the guest. Passed directly
 	// to QuickJS.create({ memoryLimit }).
 	memoryLimit?: number;
-	// TODO(quickjs-wasi): clock / random / interruptHandler overrides cannot
-	// be sent across postMessage because they're host-side functions that
-	// need WASM-memory access at VM creation time. Future work: parameterize
-	// them via serializable descriptors (fixed time, byte-fill seed, deadline
-	// ms) that the worker reconstitutes on its side.
+	// Optional sink for WorkerToMain log messages (quickjs engine diagnostics
+	// from fd_write). Omit to silently drop engine log lines.
+	logger?: Logger;
 }
 
 interface Sandbox {
@@ -180,19 +186,29 @@ async function sandbox(
 	const worker = new Worker(resolveWorkerUrl());
 
 	let onEventCb: ((event: InvocationEvent) => void) | null = null;
+	const logger = options?.logger;
+
+	function dispatchEvent(event: InvocationEvent): void {
+		if (!onEventCb) {
+			return;
+		}
+		try {
+			onEventCb(event);
+		} catch {
+			// Swallow callback errors so they don't kill the worker listener.
+		}
+	}
 
 	// Persistent listener: forwards events from worker to onEvent callback
 	// AND forwards __hostFetchForward requests when forwardFetch is set.
 	const forwardFetch = options?.fetch;
 	const onPersistentMessage = async (msg: WorkerToMain) => {
 		if (msg.type === "event") {
-			if (onEventCb) {
-				try {
-					onEventCb(msg.event);
-				} catch {
-					// Swallow callback errors so they don't kill the worker listener.
-				}
-			}
+			dispatchEvent(msg.event);
+			return;
+		}
+		if (msg.type === "log") {
+			dispatchLog(logger, msg);
 			return;
 		}
 		if (
@@ -459,9 +475,9 @@ async function sandbox(
 	return { run, onEvent, dispose, onDied };
 }
 
-export type { Logger, SandboxFactory } from "./factory.js";
+export type { SandboxFactory } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
 export type { MethodMap } from "./install-host-methods.js";
-export type { RunOptions, RunResult, Sandbox, SandboxOptions };
+export type { Logger, RunOptions, RunResult, Sandbox, SandboxOptions };
 export { sandbox };
