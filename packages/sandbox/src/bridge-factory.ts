@@ -102,6 +102,13 @@ interface Bridge {
 	pushRef(seq: number): void;
 	popRef(): number | null;
 	getRunContext(): RunContext | null;
+	buildEvent(
+		kind: EventKind,
+		seq: number,
+		ref: number | null,
+		name: string,
+		extra: { input?: unknown; output?: unknown; error?: unknown },
+	): InvocationEvent | null;
 	emit(event: InvocationEvent): void;
 	setSink(sink: EventSink | null): void;
 	dispose(): void;
@@ -216,7 +223,7 @@ function createBridge(vm: QuickJS): Bridge {
 	}
 
 	// biome-ignore lint/complexity/useMaxParams: pure constructor for the event payload — collapsing into an options object would just add boilerplate
-	function buildSystemEvent(
+	function buildEvent(
 		kind: EventKind,
 		seqValue: number,
 		ref: number | null,
@@ -254,7 +261,7 @@ function createBridge(vm: QuickJS): Bridge {
 		const requestSeq = seq++;
 		const ref = refStack.at(-1) ?? null;
 		refStack.push(requestSeq);
-		const evt = buildSystemEvent("system.request", requestSeq, ref, method, {
+		const evt = buildEvent("system.request", requestSeq, ref, method, {
 			input: args,
 		});
 		if (evt) {
@@ -272,7 +279,7 @@ function createBridge(vm: QuickJS): Bridge {
 		// Pop the matching request from the stack.
 		const popped = refStack.pop();
 		const ref = popped ?? requestSeq;
-		const evt = buildSystemEvent("system.response", responseSeq, ref, method, {
+		const evt = buildEvent("system.response", responseSeq, ref, method, {
 			output: result,
 		});
 		if (evt) {
@@ -288,7 +295,7 @@ function createBridge(vm: QuickJS): Bridge {
 		const errorSeq = seq++;
 		const popped = refStack.pop();
 		const ref = popped ?? requestSeq;
-		const evt = buildSystemEvent("system.error", errorSeq, ref, method, {
+		const evt = buildEvent("system.error", errorSeq, ref, method, {
 			error: {
 				message: errorMessage(err),
 				stack: errorStack(err),
@@ -414,6 +421,7 @@ function createBridge(vm: QuickJS): Bridge {
 		getRunContext() {
 			return runContext;
 		},
+		buildEvent,
 		emit,
 		setSink(s: EventSink | null) {
 			sink = s;

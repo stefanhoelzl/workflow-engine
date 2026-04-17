@@ -468,6 +468,183 @@ describe("sandbox dispose", () => {
 	});
 });
 
+describe("sandbox timer instrumentation", () => {
+	it("setTimeout awaited: emits set, request(ref=null), response; no clear", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				"return await new Promise(resolve => setTimeout(() => resolve(42), 0));",
+			),
+		);
+		const sets = events.filter((e) => e.kind === "timer.set");
+		const requests = events.filter((e) => e.kind === "timer.request");
+		const responses = events.filter((e) => e.kind === "timer.response");
+		const clears = events.filter((e) => e.kind === "timer.clear");
+		expect(sets).toHaveLength(1);
+		expect(requests).toHaveLength(1);
+		expect(responses).toHaveLength(1);
+		expect(clears).toHaveLength(0);
+		expect(sets[0]?.name).toBe("setTimeout");
+		expect(requests[0]?.ref).toBeNull();
+		expect(responses[0]?.ref).toBe(requests[0]?.seq);
+		const setInput = sets[0]?.input as { delay: number; timerId: number };
+		const reqInput = requests[0]?.input as { timerId: number };
+		expect(setInput.timerId).toBe(reqInput.timerId);
+		expect(setInput.delay).toBe(0);
+	});
+
+	it("fire-and-forget setTimeout produces auto timer.clear before trigger.response", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				"setTimeout(() => { globalThis.__late = true; }, 5000); return 1;",
+			),
+		);
+		const set = events.find((e) => e.kind === "timer.set");
+		const clear = events.find((e) => e.kind === "timer.clear");
+		const triggerResp = events.find((e) => e.kind === "trigger.response");
+		expect(set).toBeDefined();
+		expect(clear).toBeDefined();
+		expect(clear?.name).toBe("clearTimeout");
+		expect(clear?.ref).toBeNull();
+		const setInput = set?.input as { timerId: number };
+		const clearInput = clear?.input as { timerId: number };
+		expect(clearInput.timerId).toBe(setInput.timerId);
+		// Ordering: timer.clear precedes trigger.response by seq.
+		expect((clear?.seq ?? 0) < (triggerResp?.seq ?? -1)).toBe(true);
+		// Callback never fired.
+		const requests = events.filter((e) => e.kind === "timer.request");
+		expect(requests).toHaveLength(0);
+	});
+
+	it("setInterval with throwing callback emits request+error per tick and clears at end", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				`let ticks = 0;
+				const id = setInterval(() => { ticks++; throw new Error("tick-" + ticks); }, 5);
+				await new Promise(resolve => setTimeout(resolve, 30));
+				return ticks;`,
+			),
+		);
+		const requests = events.filter(
+			(e) => e.kind === "timer.request" && e.name === "setInterval",
+		);
+		const errors = events.filter((e) => e.kind === "timer.error");
+		expect(requests.length).toBeGreaterThanOrEqual(2);
+		expect(errors.length).toBe(requests.length);
+		for (let i = 0; i < requests.length; i++) {
+			expect(errors[i]?.ref).toBe(requests[i]?.seq);
+		}
+		const intervalClears = events.filter(
+			(e) => e.kind === "timer.clear" && e.name === "clearInterval",
+		);
+		expect(intervalClears).toHaveLength(1);
+		expect(intervalClears[0]?.ref).toBeNull();
+		// Trigger completed successfully (timer.error did not promote).
+		const triggerResp = events.find((e) => e.kind === "trigger.response");
+		expect(triggerResp).toBeDefined();
+	});
+
+	it("nested action.request inside timer callback takes timer.request as ref", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				`await new Promise(resolve => setTimeout(() => {
+					__emitEvent({ kind: "action.request", name: "child", input: {} });
+					__emitEvent({ kind: "action.response", name: "child", output: 1 });
+					resolve();
+				}, 0));
+				return 1;`,
+			),
+		);
+		const timerReq = events.find((e) => e.kind === "timer.request");
+		const actionReq = events.find(
+			(e) => e.kind === "action.request" && e.name === "child",
+		);
+		expect(actionReq?.ref).toBe(timerReq?.seq);
+	});
+
+	it("explicit clearTimeout emits timer.clear with stack-parent ref", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				`const id = setTimeout(() => {}, 5000);
+				clearTimeout(id);
+				return 1;`,
+			),
+		);
+		const triggerReq = events.find((e) => e.kind === "trigger.request");
+		const clear = events.find((e) => e.kind === "timer.clear");
+		expect(clear).toBeDefined();
+		expect(clear?.name).toBe("clearTimeout");
+		expect(clear?.ref).toBe(triggerReq?.seq);
+	});
+
+	it("clearTimeout on unknown id emits no event", async () => {
+		const { events } = await runSource(
+			defaultHandler("clearTimeout(999999); return 1;"),
+		);
+		const clears = events.filter((e) => e.kind === "timer.clear");
+		expect(clears).toHaveLength(0);
+	});
+
+	it("trigger throws while setInterval pending: clear precedes trigger.error", async () => {
+		const { events } = await runSource(
+			defaultHandler(
+				`setInterval(() => {}, 1000);
+				throw new Error("boom");`,
+			),
+		);
+		const clear = events.find((e) => e.kind === "timer.clear");
+		const triggerErr = events.find((e) => e.kind === "trigger.error");
+		expect(clear).toBeDefined();
+		expect(clear?.name).toBe("clearInterval");
+		expect(clear?.ref).toBeNull();
+		expect(triggerErr).toBeDefined();
+		expect((clear?.seq ?? 0) < (triggerErr?.seq ?? -1)).toBe(true);
+	});
+
+	it("does not introduce new globals on globalThis", async () => {
+		// Boundary guard: timer instrumentation SHALL NOT add new guest-visible
+		// globals. The four timer functions were already exposed; instrumenting
+		// their bodies does not change the globalThis surface.
+		const { result } = await runSource(
+			defaultHandler(
+				`const names = Object.getOwnPropertyNames(globalThis);
+				names.sort();
+				return names;`,
+			),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const names = result.result as string[];
+			expect(names).toContain("setTimeout");
+			expect(names).toContain("setInterval");
+			expect(names).toContain("clearTimeout");
+			expect(names).toContain("clearInterval");
+			// Negative: no timer-related helper leaked.
+			expect(names).not.toContain("buildEvent");
+			expect(names).not.toContain("__buildEvent");
+			expect(names).not.toContain("__timerEmit");
+			expect(names).not.toContain("emitEvent");
+		}
+	});
+
+	it("does not expose host-side buildEvent to the guest", async () => {
+		const { result } = await runSource(
+			defaultHandler(
+				`return {
+					direct: typeof globalThis.buildEvent,
+					prefixed: typeof globalThis.__buildEvent,
+				};`,
+			),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				direct: "undefined",
+				prefixed: "undefined",
+			});
+		}
+	});
+});
+
 describe("sandbox memory limit", () => {
 	it("rejects allocation-heavy code when memoryLimit is set", async () => {
 		// 1 MB limit — allocating a huge typed array should fail.

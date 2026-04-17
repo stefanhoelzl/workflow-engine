@@ -35,6 +35,14 @@ interface TimerCleanup {
 	clearActive(): void;
 }
 
+type TimerName = "setTimeout" | "setInterval";
+type ClearName = "clearTimeout" | "clearInterval";
+
+interface PendingTimer {
+	cb: JSValueHandle;
+	name: TimerName;
+}
+
 function setupGlobals(b: Bridge): TimerCleanup {
 	setupConsole(b);
 	return setupTimers(b);
@@ -56,16 +64,71 @@ function setupConsole(b: Bridge): void {
 	consoleObj.dispose();
 }
 
+// Timers bypass the bridge's b.sync / b.async wrappers because those cannot
+// represent a callback-handle argument; instead they emit events manually via
+// b.buildEvent / b.emit / b.pushRef / b.popRef. See the sandbox capability's
+// "Timer event kinds" and "Safe globals — timers" requirements for the
+// emission contract.
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: registering all timer globals together is clearer than splitting
 function setupTimers(b: Bridge): TimerCleanup {
-	const pendingCallbacks = new Map<number, JSValueHandle>();
+	const pendingCallbacks = new Map<number, PendingTimer>();
 
-	// Timers are direct vm.newFunction installs (not bridge.sync) because they
-	// take a guest callback handle and must dup/call it; the bridge wrappers
-	// can't represent that argument shape. They emit no events for now — guest
-	// timer use is rare and the cost of full request/response wrapping
-	// outweighs the value. Method-name tracking in the event stream would
-	// require restructuring how vm.newFunction interacts with bridge state.
+	function emitEvent(
+		kind:
+			| "timer.set"
+			| "timer.request"
+			| "timer.response"
+			| "timer.error"
+			| "timer.clear",
+		ref: number | null,
+		name: TimerName | ClearName,
+		extra: { input?: unknown; output?: unknown; error?: unknown },
+	): number {
+		const seq = b.nextSeq();
+		const evt = b.buildEvent(kind, seq, ref, name, extra);
+		if (evt) {
+			b.emit(evt);
+		}
+		return seq;
+	}
+
+	function dumpSafe(handle: JSValueHandle): unknown {
+		try {
+			return b.vm.dump(handle);
+		} catch {
+			return;
+		}
+	}
+
+	function runCallback(
+		cb: JSValueHandle,
+		numId: number,
+		name: TimerName,
+	): void {
+		const reqSeq = emitEvent("timer.request", null, name, {
+			input: { timerId: numId },
+		});
+		b.pushRef(reqSeq);
+		try {
+			const ret = b.vm.callFunction(cb, b.vm.undefined);
+			const output = dumpSafe(ret);
+			ret.dispose();
+			emitEvent("timer.response", reqSeq, name, {
+				input: { timerId: numId },
+				...(output === undefined ? {} : { output }),
+			});
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const stack = err instanceof Error ? (err.stack ?? "") : "";
+			emitEvent("timer.error", reqSeq, name, {
+				input: { timerId: numId },
+				error: { message, stack },
+			});
+		} finally {
+			b.popRef();
+			b.vm.executePendingJobs();
+		}
+	}
 
 	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
@@ -74,19 +137,16 @@ function setupTimers(b: Bridge): TimerCleanup {
 			const cb = callbackHandle.dup();
 
 			const id = setTimeout(() => {
-				pendingCallbacks.delete(id as unknown as number);
-				try {
-					const ret = b.vm.callFunction(cb, b.vm.undefined);
-					ret.dispose();
-				} catch {
-					/* ignore guest errors in timer callbacks */
-				}
+				runCallback(cb, numId, "setTimeout");
+				pendingCallbacks.delete(numId);
 				cb.dispose();
-				b.vm.executePendingJobs();
 			}, delay);
 
-			const numId = id as unknown as number;
-			pendingCallbacks.set(numId, cb);
+			const numId = Number(id);
+			emitEvent("timer.set", b.currentRef(), "setTimeout", {
+				input: { delay, timerId: numId },
+			});
+			pendingCallbacks.set(numId, { cb, name: "setTimeout" });
 			return b.vm.newNumber(numId);
 		},
 	);
@@ -95,10 +155,13 @@ function setupTimers(b: Bridge): TimerCleanup {
 
 	const clearTimeoutFn = b.vm.newFunction("clearTimeout", (idHandle) => {
 		const id = idHandle.toNumber();
-		clearTimeout(id);
-		const cb = pendingCallbacks.get(id);
-		if (cb) {
-			cb.dispose();
+		const entry = pendingCallbacks.get(id);
+		if (entry) {
+			emitEvent("timer.clear", b.currentRef(), "clearTimeout", {
+				input: { timerId: id },
+			});
+			clearTimeout(id);
+			entry.cb.dispose();
 			pendingCallbacks.delete(id);
 		}
 		return b.vm.undefined;
@@ -113,17 +176,14 @@ function setupTimers(b: Bridge): TimerCleanup {
 			const cb = callbackHandle.dup();
 
 			const id = setInterval(() => {
-				try {
-					const ret = b.vm.callFunction(cb, b.vm.undefined);
-					ret.dispose();
-				} catch {
-					/* ignore guest errors in timer callbacks */
-				}
-				b.vm.executePendingJobs();
+				runCallback(cb, numId, "setInterval");
 			}, delay);
 
-			const numId = id as unknown as number;
-			pendingCallbacks.set(numId, cb);
+			const numId = Number(id);
+			emitEvent("timer.set", b.currentRef(), "setInterval", {
+				input: { delay, timerId: numId },
+			});
+			pendingCallbacks.set(numId, { cb, name: "setInterval" });
 			return b.vm.newNumber(numId);
 		},
 	);
@@ -132,10 +192,13 @@ function setupTimers(b: Bridge): TimerCleanup {
 
 	const clearIntervalFn = b.vm.newFunction("clearInterval", (idHandle) => {
 		const id = idHandle.toNumber();
-		clearInterval(id);
-		const cb = pendingCallbacks.get(id);
-		if (cb) {
-			cb.dispose();
+		const entry = pendingCallbacks.get(id);
+		if (entry) {
+			emitEvent("timer.clear", b.currentRef(), "clearInterval", {
+				input: { timerId: id },
+			});
+			clearInterval(id);
+			entry.cb.dispose();
 			pendingCallbacks.delete(id);
 		}
 		return b.vm.undefined;
@@ -144,10 +207,15 @@ function setupTimers(b: Bridge): TimerCleanup {
 	clearIntervalFn.dispose();
 
 	function clearActive(): void {
-		for (const [id, cb] of pendingCallbacks) {
+		for (const [id, entry] of pendingCallbacks) {
+			const clearName: ClearName =
+				entry.name === "setTimeout" ? "clearTimeout" : "clearInterval";
+			emitEvent("timer.clear", null, clearName, {
+				input: { timerId: id },
+			});
 			clearTimeout(id);
 			clearInterval(id);
-			cb.dispose();
+			entry.cb.dispose();
 		}
 		pendingCallbacks.clear();
 	}
