@@ -1,10 +1,4 @@
-# Workflow Loading Specification
-
-## Purpose
-
-Load workflow manifests + per-workflow bundles from storage and expose them to the executor via the WorkflowRegistry with one sandbox per workflow.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Workflow loading instantiates one sandbox per workflow
 
@@ -34,13 +28,3 @@ After sandbox initialization completes, the `__hostCallAction` and `__emitEvent`
 - **AND** `typeof globalThis.__dispatchAction` SHALL evaluate to `"function"`
 - **AND** `Object.getOwnPropertyDescriptor(globalThis, "__dispatchAction").writable` SHALL be `false`
 - **AND** `Object.getOwnPropertyDescriptor(globalThis, "__dispatchAction").configurable` SHALL be `false`
-
-### Requirement: Workflow loading resolves env at load time
-
-The runtime SHALL apply the workflow's manifest `env` map to the loaded workflow object. The `env` resolution (reading `process.env`, applying defaults) happens at build time; the runtime simply reads the resolved values from the manifest.
-
-#### Scenario: Env values match manifest
-
-- **GIVEN** a manifest with `env: { URL: "https://..." }`
-- **WHEN** the workflow is loaded
-- **THEN** the workflow's `env.URL` (referenced by handlers as `workflow.env.URL`) SHALL equal `"https://..."`

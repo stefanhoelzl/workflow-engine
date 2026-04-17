@@ -51,6 +51,39 @@ function defaultHandler(handlerBody: string): string {
 	return iife(`exports.default = async function(ctx) { ${handlerBody} };`);
 }
 
+// Minimal dispatcher shim that mirrors the runtime's ACTION_DISPATCHER_SOURCE.
+// Captures __hostCallAction + __emitEvent into closure locals, installs a
+// locked __dispatchAction, deletes the captured names from globalThis. Used
+// by tests that need to exercise the full action-event pipeline without
+// pulling a runtime dependency into the sandbox package.
+const DISPATCHER_SHIM = `(function() {
+  var _hostCall = globalThis.__hostCallAction;
+  var _emit = globalThis.__emitEvent;
+  async function dispatch(name, input, handler, outputSchema) {
+    _emit({ kind: "action.request", name, input });
+    try {
+      await _hostCall(name, input);
+      const raw = await handler(input);
+      const output = outputSchema.parse(raw);
+      _emit({ kind: "action.response", name, output });
+      return output;
+    } catch (err) {
+      const error = {
+        message: err && err.message ? String(err.message) : String(err),
+        stack: err && err.stack ? String(err.stack) : "",
+      };
+      if (err && err.issues !== undefined) error.issues = err.issues;
+      _emit({ kind: "action.error", name, error });
+      throw err;
+    }
+  }
+  Object.defineProperty(globalThis, "__dispatchAction", {
+    value: dispatch, writable: false, configurable: false, enumerable: false,
+  });
+  delete globalThis.__hostCallAction;
+  delete globalThis.__emitEvent;
+})();`;
+
 async function runSource(
 	source: string,
 	options: {
@@ -466,30 +499,43 @@ describe("sandbox event streaming", () => {
 		expect(sysReq).toBeDefined();
 	});
 
-	it("__emitEvent is callable from guest and stamps action.* events", async () => {
-		const { events } = await runSource(
-			defaultHandler(
-				`__emitEvent({ kind: "action.request", name: "notify", input: { ch: "ops" } });
-				__emitEvent({ kind: "action.response", name: "notify", output: { sent: true } });
-				return 1;`,
-			),
-		);
+	it("dispatcher emits action.* events with correct ref chain", async () => {
+		const source = `${iife(`
+			exports.default = async function(ctx) {
+				return await globalThis.__dispatchAction(
+					"notify",
+					{ ch: "ops" },
+					async (input) => ({ sent: true }),
+					{ parse: (x) => x }
+				);
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { events } = await runSource(source, {
+			methods: { __hostCallAction: async () => undefined },
+		});
 		const actionReqs = events.filter((e) => e.kind === "action.request");
 		const actionResps = events.filter((e) => e.kind === "action.response");
 		expect(actionReqs).toHaveLength(1);
 		expect(actionResps).toHaveLength(1);
 		expect(actionReqs[0]?.name).toBe("notify");
+		expect(actionReqs[0]?.input).toEqual({ ch: "ops" });
+		expect(actionResps[0]?.output).toEqual({ sent: true });
 		expect(actionResps[0]?.ref).toBe(actionReqs[0]?.seq);
 	});
 
-	it("__emitEvent does NOT itself appear as a system.request", async () => {
-		const { events } = await runSource(
-			defaultHandler(
-				`__emitEvent({ kind: "action.request", name: "n" });
-				__emitEvent({ kind: "action.response", name: "n" });
-				return 1;`,
-			),
-		);
+	it("dispatcher's __emitEvent does NOT itself appear as a system.request", async () => {
+		const source = `${iife(`
+			exports.default = async function(ctx) {
+				return await globalThis.__dispatchAction(
+					"n", null,
+					async () => null,
+					{ parse: (x) => x }
+				);
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { events } = await runSource(source, {
+			methods: { __hostCallAction: async () => undefined },
+		});
 		const emitSysEvents = events.filter(
 			(e) =>
 				(e.kind === "system.request" || e.kind === "system.response") &&
@@ -498,40 +544,64 @@ describe("sandbox event streaming", () => {
 		expect(emitSysEvents).toHaveLength(0);
 	});
 
-	it("__emitEvent rejects non-action kinds", async () => {
-		const { events } = await runSource(
-			defaultHandler(
-				`try { __emitEvent({ kind: "system.request", name: "x" }); return "no-throw"; }
-				catch (e) { return e.message; }`,
-			),
-		);
+	it("__emitEvent rejects non-action kinds (captured, pre-delete)", async () => {
+		// Install a pre-delete probe IIFE BEFORE the dispatcher shim runs so we
+		// can observe __emitEvent's kind check. The probe captures __emitEvent
+		// and exposes it under a test-only name so guest source can exercise
+		// the TypeError path without needing direct globalThis access.
+		const source = `${iife(`
+			var _probe = globalThis.__emitEvent;
+			exports.default = async function(ctx) {
+				try {
+					_probe({ kind: "system.request", name: "x" });
+					return "no-throw";
+				} catch (e) {
+					return e.message;
+				}
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { events } = await runSource(source, {
+			methods: { __hostCallAction: async () => undefined },
+		});
 		const trigResp = events.find((e) => e.kind === "trigger.response");
 		expect(String(trigResp?.output)).toMatch(ONLY_ACTION_RE);
 	});
 
 	it("nested action and system events have correct refs forming a tree", async () => {
-		const { events } = await runSource(
-			defaultHandler(
-				`__emitEvent({ kind: "action.request", name: "outer", input: 1 });
-				console.log("inside outer");
-				__emitEvent({ kind: "action.response", name: "outer", output: 2 });
-				return 0;`,
-			),
-		);
-		// trigger.request seq=0 (ref null)
-		// action.request "outer" seq=1 (ref 0)
-		// system.request console.log seq=2 (ref 1)
-		// system.response console.log seq=3 (ref 2)
-		// action.response "outer" seq=4 (ref 1)
-		// trigger.response seq=5 (ref 0)
+		const source = `${iife(`
+			exports.default = async function(ctx) {
+				await globalThis.__dispatchAction(
+					"outer",
+					1,
+					async (input) => { console.log("inside outer"); return 2; },
+					{ parse: (x) => x }
+				);
+				return 0;
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { events } = await runSource(source, {
+			methods: { __hostCallAction: async () => undefined },
+			methodEventNames: { __hostCallAction: "host.validateAction" },
+		});
+		// trigger.request (ref null)
+		// action.request "outer" (ref trigger.request.seq)
+		// system.request host.validateAction (ref action.request.seq)
+		// system.response host.validateAction
+		// system.request console.log (ref action.request.seq)
+		// system.response console.log
+		// action.response "outer" (ref action.request.seq — popped from ref stack)
+		// trigger.response (ref trigger.request.seq)
 		const byKindName = (k: string, n?: string) =>
 			events.find((e) => e.kind === k && (!n || e.name === n));
-		expect(byKindName("trigger.request")?.ref).toBeNull();
-		expect(byKindName("action.request", "outer")?.ref).toBe(0);
-		expect(byKindName("system.request", "console.log")?.ref).toBe(1);
-		expect(byKindName("system.response", "console.log")?.ref).toBe(2);
-		expect(byKindName("action.response", "outer")?.ref).toBe(1);
-		expect(byKindName("trigger.response")?.ref).toBe(0);
+		const triggerReq = byKindName("trigger.request");
+		const actionReq = byKindName("action.request", "outer");
+		expect(triggerReq?.ref).toBeNull();
+		expect(actionReq?.ref).toBe(triggerReq?.seq);
+		expect(byKindName("system.request", "console.log")?.ref).toBe(
+			actionReq?.seq,
+		);
+		expect(byKindName("action.response", "outer")?.ref).toBe(actionReq?.seq);
+		expect(byKindName("trigger.response")?.ref).toBe(triggerReq?.seq);
 	});
 });
 
@@ -619,16 +689,22 @@ describe("sandbox timer instrumentation", () => {
 	});
 
 	it("nested action.request inside timer callback takes timer.request as ref", async () => {
-		const { events } = await runSource(
-			defaultHandler(
-				`await new Promise(resolve => setTimeout(() => {
-					__emitEvent({ kind: "action.request", name: "child", input: {} });
-					__emitEvent({ kind: "action.response", name: "child", output: 1 });
-					resolve();
+		const source = `${iife(`
+			exports.default = async function(ctx) {
+				await new Promise(resolve => setTimeout(() => {
+					globalThis.__dispatchAction(
+						"child",
+						{},
+						async () => 1,
+						{ parse: (x) => x }
+					).then(resolve);
 				}, 0));
-				return 1;`,
-			),
-		);
+				return 1;
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { events } = await runSource(source, {
+			methods: { __hostCallAction: async () => undefined },
+		});
 		const timerReq = events.find((e) => e.kind === "timer.request");
 		const actionReq = events.find(
 			(e) => e.kind === "action.request" && e.name === "child",
@@ -973,34 +1049,6 @@ describe("MCA shims", () => {
 		expect(payload.cause?.message).toBe("inner");
 	});
 
-	it("per-run extraMethods.__reportError overrides construction-time methods.__reportError", async () => {
-		const constructionCaptured: unknown[] = [];
-		const runCaptured: unknown[] = [];
-		const sb = await sandbox(defaultHandler(`reportError(new Error("hi"));`), {
-			__reportError: async (payload: unknown) => {
-				constructionCaptured.push(payload);
-			},
-		});
-		try {
-			await sb.run(
-				"default",
-				{},
-				{
-					...RUN_OPTS,
-					extraMethods: {
-						__reportError: async (payload: unknown) => {
-							runCaptured.push(payload);
-						},
-					},
-				},
-			);
-			expect(runCaptured).toHaveLength(1);
-			expect(constructionCaptured).toHaveLength(0);
-		} finally {
-			sb.dispose();
-		}
-	});
-
 	it("reportError swallows getter-throws instead of propagating into guest", async () => {
 		const captured: unknown[] = [];
 		const { result } = await runSource(
@@ -1037,12 +1085,12 @@ describe("MCA shims", () => {
 		expect(typeof payload.message).toBe("string");
 	});
 
-	it("__reportError absent throws ReferenceError when called directly", async () => {
+	it("reportError is a no-op when no __reportError host bridge was provided", async () => {
 		const { result } = await runSource(
 			defaultHandler(`
 				try {
-					__reportError({ message: "x" });
-					return { threw: false };
+					reportError(new Error("oops"));
+					return "ok";
 				} catch (e) {
 					return { threw: true, name: e.name };
 				}
@@ -1050,9 +1098,82 @@ describe("MCA shims", () => {
 		);
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			const r = result.result as { threw: boolean; name?: string };
-			expect(r.threw).toBe(true);
-			expect(r.name).toBe("ReferenceError");
+			expect(result.result).toBe("ok");
 		}
+	});
+});
+
+describe("private bridge names hidden post-init", () => {
+	it("underscore bridge names are not on globalThis after init", async () => {
+		const source = `${iife(`
+			exports.default = async function(ctx) {
+				return {
+					hostFetch: typeof globalThis.__hostFetch,
+					emitEvent: typeof globalThis.__emitEvent,
+					hostCallAction: typeof globalThis.__hostCallAction,
+					reportErrorBridge: typeof globalThis.__reportError,
+					dispatcher: typeof globalThis.__dispatchAction,
+				};
+			};
+		`)}\n${DISPATCHER_SHIM}`;
+		const { result } = await runSource(source, {
+			methods: {
+				__hostCallAction: async () => undefined,
+				__reportError: async () => undefined,
+			},
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				hostFetch: "undefined",
+				emitEvent: "undefined",
+				hostCallAction: "undefined",
+				reportErrorBridge: "undefined",
+				dispatcher: "function",
+			});
+		}
+	});
+
+	it("guest cannot overwrite __hostFetch to affect the fetch shim", async () => {
+		let forwardedMethod = "";
+		const forward: typeof globalThis.fetch = async (_url, init) => {
+			forwardedMethod = (init?.method ?? "GET") as string;
+			return new Response("real", { status: 200 });
+		};
+		const { result } = await runSource(
+			defaultHandler(`
+				try { globalThis.__hostFetch = () => Promise.resolve({ status: 418, statusText: "pwned", headers: {}, body: "hijacked" }); } catch (e) {}
+				const r = await fetch("https://example.com", { method: "POST" });
+				return { status: r.status, text: await r.text() };
+			`),
+			{ fetch: forward },
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({ status: 200, text: "real" });
+		}
+		expect(forwardedMethod).toBe("POST");
+	});
+
+	it("guest cannot overwrite __reportError to affect the reportError shim", async () => {
+		const captured: unknown[] = [];
+		const { result } = await runSource(
+			defaultHandler(`
+				try { globalThis.__reportError = () => { throw new Error("pwned"); }; } catch (e) {}
+				reportError(new Error("original"));
+				return "ok";
+			`),
+			{
+				methods: {
+					__reportError: async (payload: unknown) => {
+						captured.push(payload);
+					},
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(captured).toHaveLength(1);
+		const payload = captured[0] as { name: string; message: string };
+		expect(payload.message).toBe("original");
 	});
 });

@@ -66,6 +66,12 @@ const DEFAULT_RUN_OPTIONS: RunOptions = {
 	workflowSha: "",
 };
 
+// Hiding of sandbox-internal bridges (__hostFetch, __emitEvent) is enforced
+// by capture-and-delete shims in globals.ts / worker.ts — not by this list.
+// A host that deliberately passes `extraMethods: { __hostFetch: ... }` is
+// honoring their conscious choice to reinstall the name for the duration of
+// a single run; the sandbox's shim-captured reference from init is invariant
+// regardless.
 const RESERVED_BUILTIN_GLOBALS = new Set([
 	"console",
 	"performance",
@@ -74,8 +80,6 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"clearTimeout",
 	"setInterval",
 	"clearInterval",
-	"__hostFetch",
-	"__emitEvent",
 	"fetch",
 	"reportError",
 	"self",

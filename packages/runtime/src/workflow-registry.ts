@@ -237,13 +237,15 @@ function buildTriggerShim(triggerNames: readonly string[]): string {
 // import. In the sandbox the module is re-evaluated from source, so the
 // sandbox's copy is a fresh instance without a bound name. Append a tiny
 // binder call per action so the sandbox copy is properly named before any
-// trigger handler runs.
+// trigger handler runs, then delete the `__setActionName` property so guest
+// code cannot rebind post-init.
 function buildActionNameBinder(actionNames: readonly string[]): string {
 	return actionNames
-		.map(
-			(name) =>
-				`if (typeof ${IIFE_NAMESPACE}.${name} === "function" && typeof ${IIFE_NAMESPACE}.${name}.__setActionName === "function") ${IIFE_NAMESPACE}.${name}.__setActionName(${JSON.stringify(name)});`,
-		)
+		.map((name) => {
+			const ref = `${IIFE_NAMESPACE}.${name}`;
+			const literal = JSON.stringify(name);
+			return `if (typeof ${ref} === "function" && typeof ${ref}.__setActionName === "function") { ${ref}.__setActionName(${literal}); delete ${ref}.__setActionName; }`;
+		})
 		.join("\n");
 }
 
@@ -339,28 +341,44 @@ function buildHttpTriggers(manifest: Manifest): {
 }
 
 // The action dispatcher implementation, appended as JS source to the sandbox
-// bundle. It reads the host-installed `__hostCallAction` and `__emitEvent`
-// globals to wrap every action call with paired action.request/response/error
-// events around the validation + handler + output-parse pipeline.
+// bundle. The IIFE captures `__hostCallAction` and `__emitEvent` into closure
+// locals, installs `__dispatchAction` as a locked (non-writable,
+// non-configurable) global, then deletes the two captured bridge names from
+// globalThis so guest code cannot read or overwrite them. The dispatcher
+// itself is kept guest-callable by design (see sandbox spec
+// `__dispatchAction locked guest global`) with the audit-log-poisoning
+// residual documented in SECURITY.md §2.
 const ACTION_DISPATCHER_SOURCE = `
-globalThis.__dispatchAction = async (name, input, handler, outputSchema) => {
-  globalThis.__emitEvent({ kind: "action.request", name, input });
-  try {
-    await globalThis.__hostCallAction(name, input);
-    const raw = await handler(input);
-    const output = outputSchema.parse(raw);
-    globalThis.__emitEvent({ kind: "action.response", name, output });
-    return output;
-  } catch (err) {
-    const error = {
-      message: err && err.message ? String(err.message) : String(err),
-      stack: err && err.stack ? String(err.stack) : "",
-    };
-    if (err && err.issues !== undefined) error.issues = err.issues;
-    globalThis.__emitEvent({ kind: "action.error", name, error });
-    throw err;
+(function() {
+  var _hostCall = globalThis.__hostCallAction;
+  var _emit = globalThis.__emitEvent;
+  async function dispatch(name, input, handler, outputSchema) {
+    _emit({ kind: "action.request", name, input });
+    try {
+      await _hostCall(name, input);
+      const raw = await handler(input);
+      const output = outputSchema.parse(raw);
+      _emit({ kind: "action.response", name, output });
+      return output;
+    } catch (err) {
+      const error = {
+        message: err && err.message ? String(err.message) : String(err),
+        stack: err && err.stack ? String(err.stack) : "",
+      };
+      if (err && err.issues !== undefined) error.issues = err.issues;
+      _emit({ kind: "action.error", name, error });
+      throw err;
+    }
   }
-};
+  Object.defineProperty(globalThis, "__dispatchAction", {
+    value: dispatch,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+  delete globalThis.__hostCallAction;
+  delete globalThis.__emitEvent;
+})();
 `;
 
 function buildSandboxSource(manifest: Manifest, bundleSource: string): string {

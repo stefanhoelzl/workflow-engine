@@ -177,35 +177,47 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
 - All arguments and return values crossing the host/sandbox boundary
   via consumer-provided methods are JSON-serializable. Host object
   references, closures, and proxies never cross.
-- Globals exposed inside the sandbox: `console.*`, `performance.now`
-  (QuickJS intrinsic, reads through the WASI `clock_time_get` syscall),
-  `crypto.*` (full WebCrypto — `crypto.randomUUID`,
-  `crypto.getRandomValues`, and `crypto.subtle.*` provided natively by
-  the WASM crypto extension with a JS Promise shim so `crypto.subtle.*`
-  returns Promises per spec), `setTimeout` / `setInterval` /
-  `clearTimeout` / `clearInterval` (host bridges, scheduled on the
-  worker event loop), `fetch` (JS shim inside the sandbox that routes
-  through `__hostFetch`), `__hostFetch` (async host bridge the fetch
-  shim calls into), `__emitEvent` (write-only telemetry channel for
-  `action.*` events; see below), `self` (identity shim,
-  `self === globalThis`), `navigator` (frozen object with a single
+- Globals exposed inside the sandbox (post-init guest-visible surface):
+  `console.*`, `performance.now` (QuickJS intrinsic, reads through the
+  WASI `clock_time_get` syscall), `crypto.*` (full WebCrypto —
+  `crypto.randomUUID`, `crypto.getRandomValues`, and `crypto.subtle.*`
+  provided natively by the WASM crypto extension with a JS Promise shim
+  so `crypto.subtle.*` returns Promises per spec), `setTimeout` /
+  `setInterval` / `clearTimeout` / `clearInterval` (host bridges,
+  scheduled on the worker event loop), `fetch` (JS shim inside the
+  sandbox, locked via `Object.defineProperty({writable: false,
+  configurable: false})`), `self` (identity shim, `self === globalThis`),
+  `navigator` (frozen object with a single
   `userAgent: "WorkflowEngine/<version>"` string), `reportError` (JS
-  shim serializing Error-shaped values and forwarding to the
-  `__reportError` host bridge), plus the host methods registered via
-  `methods` and `extraMethods`. WASM extensions contribute the
-  additional standard globals `URL`, `URLSearchParams`, `TextEncoder`,
-  `TextDecoder`, `atob`, `btoa`, `structuredClone`, and `Headers` —
-  these are implemented in C/WASM inside the WASM linear memory, not
-  as host bridges. The runtime passes `__hostCallAction` as a
-  construction-time method in `methods` and appends `__dispatchAction`
-  as plain JS source after the workflow bundle — both are conventions,
-  not hardcoded built-ins; the sandbox package itself does not know
-  about manifests, Zod, or action dispatch. Consumers that want
-  `reportError` to actually capture errors pass `__reportError` as a
-  construction-time host method (write-only, JSON-marshalled, no host
-  state returned to guest — risk class equivalent to `console.log`);
-  per-run `extraMethods.__reportError` overrides the construction-time
-  impl for the scope of that run.
+  shim serializing Error-shaped values), `__dispatchAction` (runtime-
+  appended action dispatcher, locked via `Object.defineProperty
+  ({writable: false, configurable: false})`), plus the host methods
+  registered via `methods` and `extraMethods`. WASM extensions
+  contribute the additional standard globals `URL`, `URLSearchParams`,
+  `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`, and
+  `Headers` — these are implemented in C/WASM inside the WASM linear
+  memory, not as host bridges.
+
+  The host-bridged names `__hostFetch`, `__emitEvent`, `__hostCallAction`,
+  and `__reportError` are each installed on `globalThis` briefly at
+  initialization time for exactly one consumer shim to capture into an
+  IIFE closure. Each shim then `delete`s its bridge name from
+  `globalThis` before guest source evaluation begins, so guest code
+  cannot read or overwrite the underlying host wire. The captured
+  reference inside the shim closure is used for all subsequent calls
+  (`fetch()`, `reportError()`, action dispatch via `__dispatchAction`)
+  and is invariant — a guest attempt to `globalThis.__hostFetch = ...`
+  creates a new global with no effect on the shim's captured reference.
+  `__reportError` is bound at construction time only (no per-run
+  override). The sandbox package itself has no knowledge of manifests,
+  Zod, or action dispatch; it exposes `__hostFetch` and `__emitEvent`
+  as built-ins (captured by `FETCH_SHIM` and the runtime dispatcher
+  shim respectively) and installs whatever additional methods the host
+  provides via `methods` / `extraMethods`. The runtime passes
+  `__hostCallAction` (and optionally `__reportError`) as construction-
+  time methods and appends the action-dispatcher shim that captures
+  `__hostCallAction` + `__emitEvent`, installs the locked
+  `__dispatchAction`, and deletes the two captured names.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` as a **per-run**
   extraMethod (`sandbox.run(…, { extraMethods: { __wptReport } })`) to
@@ -215,59 +227,87 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   composer, runner), and `scripts/wpt-refresh.ts` are test-time artifacts
   and do not extend the production sandbox surface. See
   `packages/sandbox/test/wpt/README.md`.
-- **`__emitEvent(event)`** — write-only telemetry channel installed
-  directly on `globalThis` via `vm.newFunction` (NOT through
+- **`__emitEvent(event)`** — write-only telemetry primitive installed
+  at init directly on `globalThis` via `vm.newFunction` (NOT through
   `bridge.sync()` / `bridge.async()`, so it does not itself appear in
   the event stream). Accepts a JSON payload constrained to
   `kind ∈ {action.request, action.response, action.error}`; any other
-  `kind` is rejected with a `TypeError` thrown into the guest. The
-  worker stamps the supplied event with `id`, `seq`, `ref`, `ts`,
-  `workflow`, `workflowSha` from the current run context and posts it
-  to the main thread as a `{ type: "event" }` message. The guest cannot
-  read host state through this channel, cannot influence other events'
-  metadata, and cannot post `trigger.*` or `system.*` events (those
-  are emitted by the worker and bridge respectively, never by guest
-  code).
+  `kind` is rejected with a `TypeError`. The worker stamps the supplied
+  event with `id`, `seq`, `ref`, `ts`, `workflow`, `workflowSha` from
+  the current run context and posts it to the main thread as a
+  `{ type: "event" }` message. The runtime-appended action-dispatcher
+  shim captures the `__emitEvent` reference into its IIFE closure at
+  init and then `delete`s `globalThis.__emitEvent`, so guest code
+  cannot read or overwrite the channel after init. The dispatcher's
+  captured reference is the sole emitter of `action.*` events;
+  `trigger.*` and `system.*` events are emitted by the worker and
+  bridge respectively, never by guest code.
 - **Action dispatch model.** The author writes
   `await sendNotification(input)` against the SDK-returned callable.
   That callable delegates to `dispatchAction()` from
   `@workflow-engine/core`, which reads `globalThis.__dispatchAction`
-  and calls it. The runtime appends `__dispatchAction` as plain JS
-  source after the workflow bundle in `buildSandboxSource`; the
-  appended dispatcher runs entirely inside the QuickJS context and
-  does five things, in order:
-  1. Calls `__emitEvent({ kind: "action.request", name, input })` to
-     emit the start of the action lifecycle.
-  2. Notifies the host via `__hostCallAction(name, input)`. The host
-     (registered with the bridge method name `host.validateAction`)
-     looks up the action by name in the workflow's manifest, validates
-     `input` against the declared JSON Schema (Ajv on the host side),
-     and emits an audit-log entry. The host then returns `undefined`
-     — it does NOT dispatch the user's handler.
+  and calls it. The runtime appends an IIFE after the workflow bundle
+  in `buildSandboxSource`; the IIFE captures `__hostCallAction` and
+  `__emitEvent` into closure locals, installs `__dispatchAction` via
+  `Object.defineProperty(globalThis, "__dispatchAction", { value: fn,
+  writable: false, configurable: false })`, and then `delete`s
+  `globalThis.__hostCallAction` and `globalThis.__emitEvent` so
+  neither bridge is reachable from guest code after init. The locked
+  `__dispatchAction` runs entirely inside the QuickJS context and does
+  five things, in order:
+  1. Calls its captured `__emitEvent({ kind: "action.request", name, input })`
+     to emit the start of the action lifecycle.
+  2. Notifies the host via its captured `__hostCallAction(name, input)`.
+     The host (registered with the bridge method name
+     `host.validateAction`) looks up the action by name in the
+     workflow's manifest, validates `input` against the declared JSON
+     Schema (Ajv on the host side), and emits an audit-log entry. The
+     host returns `undefined` — it does NOT dispatch the user's
+     handler.
   3. Invokes the author's handler as a plain JS function call in the
      same QuickJS context (no nested `sandbox.run()`).
   4. Validates the handler's return value against the action's output
      Zod schema using the Zod bundle that ships inlined in the
      workflow bundle.
-  5. Calls `__emitEvent({ kind: "action.response", name, output })` (or
-     `action.error` on any thrown rejection in steps 2-4).
+  5. Calls its captured `__emitEvent({ kind: "action.response", name,
+     output })` (or `action.error` on any thrown rejection in
+     steps 2-4).
   Action code runs inside the sandbox's QuickJS boundary at all times
   — the host bridge is reached only for input validation + audit
   logging. Validation errors from either end propagate across the
   bridge (when thrown host-side) or propagate directly (when thrown
   sandbox-side, step 4) as JS `Error` rejections. On the host-thrown
   path, the guest-side error carries the Zod-shaped `issues` array
-  preserved as a JSON-marshaled own property.
-- If the runtime does not pass `__hostCallAction` in `methods`, it is
-  not installed — the SDK wrapper's first step throws "is not a
-  function" and the author's handler MUST NOT execute.
-- **Bridge surface inventory** (the total set of guest-visible globals
-  beyond standard JS built-ins):
-  - **Built-ins** (hardcoded in `packages/sandbox/src/globals.ts` /
-    `worker.ts`): `console`, `setTimeout`, `setInterval`,
-    `clearTimeout`, `clearInterval`, `__hostFetch`, `__emitEvent`,
-    `fetch` (JS shim inside the VM that routes through `__hostFetch`),
-    plus the `crypto.subtle` Promise shim that wraps the WASM crypto
+  preserved as a JSON-marshaled own property. Because
+  `__dispatchAction` is locked (non-writable, non-configurable), guest
+  code cannot replace the dispatcher; calling it directly remains
+  possible and is an accepted residual (see R-S10).
+- If the runtime does not pass `__hostCallAction` in `methods`, the
+  dispatcher shim captures `undefined`; the first step of dispatch
+  throws "is not a function" and the author's handler MUST NOT
+  execute.
+- **Bridge surface inventory** (install → capture → delete lifecycle
+  for the underscore-prefixed host bridges, plus the post-init guest-
+  visible globals):
+  - **Built-ins installed then captured-and-deleted** (hardcoded in
+    `packages/sandbox/src/globals.ts` / `worker.ts`): `__hostFetch`
+    (captured by `FETCH_SHIM` at init, deleted after the shim installs
+    `fetch`) and `__emitEvent` (installed via `vm.newFunction`,
+    captured by the runtime's dispatcher shim, deleted after the shim
+    installs `__dispatchAction`). Neither name is reachable from guest
+    code after init.
+  - **Runtime-passed bridges, then captured-and-deleted** (via
+    `methods` at `sandbox(source, methods)` construction):
+    `__hostCallAction` (captured by the runtime's dispatcher shim,
+    deleted after the shim installs `__dispatchAction`) and
+    `__reportError` (captured by `REPORT_ERROR_SHIM` at init, deleted
+    after the shim installs `reportError`). Neither name is reachable
+    from guest code after init. `__reportError` has construction-time
+    binding only; per-run override is not supported.
+  - **Built-ins that remain guest-visible**: `console`, `setTimeout`,
+    `setInterval`, `clearTimeout`, `clearInterval`, `fetch` (locked
+    JS shim), `reportError` (JS shim), `self`, `navigator`, plus the
+    `crypto.subtle` Promise shim that wraps the WASM crypto
     extension's synchronous API.
   - **WASM extension globals** (provided by `quickjs-wasi` extensions
     loaded at VM creation in `worker.ts`): `URL`, `URLSearchParams`,
@@ -275,15 +315,15 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
     `Headers`, `crypto` (including `crypto.subtle.*`), `performance`.
     These live inside WASM linear memory; they are not host bridges
     and consume no host capability.
-  - **Runtime-passed** (via `methods` at `sandbox(source, methods)`
-    construction time): `__hostCallAction`. Not a hardcoded built-in —
-    the sandbox package has no knowledge of manifests or actions; it
-    simply installs whatever methods the runtime provides.
-  - **Runtime-appended** (via JS source appended to the bundle in
-    `buildSandboxSource`): `__dispatchAction`. Not a function the
-    sandbox package installs; it is plain workflow-bundle source that
-    the runtime emits after the bundle to wire `__emitEvent` and
-    `__hostCallAction` together for the SDK's action callable.
+  - **Runtime-appended and locked**: `__dispatchAction`. Installed via
+    `Object.defineProperty` with `writable: false, configurable: false`
+    by the runtime's post-bundle IIFE. Guest may call it; guest may
+    not replace or delete it. This is the sole underscore-prefixed
+    global that remains on `globalThis` after init. The sandbox
+    package itself does not install it — it is plain workflow-bundle-
+    appended source that the runtime emits to wire the captured
+    `__emitEvent` and `__hostCallAction` together for the SDK's action
+    callable.
 - Handlers receive `(payload)` (trigger) or `(input)` (action) — no
   `ctx` parameter. Workflow-level env is declared on
   `defineWorkflow({env})` and is referenced via the imported
@@ -366,6 +406,7 @@ of scope here.
 | S8 | Action generates cryptographic material and exports it through the handler return value or an outbound `fetch()` | Information disclosure |
 | S9 | A new host-bridge API is added that accepts a raw host-object reference, allowing reflection / mutation of host state | Elevation of privilege |
 | S10 | Guest code calls `__hostCallAction` with a payload that triggers prototype pollution on the host (`__proto__`, `constructor.prototype`) | Tampering / EoP |
+| S11 | Guest code calls the locked `__dispatchAction` with `(validActionName, realInput, fakeHandler, fakeSchema)` to emit `action.*` audit events that misrepresent which handler actually ran | Tampering (audit-log integrity) |
 
 ### Mitigations (current)
 
@@ -483,6 +524,7 @@ exists. Each item should be tracked as a follow-up security task.
 | R-S7 | **Resolved.** CryptoKey objects no longer live in a host-side opaque reference store — the WASM crypto extension manages them internally (PSA key handles in WASM linear memory) and they are freed with the VM. The previous unbounded-growth concern is eliminated by the engine swap. | — | **Resolved** (quickjs-wasi migration) |
 | R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). Workflows that require JWK export must export as raw and serialize to JWK themselves, or wait for the extension to add the format. | Feature gap | v1 limitation (engine-level) |
 | R-S9 | WASI `clock` and `random` overrides (for deterministic / replay execution) cannot be sent across the worker `postMessage` boundary as-is. Engine supports them at `QuickJS.create({ wasi: ... })`; wire-up requires a serializable descriptor resolved on the worker side. | Replay infrastructure | **Follow-up** (engine supports it; wire-up is pending) |
+| R-S10 | `__dispatchAction` remains on `globalThis` after init so the SDK's `core.dispatchAction()` helper can find it. The property is locked (`writable: false, configurable: false`), so guest code cannot replace or delete it. It can still be *called* directly — guest calling `__dispatchAction(validActionName, realInput, fakeHandler, fakeSchema)` causes `action.*` events to name `validActionName` and pass host-side input validation, while the fake handler actually runs. This poisons the audit log: the event stream claims the real action ran successfully when a different handler executed. Input validation (host-side) remains authoritative; sandbox isolation is not breached. | S11 accepted | **Accepted** (documented residual; fix would require moving dispatcher reachability off `globalThis`, e.g. via a core-package `setDispatcher` indirection) |
 
 ### Rules for AI agents
 
@@ -529,6 +571,18 @@ exists. Each item should be tracked as a follow-up security task.
    manifest at registry load and runs every input through one before
    audit-logging or returning. New methods SHALL follow the same
    pattern and SHALL be covered by a prototype-pollution test.
+10. **NEVER install a `__*`-prefixed host bridge without wrapping its
+    consumer in a capture-and-delete shim that removes the bridge name
+    from `globalThis` before workflow source can read it.** The shim
+    SHALL capture the bridge reference into its IIFE closure at init
+    time, expose only the non-bridge guest-facing surface it implements
+    (e.g. `fetch`, `reportError`), and SHALL `delete globalThis.__name`
+    before returning. See the "Bridge surface inventory" subsection
+    above and the sandbox spec's post-init surface requirement. The
+    sole exception is `__dispatchAction`, which is installed with
+    `Object.defineProperty({writable: false, configurable: false})` and
+    documented as an accepted residual (R-S10); new bridges SHALL NOT
+    follow this exception without an explicit threat assessment.
 
 ### File references
 

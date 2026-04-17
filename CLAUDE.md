@@ -99,6 +99,7 @@ Accessible at `https://workflow-engine.webredirect.org` (Let's Encrypt TLS, cert
 Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive code.
 
 - **NEVER** add a global, host-bridge API, or Node.js surface to the QuickJS sandbox without extending the §2 allowlist in the same PR (§2).
+- **NEVER** add a `__*`-prefixed global to the sandbox without a capture-and-delete shim — guest code must not be able to read or overwrite raw host bridges (§2).
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
 - **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
