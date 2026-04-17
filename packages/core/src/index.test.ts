@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EventKind, InvocationEvent } from "./index.js";
 import { IIFE_NAMESPACE } from "./index.js";
+import { makeEvent } from "./test-utils.js";
 
 describe("IIFE_NAMESPACE", () => {
 	it("is the shared constant used by plugin, runtime, and sandbox", () => {
@@ -24,63 +25,53 @@ describe("EventKind", () => {
 	});
 
 	it("InvocationEvent accepts timer kinds with the expected fields", () => {
-		const setEvent: InvocationEvent = {
+		const setEvent: InvocationEvent = makeEvent({
 			kind: "timer.set",
 			id: "evt_1",
 			seq: 0,
 			ref: 1,
 			ts: 1,
-			workflow: "w",
-			workflowSha: "sha",
 			name: "setTimeout",
 			input: { delay: 100, timerId: 7 },
-		};
-		const requestEvent: InvocationEvent = {
+		});
+		const requestEvent: InvocationEvent = makeEvent({
 			kind: "timer.request",
 			id: "evt_1",
 			seq: 1,
 			ref: null,
 			ts: 2,
-			workflow: "w",
-			workflowSha: "sha",
 			name: "setTimeout",
 			input: { timerId: 7 },
-		};
-		const responseEvent: InvocationEvent = {
+		});
+		const responseEvent: InvocationEvent = makeEvent({
 			kind: "timer.response",
 			id: "evt_1",
 			seq: 2,
 			ref: 1,
 			ts: 3,
-			workflow: "w",
-			workflowSha: "sha",
 			name: "setTimeout",
 			input: { timerId: 7 },
 			output: "ok",
-		};
-		const errorEvent: InvocationEvent = {
+		});
+		const errorEvent: InvocationEvent = makeEvent({
 			kind: "timer.error",
 			id: "evt_1",
 			seq: 3,
 			ref: 1,
 			ts: 4,
-			workflow: "w",
-			workflowSha: "sha",
 			name: "setTimeout",
 			input: { timerId: 7 },
 			error: { message: "boom", stack: "stack" },
-		};
-		const clearEvent: InvocationEvent = {
+		});
+		const clearEvent: InvocationEvent = makeEvent({
 			kind: "timer.clear",
 			id: "evt_1",
 			seq: 4,
 			ref: null,
 			ts: 5,
-			workflow: "w",
-			workflowSha: "sha",
 			name: "clearTimeout",
 			input: { timerId: 7 },
-		};
+		});
 		expect(setEvent.kind).toBe("timer.set");
 		expect(requestEvent.ref).toBeNull();
 		expect(responseEvent.output).toBe("ok");

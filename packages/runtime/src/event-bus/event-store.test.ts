@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFsStorage } from "../storage/fs.js";
 import type { StorageBackend } from "../storage/index.js";
@@ -10,16 +11,14 @@ import { createEventStore, type EventStore } from "./event-store.js";
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
 ): InvocationEvent {
-	return {
+	return makeEvent({
 		id: "evt_a",
-		seq: 0,
-		ref: null,
-		ts: Date.parse("2026-04-16T10:00:00Z"),
+		at: "2026-04-16T10:00:00.000Z",
+		ts: 0,
 		workflow: "wf",
-		workflowSha: "sha",
 		name: "on-push",
 		...overrides,
-	} as InvocationEvent;
+	});
 }
 
 describe("event store", () => {
@@ -76,7 +75,8 @@ describe("event store", () => {
 				seq: 1,
 				ref: 0,
 				output: { status: 200 },
-				ts: Date.parse("2026-04-16T10:00:01Z"),
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
 			}),
 		);
 		await store.handle(
@@ -85,13 +85,14 @@ describe("event store", () => {
 				kind: "trigger.request",
 				seq: 0,
 				name: "another",
+				at: "2026-04-16T10:00:02.000Z",
 			}),
 		);
 
 		const requests = await store.query
 			.where("kind", "=", "trigger.request")
 			.select(["id", "name"])
-			.orderBy("ts", "asc")
+			.orderBy("at", "asc")
 			.execute();
 		expect(requests).toHaveLength(2);
 		expect(requests.map((r) => r.id)).toEqual(["evt_a", "evt_b"]);

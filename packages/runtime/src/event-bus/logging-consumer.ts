@@ -7,7 +7,7 @@ function baseFields(event: InvocationEvent): Record<string, unknown> {
 		id: event.id,
 		workflow: event.workflow,
 		trigger: event.name,
-		ts: new Date(event.ts).toISOString(),
+		ts: event.at,
 	};
 }
 

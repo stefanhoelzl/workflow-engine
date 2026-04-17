@@ -1,10 +1,4 @@
-# Dashboard List View Specification
-
-## Purpose
-
-Provide a simple invocation list view for the dashboard, showing recent trigger invocations with their status and duration.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Dashboard lists invocations
 
@@ -75,41 +69,3 @@ Duration SHALL NOT be derived from the wall-clock ISO strings (`startedAt` / `co
 - **GIVEN** a recovered invocation where `trigger.request.ts = 0` and the synthetic `trigger.error.ts = 4_200` (copied from the last pending event)
 - **WHEN** the list is rendered
 - **THEN** the duration field SHALL contain `"4.2 ms"` (i.e. the smart-unit rendering of 4 200 µs)
-
-### Requirement: Deferred list loading
-
-The dashboard SHALL render a user-visible loading state before invocation data is available, and SHALL serve invocation data from an endpoint distinct from the page shell. The loading state SHALL be replaced by the invocation list (or the empty-state message) once data is received.
-
-#### Scenario: Loading state visible before data arrives
-
-- **WHEN** the dashboard page shell is first requested
-- **THEN** the initial response SHALL contain a visible loading-state placeholder in place of the invocation list
-- **AND** the initial response SHALL NOT contain any rendered invocation entries
-
-#### Scenario: Invocation data served from a distinct endpoint
-
-- **WHEN** the invocation list endpoint is requested
-- **THEN** the response SHALL contain entries for the most recent invocations ordered by `startedAt` descending (subject to the list bound)
-- **AND** the response SHALL NOT contain the page shell (topbar, sidebar, page header)
-
-#### Scenario: Empty-state replaces the loading state when no invocations exist
-
-- **GIVEN** the page shell is rendered and no invocations exist in the EventStore
-- **WHEN** the invocation list endpoint response is applied to the shell
-- **THEN** the loading-state placeholder SHALL be replaced by the empty-state message
-
-#### Scenario: Loading state respects reduced-motion preference
-
-- **GIVEN** the user has `prefers-reduced-motion: reduce` set
-- **WHEN** the loading-state placeholder is rendered
-- **THEN** it SHALL NOT apply motion-based animation
-- **AND** it SHALL remain visible as a static placeholder
-
-### Requirement: No filters or detail page in v1
-
-The v1 dashboard SHALL NOT support filters (by workflow, trigger, status, time range), detail pages per invocation, replay/retry buttons, flame graph rendering, or live-streaming updates.
-
-#### Scenario: List is the only dashboard view
-
-- **WHEN** the user navigates to any dashboard URL other than the list
-- **THEN** the response SHALL be `404` (or the request SHALL be redirected to the list)

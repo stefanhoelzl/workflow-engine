@@ -175,7 +175,8 @@ function installEmitEvent(bridge: Bridge): void {
 			id: ctx.invocationId,
 			seq: seqValue,
 			ref,
-			ts: Date.now(),
+			at: new Date().toISOString(),
+			ts: bridge.tsUs(),
 			workflow: ctx.workflow,
 			workflowSha: ctx.workflowSha,
 			name,
@@ -233,12 +234,16 @@ async function handleInit(
 		createOptions.memoryLimit = msg.memoryLimit;
 	}
 
-	wasiState.anchorNs = perfNowNs();
+	// Seed the shared anchor BEFORE QuickJS.create so the WASI monotonic
+	// clock returns small values during VM init; otherwise QuickJS caches a
+	// large reference for performance.now() and every subsequent guest read
+	// is skewed by the Node process uptime at init time.
+	wasiState.anchor.ns = perfNowNs();
 	createOptions.wasi = createWasiFactory(wasiState, post);
 
 	const vm = await QuickJS.create(createOptions);
 
-	const bridge = createBridge(vm);
+	const bridge = createBridge(vm, wasiState.anchor);
 	wasiState.bridge = bridge;
 	bridge.setSink((event) => post({ type: "event", event }));
 	const timers = setupGlobals(bridge);
@@ -362,7 +367,8 @@ function emitTriggerEvent(
 		id: ctx.invocationId,
 		seq: seqValue,
 		ref,
-		ts: Date.now(),
+		at: new Date().toISOString(),
+		ts: bridge.tsUs(),
 		workflow: ctx.workflow,
 		workflowSha: ctx.workflowSha,
 		name,
@@ -477,7 +483,7 @@ async function handleRun(
 	}
 	const { vm, bridge, timers } = state;
 
-	wasiState.anchorNs = perfNowNs();
+	bridge.resetAnchor();
 	bridge.setRunContext({
 		invocationId: msg.invocationId,
 		workflow: msg.workflow,

@@ -1,4 +1,5 @@
 import type { InvocationEvent } from "@workflow-engine/core";
+import { makeEvent } from "@workflow-engine/core/test-utils";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
@@ -12,16 +13,14 @@ const SUCCEEDED_BADGE_RE = /class="badge succeeded"[^>]*>succeeded</;
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
 ): InvocationEvent {
-	return {
+	return makeEvent({
 		id: "evt_a",
-		seq: 0,
-		ref: null,
-		ts: Date.parse("2026-04-16T10:00:00Z"),
+		at: "2026-04-16T10:00:00.000Z",
+		ts: 0,
 		workflow: "wf",
-		workflowSha: "sha",
 		name: "on-push",
 		...overrides,
-	} as InvocationEvent;
+	});
 }
 
 async function mount(eventStore: EventStore): Promise<Hono> {
@@ -93,7 +92,8 @@ describe("dashboard middleware — fragment", () => {
 				seq: 1,
 				ref: 0,
 				output: { status: 200 },
-				ts: Date.parse("2026-04-16T10:00:01Z"),
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
 			}),
 		);
 		const app = await mount(store);
@@ -110,7 +110,8 @@ describe("dashboard middleware — fragment", () => {
 				seq: 1,
 				ref: 0,
 				error: { message: "boom", stack: "" },
-				ts: Date.parse("2026-04-16T10:00:01Z"),
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
 			}),
 		);
 		const app = await mount(store);
@@ -119,7 +120,7 @@ describe("dashboard middleware — fragment", () => {
 		expect(html).toContain("failed");
 	});
 
-	it("orders by ts desc and limits", async () => {
+	it("orders by at desc and limits", async () => {
 		// 3 invocations, oldest first
 		await Promise.all(
 			[0, 1, 2].map((i) =>
@@ -128,7 +129,7 @@ describe("dashboard middleware — fragment", () => {
 						id: `evt_${i}`,
 						kind: "trigger.request",
 						seq: 0,
-						ts: Date.parse(`2026-04-16T10:00:0${i}Z`),
+						at: `2026-04-16T10:00:0${i}.000Z`,
 						name: `tr_${i}`,
 					}),
 				),
@@ -157,7 +158,8 @@ describe("dashboard middleware — fragment", () => {
 				seq: 1,
 				ref: 0,
 				output: { status: 200 },
-				ts: Date.parse("2026-04-16T10:00:01Z"),
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
 			}),
 		);
 		const app = await mount(store);
@@ -166,5 +168,47 @@ describe("dashboard middleware — fragment", () => {
 		expect(html).toContain('id="inv-evt_success"');
 		// Colored status label: badge.succeeded carries the status color + text
 		expect(html).toMatch(SUCCEEDED_BADGE_RE);
+	});
+
+	it("formatDurationUs renders smart-unit bands at the four boundaries", async () => {
+		const bands: Array<{ ts: number; expected: string }> = [
+			{ ts: 999, expected: "999 µs" },
+			{ ts: 1000, expected: "1.0 ms" },
+			{ ts: 1_000_000, expected: "1.0 s" },
+			{ ts: 60_000_000, expected: "1.0 min" },
+		];
+		await Promise.all(
+			bands.flatMap(({ ts }) => {
+				const id = `evt_band_${ts}`;
+				return [
+					store.handle(
+						event({
+							id,
+							kind: "trigger.request",
+							seq: 0,
+							at: "2026-04-16T10:00:00.000Z",
+							ts: 0,
+						}),
+					),
+					store.handle(
+						event({
+							id,
+							kind: "trigger.response",
+							seq: 1,
+							ref: 0,
+							output: { status: 200 },
+							at: "2026-04-16T10:00:01.000Z",
+							ts,
+						}),
+					),
+				];
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations");
+		const html = await res.text();
+		for (const { expected } of bands) {
+			expect(html).toContain(expected);
+		}
 	});
 });

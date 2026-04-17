@@ -15,6 +15,10 @@
 - `pnpm build` — Build runtime + workflows
 - `pnpm start` — Build workflows and start runtime
 
+## Upgrade notes
+
+- **monotonic-event-timestamps** (event shape changed: `ts` is now per-run µs, new `at` field carries wall-clock ISO). Upgrading past this change requires wiping the `pending/` and `archive/` prefixes under the storage backend; the in-memory DuckDB index rebuilds on its own from the (now-empty) archive.
+
 ## Infrastructure (OpenTofu + kind)
 
 Prerequisites: OpenTofu >= 1.11, Podman

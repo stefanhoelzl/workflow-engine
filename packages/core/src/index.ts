@@ -63,6 +63,7 @@ interface InvocationEvent {
 	readonly id: string;
 	readonly seq: number;
 	readonly ref: number | null;
+	readonly at: string;
 	readonly ts: number;
 	readonly workflow: string;
 	readonly workflowSha: string;
