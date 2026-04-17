@@ -98,7 +98,19 @@ const spec: Record<string, Expectation> = {
 	},
 	"WebCryptoAPI/**": {
 		expected: "skip",
-		reason: "first-run triage pending (needs fetch-for-vectors)",
+		reason:
+			"first-run triage pending — mostly needs DOMException polyfill (for promise_rejects_dom / assert_throws_quotaexceedederror) + JWK export + external vectors",
+	},
+	"WebCryptoAPI/randomUUID.https.any.js": { expected: "pass" },
+	"WebCryptoAPI/historical.any.js": {
+		expected: "skip",
+		reason:
+			"sandbox does not model secure-context — crypto.subtle/SubtleCrypto/CryptoKey always present",
+	},
+	"WebCryptoAPI/supports.tentative.https.any.js": {
+		expected: "skip",
+		reason:
+			"needs SubtleCrypto.supports() shim (not in globals.ts CRYPTO_PROMISE_SHIM method list)",
 	},
 
 	// --- Missing-polyfill skips (directory-wide) ---
