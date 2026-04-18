@@ -117,6 +117,28 @@ sections must append (§7 and onward), not renumber.
 - **INTERNAL** — Cluster-local, reachable only by other pods. Not exposed
   externally. Not a substitute for authentication at the app level.
 
+### Tenant isolation invariants
+
+**I-T2** — No caller (authenticated or not) SHALL read, modify, or execute
+another tenant's workflows or invocation events.
+
+Enforcement is distributed across several mechanisms; each is
+load-bearing and documented in its own section or capability spec. The
+table below is the navigation map:
+
+| Data path                              | Enforcement mechanism                                       | Documented in                      |
+|----------------------------------------|-------------------------------------------------------------|------------------------------------|
+| `POST /api/workflows/:tenant`          | Tenant regex + `isMember(user, tenant)` gate; identical 404 | §4, threat A12                     |
+| Invocation event reads                 | `EventStore.query(tenant)` pre-binds `.where("tenant", …)`  | `event-store/spec.md`              |
+| Invocation event writes                | Sandbox stamps `tenant` from workflow registration          | §2 sandbox invariants              |
+| `POST /webhooks/:tenant/:workflow/*`   | Registry lookup by `(tenant, workflow)` pair                | §3, `http-trigger/spec.md`         |
+| Workflow bundle storage                | Storage key = `workflows/<tenant>.tar.gz`                   | `workflow-registry/spec.md`        |
+
+The regex-validated tenant identifier is NOT a permission check — it is
+a format check. Every mechanism above is load-bearing; weakening any one
+of them breaks I-T2. Threats that specifically target I-T2 are
+enumerated in §4 (A12, A13, A14) alongside their mitigations.
+
 ## §2 Sandbox Boundary
 
 ### Trust level
@@ -873,6 +895,8 @@ and any future authenticated UI prefix.
 | A10 | User is removed from the `GITHUB_USER` / `OAUTH2_PROXY_GITHUB_USERS` allowlist but an existing session cookie stays valid until expiry | EoP (stale access) |
 | A11 | Open redirect via `/oauth2` callback parameters | Spoofing (phishing) |
 | A12 | Allow-listed user uploads to a tenant they are not a member of (or enumerates tenants) to discover tenant names | EoP (cross-tenant) / Information disclosure |
+| A13 | Allow-listed Bearer caller on `/api/*` forges `X-Auth-Request-*` headers to impersonate membership in another tenant (breaks I-T2) | EoP (cross-tenant) |
+| A14 | Authenticated caller reads workflow or invocation-event data by id or name on a surface whose handler omits the tenant scope (breaks I-T2) | EoP (cross-tenant) / Information disclosure |
 
 ### Mitigations (current)
 
@@ -936,7 +960,7 @@ and any future authenticated UI prefix.
 - **Separate trust domains for UI vs API** — the UI's cookie does not
   authenticate the API; the API's Bearer token does not sign a UI
   session.
-- **App-side trust-domain split for user-context population.** The
+- **App-side trust-domain split for user-context population (A13).** The
   middleware that builds `UserContext` is split into two modules that
   share only the data type: `packages/runtime/src/auth/bearer-user.ts`
   (used on `/api/*`, reads only the `Authorization: Bearer` header;
@@ -946,9 +970,9 @@ and any future authenticated UI prefix.
   forged `X-Auth-Request-Groups` on `/api/*` cannot inject a tenant
   into `UserContext.orgs` — the API path structurally does not read
   the header. This is the correctness control against cross-tenant
-  escalation by allow-listed Bearer callers (closes R-A4a below).
-- **Edge-side strip of forward-auth headers.** The Traefik `Middleware`
-  CR `strip-auth-headers`
+  escalation by allow-listed Bearer callers (closes A13 and R-A4a below).
+- **Edge-side strip of forward-auth headers (A13).** The Traefik
+  `Middleware` CR `strip-auth-headers`
   (`infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`)
   clears every oauth2-proxy-emitted `X-Auth-Request-*` header on every
   IngressRoute path except `/dashboard` and `/trigger` (the only routes
@@ -956,7 +980,16 @@ and any future authenticated UI prefix.
   `authResponseHeaders`). This is a containment control: forged
   headers from external callers do not reach any handler or log on
   `/api/*`, `/webhooks/*`, `/static/*`, `/oauth2/*`, `/livez`, or `/`.
-  Closes R-A4b below.
+  Closes A13 and R-A4b below.
+- **Tenant-scoped query API (A14).** The `EventStore.query(tenant)`
+  method requires the tenant at the call site and pre-binds
+  `.where("tenant", "=", tenant)` on the returned Kysely
+  `SelectQueryBuilder`. No unscoped read path against the `events`
+  table exists; tenant-scope omission is structurally impossible at
+  the API shape. Workflow bundle reads are analogously keyed by tenant
+  at the storage layer (`workflows/<tenant>.tar.gz`). See
+  `openspec/specs/event-store/spec.md` and
+  `openspec/specs/workflow-registry/spec.md`. Closes A14 and R-A14.
 
 ### Residual risks
 
@@ -967,6 +1000,7 @@ and any future authenticated UI prefix.
 | R-A3 | K8s `NetworkPolicy` restricts app-pod ingress on `:8080` to Traefik pods only (`app.kubernetes.io/name=traefik`) plus the UpCloud node CIDR for kubelet probes. Forged `X-Auth-Request-User` from a neighbouring pod is no longer possible. No longer load-bearing for the cross-tenant threat vector (R-A4a closes it at the app layer), but retained as defence-in-depth. | High | **Resolved** (see §5 R-I1) |
 | R-A4a | App-side forwarded-header trust: the `/api/*` middleware does not read `X-Auth-Request-*`. `bearerUserMiddleware` resolves `UserContext` exclusively from GitHub using the Bearer token, so a forged `X-Auth-Request-Groups` cannot inject a tenant into `UserContext.orgs`. | High | **Resolved** (`packages/runtime/src/auth/bearer-user.ts`) |
 | R-A4b | Edge-side forwarded-header trust: Traefik strips every `X-Auth-Request-*` header on every IngressRoute path except `/dashboard` and `/trigger`, so forged values never reach the app, its logs, or future handlers that might read them. | Medium | **Resolved** (Traefik `strip-auth-headers` middleware in `routes-chart`) |
+| R-A14 | Invocation-event reads are scoped by tenant at the API surface: `EventStore.query(tenant)` requires the tenant argument and pre-binds `.where("tenant", "=", tenant)`. No unscoped read path against the `events` table is exposed, so a handler cannot accidentally omit the tenant predicate on an id- or name-based lookup. | High | **Resolved** (`openspec/specs/event-store/spec.md`, `packages/runtime/src/event-bus/event-store.ts`) |
 | R-A5 | No logout-on-allowlist-removal — removing a user from `OAUTH2_PROXY_GITHUB_USERS` does not invalidate existing sessions until cookie expiry. | Low-Medium | Accept or add session store |
 | R-A6 | No explicit request / response logging policy for `Authorization` headers — nothing guarantees tokens are redacted from pino logs. | Medium | Verify logger config |
 | R-A7 | GitHub OAuth is the only identity provider — no local fallback, no MFA enforcement beyond what GitHub offers. | Accepted | By design |
@@ -1003,6 +1037,20 @@ and any future authenticated UI prefix.
 7. **Bearer tokens and session cookies live at different trust levels**
    — never design a feature that accepts either interchangeably. Pick
    one per surface.
+8. **NEVER read `X-Auth-Request-*` headers on any code path reachable
+   from `/api/*`, `/webhooks/*`, `/static/*`, or any non-UI route.**
+   They are stripped by Traefik's `strip-auth-headers` middleware and
+   ignored by `bearerUserMiddleware`; reading them anywhere else would
+   break both guards simultaneously. The only legitimate reader of
+   these headers is `headerUserMiddleware` on the `/dashboard` and
+   `/trigger` mounts (A13, R-A4a/b, §1 I-T2).
+9. **NEVER read or list workflow or invocation-event data without a
+   tenant scope.** For invocation events, the only scoped read API is
+   `EventStore.query(tenant)` — do not construct raw SQL against the
+   `events` table. For workflows, route through `WorkflowRegistry`,
+   which is keyed by tenant. Format validation of a tenant identifier
+   (the regex) is NOT a permission check and does NOT substitute for a
+   tenant-scoped query (A14, R-A14, §1 I-T2).
 
 ### File references
 
