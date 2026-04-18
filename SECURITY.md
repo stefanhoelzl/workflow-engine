@@ -119,7 +119,7 @@ sections must append (§7 and onward), not renumber.
 
 ### Trust level
 
-**UNTRUSTED.** All code inside `sandbox(source, methods).run(name, ctx, extraMethods)` is
+**UNTRUSTED.** All code inside `sandbox(source, methods).run(name, ctx, options)` is
 user-authored action code. Treat it as hostile: it may attempt to read
 host state, reach network services it shouldn't, run indefinitely, or
 exfiltrate secrets through any channel available to it.
@@ -157,14 +157,15 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   so the next `create(source)` spawns a fresh worker.
 - `Sandbox.run(name, ctx, runOptions)` — invokes a named export from
   the workflow module with a JSON-shaped `ctx` argument. `runOptions`
-  carries `invocationId`, `workflow`, `workflowSha`, and optional
-  `extraMethods`. The worker uses these to stamp every `InvocationEvent`
-  emitted during the run (see `__emitEvent` below). Host-provided
-  methods in `methods` (construction-time) and `extraMethods` (per-run)
-  are installed as top-level globals inside the sandbox via RPC
-  proxies: the worker posts a `request` carrying `method` + `args`,
-  the main thread dispatches to the provided implementation, and the
-  response travels back as a `response` message.
+  carries `invocationId`, `workflow`, and `workflowSha`. The worker uses
+  these to stamp every `InvocationEvent` emitted during the run (see
+  `__emitEvent` below). Host-provided methods in `methods` (registered
+  at construction time) are installed as top-level globals inside the
+  sandbox via RPC proxies: the worker posts a `request` carrying
+  `method` + `args`, the main thread dispatches to the provided
+  implementation, and the response travels back as a `response` message.
+  The set of callable host methods is fixed at construction time and
+  does not vary across runs.
 - `Sandbox.onEvent(cb)` — registers a callback the main-thread sandbox
   proxy invokes for each `InvocationEvent` the worker streams. The
   worker posts `{ type: "event", event }` messages as paired
@@ -229,7 +230,7 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   the pin is deliberate, not an oversight), `__dispatchAction` (runtime-
   appended action dispatcher, locked via
   `Object.defineProperty({writable: false, configurable: false})`),
-  plus the host methods registered via `methods` and `extraMethods`.
+  plus the host methods registered via `methods`.
   WASM extensions contribute the additional standard globals `URL`,
   `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`,
   `structuredClone`, `Headers`, and `DOMException` — these are
@@ -246,12 +247,11 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   (`fetch()`, `reportError()`, action dispatch via `__dispatchAction`)
   and is invariant — a guest attempt to `globalThis.__hostFetch = ...`
   creates a new global with no effect on the shim's captured reference.
-  `__reportError` is bound at construction time only (no per-run
-  override). The sandbox package itself has no knowledge of manifests,
+  The sandbox package itself has no knowledge of manifests,
   Zod, or action dispatch; it exposes `__hostFetch` and `__emitEvent`
   as built-ins (captured by `packages/sandbox/src/polyfills/fetch.ts`
   and the runtime dispatcher shim respectively) and installs whatever
-  additional methods the host provides via `methods` / `extraMethods`.
+  additional methods the host provides via `methods`.
   The runtime passes `__hostCallAction` (and optionally
   `__reportError`) as construction-time methods and appends the
   action-dispatcher shim that captures `__hostCallAction` +
@@ -275,10 +275,11 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
   `fetch.ts`) and the pinned `event-target-shim@^6` dependency.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
-  `packages/sandbox/test/wpt/` installs `__wptReport` as a **per-run**
-  extraMethod (`sandbox.run(…, { extraMethods: { __wptReport } })`) to
-  collect testharness.js subtest outcomes. `__wptReport` is never passed
-  to production sandbox construction; its presence is scoped to the WPT
+  `packages/sandbox/test/wpt/` installs `__wptReport` via the
+  construction-time `methods` argument of its own `sandbox(source,
+  { __wptReport }, opts)` call in `harness/runner.ts` to collect
+  testharness.js subtest outcomes. `__wptReport` is never passed to
+  production sandbox construction; its presence is scoped to the WPT
   test runner only. Vendored WPT files, the harness adapter (preamble,
   composer, runner), and `scripts/wpt-refresh.ts` are test-time artifacts
   and do not extend the production sandbox surface. See
@@ -608,18 +609,16 @@ exists. Each item should be tracked as a follow-up security task.
    functions and let the sandbox marshal.
 6. **NEVER expose the Bridge primitive through the public API.**
    `sync`/`async`/`arg`/`marshal` are sandbox-internal implementation
-   details. Consumers register host methods only via `methods`
-   (construction-time) and `extraMethods` (per-run). All arguments and
-   return values on the public boundary
-   are JSON.
+   details. Consumers register host methods only via `methods` at
+   construction time. All arguments and return values on the public
+   boundary are JSON.
 7. **When adding an outbound capability (fetch, action call, etc.),
    explicitly consider SSRF and exfiltration.** If there is no URL
    allowlist today, say so in the change proposal; do not claim the
    sandbox "prevents" the action from reaching an internal service.
 8. **Sandbox-related changes MUST include security tests** (per
    `openspec/config.yaml` task rules) covering: escape attempts, global
-   visibility, sandbox disposal, extraMethods collision rejection, and
-   any new bridge API's failure modes.
+   visibility, sandbox disposal, and any new bridge API's failure modes.
 9. **Every new runtime-passed method in `methods` MUST validate its
    input on the host side before acting on it.** The host is the
    authoritative validation boundary (the guest's Zod copy is

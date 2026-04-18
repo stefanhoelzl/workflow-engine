@@ -176,19 +176,19 @@ For each runnable file, the runner SHALL verify that every name in the manifest 
 
 ### Requirement: Harness never adds production sandbox surface
 
-The WPT harness package SHALL NOT register any host method, global, or bridge on the sandbox except via per-run `extraMethods` to `sandbox.run()`. Specifically, `__wptReport` SHALL only be installed per-run at test time. No production sandbox consumer SHALL have access to `__wptReport`.
+The WPT harness package SHALL pass `__wptReport` only via the construction-time `methods` argument of its own `sandbox(...)` call in `packages/sandbox/test/wpt/harness/runner.ts`. No production sandbox construction site SHALL pass `__wptReport` in `methods`. `__wptReport` SHALL NOT be installed on any production sandbox by any other mechanism.
 
 #### Scenario: __wptReport absent in production
 
-- **GIVEN** a production sandbox constructed without `extraMethods` containing `__wptReport`
+- **GIVEN** a production sandbox constructed via `sandbox(source, methods, options)` where `methods` does not contain `__wptReport`
 - **WHEN** guest code attempts to call `__wptReport(...)`
 - **THEN** a `ReferenceError` SHALL be thrown
 
 #### Scenario: __wptReport available only during WPT runs
 
-- **GIVEN** a WPT test run via `sandbox.run("__wptEntry", {}, { extraMethods: { __wptReport } })`
+- **GIVEN** a WPT test run initiated by `sandbox(source, { __wptReport }, opts)` followed by `sb.run("__wptEntry", {}, runOpts)`
 - **WHEN** guest code calls `__wptReport(name, status, message)`
-- **THEN** the host-side implementation provided via extraMethods SHALL receive the call
+- **THEN** the host-side implementation registered via construction-time `methods` SHALL receive the call
 
 ### Requirement: Test commands
 

@@ -120,6 +120,7 @@ When a polyfill lands in `packages/sandbox/src/`:
 
 ## Security
 
-The harness is **test-only infrastructure**. `__wptReport` is installed per-run
-via `sandbox.run(..., { extraMethods: { __wptReport } })` and is never present
-in production sandbox construction. See `/SECURITY.md §2` for the allowlist.
+The harness is **test-only infrastructure**. `__wptReport` is installed via the
+`methods` argument of the test-only `sandbox(source, { __wptReport }, opts)`
+call in `harness/runner.ts` and is never passed to a production sandbox
+construction. See `/SECURITY.md §2` for the allowlist.

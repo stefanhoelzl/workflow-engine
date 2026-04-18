@@ -2,7 +2,8 @@
 // don't exist in Node's type environment — they are installed by the
 // preamble (`__wpt`), provided by testharness.js once loaded
 // (`add_result_callback`, `add_completion_callback`, `done`), or
-// injected by the sandbox runner as a per-run extraMethod (`__wptReport`).
+// injected by the sandbox runner as a construction-time host method
+// (`__wptReport`).
 //
 // This file is type-only and is never emitted into the preamble bundle.
 
