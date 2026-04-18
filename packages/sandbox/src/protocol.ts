@@ -31,7 +31,6 @@ type MainToWorker =
 			type: "run";
 			exportName: string;
 			ctx: unknown;
-			extraNames: string[];
 			invocationId: string;
 			tenant: string;
 			workflow: string;

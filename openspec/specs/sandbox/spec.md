@@ -80,15 +80,17 @@ The returned promise SHALL NOT resolve until the worker has reported `ready`. If
 
 ### Requirement: Public API — Sandbox.run()
 
-The `Sandbox` interface SHALL provide a `run(name, ctx, extraMethods?)` method that invokes a named export from the source module with `ctx` as the single argument.
+The `Sandbox` interface SHALL provide a `run(name, ctx, options)` method that invokes a named export from the source module with `ctx` as the single argument.
 
 ```ts
+interface RunOptions {
+  readonly invocationId: string
+  readonly workflow: string
+  readonly workflowSha: string
+}
+
 interface Sandbox {
-  run(
-    name: string,
-    ctx: unknown,
-    extraMethods?: Record<string, (...args: unknown[]) => Promise<unknown>>
-  ): Promise<RunResult>
+  run(name: string, ctx: unknown, options: RunOptions): Promise<RunResult>
   dispose(): void
   onDied(cb: (err: Error) => void): void
 }
@@ -97,12 +99,12 @@ interface Sandbox {
 The method SHALL:
 
 1. Clear the run-local log buffer (performed inside the worker as part of handling the `run` message).
-2. If `extraMethods` is provided, install a per-run main-side RPC handler that dispatches `request` messages for those names into `extraMethods`. Collision between an `extraMethods` key and a reserved global or a construction-time method name SHALL throw from the main side before any message is sent to the worker.
-3. Post a `run` message to the worker containing `exportName: name`, `ctx` (structured-cloned), and the names of `extraMethods`. The worker SHALL install corresponding RPC-proxy globals inside the QuickJS context whose `impl` performs a postMessage round-trip to main.
-4. While the worker executes the guest, service incoming `request` messages by dispatching to `extraMethods` (or to the construction-time `methods`) and replying with `response` messages. Main-side handlers SHALL be scoped to this `run()` invocation — installed before posting `run` and removed when `done` is received.
+2. Attach the `RunOptions` fields (`invocationId`, `workflow`, `workflowSha`) to the run-local bridge context so they can stamp every `InvocationEvent` emitted during the run.
+3. Post a `run` message to the worker containing `exportName: name` and `ctx` (structured-cloned).
+4. Service incoming `request` messages by dispatching to the construction-time `methods` registered at `sandbox(source, methods, options)` construction and replying with `response` messages. No per-run method installation or uninstallation SHALL occur.
 5. On `done`, resolve with the `RunResult` payload carried in the message.
 
-Between runs, per-run RPC handlers SHALL be removed on the main side and per-run guest globals SHALL be uninstalled inside the worker. Construction-time methods installed at init time SHALL persist across runs.
+All host methods the guest can call SHALL have been installed once at init time from the `methods` parameter of `sandbox(...)`; the set of callable host methods SHALL NOT vary across `run()` invocations of the same sandbox.
 
 Concurrent `run()` invocations on the same `Sandbox` are documented undefined behavior; the implementation is not required to detect or serialize them.
 
@@ -110,38 +112,26 @@ Concurrent `run()` invocations on the same `Sandbox` are documented undefined be
 
 - **GIVEN** a source with `export async function onFoo(ctx) { return ctx.n * 2; }`
 - **AND** a sandbox constructed from that source
-- **WHEN** `sb.run("onFoo", { n: 21 })` is called
-- **THEN** the returned `RunResult` SHALL be `{ ok: true, result: 42, logs: [] }`
+- **WHEN** `sb.run("onFoo", { n: 21 }, { invocationId: "i1", workflow: "w", workflowSha: "s" })` is called
+- **THEN** the returned `RunResult` SHALL be `{ ok: true, result: 42 }`
 
 #### Scenario: Missing export yields error result
 
 - **GIVEN** a sandbox whose source has no `nonexistent` export
-- **WHEN** `sb.run("nonexistent", {})` is called
+- **WHEN** `sb.run("nonexistent", {}, opts)` is called
 - **THEN** the returned `RunResult` SHALL have `ok: false` with an error describing the missing export
 - **AND** the worker SHALL remain alive and usable for subsequent runs
 
-#### Scenario: extraMethods extend construction-time methods
+#### Scenario: Construction-time methods persist across runs
 
-- **GIVEN** a sandbox constructed with `methods = { base: async () => "base" }`
-- **WHEN** `sb.run("action", ctx, { extra: async () => "extra" })` is called
-- **THEN** the guest SHALL see both `base` and `extra` as global functions
+- **GIVEN** a sandbox constructed with `methods = { tally: async (n) => n + 1 }`
+- **WHEN** guest code inside two successive `sb.run(...)` invocations both call `tally(41)`
+- **THEN** each call SHALL resolve to `42` via the construction-time `tally` implementation
 
-#### Scenario: extraMethods shadowing is rejected
+#### Scenario: Concurrent host-method requests correlate via requestId
 
-- **GIVEN** a sandbox constructed with `methods = { emit: async () => {} }`
-- **WHEN** `sb.run("action", ctx, { emit: async () => {} })` is called
-- **THEN** the run SHALL throw a collision error before any message is sent to the worker
-- **AND** no log entries SHALL be recorded for this attempt
-
-#### Scenario: extraMethods are cleared between runs
-
-- **GIVEN** a sandbox where `sb.run("a", ctx, { extra: f1 })` has completed
-- **WHEN** `sb.run("b", ctx)` is called without `extraMethods`
-- **THEN** the guest SHALL NOT see `extra` as a global
-
-#### Scenario: Concurrent extra-method requests correlate via requestId
-
-- **GIVEN** a guest that invokes `await Promise.all([emit("a", {}), emit("b", {})])`
+- **GIVEN** a sandbox constructed with `methods = { echo: async (x) => x }`
+- **AND** guest code that invokes `await Promise.all([echo("a"), echo("b")])`
 - **WHEN** the worker posts two `request` messages with distinct `requestId` values
 - **THEN** the main side SHALL reply to each with a matching `response` carrying the same `requestId`
 - **AND** the worker SHALL resolve each pending guest promise against the correct `requestId`
@@ -156,7 +146,7 @@ type RunResult =
   | { ok: false; error: { message: string; stack: string }; logs: LogEntry[] }
 ```
 
-The method SHALL NOT throw for errors raised inside the sandbox; errors SHALL be returned as values. The method MAY throw for host-side programming errors (e.g., invalid extraMethods collision, sandbox already disposed).
+The method SHALL NOT throw for errors raised inside the sandbox; errors SHALL be returned as values. The method MAY throw for host-side programming errors (e.g., sandbox already disposed).
 
 The `logs` array SHALL contain all bridge and console log entries pushed during this run, in chronological order. The `result` field on success SHALL be the JSON-serialized return value of the invoked export (`undefined` serializes to absent).
 
@@ -194,7 +184,7 @@ interface LogEntry {
 }
 ```
 
-Every host-bridged method call (construction-time method, per-run extraMethod, `__hostFetch`, crypto operation) SHALL push an entry before returning. Console calls (`console.log`, `.info`, `.warn`, `.error`, `.debug`) SHALL push entries with `method: "console.<level>"`. The log buffer SHALL be cleared at the start of each `run()` call and SHALL NOT persist across runs.
+Every host-bridged method call (construction-time method, `__hostFetch`, crypto operation) SHALL push an entry before returning. Console calls (`console.log`, `.info`, `.warn`, `.error`, `.debug`) SHALL push entries with `method: "console.<level>"`. The log buffer SHALL be cleared at the start of each `run()` call and SHALL NOT persist across runs.
 
 #### Scenario: Log buffer is per-run
 
@@ -210,7 +200,7 @@ Every host-bridged method call (construction-time method, per-run extraMethod, `
 
 ### Requirement: JSON-only host/sandbox boundary
 
-All arguments and return values crossing the host/sandbox boundary via consumer-provided `methods` or `extraMethods` SHALL be JSON-serializable. The sandbox SHALL serialize host values to JSON when passing into the VM and SHALL deserialize VM values into host-native JSON values when returning.
+All arguments and return values crossing the host/sandbox boundary via consumer-provided `methods` SHALL be JSON-serializable. The sandbox SHALL serialize host values to JSON when passing into the VM and SHALL deserialize VM values into host-native JSON values when returning.
 
 The sandbox SHALL NOT expose host object references, closures, proxies, or any host-identity-carrying value to consumer methods.
 
@@ -230,7 +220,7 @@ The sandbox SHALL NOT expose host object references, closures, proxies, or any h
 
 The sandbox SHALL provide a hard isolation boundary. Guest code SHALL have no access to `process`, `require`, `global` (as a Node.js object), filesystem APIs, child_process, or any Node.js built-ins.
 
-The sandbox SHALL expose only the following globals to guest code after initialization completes: the host methods registered via `methods` / `extraMethods` (each installed on `globalThis` for the duration of its scope, subject to the capture-and-delete rules in the `__hostFetch bridge`, `__reportError host bridge`, `__emitEvent init-time bridge`, and `__hostCallAction bridge global` requirements), the built-in host-bridged globals that remain guest-visible (`console`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`), the guest-side shims (`fetch`, `reportError`, `self`, `navigator`, `URLPattern`), the globals provided by WASM extensions (`URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`, `Headers`, `crypto`, `performance`), and the locked runtime-appended dispatcher global (`__dispatchAction`). The names `__hostFetch`, `__emitEvent`, `__hostCallAction`, and `__reportError` SHALL NOT be present on `globalThis` by the time workflow source evaluation begins, or at any later point in the sandbox's lifetime, unless a per-run `extraMethod` deliberately reinstalls one of these names for the duration of that run (honored as the host's explicit choice, independent of the sandbox's default hiding).
+The sandbox SHALL expose only the following globals to guest code after initialization completes: the host methods registered via `methods` (each installed on `globalThis` at init time, subject to the capture-and-delete rules in the `__hostFetch bridge`, `__reportError host bridge`, `__emitEvent init-time bridge`, and `__hostCallAction bridge global` requirements), the built-in host-bridged globals that remain guest-visible (`console`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`), the guest-side shims (`fetch`, `reportError`, `self`, `navigator`, `URLPattern`), the globals provided by WASM extensions (`URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`, `Headers`, `crypto`, `performance`), and the locked runtime-appended dispatcher global (`__dispatchAction`). The names `__hostFetch`, `__emitEvent`, `__hostCallAction`, and `__reportError` SHALL NOT be present on `globalThis` by the time workflow source evaluation begins, or at any later point in the sandbox's lifetime.
 
 Any addition to this allowlist SHALL be made in the same change proposal that amends `/SECURITY.md §2`, with a written rationale and threat assessment per surface added.
 
@@ -737,8 +727,6 @@ The sandbox SHALL accept a `__reportError(payload)` host method via the construc
 
 The `REPORT_ERROR_SHIM` IIFE SHALL capture `globalThis.__reportError` into its closure at evaluation time, install the guest-facing `reportError` global, and then `delete globalThis.__reportError` so that the bridge is not reachable from guest code for the remainder of the sandbox's lifetime.
 
-Per-run `extraMethods.__reportError` SHALL NOT override the construction-time binding. The `REPORT_ERROR_SHIM` captures its reference once at initialization; subsequent per-run installations of the `__reportError` name are honored as separate host-provided methods (see the `Isolation — no Node.js surface` requirement), but do not flow through the `reportError()` shim path.
-
 #### Scenario: Construction-time __reportError receives calls from reportError shim
 
 - **GIVEN** `sandbox(src, { __reportError: (p) => captured.push(p) })`
@@ -792,7 +780,7 @@ The worker↔main message protocol SHALL define exactly these types:
 
 - `init` (main → worker): carries `source`, construction-time `methodNames`, and `filename`.
 - `ready` (worker → main): carries no payload; SHALL NOT be sent if initialization fails.
-- `run` (main → worker): carries `exportName`, `ctx`, and per-run `extraNames`.
+- `run` (main → worker): carries `exportName` and `ctx`. All host methods available to the guest during a run are the ones registered at init from `methodNames`; no per-run method list is carried.
 - `request` (worker → main): carries `requestId`, `method`, `args` for a host method invocation.
 - `response` (main → worker): carries `requestId`, `ok`, and either `result` or `error`.
 - `done` (worker → main): carries the `RunResult` payload for a completed run.
@@ -816,7 +804,7 @@ The worker↔main message protocol SHALL define exactly these types:
 
 #### Scenario: Non-cloneable RPC arg is rejected
 
-- **GIVEN** a host method registered via `extraMethods` whose caller passes a function as an argument (e.g., guest code calls `someMethod(() => {})`)
+- **GIVEN** a host method registered via `methods` whose caller passes a function as an argument (e.g., guest code calls `someMethod(() => {})`)
 - **WHEN** the worker attempts to post a `request` message
 - **THEN** the call SHALL fail inside the worker before `request` is posted
 - **AND** the guest SHALL see a rejected promise carrying the serialization error

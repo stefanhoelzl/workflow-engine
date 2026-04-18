@@ -28,7 +28,6 @@ interface RunOptions {
 	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
-	readonly extraMethods?: MethodMap;
 }
 
 interface Logger {
@@ -284,7 +283,7 @@ async function sandbox(
 		worker.postMessage(initMsg);
 	});
 
-	// --- Per-run dispatch ---
+	// --- Run dispatch ---
 
 	const pendingRunRejects = new Set<(err: Error) => void>();
 
@@ -303,10 +302,6 @@ async function sandbox(
 			);
 		}
 
-		const extraMethods = runOptions.extraMethods ?? {};
-		const allMethods: MethodMap = { ...methods, ...extraMethods };
-		const extraNames = Object.keys(extraMethods);
-
 		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Promise executor sets up message/error/exit listeners and their shared cleanup as one unit
 		return new Promise<RunResult>((resolve, reject) => {
 			pendingRunRejects.add(reject);
@@ -317,7 +312,7 @@ async function sandbox(
 					if (msg.method === "__hostFetchForward") {
 						return;
 					}
-					const fn = allMethods[msg.method];
+					const fn = methods[msg.method];
 					if (!fn) {
 						const errMsg: MainToWorker = {
 							type: "response",
@@ -382,7 +377,6 @@ async function sandbox(
 				type: "run",
 				exportName: name,
 				ctx,
-				extraNames,
 				invocationId: runOptions.invocationId,
 				tenant: runOptions.tenant,
 				workflow: runOptions.workflow,

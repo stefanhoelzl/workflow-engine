@@ -68,7 +68,21 @@ async function runWpt(
 	}, deadlineMs);
 
 	try {
-		sb = await sandbox(source, {}, { memoryLimit: MEMORY_LIMIT });
+		sb = await sandbox(
+			source,
+			{
+				__wptReport: async (...args: unknown[]): Promise<unknown> => {
+					const [name, status, message] = args as [
+						string,
+						SubtestStatus,
+						string,
+					];
+					captured.push({ name, status, message });
+					return;
+				},
+			},
+			{ memoryLimit: MEMORY_LIMIT },
+		);
 		await sb.run(
 			"__wptEntry",
 			{},
@@ -77,17 +91,6 @@ async function runWpt(
 				tenant: "wpt",
 				workflow: "wpt",
 				workflowSha: "",
-				extraMethods: {
-					__wptReport: async (...args: unknown[]): Promise<unknown> => {
-						const [name, status, message] = args as [
-							string,
-							SubtestStatus,
-							string,
-						];
-						captured.push({ name, status, message });
-						return;
-					},
-				},
 			},
 		);
 	} catch (err) {

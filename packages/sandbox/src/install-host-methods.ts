@@ -49,16 +49,5 @@ function installRpcMethods(
 	}
 }
 
-function uninstallGlobals(b: Bridge, names: readonly string[]): void {
-	for (const name of names) {
-		b.vm.setProp(b.vm.global, name, b.vm.undefined);
-	}
-}
-
 export type { HostMethod, MethodMap };
-export {
-	installHostMethod,
-	installMethods,
-	installRpcMethods,
-	uninstallGlobals,
-};
+export { installHostMethod, installMethods, installRpcMethods };

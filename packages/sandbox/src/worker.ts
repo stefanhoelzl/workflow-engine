@@ -20,7 +20,7 @@ import { urlExtension } from "quickjs-wasi/url";
 import { bridgeHostFetch } from "./bridge.js";
 import { type Bridge, createBridge } from "./bridge-factory.js";
 import { setupGlobals, type TimerCleanup } from "./globals.js";
-import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
+import { installRpcMethods } from "./install-host-methods.js";
 import type {
 	MainToWorker,
 	RunResultPayload,
@@ -200,8 +200,6 @@ interface SandboxState {
 	vm: QuickJS;
 	bridge: Bridge;
 	timers: TimerCleanup;
-	constructionMethodNames: string[];
-	constructionMethodEventNames: Record<string, string>;
 	currentAbort: AbortController | null;
 }
 
@@ -337,8 +335,6 @@ async function handleInit(
 		vm,
 		bridge,
 		timers,
-		constructionMethodNames: [...msg.methodNames],
-		constructionMethodEventNames: { ...(msg.methodEventNames ?? {}) },
 		currentAbort: null,
 	};
 
@@ -469,7 +465,6 @@ function emitTerminalTriggerEvent(
 	}
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run orchestrator threads abort signal, installs per-run extras, invokes the exported function, and emits trigger events — splitting obscures the sequence
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
 ): Promise<void> {
@@ -493,14 +488,6 @@ async function handleRun(
 		workflowSha: msg.workflowSha,
 	});
 	state.currentAbort = new AbortController();
-	// Per-run extraMethods that share a name with a construction-time method
-	// must NOT re-register a QuickJS host callback (quickjs-wasi throws on
-	// double-registration). The main-thread dispatch (allMethods = {...methods,
-	// ...extraMethods}) routes the call to the extra impl for the run's
-	// duration, so the existing guest binding already forwards correctly.
-	const constructionNames = new Set(state.constructionMethodNames);
-	const extraNames = msg.extraNames.filter((n) => !constructionNames.has(n));
-	installRpcMethods(bridge, bridge.vm.global, extraNames, sendRequest);
 
 	emitTriggerEvent(bridge, "trigger.request", msg.exportName, {
 		input: msg.ctx,
@@ -536,7 +523,6 @@ async function handleRun(
 		}
 		state.currentAbort?.abort();
 		state.currentAbort = null;
-		uninstallGlobals(bridge, extraNames);
 		bridge.clearRunContext();
 	}
 
