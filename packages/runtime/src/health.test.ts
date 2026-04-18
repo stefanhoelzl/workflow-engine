@@ -12,21 +12,13 @@ import type { StorageBackend } from "./storage/index.js";
 
 const CONTENT_TYPE = "application/health+json";
 
-function stubEventStore(): EventStore {
-	const query = {
-		select: vi.fn().mockReturnThis(),
-		executeTakeFirstOrThrow: vi.fn().mockResolvedValue({ count: 5 }),
-	};
-	// Make select return an object with executeTakeFirstOrThrow
-	query.select.mockReturnValue({
-		executeTakeFirstOrThrow: query.executeTakeFirstOrThrow,
-	});
-
+function stubEventStore(overrides?: Partial<EventStore>): EventStore {
 	return {
-		query,
+		query: vi.fn(),
+		ping: vi.fn().mockResolvedValue(undefined),
 		handle: vi.fn(),
-		bootstrap: vi.fn(),
 		with: vi.fn(),
+		...overrides,
 	} as unknown as EventStore;
 }
 
@@ -187,17 +179,12 @@ describe("GET /healthz", () => {
 	});
 
 	it("custom timeout is applied via query param", async () => {
-		const slowEventStore = stubEventStore();
-		(
-			slowEventStore.query as unknown as { select: ReturnType<typeof vi.fn> }
-		).select.mockReturnValue({
-			executeTakeFirstOrThrow: vi
+		const slowEventStore = stubEventStore({
+			ping: vi
 				.fn()
 				.mockImplementation(
 					() =>
-						new Promise((resolve) =>
-							setTimeout(() => resolve({ count: 0 }), 200),
-						),
+						new Promise<void>((resolve) => setTimeout(() => resolve(), 200)),
 				),
 		});
 		const app = createApp(defaultDeps({ eventStore: slowEventStore }));

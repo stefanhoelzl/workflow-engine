@@ -30,7 +30,7 @@ describe("event store", () => {
 
 	it("inserts a row for each handled event", async () => {
 		await store.handle(event({ kind: "trigger.request", input: { x: 1 } }));
-		const rows = await store.query.selectAll().execute();
+		const rows = await store.query("t0").selectAll().execute();
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({
 			id: "evt_a",
@@ -44,7 +44,7 @@ describe("event store", () => {
 		});
 	});
 
-	it("filters by tenant via WHERE clause", async () => {
+	it("query(tenant) scopes results to that tenant", async () => {
 		await store.handle(
 			event({ kind: "trigger.request", seq: 0, id: "evt_a", tenant: "acme" }),
 		);
@@ -59,11 +59,20 @@ describe("event store", () => {
 		await store.handle(
 			event({ kind: "trigger.request", seq: 0, id: "evt_c", tenant: "acme" }),
 		);
-		const rows = await store.query
-			.where("tenant", "=", "acme")
+		const rows = await store.query("acme").selectAll().execute();
+		expect(rows.map((r) => r.id).sort()).toEqual(["evt_a", "evt_c"]);
+	});
+
+	it("query(tenant) returns no rows for a tenant the caller is not in", async () => {
+		await store.handle(
+			event({ kind: "trigger.request", seq: 0, id: "evt_x", tenant: "other" }),
+		);
+		const rows = await store
+			.query("t0")
+			.where("id", "=", "evt_x")
 			.selectAll()
 			.execute();
-		expect(rows.map((r) => r.id).sort()).toEqual(["evt_a", "evt_c"]);
+		expect(rows).toEqual([]);
 	});
 
 	it("appends rows — does not update on subsequent emits", async () => {
@@ -71,7 +80,11 @@ describe("event store", () => {
 		await store.handle(
 			event({ kind: "trigger.response", seq: 1, ref: 0, output: "ok" }),
 		);
-		const rows = await store.query.selectAll().orderBy("seq", "asc").execute();
+		const rows = await store
+			.query("t0")
+			.selectAll()
+			.orderBy("seq", "asc")
+			.execute();
 		expect(rows).toHaveLength(2);
 		expect(rows.map((r) => r.kind)).toEqual([
 			"trigger.request",
@@ -112,7 +125,8 @@ describe("event store", () => {
 			}),
 		);
 
-		const requests = await store.query
+		const requests = await store
+			.query("t0")
 			.where("kind", "=", "trigger.request")
 			.select(["id", "name"])
 			.orderBy("at", "asc")
@@ -120,7 +134,8 @@ describe("event store", () => {
 		expect(requests).toHaveLength(2);
 		expect(requests.map((r) => r.id)).toEqual(["evt_a", "evt_b"]);
 
-		const responses = await store.query
+		const responses = await store
+			.query("t0")
 			.where("kind", "in", ["trigger.response", "trigger.error"])
 			.select(["id", "kind"])
 			.execute();
@@ -142,7 +157,11 @@ describe("event store", () => {
 			const s = await createEventStore({ persistence: { backend } });
 			await s.initialized;
 
-			const rows = await s.query.selectAll().orderBy("seq", "asc").execute();
+			const rows = await s
+				.query("t0")
+				.selectAll()
+				.orderBy("seq", "asc")
+				.execute();
 			expect(rows).toHaveLength(2);
 			expect(rows.map((r) => r.kind)).toEqual([
 				"trigger.request",
@@ -151,6 +170,10 @@ describe("event store", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("ping resolves on a healthy store", async () => {
+		await expect(store.ping()).resolves.toBeUndefined();
 	});
 
 	afterEach(() => {

@@ -1,9 +1,11 @@
-# Event Store Specification
+## RENAMED Requirements
 
-## Purpose
+### Requirement: query method exposes read-only SelectQueryBuilder
+- **FROM:** `query property exposes read-only SelectQueryBuilder`
+- **TO:** `query method exposes read-only SelectQueryBuilder`
 
-Provide an in-memory DuckDB-based invocation index that implements BusConsumer, enabling SQL queries over invocation lifecycle records for the dashboard.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: EventStore implements BusConsumer
 
 The EventStore SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function `createEventStore(options?: { logger? }): EventStore` that eagerly creates an in-memory DuckDB instance, runs DDL, and returns an object with `handle()`, a `query(tenant)` method, and a `ping()` method.
@@ -15,16 +17,6 @@ The EventStore SHALL implement the `BusConsumer` interface. It SHALL be created 
 - **AND** exposes a `query(tenant: string)` method (returns a tenant-scoped read-only `SelectQueryBuilder`)
 - **AND** exposes a `ping(): Promise<void>` method
 - **AND** the in-memory DuckDB instance is ready for queries
-
-### Requirement: DuckDB in-memory storage
-
-The EventStore SHALL use DuckDB in `:memory:` mode via `@duckdb/node-api`. The database instance SHALL be created eagerly in the factory function. No explicit close/destroy is required.
-
-#### Scenario: Database is in-memory
-
-- **GIVEN** a newly created EventStore
-- **WHEN** the process exits
-- **THEN** all indexed data is lost (expected --- rebuilt from persistence on next startup)
 
 ### Requirement: EventStore indexes invocation events
 
@@ -56,17 +48,6 @@ Cross-invocation ordering for the dashboard list is derived by the consuming cod
 - **THEN** the `handle()` call SHALL resolve without throwing
 - **AND** the table SHALL NOT contain more than one row for `(id: "evt_a", seq: 0)`
 
-### Requirement: EventStore bootstraps from persistence at init
-
-The EventStore consumer factory SHALL accept a persistence reference and SHALL eagerly populate its `events` table from the archive records returned by `persistence.scanArchive()` at construction. Each archived `InvocationEvent` SHALL become one row in the `events` table. The factory function SHALL be async (or expose an `initialized` promise that callers can await) so the dashboard list can render only after the bootstrap completes.
-
-#### Scenario: Index populated from archive at init
-
-- **GIVEN** `archive/` containing 5 invocations, each with N events (for a total of M event records)
-- **WHEN** `createEventStore({ persistence })` is called and its `initialized` promise resolves
-- **THEN** the `events` table SHALL contain `M` rows
-- **AND** each row's `(id, seq)` pair SHALL match an event record found in the archive
-
 ### Requirement: Query latest invocations
 
 The EventStore SHALL expose a `query(tenant: string)` method that returns a Kysely-style read-only `SelectQueryBuilder` scoped to the `events` table AND pre-bound with `.where("tenant", "=", tenant)`. Consumers derive the cross-invocation dashboard list by querying `trigger.request` rows for the active tenant with the appropriate ordering and then joining terminal events for status/duration. Cross-invocation ordering SHALL use the `at` column with `id` as tiebreak.
@@ -94,17 +75,6 @@ The `tenant` argument SHALL be required. There SHALL be no API for issuing an un
 - **WHEN** `eventStore.query("t0").where('id', '=', 'evt_xyz').execute()` is called
 - **THEN** the EventStore SHALL return zero rows
 
-### Requirement: handle() inserts event row (non-fatal)
-
-`handle(event)` SHALL INSERT a row into the `events` table for every `InvocationEvent` received. The operation SHALL be wrapped in a try/catch — errors SHALL be logged but NOT rethrown, so the bus pipeline continues.
-
-#### Scenario: Insert failure does not crash pipeline
-
-- **GIVEN** an EventStore whose DuckDB instance has an internal error
-- **WHEN** `handle(event)` is called
-- **THEN** the error is logged via the injected logger
-- **AND** `handle()` resolves without throwing
-
 ### Requirement: query property exposes read-only SelectQueryBuilder
 
 The `query(tenant)` method SHALL return a Kysely `SelectQueryBuilder` pre-scoped to the `events` table AND pre-bound with `.where("tenant", "=", tenant)`. Consumers chain `.where()`, `.select()`, `.groupBy()`, `.execute()`, etc. The returned builder SHALL NOT expose insert, update, or delete capabilities.
@@ -123,27 +93,7 @@ Additional `.where("tenant", "=", X)` predicates SHALL be additive (Kysely AND-c
 - **WHEN** a GROUP BY query with `eb.fn.count('id')` is executed via `eventStore.query("t0")`
 - **THEN** results show foo=3, bar=2 (no contribution from `"t1"`)
 
-### Requirement: Module re-exports Kysely utilities
-
-The `event-bus/event-store.ts` module SHALL re-export `sql` from `kysely` and any types consumers need for building queries. Consumers SHALL NOT need to import from `kysely` directly.
-
-#### Scenario: Consumer imports sql from event-store
-
-- **WHEN** a consumer imports `{ sql }` from the event-store module
-- **THEN** the `sql` tagged template is available for raw SQL expressions
-
-### Requirement: EventStore module exports
-
-The `event-bus/event-store.ts` module SHALL export:
-- `createEventStore` factory function
-- `EventStore` type
-- `sql` (re-exported from kysely)
-- Kysely types needed by consumers for query building
-
-#### Scenario: All exports available
-
-- **WHEN** a consumer imports from the event-store module
-- **THEN** `createEventStore`, `EventStore`, and `sql` are available
+## ADDED Requirements
 
 ### Requirement: Liveness ping
 
@@ -160,4 +110,3 @@ The EventStore SHALL expose a `ping(): Promise<void>` method that issues a `SELE
 - **GIVEN** an EventStore whose DuckDB instance has an internal error
 - **WHEN** `eventStore.ping()` is called
 - **THEN** the returned promise SHALL reject with the underlying error
-

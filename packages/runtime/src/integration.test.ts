@@ -120,7 +120,11 @@ describe("end-to-end event flow", () => {
 		await new Promise((r) => setImmediate(r));
 
 		// The events table should contain the full trace.
-		const rows = await store.query.selectAll().orderBy("seq", "asc").execute();
+		const rows = await store
+			.query("acme")
+			.selectAll()
+			.orderBy("seq", "asc")
+			.execute();
 		const kinds = rows.map((r) => r.kind);
 		expect(kinds[0]).toBe("trigger.request");
 		expect(kinds.at(-1)).toBe("trigger.response");
@@ -189,7 +193,8 @@ describe("end-to-end event flow", () => {
 		await recover({ backend, eventStore: store, logger }, bus);
 
 		// The synthesized trigger.error should be in the events table.
-		const rows = await store.query
+		const rows = await store
+			.query("acme")
 			.where("id", "=", "evt_crashed")
 			.selectAll()
 			.execute();
@@ -295,7 +300,8 @@ describe("end-to-end event flow", () => {
 
 		// Event store still holds exactly the archive rows — no duplicates, no
 		// synthetic trigger.error.
-		const rows = await store.query
+		const rows = await store
+			.query("t0")
 			.where("id", "=", id)
 			.selectAll()
 			.orderBy("seq", "asc")

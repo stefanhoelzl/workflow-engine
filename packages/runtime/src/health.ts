@@ -69,13 +69,7 @@ async function checkEventstore(
 	timeoutMs: number,
 ): Promise<Record<string, CheckResult[]>> {
 	try {
-		const { durationMs } = await timed(
-			() =>
-				deps.eventStore.query
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.executeTakeFirstOrThrow(),
-			timeoutMs,
-		);
+		const { durationMs } = await timed(() => deps.eventStore.ping(), timeoutMs);
 		return { eventstore: [pass("datastore", durationMs)] };
 	} catch (err) {
 		return {
