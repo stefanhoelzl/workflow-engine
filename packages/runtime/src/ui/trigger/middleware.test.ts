@@ -1,41 +1,63 @@
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
-import type { WorkflowRunner } from "../../executor/types.js";
+import { describe, expect, it } from "vitest";
 import type {
-	HttpTriggerEntry,
-	HttpTriggerRegistry,
-} from "../../triggers/http.js";
+	WorkflowEntry,
+	WorkflowRegistry,
+} from "../../workflow-registry.js";
 import { triggerMiddleware } from "./middleware.js";
 import { prepareSchema } from "./page.js";
 
-function makeRegistry(entries: HttpTriggerEntry[]): HttpTriggerRegistry {
+function makeRegistry(entries: WorkflowEntry[]): WorkflowRegistry {
 	return {
-		register: vi.fn(),
-		removeRunner: vi.fn(),
-		lookup: vi.fn(),
-		list: () => entries,
 		get size() {
-			return entries.length;
+			return entries.reduce((sum, e) => sum + e.triggers.length, 0);
 		},
+		tenants: () => Array.from(new Set(entries.map((e) => e.tenant))),
+		list: (tenant?: string) =>
+			tenant === undefined
+				? entries
+				: entries.filter((e) => e.tenant === tenant),
+		lookup: () => undefined,
+		registerTenant: async () => ({ ok: false, error: "unused" }),
+		recover: async () => undefined,
+		dispose: () => undefined,
 	};
 }
 
-function makeRunner(name: string): WorkflowRunner {
+function makeEntry(
+	tenant: string,
+	workflowName: string,
+	triggerSpec: {
+		triggerName: string;
+		path: string;
+		method: string;
+		schema?: Record<string, unknown>;
+	},
+): WorkflowEntry {
 	return {
-		tenant: "t0",
-		name,
-		env: {},
-		actions: [],
-		triggers: [],
-		invokeHandler: async () => ({}),
-		onEvent: () => {
-			/* no-op for tests */
+		tenant,
+		workflow: {
+			name: workflowName,
+			module: `${workflowName}.js`,
+			sha: "0".repeat(64),
+			env: {},
+			actions: [],
+			triggers: [],
 		},
+		bundleSource: "",
+		triggers: [
+			{
+				triggerName: triggerSpec.triggerName,
+				path: triggerSpec.path,
+				method: triggerSpec.method,
+				schema: triggerSpec.schema ?? { type: "object" },
+			},
+		],
 	};
 }
 
-function mount(registry: HttpTriggerRegistry) {
-	const m = triggerMiddleware({ triggerRegistry: registry });
+function mount(registry: WorkflowRegistry) {
+	const m = triggerMiddleware({ registry });
 	const app = new Hono();
 	app.all(m.match, m.handler);
 	if (m.match.endsWith("/*")) {
@@ -45,7 +67,7 @@ function mount(registry: HttpTriggerRegistry) {
 }
 
 // User name is "user" so alphabetical sort of (orgs ∪ {name}) = ["t0","user"]
-// → active tenant defaults to "t0", the default tenant assigned by makeRunner.
+// → active tenant defaults to "t0", the default tenant assigned by makeEntry.
 const AUTH_HEADERS = {
 	"X-Auth-Request-User": "user",
 	"X-Auth-Request-Email": "user@example.test",
@@ -54,18 +76,11 @@ const AUTH_HEADERS = {
 
 describe("triggerMiddleware", () => {
 	it("renders a card per registered trigger including its webhook URL and method", async () => {
-		const runner = makeRunner("cronitor");
 		const registry = makeRegistry([
-			{
-				workflow: runner,
-				descriptor: {
-					name: "onCronitorEvent",
-					type: "http",
-					path: "cronitor",
-					method: "POST",
-					params: [],
-					body: { parse: (x) => x },
-				},
+			makeEntry("t0", "cronitor", {
+				triggerName: "onCronitorEvent",
+				path: "cronitor",
+				method: "POST",
 				schema: {
 					type: "object",
 					properties: {
@@ -80,7 +95,7 @@ describe("triggerMiddleware", () => {
 						params: { type: "object" },
 					},
 				},
-			},
+			}),
 		]);
 
 		const app = mount(registry);
@@ -105,28 +120,16 @@ describe("triggerMiddleware", () => {
 
 	it("sorts cards by workflow/trigger name (stable output)", async () => {
 		const registry = makeRegistry([
-			{
-				workflow: makeRunner("zeta"),
-				descriptor: {
-					name: "z",
-					type: "http",
-					path: "z",
-					method: "POST",
-					params: [],
-					body: { parse: (x) => x },
-				},
-			},
-			{
-				workflow: makeRunner("alpha"),
-				descriptor: {
-					name: "a",
-					type: "http",
-					path: "a",
-					method: "GET",
-					params: [],
-					body: { parse: (x) => x },
-				},
-			},
+			makeEntry("t0", "zeta", {
+				triggerName: "z",
+				path: "z",
+				method: "POST",
+			}),
+			makeEntry("t0", "alpha", {
+				triggerName: "a",
+				path: "a",
+				method: "GET",
+			}),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });

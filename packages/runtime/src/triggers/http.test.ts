@@ -2,15 +2,8 @@ import type { HttpTriggerResult } from "@workflow-engine/core";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../executor/index.js";
-import type {
-	HttpTriggerDescriptor,
-	WorkflowRunner,
-} from "../executor/types.js";
-import {
-	createHttpTriggerRegistry,
-	httpTriggerMiddleware,
-	type PayloadValidator,
-} from "./http.js";
+import type { LookupResult, WorkflowRegistry } from "../workflow-registry.js";
+import { httpTriggerMiddleware, type PayloadValidator } from "./http.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -24,58 +17,72 @@ function passValidator(): PayloadValidator {
 	};
 }
 
-function makeDescriptor(
-	overrides: Partial<HttpTriggerDescriptor>,
-): HttpTriggerDescriptor {
+function makeLookupResult(overrides: Partial<LookupResult> = {}): LookupResult {
 	return {
-		name: "t",
-		type: "http",
-		path: "webhook",
-		method: "POST",
-		params: [],
-		body: { parse: (x) => x },
+		workflow: {
+			name: "w",
+			module: "w.js",
+			sha: "0".repeat(64),
+			env: {},
+			actions: [],
+			triggers: [],
+		},
+		triggerName: "t",
+		validator: passValidator(),
+		params: {},
+		bundleSource: "",
 		...overrides,
 	};
 }
 
-function makeRunner(name: string, tenant = "t0"): WorkflowRunner {
+interface MakeRegistryOptions {
+	readonly result?: LookupResult | undefined;
+	readonly register?: boolean;
+}
+
+function makeRegistry(options: MakeRegistryOptions = {}): WorkflowRegistry {
+	const hasTrigger = options.register !== false;
+	const result = options.result;
 	return {
-		tenant,
-		name,
-		env: Object.freeze({}),
-		actions: [],
-		triggers: [],
-		invokeHandler: async () => ({ status: 200 }),
-		onEvent: () => {
-			/* no-op for tests */
+		get size() {
+			return hasTrigger ? 1 : 0;
 		},
+		tenants: () => [],
+		list: () => [],
+		lookup: (_tenant, workflowName, path) => {
+			if (!hasTrigger) {
+				return;
+			}
+			if (result !== undefined) {
+				return result;
+			}
+			// Default: match "webhook" path only, on workflow "w".
+			if (workflowName === "w" && path === "webhook") {
+				return makeLookupResult();
+			}
+			return;
+		},
+		registerTenant: async () => ({ ok: false, error: "unused" }),
+		recover: async () => undefined,
+		dispose: () => undefined,
 	};
 }
 
 interface MountOptions {
-	readonly runner?: WorkflowRunner;
-	readonly descriptor?: HttpTriggerDescriptor;
-	readonly validator?: PayloadValidator;
+	readonly result?: LookupResult;
 	readonly invoke?: Executor["invoke"];
 	readonly register?: boolean;
 }
 
 function mount(options: MountOptions = {}) {
-	const registry = createHttpTriggerRegistry();
-	if (options.register !== false) {
-		registry.register(
-			options.runner ?? makeRunner("w"),
-			options.descriptor ?? makeDescriptor({}),
-			options.validator ?? passValidator(),
-		);
-	}
+	const registry = makeRegistry({
+		...(options.register === undefined ? {} : { register: options.register }),
+		...(options.result === undefined ? {} : { result: options.result }),
+	});
 	const executor = {
 		invoke: options.invoke ?? (async () => ({ status: 200, body: "ok" })),
 	} as Executor;
-	const middleware = httpTriggerMiddleware(
-		{ triggerRegistry: registry },
-		executor,
-	);
+	const middleware = httpTriggerMiddleware(registry, executor);
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
 	if (middleware.match.endsWith("/*")) {
@@ -83,73 +90,6 @@ function mount(options: MountOptions = {}) {
 	}
 	return { app, registry, executor };
 }
-
-// ---------------------------------------------------------------------------
-// Registry routing
-// ---------------------------------------------------------------------------
-
-describe("HttpTriggerRegistry", () => {
-	it("matches by exact static path + method", () => {
-		const r = createHttpTriggerRegistry();
-		const w = makeRunner("w");
-		r.register(w, makeDescriptor({ name: "a", path: "x" }), passValidator());
-		expect(r.lookup("t0", "w", "x", "POST")?.descriptor.name).toBe("a");
-		expect(r.lookup("t0", "w", "x", "GET")).toBeUndefined();
-		expect(r.lookup("t0", "w", "y", "POST")).toBeUndefined();
-		expect(r.lookup("other", "w", "x", "POST")).toBeUndefined();
-	});
-
-	it("prefers static paths over parameterized ones", () => {
-		const r = createHttpTriggerRegistry();
-		const w = makeRunner("w");
-		// Register parameterized first to make sure the registry honours
-		// static priority regardless of insertion order.
-		r.register(
-			w,
-			makeDescriptor({ name: "param", path: "users/:userId" }),
-			passValidator(),
-		);
-		r.register(
-			w,
-			makeDescriptor({ name: "static", path: "users/admin" }),
-			passValidator(),
-		);
-		expect(r.lookup("t0", "w", "users/admin", "POST")?.descriptor.name).toBe(
-			"static",
-		);
-		expect(r.lookup("t0", "w", "users/other", "POST")?.descriptor.name).toBe(
-			"param",
-		);
-		expect(r.lookup("t0", "w", "users/other", "POST")?.params).toEqual({
-			userId: "other",
-		});
-	});
-
-	it("matches wildcard catch-all", () => {
-		const r = createHttpTriggerRegistry();
-		const w = makeRunner("w");
-		r.register(
-			w,
-			makeDescriptor({ name: "files", path: "files/*rest" }),
-			passValidator(),
-		);
-		const match = r.lookup("t0", "w", "files/docs/2024/report.pdf", "POST");
-		expect(match?.descriptor.name).toBe("files");
-		expect(match?.params).toEqual({ rest: "docs/2024/report.pdf" });
-	});
-
-	it("exposes size reflecting registered count", () => {
-		const r = createHttpTriggerRegistry();
-		expect(r.size).toBe(0);
-		r.register(makeRunner("w"), makeDescriptor({ name: "a" }), passValidator());
-		r.register(
-			makeRunner("w"),
-			makeDescriptor({ name: "b", path: "y" }),
-			passValidator(),
-		);
-		expect(r.size).toBe(2);
-	});
-});
 
 // ---------------------------------------------------------------------------
 // httpTriggerMiddleware — success path
@@ -193,21 +133,32 @@ describe("httpTriggerMiddleware: success path", () => {
 		expect(await res.text()).toBe("");
 	});
 
-	it("passes the parsed payload to the executor (body, params, query)", async () => {
-		const received: unknown[] = [];
-		const invoke = vi.fn<Executor["invoke"]>(async (_w, _t, payload) => {
-			received.push(payload);
-			return { status: 200 } satisfies HttpTriggerResult;
+	it("passes tenant, workflow, triggerName and payload to the executor", async () => {
+		const calls: {
+			tenant: string;
+			workflowName: string;
+			triggerName: string;
+			payload: unknown;
+		}[] = [];
+		const invoke = vi.fn<Executor["invoke"]>(
+			async (tenant, workflow, triggerName, payload) => {
+				calls.push({
+					tenant,
+					workflowName: workflow.name,
+					triggerName,
+					payload,
+				});
+				return { status: 200 } satisfies HttpTriggerResult;
+			},
+		);
+		const result = makeLookupResult({
+			triggerName: "paramTrig",
+			params: { userId: "abc" },
 		});
-		const descriptor = makeDescriptor({
-			name: "paramTrig",
-			path: "users/:userId",
-			params: ["userId"],
-		});
-		const { app } = mount({ invoke, descriptor });
+		const { app } = mount({ invoke, result });
 
 		const res = await app.request(
-			"/webhooks/t0/w/users/abc?tag=one&tag=two&q=hello",
+			"/webhooks/t0/w/webhook?tag=one&tag=two&q=hello",
 			{
 				method: "POST",
 				body: JSON.stringify({ active: true }),
@@ -216,12 +167,15 @@ describe("httpTriggerMiddleware: success path", () => {
 		);
 
 		expect(res.status).toBe(200);
-		expect(received).toHaveLength(1);
-		const payload = received[0] as {
+		expect(calls).toHaveLength(1);
+		const call = calls[0];
+		expect(call?.tenant).toBe("t0");
+		expect(call?.workflowName).toBe("w");
+		expect(call?.triggerName).toBe("paramTrig");
+		const payload = call?.payload as {
 			body: unknown;
 			params: Record<string, string>;
 			query: Record<string, string[]>;
-			url: string;
 			method: string;
 		};
 		expect(payload.body).toEqual({ active: true });
@@ -265,18 +219,20 @@ describe("httpTriggerMiddleware: error paths", () => {
 
 	it("returns 422 with structured issues on validation failure", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
-		const validator: PayloadValidator = {
-			validateBody: () => ({
-				ok: false,
-				issues: [
-					{ path: ["a"], message: "a must be string" },
-					{ path: ["b", 0], message: "b[0] must be number" },
-				],
-			}),
-			validateQuery: (v) => ({ ok: true, value: v }),
-			validateParams: (v) => ({ ok: true, value: v }),
-		};
-		const { app } = mount({ invoke, validator });
+		const failingResult = makeLookupResult({
+			validator: {
+				validateBody: () => ({
+					ok: false,
+					issues: [
+						{ path: ["a"], message: "a must be string" },
+						{ path: ["b", 0], message: "b[0] must be number" },
+					],
+				}),
+				validateQuery: (v) => ({ ok: true, value: v }),
+				validateParams: (v) => ({ ok: true, value: v }),
+			},
+		});
+		const { app } = mount({ invoke, result: failingResult });
 		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({ wrong: true }),
@@ -320,10 +276,6 @@ describe("httpTriggerMiddleware: webhooks health probe", () => {
 
 describe("httpTriggerMiddleware: security", () => {
 	it("is a public ingress — no auth middleware attached (per SECURITY.md §3)", async () => {
-		// The middleware in this module does NOT add any authentication.
-		// Attaching `apiMiddleware` or forward-auth to `/webhooks/*` is what
-		// SECURITY.md §3 forbids. This test asserts the middleware admits a
-		// request with NO auth headers.
 		const invoke = vi.fn<Executor["invoke"]>(async () => ({ status: 200 }));
 		const { app } = mount({ invoke });
 		const res = await app.request("/webhooks/t0/w/webhook", {
@@ -348,23 +300,21 @@ describe("httpTriggerMiddleware: security", () => {
 	});
 
 	it("strips __proto__ / constructor keys before they reach the executor", async () => {
-		// The structured-clone pass in the Ajv validator (workflow-registry)
-		// drops prototype-pollution keys. In this test we assert the
-		// middleware's validator contract: when validator.validateBody
-		// returns a clean value, that clean value is what the executor sees
-		// — i.e., the middleware does not route the raw body around the
-		// validator.
-		const prototypePollutingValidator: PayloadValidator = {
-			validateBody: () => ({ ok: true, value: { clean: true } }),
-			validateQuery: (v) => ({ ok: true, value: v }),
-			validateParams: (v) => ({ ok: true, value: v }),
-		};
-		const received: unknown[] = [];
-		const invoke = vi.fn<Executor["invoke"]>(async (_w, _t, payload) => {
-			received.push(payload);
-			return { status: 200 };
+		const prototypePollutingResult = makeLookupResult({
+			validator: {
+				validateBody: () => ({ ok: true, value: { clean: true } }),
+				validateQuery: (v) => ({ ok: true, value: v }),
+				validateParams: (v) => ({ ok: true, value: v }),
+			},
 		});
-		const { app } = mount({ invoke, validator: prototypePollutingValidator });
+		const received: unknown[] = [];
+		const invoke = vi.fn<Executor["invoke"]>(
+			async (_tenant, _workflow, _name, payload) => {
+				received.push(payload);
+				return { status: 200 };
+			},
+		);
+		const { app } = mount({ invoke, result: prototypePollutingResult });
 		await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({

@@ -6,31 +6,27 @@ import {
 	ManifestSchema,
 	type WorkflowManifest,
 } from "@workflow-engine/core";
-import { type Sandbox, sandbox } from "@workflow-engine/sandbox";
 import Ajv2020 from "ajv/dist/2020.js";
 import { extract as tarExtract } from "tar-stream";
-import type {
-	ActionDescriptor,
-	HttpTriggerDescriptor,
-	WorkflowRunner,
-} from "./executor/types.js";
 import type { Logger } from "./logger.js";
 import type { StorageBackend } from "./storage/index.js";
 import type {
-	HttpTriggerRegistry,
 	PayloadValidator,
 	ValidationIssue,
 	ValidatorResult,
 } from "./triggers/http.js";
-import { createHttpTriggerRegistry } from "./triggers/http.js";
 
 // ---------------------------------------------------------------------------
-// Workflow registry (multi-tenant)
+// Workflow registry (multi-tenant, metadata-only)
 // ---------------------------------------------------------------------------
 //
-// Runners are keyed by `(tenant, name)`. The registry accepts tenant
-// tarballs via `registerTenant(tenant, files)` and rebuilds from the
-// storage backend at startup via `recover(backend)`.
+// The registry owns tenant manifests, their bundle sources, and a per-tenant
+// HTTP-trigger index. It does NOT own sandboxes (see `sandbox-store.ts`) or
+// runners (removed in the sandbox-store change). Consumers:
+//   - Executor: calls `registry.lookup(tenant, method, path)` to get routing
+//     info; resolves sandbox via the store.
+//   - UI (dashboard / trigger): calls `registry.tenants()` / `registry.list()`
+//     for presentation.
 
 const ajv = new Ajv2020.default({ allErrors: true, strict: false });
 
@@ -43,6 +39,19 @@ function structuredCloneJson<T>(value: T): T {
 	} catch {
 		return value;
 	}
+}
+
+function ajvPathToSegments(instancePath: string): (string | number)[] {
+	if (instancePath === "") {
+		return [];
+	}
+	return instancePath
+		.split("/")
+		.slice(1)
+		.map((seg) => {
+			const n = Number(seg);
+			return Number.isFinite(n) && seg !== "" ? n : seg;
+		});
 }
 
 function compileValidator(
@@ -62,19 +71,6 @@ function compileValidator(
 		}));
 		return { ok: false, issues };
 	};
-}
-
-function ajvPathToSegments(instancePath: string): (string | number)[] {
-	if (instancePath === "") {
-		return [];
-	}
-	return instancePath
-		.split("/")
-		.slice(1)
-		.map((seg) => {
-			const n = Number(seg);
-			return Number.isFinite(n) && seg !== "" ? n : seg;
-		});
 }
 
 // ---------------------------------------------------------------------------
@@ -106,107 +102,8 @@ async function extractTenantTarGz(
 }
 
 // ---------------------------------------------------------------------------
-// __hostCallAction dispatcher (per workflow)
+// Trigger payload validator (body / query / params)
 // ---------------------------------------------------------------------------
-
-interface DispatcherDeps {
-	readonly workflow: WorkflowManifest;
-	readonly logger: Logger;
-}
-
-function buildHostCallAction(deps: DispatcherDeps) {
-	const inputValidators = new Map<
-		string,
-		(value: unknown) => ValidatorResult<unknown>
-	>();
-	for (const action of deps.workflow.actions) {
-		inputValidators.set(action.name, compileValidator(action.input));
-	}
-
-	return (...args: unknown[]): Promise<undefined> => {
-		try {
-			dispatchActionCall(deps, inputValidators, args);
-			return Promise.resolve(undefined);
-		} catch (err) {
-			return Promise.reject(err);
-		}
-	};
-}
-
-function dispatchActionCall(
-	deps: DispatcherDeps,
-	inputValidators: Map<string, (value: unknown) => ValidatorResult<unknown>>,
-	args: unknown[],
-): void {
-	const [name, input] = args as [string, unknown];
-	const action = deps.workflow.actions.find((a) => a.name === name);
-	if (!action) {
-		throw new Error(`action "${name}" is not declared in the manifest`);
-	}
-	const validateInput = inputValidators.get(name);
-	if (!validateInput) {
-		throw new Error(`action "${name}" has no validator`);
-	}
-	const inputResult = validateInput(input);
-	if (!inputResult.ok) {
-		throwValidationError("action input validation failed", inputResult.issues);
-	}
-	deps.logger.info("action.invoked", {
-		workflow: deps.workflow.name,
-		action: name,
-		input: inputResult.value,
-	});
-}
-
-function throwValidationError(
-	message: string,
-	issues: ValidationIssue[] | undefined,
-): never {
-	const err = new Error(message) as Error & { issues?: unknown };
-	err.name = "ValidationError";
-	err.issues = issues ?? [];
-	throw err;
-}
-
-// ---------------------------------------------------------------------------
-// WorkflowRunner construction
-// ---------------------------------------------------------------------------
-
-interface HttpTriggerBinding {
-	readonly descriptor: HttpTriggerDescriptor;
-	readonly validator: PayloadValidator;
-	readonly schema: Record<string, unknown>;
-}
-
-interface RunnerArtifacts {
-	readonly runner: WorkflowRunner;
-	readonly sandbox: Sandbox;
-	readonly httpTriggers: HttpTriggerBinding[];
-}
-
-interface RunnerLifetime {
-	readonly sandbox: Sandbox;
-	isBusy: boolean;
-	retiring: boolean;
-}
-
-function buildTriggerDescriptor(
-	manifestEntry: WorkflowManifest["triggers"][number],
-): HttpTriggerDescriptor {
-	const fallback = { parse: (x: unknown) => x };
-	const descriptor: HttpTriggerDescriptor = {
-		name: manifestEntry.name,
-		type: "http",
-		path: manifestEntry.path,
-		method: manifestEntry.method,
-		params: [...manifestEntry.params],
-		body: fallback,
-	};
-	if (manifestEntry.query) {
-		return { ...descriptor, query: fallback };
-	}
-	return descriptor;
-}
 
 function buildValidatorFromManifestTrigger(
 	manifestEntry: WorkflowManifest["triggers"][number],
@@ -226,158 +123,120 @@ function buildValidatorFromManifestTrigger(
 	return { validateBody, validateQuery, validateParams };
 }
 
-interface BuildRunnerArgs {
-	readonly tenant: string;
-	readonly workflow: WorkflowManifest;
-	readonly bundleSource: string;
-	readonly filename: string;
-	readonly logger: Logger;
+// ---------------------------------------------------------------------------
+// Trigger index (per tenant + per workflow)
+// ---------------------------------------------------------------------------
+
+const PARAM_SEGMENT_RE = /[:*]/;
+const WILDCARD_SEGMENT_RE = /\*(\w+)/g;
+
+function toUrlPatternPath(path: string): string {
+	return path.replace(WILDCARD_SEGMENT_RE, ":$1+");
 }
 
-function buildActionDescriptors(
+interface TriggerIndexEntry {
+	readonly workflow: WorkflowManifest;
+	readonly triggerName: string;
+	readonly method: string;
+	readonly path: string;
+	readonly schema: Record<string, unknown>;
+	readonly validator: PayloadValidator;
+	readonly pattern: URLPattern;
+	readonly isStatic: boolean;
+}
+
+interface TriggerMatch {
+	readonly workflow: WorkflowManifest;
+	readonly triggerName: string;
+	readonly validator: PayloadValidator;
+	readonly params: Record<string, string>;
+}
+
+function buildTriggerIndexEntries(
 	workflow: WorkflowManifest,
-): ActionDescriptor[] {
-	const fallback = { parse: (x: unknown) => x };
-	return workflow.actions.map((a) => ({
-		name: a.name,
-		input: fallback,
-		output: fallback,
+): TriggerIndexEntry[] {
+	return workflow.triggers.map((trigger) => ({
+		workflow,
+		triggerName: trigger.name,
+		method: trigger.method,
+		path: trigger.path,
+		schema: trigger.schema as Record<string, unknown>,
+		validator: buildValidatorFromManifestTrigger(trigger),
+		pattern: new URLPattern({ pathname: `/${toUrlPatternPath(trigger.path)}` }),
+		isStatic: !PARAM_SEGMENT_RE.test(trigger.path),
 	}));
 }
 
-function buildHttpTriggers(workflow: WorkflowManifest): {
-	descriptors: HttpTriggerDescriptor[];
-	bindings: HttpTriggerBinding[];
-} {
-	const descriptors: HttpTriggerDescriptor[] = [];
-	const bindings: HttpTriggerBinding[] = [];
-	for (const manifestTrigger of workflow.triggers) {
-		const descriptor = buildTriggerDescriptor(manifestTrigger);
-		descriptors.push(descriptor);
-		bindings.push({
-			descriptor,
-			validator: buildValidatorFromManifestTrigger(manifestTrigger),
-			schema: manifestTrigger.schema as Record<string, unknown>,
-		});
-	}
-	return { descriptors, bindings };
-}
-
-// The action dispatcher implementation, appended as JS source to the sandbox
-// bundle. The IIFE captures `__hostCallAction` and `__emitEvent` into closure
-// locals, installs `__dispatchAction` as a locked (non-writable,
-// non-configurable) global, then deletes the two captured bridge names from
-// globalThis so guest code cannot read or overwrite them. The dispatcher
-// itself is kept guest-callable by design (see sandbox spec
-// `__dispatchAction locked guest global`) with the audit-log-poisoning
-// residual documented in SECURITY.md §2.
-const ACTION_DISPATCHER_SOURCE = `
-(function() {
-  var _hostCall = globalThis.__hostCallAction;
-  var _emit = globalThis.__emitEvent;
-  async function dispatch(name, input, handler, outputSchema) {
-    _emit({ kind: "action.request", name, input });
-    try {
-      await _hostCall(name, input);
-      const raw = await handler(input);
-      const output = outputSchema.parse(raw);
-      _emit({ kind: "action.response", name, output });
-      return output;
-    } catch (err) {
-      const error = {
-        message: err && err.message ? String(err.message) : String(err),
-        stack: err && err.stack ? String(err.stack) : "",
-      };
-      if (err && err.issues !== undefined) error.issues = err.issues;
-      _emit({ kind: "action.error", name, error });
-      throw err;
-    }
-  }
-  Object.defineProperty(globalThis, "__dispatchAction", {
-    value: dispatch,
-    writable: false,
-    configurable: false,
-    enumerable: false,
-  });
-  delete globalThis.__hostCallAction;
-  delete globalThis.__emitEvent;
-})();
-`;
-
-function buildSandboxSource(bundleSource: string): string {
-	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}`;
-}
-
-function buildInvokeHandler(
-	sb: Sandbox,
-	tenant: string,
-	workflow: WorkflowManifest,
-) {
-	return async function invokeHandler(
-		invocationId: string,
-		triggerName: string,
-		payload: unknown,
-	) {
-		const runResult = await sb.run(triggerName, payload, {
-			invocationId,
-			tenant,
-			workflow: workflow.name,
-			workflowSha: workflow.sha,
-		});
-		if (!runResult.ok) {
-			const err = new Error(runResult.error.message);
-			err.stack = runResult.error.stack;
-			throw err;
+function extractParams(
+	groups: Record<string, string | undefined>,
+): Record<string, string> {
+	const params: Record<string, string> = {};
+	for (const [key, value] of Object.entries(groups)) {
+		if (value !== undefined) {
+			params[key] = value;
 		}
-		return runResult.result as {
-			status?: number;
-			body?: unknown;
-			headers?: Record<string, string>;
-		};
+	}
+	return params;
+}
+
+function tryMatch(
+	entry: TriggerIndexEntry,
+	pathname: string,
+	method: string,
+	isStatic: boolean,
+): TriggerMatch | undefined {
+	if (entry.isStatic !== isStatic) {
+		return;
+	}
+	if (entry.method !== method) {
+		return;
+	}
+	const result = entry.pattern.exec({ pathname });
+	if (!result) {
+		return;
+	}
+	return {
+		workflow: entry.workflow,
+		triggerName: entry.triggerName,
+		validator: entry.validator,
+		params: extractParams(
+			result.pathname.groups as Record<string, string | undefined>,
+		),
 	};
 }
 
-async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
-	const { tenant, workflow, bundleSource, filename, logger } = args;
+// ---------------------------------------------------------------------------
+// Tenant state
+// ---------------------------------------------------------------------------
 
-	const __hostCallAction = buildHostCallAction({ workflow, logger });
-	const sandboxSource = buildSandboxSource(bundleSource);
+interface TenantState {
+	readonly workflows: Map<string, WorkflowManifest>;
+	readonly bundleSources: Map<string, string>;
+	readonly triggerEntries: TriggerIndexEntry[];
+}
 
-	const sb = await sandbox(
-		sandboxSource,
-		{ __hostCallAction },
-		{
-			filename,
-			methodEventNames: { __hostCallAction: "host.validateAction" },
-		},
-	);
-
-	const actionDescriptors = buildActionDescriptors(workflow);
-	const { descriptors: triggerDescriptors, bindings: httpTriggers } =
-		buildHttpTriggers(workflow);
-
-	const runner: WorkflowRunner = {
-		tenant,
-		name: workflow.name,
-		env: Object.freeze({ ...workflow.env }),
-		actions: actionDescriptors,
-		triggers: triggerDescriptors,
-		invokeHandler: buildInvokeHandler(sb, tenant, workflow),
-		onEvent(cb) {
-			sb.onEvent(cb);
-		},
-	};
-
-	return { runner, sandbox: sb, httpTriggers };
+function buildTenantState(
+	manifest: Manifest,
+	files: Map<string, string>,
+): TenantState {
+	const workflows = new Map<string, WorkflowManifest>();
+	const bundleSources = new Map<string, string>();
+	const triggerEntries: TriggerIndexEntry[] = [];
+	for (const wf of manifest.workflows) {
+		const bundleSource = files.get(wf.module);
+		if (bundleSource === undefined) {
+			continue;
+		}
+		workflows.set(wf.name, wf);
+		bundleSources.set(wf.name, bundleSource);
+		triggerEntries.push(...buildTriggerIndexEntries(wf));
+	}
+	return { workflows, bundleSources, triggerEntries };
 }
 
 // ---------------------------------------------------------------------------
-// Registry factory
+// Registry
 // ---------------------------------------------------------------------------
-
-function runnerKey(tenant: string, name: string): string {
-	return `${tenant}/${name}`;
-}
 
 interface WorkflowRegistryOptions {
 	readonly logger: Logger;
@@ -388,10 +247,38 @@ interface RegisterTenantOptions {
 	readonly tarballBytes?: Uint8Array;
 }
 
+interface WorkflowEntry {
+	readonly tenant: string;
+	readonly workflow: WorkflowManifest;
+	readonly bundleSource: string;
+	readonly triggers: readonly TriggerEntry[];
+}
+
+interface TriggerEntry {
+	readonly triggerName: string;
+	readonly method: string;
+	readonly path: string;
+	readonly schema: Record<string, unknown>;
+}
+
+interface LookupResult {
+	readonly workflow: WorkflowManifest;
+	readonly triggerName: string;
+	readonly validator: PayloadValidator;
+	readonly params: Record<string, string>;
+	readonly bundleSource: string;
+}
+
 interface WorkflowRegistry {
-	readonly runners: readonly WorkflowRunner[];
-	readonly triggerRegistry: HttpTriggerRegistry;
-	lookupRunner(tenant: string, name: string): WorkflowRunner | undefined;
+	readonly size: number;
+	tenants(): string[];
+	list(tenant?: string): WorkflowEntry[];
+	lookup(
+		tenant: string,
+		workflowName: string,
+		path: string,
+		method: string,
+	): LookupResult | undefined;
 	registerTenant(
 		tenant: string,
 		files: Map<string, string>,
@@ -401,79 +288,14 @@ interface WorkflowRegistry {
 	dispose(): void;
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes all registry state and operations
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state (per-tenant maps, trigger index) and the suite of operations (register, recover, lookup, list, dispose) with their shared helpers
 function createWorkflowRegistry(
 	options: WorkflowRegistryOptions,
 ): WorkflowRegistry {
-	const triggerRegistry = createHttpTriggerRegistry();
-	const runners: WorkflowRunner[] = [];
-	const runnersByKey = new Map<string, WorkflowRunner>();
-	const lifetimes = new Map<string, RunnerLifetime>();
-	const retiringLifetimes = new Set<RunnerLifetime>();
+	const tenantStates = new Map<string, TenantState>();
 	const backend = options.storageBackend;
 
 	options.logger.info("workflow-registry.created");
-
-	function removeRunner(key: string): void {
-		const existing = runnersByKey.get(key);
-		const lifetime = lifetimes.get(key);
-		if (!(existing && lifetime)) {
-			return;
-		}
-		const idx = runners.findIndex((r) => runnerKey(r.tenant, r.name) === key);
-		if (idx >= 0) {
-			runners.splice(idx, 1);
-		}
-		runnersByKey.delete(key);
-		lifetimes.delete(key);
-		triggerRegistry.removeRunner(existing.tenant, existing.name);
-
-		// Per-workflow serialization (executor runQueue) guarantees at most one
-		// in-flight invocation per sandbox at any moment. If idle, dispose now;
-		// if busy, let the currently-running invocation finish, then dispose on
-		// its terminal event (see onEvent hook in addRunner).
-		if (lifetime.isBusy) {
-			lifetime.retiring = true;
-			retiringLifetimes.add(lifetime);
-		} else {
-			lifetime.sandbox.dispose();
-		}
-	}
-
-	function addRunner(
-		runner: WorkflowRunner,
-		sb: Sandbox,
-		bindings: HttpTriggerBinding[],
-	): void {
-		const key = runnerKey(runner.tenant, runner.name);
-		const lifetime: RunnerLifetime = {
-			sandbox: sb,
-			isBusy: false,
-			retiring: false,
-		};
-		runner.onEvent((event) => {
-			if (event.kind === "trigger.request") {
-				lifetime.isBusy = true;
-			} else if (
-				event.kind === "trigger.response" ||
-				event.kind === "trigger.error"
-			) {
-				lifetime.isBusy = false;
-				if (lifetime.retiring) {
-					lifetime.sandbox.dispose();
-					retiringLifetimes.delete(lifetime);
-				}
-			}
-		});
-		runners.push(runner);
-		runnersByKey.set(key, runner);
-		lifetimes.set(key, lifetime);
-		for (const binding of bindings) {
-			triggerRegistry.register(runner, binding.descriptor, binding.validator, {
-				schema: binding.schema,
-			});
-		}
-	}
 
 	function parseManifest(
 		tenant: string,
@@ -511,44 +333,6 @@ function createWorkflowRegistry(
 		}
 	}
 
-	async function buildTenantArtifacts(
-		tenant: string,
-		manifest: Manifest,
-		files: Map<string, string>,
-	): Promise<RunnerArtifacts[]> {
-		const artifacts: RunnerArtifacts[] = [];
-		for (const wf of manifest.workflows) {
-			const bundleSource = files.get(wf.module);
-			if (bundleSource === undefined) {
-				continue;
-			}
-			// biome-ignore lint/performance/noAwaitInLoops: sequential sandbox construction avoids concurrent worker startup
-			const artifact = await buildRunner({
-				tenant,
-				workflow: wf,
-				bundleSource,
-				filename: `${wf.name}.js`,
-				logger: options.logger,
-			});
-			artifacts.push(artifact);
-		}
-		return artifacts;
-	}
-
-	function swapTenantRunners(
-		tenant: string,
-		artifacts: RunnerArtifacts[],
-	): void {
-		for (const key of Array.from(runnersByKey.keys())) {
-			if (key.startsWith(`${tenant}/`)) {
-				removeRunner(key);
-			}
-		}
-		for (const artifact of artifacts) {
-			addRunner(artifact.runner, artifact.sandbox, artifact.httpTriggers);
-		}
-	}
-
 	async function persistTarball(
 		tenant: string,
 		bytes: Uint8Array,
@@ -575,31 +359,6 @@ function createWorkflowRegistry(
 		}
 	}
 
-	async function persistIfRequested(
-		tenant: string,
-		artifacts: RunnerArtifacts[],
-		opts: RegisterTenantOptions | undefined,
-	): Promise<RegisterResult | undefined> {
-		if (!(opts?.tarballBytes && backend)) {
-			return;
-		}
-		const persisted = await persistTarball(tenant, opts.tarballBytes);
-		if (persisted.ok) {
-			return;
-		}
-		// Persistence failed; discard freshly built artifacts to avoid sandbox
-		// leaks. Keep existing runners unchanged.
-		for (const a of artifacts) {
-			a.sandbox.dispose();
-		}
-		const error = `failed to persist tenant bundle: ${persisted.error}`;
-		options.logger.error("workflow-registry.persist-failed", {
-			tenant,
-			error,
-		});
-		return { ok: false, error };
-	}
-
 	async function registerTenant(
 		tenant: string,
 		files: Map<string, string>,
@@ -622,12 +381,18 @@ function createWorkflowRegistry(
 		if (modulesCheck) {
 			return modulesCheck;
 		}
-		const artifacts = await buildTenantArtifacts(tenant, manifest, files);
-		const persistFailure = await persistIfRequested(tenant, artifacts, opts);
-		if (persistFailure) {
-			return persistFailure;
+		if (opts?.tarballBytes && backend) {
+			const persisted = await persistTarball(tenant, opts.tarballBytes);
+			if (!persisted.ok) {
+				const error = `failed to persist tenant bundle: ${persisted.error}`;
+				options.logger.error("workflow-registry.persist-failed", {
+					tenant,
+					error,
+				});
+				return { ok: false, error };
+			}
 		}
-		swapTenantRunners(tenant, artifacts);
+		tenantStates.set(tenant, buildTenantState(manifest, files));
 		options.logger.info("workflow-registry.registered", {
 			tenant,
 			workflows: manifest.workflows.length,
@@ -677,27 +442,106 @@ function createWorkflowRegistry(
 		}
 	}
 
+	function triggerEntriesFor(
+		tenant: string,
+		workflowName: string,
+	): TriggerIndexEntry[] {
+		const state = tenantStates.get(tenant);
+		if (!state) {
+			return [];
+		}
+		return state.triggerEntries.filter((e) => e.workflow.name === workflowName);
+	}
+
+	function lookup(
+		tenant: string,
+		workflowName: string,
+		path: string,
+		method: string,
+	): LookupResult | undefined {
+		const entries = triggerEntriesFor(tenant, workflowName);
+		if (entries.length === 0) {
+			return;
+		}
+		const pathname = `/${path}`;
+		const bundleSource = tenantStates
+			.get(tenant)
+			?.bundleSources.get(workflowName);
+		if (bundleSource === undefined) {
+			return;
+		}
+		const findMatch = (isStatic: boolean): TriggerMatch | undefined => {
+			for (const entry of entries) {
+				const match = tryMatch(entry, pathname, method, isStatic);
+				if (match) {
+					return match;
+				}
+			}
+		};
+		const match = findMatch(true) ?? findMatch(false);
+		if (!match) {
+			return;
+		}
+		return {
+			workflow: match.workflow,
+			triggerName: match.triggerName,
+			validator: match.validator,
+			params: match.params,
+			bundleSource,
+		};
+	}
+
+	function list(tenant?: string): WorkflowEntry[] {
+		const entries: WorkflowEntry[] = [];
+		const appendTenant = (t: string, state: TenantState) => {
+			for (const [name, workflow] of state.workflows) {
+				const bundleSource = state.bundleSources.get(name);
+				if (bundleSource === undefined) {
+					continue;
+				}
+				const triggers = state.triggerEntries
+					.filter((e) => e.workflow.name === name)
+					.map(
+						(e): TriggerEntry => ({
+							triggerName: e.triggerName,
+							method: e.method,
+							path: e.path,
+							schema: e.schema,
+						}),
+					);
+				entries.push({ tenant: t, workflow, bundleSource, triggers });
+			}
+		};
+		if (tenant === undefined) {
+			for (const [t, state] of tenantStates) {
+				appendTenant(t, state);
+			}
+		} else {
+			const state = tenantStates.get(tenant);
+			if (state) {
+				appendTenant(tenant, state);
+			}
+		}
+		return entries;
+	}
+
 	return {
-		get runners() {
-			return runners;
+		get size(): number {
+			let total = 0;
+			for (const state of tenantStates.values()) {
+				total += state.triggerEntries.length;
+			}
+			return total;
 		},
-		get triggerRegistry() {
-			return triggerRegistry;
+		tenants() {
+			return Array.from(tenantStates.keys());
 		},
-		lookupRunner(tenant: string, name: string) {
-			return runnersByKey.get(runnerKey(tenant, name));
-		},
+		list,
+		lookup,
 		registerTenant,
 		recover,
 		dispose() {
-			for (const lifetime of lifetimes.values()) {
-				lifetime.sandbox.dispose();
-			}
-			lifetimes.clear();
-			for (const lifetime of retiringLifetimes) {
-				lifetime.sandbox.dispose();
-			}
-			retiringLifetimes.clear();
+			tenantStates.clear();
 		},
 	};
 }
@@ -755,8 +599,11 @@ function toRegisterIssue(err: unknown): {
 }
 
 export type {
+	LookupResult,
 	ManifestIssue,
 	RegisterResult,
+	TriggerEntry,
+	WorkflowEntry,
 	WorkflowRegistry,
 	WorkflowRegistryOptions,
 };

@@ -414,7 +414,7 @@ async function sandbox(
 	return { run, onEvent, dispose, onDied };
 }
 
-export type { SandboxFactory } from "./factory.js";
+export type { FactoryCreateOptions, SandboxFactory } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
 export type { MethodMap } from "./install-host-methods.js";

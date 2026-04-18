@@ -59,9 +59,9 @@ function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	// In production, oauth2-proxy forward-auth ensures a user is always set on
 	// `/dashboard/*`; arriving without one means auth is disabled (open mode).
 	const fromRegistry = new Set<string>();
-	for (const runner of registry.runners) {
-		if (validateTenant(runner.tenant)) {
-			fromRegistry.add(runner.tenant);
+	for (const tenant of registry.tenants()) {
+		if (validateTenant(tenant)) {
+			fromRegistry.add(tenant);
 		}
 	}
 	return Array.from(fromRegistry).sort();

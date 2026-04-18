@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: WorkflowRegistry is the central owner of workflow state
 
 The runtime SHALL provide a `WorkflowRegistry` created with an optional `StorageBackend` and a `Logger`. It SHALL own manifest validation, persistence, and in-memory metadata for all registered workflows across all tenants. It SHALL NOT own sandboxes, `WorkflowRunner` objects, or any execution-side state; sandbox lifecycle is owned by the `SandboxStore` (see the `sandbox-store` capability), and invocation dispatch is owned by the `Executor`.
@@ -44,22 +46,6 @@ The runtime SHALL provide a `WorkflowRegistry.lookup(tenant, method, path)` meth
 - **WHEN** `registry.lookup("A", method, path)` is called
 - **THEN** the registry SHALL return `A`'s workflow manifest, not `B`'s
 
-### Requirement: Persist before rebuild
-
-When a storage backend is configured, `register()` SHALL persist the workflow files to the storage backend before updating in-memory state. If persistence fails, the in-memory state SHALL NOT be updated.
-
-#### Scenario: Successful persistence
-
-- **WHEN** `register(files)` is called and the storage backend write succeeds
-- **THEN** the files SHALL be written to `workflows/{name}/` in the storage backend
-- **AND** the in-memory workflow state SHALL be updated
-
-#### Scenario: No storage backend
-
-- **WHEN** `register(files)` is called and no storage backend is configured
-- **THEN** the workflow SHALL exist only in memory
-- **AND** it SHALL be lost on restart
-
 ### Requirement: Recover workflows from storage backend
 
 The registry SHALL provide a `recover()` method that loads all tenant tarballs from the storage backend's `workflows/` prefix at startup and invokes `registerTenant` for each. Recovery SHALL use the same validation logic as `registerTenant`.
@@ -100,3 +86,17 @@ The registry SHALL maintain a per-tenant HTTP trigger index that is rebuilt eage
 - **WHEN** the tenant re-registers with workflow `v2` (different trigger paths)
 - **THEN** `v1`'s triggers SHALL no longer appear in lookup results
 - **AND** `v2`'s triggers SHALL be reachable
+
+## REMOVED Requirements
+
+### Requirement: WorkflowRegistry exposes workflows with actions and triggers
+
+**Reason**: The `WorkflowRunner` abstraction is removed by this change. The metadata it carried (name, env, actions, triggers) lives in the `WorkflowManifest` returned by `registry.lookup`; sandbox access moves to the `SandboxStore`. No consumer should ever need a bundled `(sandbox, metadata)` object — the executor reaches into both individually.
+
+**Migration**: Consumers that previously accessed `registry.runners[i].sandbox` SHALL use `SandboxStore.get(tenant, workflow, bundleSource)` instead. Consumers that previously accessed `registry.runners[i].{name, env, actions, triggers}` SHALL use `registry.lookup(tenant, method, path)` and read the returned `WorkflowManifest`. Dashboard / trigger UI code migrates to `registry.list()` returning tenant-scoped manifest entries (introduced as part of this change where needed).
+
+### Requirement: Trigger conflict override
+
+**Reason**: Cross-workflow trigger overrides no longer exist. Under multi-tenant isolation, a trigger from tenant `A` and a trigger from tenant `B` on the same path are both reachable via `lookup(A, ...)` and `lookup(B, ...)` respectively. Within a tenant, two workflows registering the same path in a single `registerTenant` call is a manifest validation error (existing behavior). The "last registration wins" override across workflows within a tenant is removed as a documented behavior because `registerTenant` always replaces all of the tenant's workflows atomically.
+
+**Migration**: Manifests that rely on cross-registration overrides SHALL instead declare all trigger paths once per tenant.

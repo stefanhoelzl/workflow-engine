@@ -877,7 +877,7 @@ interface SandboxFactory {
 function createSandboxFactory(opts: { logger: Logger }): SandboxFactory
 ```
 
-The `SandboxFactory` SHALL be the supported lifecycle owner for `Sandbox` instances. Consumers (the scheduler and equivalent orchestrators) SHOULD depend on `SandboxFactory` rather than calling `sandbox()` directly so that death monitoring and cross-call reuse behave consistently.
+The `SandboxFactory` SHALL be a construction primitive: it SHALL create new `Sandbox` instances on every `create` call and SHALL NOT cache instances by source. Tenant-scoped sandbox reuse SHALL be provided by a runtime-owned `SandboxStore` (see the `sandbox-store` capability), not by the factory.
 
 #### Scenario: Factory is exported from the sandbox package
 
@@ -891,121 +891,61 @@ The `SandboxFactory` SHALL be the supported lifecycle owner for `Sandbox` instan
 - **WHEN** `createSandboxFactory({ logger })` is called
 - **THEN** the returned factory SHALL retain a reference to that logger for all operational log output
 
-### Requirement: Factory lazy-cached create
+#### Scenario: Every create constructs a new Sandbox
 
-The factory SHALL implement `create(source, options?)` with lazy-cached semantics keyed on `source`:
-
-- On the first call for a given `source`, the factory SHALL invoke the package's `sandbox(source, {}, options)` constructor, register a death handler on the returned instance, store the instance in an internal `Map<string, Sandbox>`, and resolve to that instance.
-- On subsequent calls for the same `source` while the cached instance is alive, the factory SHALL resolve to the cached instance without invoking `sandbox()` a second time.
-- If the cached instance has died (see "Factory death monitoring and eviction") before a subsequent call, the factory SHALL spawn a fresh instance transparently and resolve to the new one.
-
-The `options` parameter (`SandboxOptions`) SHALL be forwarded to `sandbox()` unchanged.
-
-#### Scenario: First call for a source constructs a new Sandbox
-
-- **GIVEN** a freshly constructed factory with no cached sandboxes
-- **WHEN** `factory.create("export const run = () => 1; export { run as default }")` is called
-- **THEN** the factory SHALL invoke `sandbox(source, {}, undefined)` exactly once
-- **AND** the returned `Sandbox` SHALL be the value the factory resolves with
-- **AND** the instance SHALL be stored in the factory's internal cache keyed on the source string
-
-#### Scenario: Subsequent call reuses cached instance
-
-- **GIVEN** a factory that has already resolved a `Sandbox` for a given `source`
-- **AND** the cached instance has not died
-- **WHEN** `factory.create(source)` is called a second time
-- **THEN** the factory SHALL resolve to the same `Sandbox` reference
-- **AND** the factory SHALL NOT invoke `sandbox(...)` a second time
-
-#### Scenario: Construction-time options are forwarded
-
-- **GIVEN** `factory.create(source, { filename: "action.js" })`
-- **WHEN** the factory invokes `sandbox(...)` for the first time
-- **THEN** `options.filename` SHALL be passed through to `sandbox(source, {}, { filename: "action.js" })`
-
-### Requirement: Factory death monitoring and eviction
-
-For every `Sandbox` the factory creates, the factory SHALL register a death callback via `sandbox.onDied(cb)`. When the callback fires, the factory SHALL:
-
-1. Emit a `warn`-level log entry via the injected logger, including the affected source identifier and the error message.
-2. Remove the dead instance from the internal cache so that a subsequent `create(source)` call spawns a fresh instance.
-3. Invoke `dispose()` on the dead instance to release any residual main-side resources.
-
-The factory SHALL NOT respawn a replacement preemptively; replacement happens lazily on the next `create(source)` for the same source.
-
-#### Scenario: Dead sandbox is evicted
-
-- **GIVEN** a factory with a cached `Sandbox` for a given `source`
-- **WHEN** the underlying worker dies and the sandbox's `onDied` callback fires
-- **THEN** the factory SHALL remove that cache entry
-- **AND** the factory SHALL log a warning via its injected logger referencing `source` and the error
-- **AND** a subsequent `factory.create(source)` SHALL invoke `sandbox(...)` to construct a fresh instance
-
-#### Scenario: Factory does not preemptively respawn
-
-- **GIVEN** a cached `Sandbox` that dies
-- **WHEN** the `onDied` callback fires but no further `create(source)` call is made
-- **THEN** the factory SHALL NOT spawn a replacement
-
-### Requirement: Factory eval-failure policy
-
-Construction errors from `sandbox(source, ...)` (e.g., the guest module's top-level evaluation throws) SHALL propagate from `factory.create(source)` as a rejected promise. The factory SHALL NOT cache the failure. A subsequent `create(source)` call SHALL retry the full construction (spawn worker, load WASM, evaluate source).
-
-This is intentional: `action.source` is immutable for a given workflow registration, so a retry will fail identically. Simplicity is preferred over a persistent failure cache until operational need demands otherwise.
-
-#### Scenario: Eval failure rejects create
-
-- **GIVEN** a source string whose top-level evaluation throws
-- **WHEN** `factory.create(source)` is called
-- **THEN** the returned promise SHALL reject with the underlying error
-
-#### Scenario: Retry after eval failure is allowed
-
-- **GIVEN** `factory.create(source)` rejected on a prior call
-- **WHEN** a caller invokes `factory.create(source)` again
-- **THEN** the factory SHALL invoke `sandbox(...)` again
-- **AND** SHALL NOT return a cached failure value
+- **GIVEN** a factory
+- **WHEN** `factory.create(source)` is called twice with the same source
+- **THEN** the factory SHALL invoke `sandbox(source, {}, options)` twice
+- **AND** SHALL resolve to two distinct `Sandbox` instances
 
 ### Requirement: Factory-wide dispose
 
-The factory SHALL expose a `dispose(): Promise<void>` method that disposes every cached `Sandbox` instance and clears the internal cache. After `dispose()`, calls to `create(source)` SHALL behave as if the factory were freshly constructed — a new `Sandbox` SHALL be created for each source on demand.
+The factory SHALL expose a `dispose(): Promise<void>` method that disposes every `Sandbox` instance it has created (and not yet itself disposed) and clears its internal tracking set. After `dispose()`, calls to `create(source)` SHALL resume creating fresh sandboxes as normal.
 
-Per-source disposal is NOT exposed in this change; TTL / LRU eviction and workflow-registry-driven invalidation are explicitly deferred.
+#### Scenario: Dispose tears down all created sandboxes
 
-#### Scenario: Dispose tears down all cached sandboxes
-
-- **GIVEN** a factory with `N` cached `Sandbox` instances
+- **GIVEN** a factory that has created `N` `Sandbox` instances, none of which have been individually disposed
 - **WHEN** `factory.dispose()` is called
-- **THEN** each cached instance SHALL have `dispose()` invoked on it
-- **AND** the internal cache SHALL be empty after the call resolves
+- **THEN** each tracked instance SHALL have `dispose()` invoked on it
+- **AND** the internal tracking set SHALL be empty after the call resolves
 
 #### Scenario: Create after dispose spawns fresh
 
 - **GIVEN** a factory whose `dispose()` has resolved
-- **WHEN** `factory.create(source)` is called for a source that was previously cached
+- **WHEN** `factory.create(source)` is called for any source
 - **THEN** the factory SHALL invoke `sandbox(source, {}, ...)` to construct a new instance
 
 ### Requirement: Factory operational logging
 
 The factory SHALL emit operational log entries via its injected logger for the following lifecycle events:
 
-- `info` when a new `Sandbox` is created: include `source` and the construction duration in milliseconds.
-- `info` when a `Sandbox` is disposed: include `source` and the disposal trigger (`"factory.dispose"`).
-- `warn` when a `Sandbox` dies unexpectedly: include `source` and the error message.
+- `info` when a new `Sandbox` is created: include a stable source identifier (e.g. a short hash) and the construction duration in milliseconds.
+- `info` when a `Sandbox` is disposed: include the source identifier and the disposal trigger (`"factory.dispose"`).
 
 Operational log entries SHALL NOT be merged into `RunResult.logs`; the per-run bridge log stream remains guest-only.
 
 #### Scenario: Creation is logged
 
-- **GIVEN** a factory with an injected spy logger
-- **WHEN** `factory.create(source)` resolves for a new source
-- **THEN** the logger SHALL have received at least one `info` entry referencing `source` and a numeric `durationMs`
+- **GIVEN** a factory with an injected logger spy
+- **WHEN** `factory.create(source)` resolves
+- **THEN** the logger SHALL receive a single `info` call carrying a source identifier and a `durationMs` field
 
-#### Scenario: Death is logged
+#### Scenario: Factory-wide disposal is logged
 
-- **GIVEN** a cached sandbox whose worker dies
-- **WHEN** `onDied` fires
-- **THEN** the logger SHALL receive a `warn` entry referencing `source` and the error message
+- **GIVEN** a factory with tracked sandboxes and an injected logger spy
+- **WHEN** `factory.dispose()` is called and resolves
+- **THEN** the logger SHALL receive one `info` call per disposed sandbox carrying the source identifier and `reason: "factory.dispose"`
+
+### Requirement: Consumer lifecycle ownership
+
+Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be constructed per workflow module load, and the sandbox SHALL be disposed on process shutdown. Tenant-scoped sandbox reuse and the decision of when to build a new sandbox SHALL be owned by the runtime-level `SandboxStore` (see the `sandbox-store` capability); consumers SHOULD depend on `SandboxStore` rather than `SandboxFactory` directly.
+
+#### Scenario: Store is the documented consumer
+
+- **GIVEN** a runtime consumer that needs to dispatch trigger handlers
+- **WHEN** it needs a `Sandbox` for a `(tenant, workflow)` pair
+- **THEN** it SHALL obtain the sandbox via `SandboxStore.get(tenant, workflow, bundleSource)`
+- **AND** it SHALL NOT call `SandboxFactory.create` directly
 
 ### Requirement: __hostCallAction bridge global
 

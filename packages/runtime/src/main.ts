@@ -1,3 +1,4 @@
+import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { apiMiddleware } from "./api/index.js";
 import { createConfig } from "./config.js";
 import { createEventStore } from "./event-bus/event-store.js";
@@ -12,6 +13,7 @@ import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { recover } from "./recovery.js";
+import { createSandboxStore } from "./sandbox-store.js";
 import type { Service } from "./services/index.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
@@ -116,11 +118,20 @@ async function init() {
 	if (storageBackend) {
 		await registry.recover();
 	}
-	runtimeLogger.info("workflows.loaded", { count: registry.runners.length });
+	runtimeLogger.info("workflows.loaded", { count: registry.size });
 
-	// 4. Create the executor (serializes per-workflow invocations; emits
-	//    started/completed/failed through the bus).
-	const executor = createExecutor({ bus: eventBus });
+	// 4. Construct the sandbox factory + store. The store is keyed by
+	//    (tenant, workflow.sha); sandboxes live for process lifetime.
+	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
+	const sandboxStore = createSandboxStore({
+		sandboxFactory,
+		logger: runtimeLogger,
+	});
+
+	// 5. Create the executor (serializes per-(tenant, sha) invocations;
+	//    resolves sandboxes via the store; emits trigger.* events through
+	//    the bus).
+	const executor = createExecutor({ bus: eventBus, sandboxStore });
 
 	// 5. Sweep crashed pending invocations before binding the HTTP port.
 	if (storageBackend) {
@@ -144,7 +155,7 @@ async function init() {
 		staticMiddleware(),
 		httpTriggerMiddleware(registry, executor),
 		dashboardMiddleware({ eventStore, registry }),
-		triggerMiddleware({ triggerRegistry: registry.triggerRegistry }),
+		triggerMiddleware({ registry }),
 		apiMiddleware({
 			githubAuth: config.githubAuth,
 			registry,
@@ -152,7 +163,15 @@ async function init() {
 		}),
 	);
 
-	return { runtimeLogger, server };
+	const sandboxService: Service = {
+		start: () => Promise.resolve(),
+		async stop() {
+			sandboxStore.dispose();
+			await sandboxFactory.dispose();
+		},
+	};
+
+	return { runtimeLogger, server, sandboxService };
 }
 
 function start(
@@ -187,10 +206,10 @@ function start(
 }
 
 async function main() {
-	const { runtimeLogger, server } = await init();
+	const { runtimeLogger, server, sandboxService } = await init();
 	runtimeLogger.info("main.initialized");
 
-	start(runtimeLogger, server);
+	start(runtimeLogger, server, sandboxService);
 	runtimeLogger.info("main.started");
 }
 

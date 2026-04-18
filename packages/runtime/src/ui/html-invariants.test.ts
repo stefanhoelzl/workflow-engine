@@ -1,8 +1,7 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it } from "vitest";
-import type { WorkflowRunner } from "../executor/types.js";
-import type { HttpTriggerEntry } from "../triggers/http.js";
+import type { WorkflowEntry } from "../workflow-registry.js";
 import { renderFlamegraph } from "./dashboard/flamegraph.js";
 import {
 	type InvocationRow,
@@ -34,35 +33,29 @@ const DATA_EVENT_PAIR_0_6_RE = /data-event-pair="0-6"/;
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeRunner(name: string): WorkflowRunner {
+function makeWorkflowEntry(): WorkflowEntry {
 	return {
 		tenant: "t0",
-		name,
-		env: {},
-		actions: [],
-		triggers: [],
-		invokeHandler: async () => ({}),
-		onEvent: () => {
-			/* no-op for tests */
+		workflow: {
+			name: "w",
+			module: "w.js",
+			sha: "0".repeat(64),
+			env: {},
+			actions: [],
+			triggers: [],
 		},
-	};
-}
-
-function makeTriggerEntry(): HttpTriggerEntry {
-	return {
-		workflow: makeRunner("w"),
-		descriptor: {
-			name: "t",
-			type: "http",
-			path: "w/t",
-			method: "POST",
-			params: [],
-			body: { parse: (x: unknown) => x },
-		},
-		schema: {
-			type: "object",
-			properties: { body: { type: "object" } },
-		},
+		bundleSource: "",
+		triggers: [
+			{
+				triggerName: "t",
+				method: "POST",
+				path: "w/t",
+				schema: {
+					type: "object",
+					properties: { body: { type: "object" } },
+				},
+			},
+		],
 	};
 }
 
@@ -126,7 +119,7 @@ describe("HTML CSP invariants", () => {
 	});
 
 	it("renderTriggerPage output has no forbidden inline patterns", async () => {
-		const entries: HttpTriggerEntry[] = [makeTriggerEntry()];
+		const entries: WorkflowEntry[] = [makeWorkflowEntry()];
 		const html = (
 			await renderTriggerPage({
 				entries,
