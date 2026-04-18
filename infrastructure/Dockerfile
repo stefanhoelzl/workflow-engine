@@ -18,8 +18,13 @@ COPY packages/core/tsconfig.json packages/core/
 COPY packages/core/src/ packages/core/src/
 COPY packages/runtime/tsconfig.json packages/runtime/vite.config.ts packages/runtime/
 COPY packages/runtime/src/ packages/runtime/src/
-COPY packages/sandbox/tsconfig.json packages/sandbox/
+COPY packages/sandbox/tsconfig.json packages/sandbox/vite.config.ts packages/sandbox/
 COPY packages/sandbox/src/ packages/sandbox/src/
+# Build sandbox so its dist/src/worker.js is emitted — the runtime bundles
+# sandbox's index.ts but the worker is loaded from disk at runtime via
+# `new Worker(pathToFileURL(.../dist/src/worker.js))` (see
+# resolveWorkerUrl() in packages/sandbox/src/index.ts).
+RUN pnpm --filter @workflow-engine/sandbox exec vite build
 RUN pnpm --filter @workflow-engine/runtime exec vite build
 RUN pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy
 RUN cp -r packages/runtime/dist/* /app/deploy/
