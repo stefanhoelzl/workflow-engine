@@ -7,12 +7,18 @@ import { compose } from "./composer.js";
 interface RunnableEntry {
 	scripts: readonly string[];
 	timeout?: "long";
-	skippedSubtests?: Record<string, string>;
 }
+
+type SubtestStatus =
+	| "PASS"
+	| "FAIL"
+	| "TIMEOUT"
+	| "NOTRUN"
+	| "PRECONDITION_FAILED";
 
 interface SubtestResult {
 	name: string;
-	status: "PASS" | "FAIL" | "TIMEOUT" | "NOTRUN" | "PRECONDITION_FAILED";
+	status: SubtestStatus;
 	message: string;
 }
 
@@ -25,22 +31,6 @@ const TESTHARNESS_REL = "resources/testharness.js";
 const MEMORY_LIMIT = 128 * 1024 * 1024;
 const DEFAULT_DEADLINE_MS = 10_000;
 const LONG_DEADLINE_MS = 45_000;
-
-interface RunOptions {
-	defaultDeadlineMs?: number;
-	longDeadlineMs?: number;
-}
-
-function findMissingSkips(
-	declared: Record<string, string> | undefined,
-	observed: readonly { name: string }[],
-): string[] {
-	if (!declared) {
-		return [];
-	}
-	const observedNames = new Set(observed.map((r) => r.name));
-	return Object.keys(declared).filter((n) => !observedNames.has(n));
-}
 
 function fileCache(): (relPath: string) => string {
 	const cache = new Map<string, string>();
@@ -60,7 +50,6 @@ const readVendor = fileCache();
 async function runWpt(
 	path: string,
 	entry: RunnableEntry,
-	options: RunOptions = {},
 ): Promise<SubtestResult[]> {
 	const source = compose({
 		testharness: readVendor(TESTHARNESS_REL),
@@ -69,9 +58,8 @@ async function runWpt(
 	});
 
 	const captured: SubtestResult[] = [];
-	const defaultDeadline = options.defaultDeadlineMs ?? DEFAULT_DEADLINE_MS;
-	const longDeadline = options.longDeadlineMs ?? LONG_DEADLINE_MS;
-	const deadlineMs = entry.timeout === "long" ? longDeadline : defaultDeadline;
+	const deadlineMs =
+		entry.timeout === "long" ? LONG_DEADLINE_MS : DEFAULT_DEADLINE_MS;
 	let sb: Sandbox | null = null;
 	let watchdogFired = false;
 	const watchdog = setTimeout(() => {
@@ -92,7 +80,7 @@ async function runWpt(
 					__wptReport: async (...args: unknown[]): Promise<unknown> => {
 						const [name, status, message] = args as [
 							string,
-							SubtestResult["status"],
+							SubtestStatus,
 							string,
 						];
 						captured.push({ name, status, message });
@@ -122,5 +110,5 @@ async function runWpt(
 	return captured;
 }
 
-export type { RunnableEntry, RunOptions, SubtestResult };
-export { findMissingSkips, runWpt };
+export type { RunnableEntry, SubtestResult, SubtestStatus };
+export { runWpt };

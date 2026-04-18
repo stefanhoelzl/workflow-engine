@@ -1,10 +1,14 @@
 // Vendor the worker-scope subset of web-platform-tests/wpt into the
-// sandbox package. Walks the upstream tree, classifies every candidate
-// file via spec.ts, copies pass-classified files plus their transitive
-// META dependencies into vendor/, and writes a manifest.json describing
-// every applicable test (runnable or structurally-skipped).
+// sandbox package. Walks the upstream tree, copies every applicable file
+// (worker-globals-applicable per WPT META) plus its transitive META
+// dependencies into vendor/, and writes a manifest.json describing every
+// applicable test (runnable or structurally-skipped because of a network
+// dep). Spec-level skips (skip.ts) are applied at runtime, not here.
 //
-// Invoke: pnpm test:wpt:refresh [--sha <commit>] [--strict]
+// Invoke: pnpm test:wpt:refresh [--sha <commit>]
+//
+// Refresh fails if any literal-path entry in skip.ts no longer points to
+// an applicable upstream file (catches renames/deletions early).
 
 import { execSync, spawnSync } from "node:child_process";
 import {
@@ -20,8 +24,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findMostSpecific } from "../packages/sandbox/test/wpt/harness/match.js";
-import { spec } from "../packages/sandbox/test/wpt/spec.js";
+import skip from "../packages/sandbox/test/wpt/skip.js";
 
 // --- Config ---
 
@@ -58,13 +61,11 @@ const NETWORK_DEP_PATTERN = /\{\{(host|ports|hosts|domains)[^}]*\}\}/;
 
 interface Args {
 	sha: string | null;
-	strict: boolean;
 }
 
 function parseArgs(): Args {
 	const argv = process.argv.slice(2);
 	let sha: string | null = null;
-	let strict = false;
 	// biome-ignore lint/style/useForOf: index-based loop advances i++ to consume "--sha <value>" pairs
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -72,8 +73,6 @@ function parseArgs(): Args {
 			sha = argv[++i] ?? null;
 		} else if (a?.startsWith("--sha=")) {
 			sha = a.slice("--sha=".length);
-		} else if (a === "--strict") {
-			strict = true;
 		} else if (a === "--help" || a === "-h") {
 			printUsage();
 			process.exit(0);
@@ -83,19 +82,20 @@ function parseArgs(): Args {
 			process.exit(2);
 		}
 	}
-	return { sha, strict };
+	return { sha };
 }
 
 function printUsage(): void {
 	console.log(
-		`usage: pnpm test:wpt:refresh [--sha <commit>] [--strict]
+		`usage: pnpm test:wpt:refresh [--sha <commit>]
 
 Regenerates packages/sandbox/test/wpt/vendor/ from upstream WPT.
 
 Options:
   --sha <commit>   Pin to a specific upstream commit (default: latest main).
-  --strict         Fail if any spec.ts-referenced subtest or file no longer
-                   exists in upstream.
+
+Refresh fails if any literal-path entry in skip.ts no longer points to an
+applicable upstream file (renames/deletions surface immediately).
 `,
 	);
 }
@@ -155,7 +155,7 @@ function* walkTestFiles(dir: string, root: string): Generator<string> {
 // --- META parsing ---
 
 interface Meta {
-	globals: string[] | null; // null = absent; worker-default applies
+	globals: string[] | null;
 	scripts: string[];
 	timeout: "long" | null;
 	variants: string[];
@@ -172,7 +172,6 @@ function parseMeta(source: string): Meta {
 	};
 	const lines = source.split("\n");
 	for (const line of lines) {
-		// META directives only appear at the top; stop at first non-META non-blank.
 		if (!line.startsWith("//")) {
 			break;
 		}
@@ -202,7 +201,7 @@ function parseMeta(source: string): Meta {
 
 function isWorkerApplicable(meta: Meta): boolean {
 	if (meta.globals === null) {
-		return true; // WPT default includes workers
+		return true;
 	}
 	return meta.globals.some((g) => WORKER_GLOBALS.has(g));
 }
@@ -224,11 +223,9 @@ function hasNetworkDep(source: string): boolean {
 // --- Dep resolution (BFS) ---
 
 function resolveScriptPath(ref: string, fromFileRel: string): string {
-	// Absolute paths (leading /) are relative to WPT root.
 	if (ref.startsWith("/")) {
 		return ref.slice(1);
 	}
-	// Relative paths are relative to the file's directory.
 	return join(dirname(fromFileRel), ref);
 }
 
@@ -241,7 +238,6 @@ function resolveDeps(
 	const order: string[] = [];
 	const substituted = new Map<string, string>();
 
-	// testharness.js is implicit for every .any.js / .worker.js file.
 	const queue: Array<{ ref: string; from: string }> = [
 		{ ref: `/${TESTHARNESS_REL}`, from: fileRel },
 	];
@@ -288,7 +284,6 @@ function resolveDeps(
 interface RunnableEntry {
 	scripts: string[];
 	timeout?: "long";
-	skippedSubtests?: Record<string, string>;
 }
 interface SkipEntry {
 	skip: { reason: string };
@@ -299,27 +294,6 @@ interface Manifest {
 	wptSha: string;
 	vendoredAt: string;
 	tests: Record<string, ManifestTest>;
-}
-
-function collectSkippedSubtests(
-	fileRel: string,
-): Record<string, string> | undefined {
-	const out: Record<string, string> = {};
-	for (const key of Object.keys(spec)) {
-		const [filePart, ...rest] = key.split(":");
-		if (filePart !== fileRel) {
-			continue;
-		}
-		if (rest.length === 0) {
-			continue;
-		}
-		const subtestName = rest.join(":");
-		const entry = spec[key];
-		if (entry && entry.expected === "skip") {
-			out[subtestName] = entry.reason;
-		}
-	}
-	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function copyFileToVendor(
@@ -338,24 +312,22 @@ function copyFileToVendor(
 
 // --- Main orchestration ---
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: orchestrator groups the top-level refresh flow
 async function main(): Promise<void> {
-	const { sha, strict } = parseArgs();
+	const { sha } = parseArgs();
 	const { repoDir, resolvedSha } = gitClone(sha);
 
-	// Fresh vendor dir each run.
 	if (existsSync(VENDOR_DIR)) {
 		rmSync(VENDOR_DIR, { recursive: true });
 	}
 	mkdirSync(VENDOR_DIR, { recursive: true });
 
 	const tests: Record<string, ManifestTest> = {};
-	const runnableFiles: Array<{ rel: string; substituted: string | null }> = [];
-	const runnableDeps = new Map<string, string>(); // dep rel -> substituted source
+	const vendoredFiles: Array<{ rel: string; substituted: string | null }> = [];
+	const vendoredDeps = new Map<string, string>();
+	const applicableFiles = new Set<string>();
 	let applicable = 0;
-	let skippedUnclassified = 0;
-	let skippedStructural = 0;
 	let runnable = 0;
+	let skippedStructural = 0;
 
 	console.log("walking WPT tree...");
 	for (const fileRel of walkTestFiles(repoDir, repoDir)) {
@@ -371,8 +343,8 @@ async function main(): Promise<void> {
 			continue;
 		}
 		applicable++;
+		applicableFiles.add(fileRel);
 
-		// Structural skip: transitive network dep?
 		const { deps, substituted } = resolveDeps(repoDir, fileRel, meta);
 		const substFile = fileRel.endsWith(".sub.js")
 			? applySubstitutions(source)
@@ -391,57 +363,37 @@ async function main(): Promise<void> {
 			continue;
 		}
 
-		// Spec classification.
-		const exp = findMostSpecific(spec, fileRel);
-		if (!exp || exp.expected === "skip") {
-			// Not vendored. Manifest records just the file path with classification
-			// reason via spec, or as unclassified if no match. The runner re-derives
-			// the reason from spec.ts at test time; we don't stamp it here.
-			tests[fileRel] = {
-				skip: { reason: exp?.reason ?? "not yet classified" },
-			};
-			if (!exp) {
-				skippedUnclassified++;
-			}
-			continue;
-		}
-
-		// Runnable. Copy file + deps to vendor.
+		// Runnable. Vendor the file + deps regardless of skip.ts — runtime
+		// applies skip.ts via findMostSpecific.
 		const entry: RunnableEntry = { scripts: deps };
 		if (meta.timeout === "long") {
 			entry.timeout = "long";
 		}
-		const subOverrides = collectSkippedSubtests(fileRel);
-		if (subOverrides) {
-			entry.skippedSubtests = subOverrides;
-		}
 		tests[fileRel] = entry;
-		runnableFiles.push({
+		vendoredFiles.push({
 			rel: fileRel,
 			substituted: fileRel.endsWith(".sub.js") ? substFile : null,
 		});
 		for (const d of deps) {
-			if (!runnableDeps.has(d)) {
-				runnableDeps.set(d, substituted.get(d) ?? "");
+			if (!vendoredDeps.has(d)) {
+				vendoredDeps.set(d, substituted.get(d) ?? "");
 			}
 		}
 		runnable++;
 	}
 
 	console.log(
-		`applicable=${applicable} runnable=${runnable} structural-skip=${skippedStructural} unclassified=${skippedUnclassified}`,
+		`applicable=${applicable} runnable=${runnable} structural-skip=${skippedStructural}`,
 	);
 
-	// Copy runnable files + deps into vendor/.
 	console.log("copying vendor files...");
-	for (const f of runnableFiles) {
+	for (const f of vendoredFiles) {
 		copyFileToVendor(repoDir, f.rel, f.substituted);
 	}
-	for (const [depRel, substituted] of runnableDeps) {
+	for (const [depRel, substituted] of vendoredDeps) {
 		copyFileToVendor(repoDir, depRel, substituted);
 	}
 
-	// Manifest.
 	const manifest: Manifest = {
 		wptSha: resolvedSha,
 		vendoredAt: new Date().toISOString(),
@@ -453,36 +405,26 @@ async function main(): Promise<void> {
 	);
 	console.log(`manifest: ${Object.keys(tests).length} entries`);
 
-	// Strict: check every spec subtest reference maps to a vendored file.
-	if (strict) {
-		const missing: string[] = [];
-		for (const key of Object.keys(spec)) {
-			const [filePart, ...rest] = key.split(":");
-			if (rest.length === 0) {
-				continue; // dir/glob patterns, not file-subtest
-			}
-			if (filePart === undefined) {
-				continue;
-			}
-			if (filePart.includes("*")) {
-				continue; // skip wildcard patterns
-			}
-			if (!tests[filePart]) {
-				missing.push(key);
-			}
+	// Validate: every literal-path skip entry must point to an applicable file.
+	const stale: string[] = [];
+	for (const key of Object.keys(skip)) {
+		const filePart = key.split(":")[0];
+		if (filePart === undefined || filePart.includes("*")) {
+			continue;
 		}
-		if (missing.length > 0) {
-			console.error(
-				"--strict: spec.ts references subtests in files no longer in the vendor:",
-			);
-			for (const k of missing) {
-				console.error(`  - ${k}`);
-			}
-			process.exit(1);
+		if (!applicableFiles.has(filePart)) {
+			stale.push(key);
 		}
 	}
+	if (stale.length > 0) {
+		console.error("skip.ts references files no longer in upstream WPT:");
+		for (const k of stale) {
+			console.error(`  - ${k}`);
+		}
+		rmSync(repoDir, { recursive: true, force: true });
+		process.exit(1);
+	}
 
-	// Clean up temp clone.
 	rmSync(repoDir, { recursive: true, force: true });
 
 	console.log(`done. vendor at ${relative(ROOT, VENDOR_DIR)}/`);

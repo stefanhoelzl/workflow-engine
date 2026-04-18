@@ -91,7 +91,7 @@ Accessible at `https://workflow-engine.webredirect.org` (Let's Encrypt TLS, cert
 - All relative imports must use `.js` extensions (required by `verbatimModuleSyntax`)
 - Use `z.exactOptional()` not `.optional()` for optional Zod fields (`exactOptionalPropertyTypes` is enabled)
 - Factory functions over classes. Closures for private state.
-- Named exports only. Separate `export type {}` from value exports.
+- Named exports only. Separate `export type {}` from value exports. Exception: data-only modules whose filename already conveys identity (e.g. `skip.ts`) may use `export default`.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
 
 ## Security Invariants

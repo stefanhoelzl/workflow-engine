@@ -140,13 +140,9 @@ async function runUpload(port: number): Promise<void> {
 function runtimeEnv(port: number): NodeJS.ProcessEnv {
 	return {
 		...process.env,
-		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
 		PORT: String(port),
-		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
-		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
 		BASE_URL: `http://localhost:${String(port)}`,
-		// biome-ignore lint/style/useNamingConvention: environment variables are UPPER_CASE by convention
 		GITHUB_USER: "__DISABLE_AUTH__",
 	};
 }

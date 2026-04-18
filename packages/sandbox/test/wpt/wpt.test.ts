@@ -4,23 +4,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { limitedAll } from "./harness/limited-all.js";
-import { findMostSpecific } from "./harness/match.js";
 import {
-	findMissingSkips,
-	runWpt,
-	type SubtestResult,
-} from "./harness/runner.js";
-import { spec } from "./spec.js";
-
-// Runner for the WinterCG MCA-applicable WPT subset. Uses the top-level
-// await pattern verified by the spike: pre-run every runnable file via
-// limitedAll under an owned concurrency cap, then synchronously register
-// one describe per file and one it() per observed subtest.
+	declaredSubtestSkips,
+	findMissingSubtestSkips,
+	findReason,
+} from "./harness/match.js";
+import { runWpt, type SubtestResult } from "./harness/runner.js";
+import skip from "./skip.js";
 
 interface RunnableEntry {
 	scripts: string[];
 	timeout?: "long";
-	skippedSubtests?: Record<string, string>;
 }
 interface SkipEntry {
 	skip: { reason: string };
@@ -51,7 +45,6 @@ async function runSuite(): Promise<void> {
 		process.env.WPT_CONCURRENCY ?? Math.max(4, availableParallelism() * 2),
 	);
 
-	// Partition.
 	const runnable: Array<{ path: string; entry: RunnableEntry }> = [];
 	const skipped: Array<{ path: string; reason: string }> = [];
 	for (const [path, entry] of Object.entries(manifest.tests)) {
@@ -59,59 +52,50 @@ async function runSuite(): Promise<void> {
 			skipped.push({ path, reason: entry.skip.reason });
 			continue;
 		}
-		// spec.ts may reclassify a manifest-runnable as skip (dir-level skip
-		// over a file that was runnable by the vendor script's view). Runner
-		// honors the spec.ts classification.
-		const exp = findMostSpecific(spec, path);
-		if (!exp) {
-			skipped.push({ path, reason: "no spec entry" });
-			continue;
-		}
-		if (exp.expected === "skip") {
-			skipped.push({ path, reason: exp.reason });
+		const reason = findReason(skip, path);
+		if (reason !== null) {
+			skipped.push({ path, reason });
 			continue;
 		}
 		runnable.push({ path, entry });
 	}
 
-	// Run all runnables with owned concurrency cap.
 	const results = await limitedAll(
 		runnable.map(
 			({ path, entry }) =>
 				() =>
-					runWpt(path, entry).then(
-						(subtests) => [path, entry, subtests] as const,
-					),
+					runWpt(path, entry).then((subtests) => [path, subtests] as const),
 		),
 		concurrency,
 	);
 
-	// Register.
 	for (const { path, reason } of skipped) {
 		describe(path, () => {
 			it.skip(`(skipped: ${reason})`, () => {});
 		});
 	}
-	for (const [path, entry, subtestResults] of results) {
-		registerFileTests(path, entry, subtestResults);
+	for (const [path, subtestResults] of results) {
+		registerFileTests(path, subtestResults);
 	}
 }
 
 function registerFileTests(
 	path: string,
-	entry: RunnableEntry,
 	subtestResults: SubtestResult[],
 ): void {
 	describe(path, () => {
+		if (subtestResults.length === 0) {
+			it("<no subtests reported>", () => {
+				throw new Error(
+					"file produced zero subtest reports (likely broken setup)",
+				);
+			});
+			return;
+		}
 		for (const { name, status, message } of subtestResults) {
-			const sub = findMostSpecific(spec, `${path}:${name}`);
-			if (sub?.expected === "skip") {
-				it.skip(`${name} — ${sub.reason}`, () => {});
-				continue;
-			}
-			const manifestSkip = entry.skippedSubtests?.[name];
-			if (manifestSkip !== undefined) {
-				it.skip(`${name} — ${manifestSkip}`, () => {});
+			const subReason = findReason(skip, `${path}:${name}`);
+			if (subReason !== null) {
+				it.skip(`${name} — ${subReason}`, () => {});
 				continue;
 			}
 			it(name, () => {
@@ -122,14 +106,14 @@ function registerFileTests(
 			});
 		}
 
-		// Drift: declared skip for a subtest that never ran.
-		for (const declaredName of findMissingSkips(
-			entry.skippedSubtests,
-			subtestResults,
-		)) {
-			it(`<missing declared subtest '${declaredName}'>`, () => {
+		// Drift: a subtest skip whose name never appears means the upstream
+		// subtest was likely renamed; refresh-time validation only catches
+		// file-level renames.
+		const declared = declaredSubtestSkips(skip, path);
+		for (const name of findMissingSubtestSkips(declared, subtestResults)) {
+			it(`<missing declared subtest '${name}'>`, () => {
 				throw new Error(
-					`spec declares skip for '${declaredName}', but subtest never ran (renamed upstream?)`,
+					`skip.ts declares skip for '${name}', but subtest never ran (renamed upstream?)`,
 				);
 			});
 		}
