@@ -28,7 +28,6 @@ const skip: Record<string, string> = {
 	"cors/**": "ReferenceError: CROSSDOMAIN is not defined",
 	"deprecation-reporting/**": "TypeError: Failed to parse URL from /interfaces/deprecation-reporting.idl",
 	"device-memory/**": "assert_equals: navigator.deviceMemory returns a number expected \"number\" but got \"undefined\"",
-	"dom/observable/**": "needs AbortController polyfill",
 	"encoding/legacy-mb-schinese/**": "legacy encoding not in scope (UTF-8/UTF-16 only)",
 	"event-timing/**": "TypeError: Failed to parse URL from /interfaces/event-timing.idl",
 	"eventsource/**": "EventSource is not defined",
@@ -64,7 +63,6 @@ const skip: Record<string, string> = {
 	"push-api/**": "needs PushManager polyfill",
 	"reporting/**": "TypeError: Failed to parse URL from /interfaces/reporting.idl",
 	"savedata/**": "TypeError: Failed to parse URL from /interfaces/savedata.idl",
-	"scheduler/**": "needs AbortController polyfill",
 	"serial/**": "TypeError: Failed to parse URL from /interfaces/serial.idl",
 	"server-timing/**": "TypeError: Failed to parse URL from /interfaces/resource-timing.idl",
 	"service-workers/**": "Request is not defined",
@@ -1734,7 +1732,6 @@ const skip: Record<string, string> = {
 	"workers/semantics/multiple-workers/exposure.any.js:Worker exposure": "assert_not_equals: got disallowed value undefined",
 
 	// --- New failures after rebase onto main (EventTarget/AbortController + WebAssembly.Memory stub) ---
-	"dom/abort/event.any.js:controller.abort() should do nothing the second time it is called": "assert_equals: event handler should have been called once expected 1 but got 0",
 	"dom/abort/timeout-shadowrealm.any.js:AbortSignal.timeout() is not exposed in ShadowRealm": "assert_not_own_property: AbortSignal does not have a 'timeout' property unexpected property \"timeou\u2026",
 	"dom/events/AddEventListenerOptions-signal.any.js:Passing null as the signal should throw": "assert_throws_js: function \"() => { et.addEventListener(\"foo\", () => {}, { signal: null }); }\" did \u2026",
 	"dom/events/AddEventListenerOptions-signal.any.js:Passing null as the signal should throw (listener is also null)": "assert_throws_js: function \"() => { et.addEventListener(\"foo\", null, { signal: null }); }\" did not \u2026",
@@ -1823,8 +1820,85 @@ const skip: Record<string, string> = {
 	"wasm/serialization/module/serialization-via-idb.any.js:WebAssembly.Module cloning via the IndexedDB: is interleaved correctly": "assert_throws_dom: function \"() => {",
 	"wasm/serialization/module/serialization-via-notifications-api.any.js:WebAssembly.Module cloning via the Notifications API's data member: basic case": "assert_throws_dom: function \"() => {",
 	"wasm/serialization/module/serialization-via-notifications-api.any.js:WebAssembly.Module cloning via the Notifications API's data member: is interleaved correctly": "assert_throws_dom: function \"() => {",
-	"dom/abort/abort-signal-any.any.js": "watchdog: deadline exceeded after EventTarget polyfill landed",
-	"dom/abort/timeout.any.js": "watchdog: deadline exceeded after EventTarget polyfill landed",
+
+	// =========================================================================
+	// AbortController polyfill — residual subtest-level limitations after
+	// moving dom/abort/** out of file-level skip bucket. The polyfill uses
+	// plain `new Event("abort")` which per SECURITY.md §2 is isTrusted=false
+	// (no pathway to true); listener ordering across composite signals does
+	// not match Chrome's native UA dispatch ordering.
+	// =========================================================================
+	"dom/abort/event.any.js:the abort event should have the right properties": "event.isTrusted is false in sandbox (SECURITY.md §2 invariant); native UA sets it true",
+	"dom/abort/abort-signal-any.any.js:Abort events for AbortSignal.any() signals fire in the right order (using AbortController)": "polyfilled AbortSignal.any listener re-entrancy does not match native UA event-loop ordering",
+
+	// =========================================================================
+	// Observable polyfill (observable-polyfill@^0.0.29) — residual subtest
+	// failures after unbucketing dom/observable/**. Upstream polyfill gaps
+	// around global-error reporting semantics (spec requires uncaught
+	// subscriber errors to route via reportError/ErrorEvent with specific
+	// isTrusted/target shape), iterator-return spec nuances, and teardown
+	// ordering. WICG proposal is still tentative; upstream tracks it but
+	// hasn't converged on every edge case.
+	// =========================================================================
+	"dom/observable/tentative/observable-catch.any.js:catch(): Abort order between outer AbortSignal and inner CatchHandler subscriber's AbortSignal": "observable-polyfill abort-propagation ordering differs from spec",
+	"dom/observable/tentative/observable-constructor.any.js:Calling subscribe should never throw an error synchronously, initializer throws error": "polyfill surfaces initializer throw synchronously",
+	"dom/observable/tentative/observable-constructor.any.js:Calling subscribe should never throw an error synchronously, subscriber pushes error": "polyfill surfaces subscriber error synchronously",
+	"dom/observable/tentative/observable-constructor.any.js:Errors pushed by initializer function after subscriber is closed by error are reported": "polyfill does not route post-close errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Errors pushed to the subscriber that are not handled by the subscription are reported to the global": "polyfill does not route unhandled errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Errors thrown by initializer function after subscriber is closed by completion are reported": "polyfill does not route post-close errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Errors thrown by initializer function after subscriber is closed by error are reported": "polyfill does not route post-close errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Errors thrown in the initializer that are not handled by the subscription are reported to the global": "polyfill does not route unhandled errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Producer-initiated unsubscription in a downstream Observable fires abort events before each teardown, in downstream->upstream order": "polyfill teardown/abort-event ordering differs from spec",
+	"dom/observable/tentative/observable-constructor.any.js:Subscription reports errors that are pushed after subscriber is closed by completion": "polyfill does not route post-close errors to global reportError",
+	"dom/observable/tentative/observable-constructor.any.js:Teardowns are called in upstream->downstream order on consumer-initiated unsubscription": "polyfill teardown ordering differs from spec",
+	"dom/observable/tentative/observable-from.any.js:from(): Async iterable: `Iterator#return()` must return an Object, or a Promise rejects asynchronously": "polyfill does not enforce Iterator#return() return-type per spec",
+	"dom/observable/tentative/observable-from.any.js:from(): Async iterable: error thrown from IteratorRecord#return() is wrapped in rejected Promise": "polyfill does not wrap Iterator#return() throws",
+	"dom/observable/tentative/observable-from.any.js:from(): Sync iterable: `Iterator#return()` must return an Object, or an error is thrown": "polyfill does not enforce Iterator#return() return-type per spec",
+	"dom/observable/tentative/observable-from.any.js:from(): Sync iterable: error thrown from IteratorRecord#return() can be synchronously caught": "polyfill does not propagate Iterator#return() throws",
+	"dom/observable/tentative/observable-takeUntil.any.js:takeUntil: notifier calls `Subscriber#error()` twice; second goes to global error handler": "polyfill does not route second-error to global reportError",
+	"dom/observable/tentative/observable-toArray.any.js:Operator Promise abort ordering": "polyfill promise-terminator abort ordering differs from spec",
+	"dom/observable/tentative/observable-toArray.any.js:toArray(): complete() resolves promise; subsequent error()s report the exceptions": "polyfill does not route post-complete errors to global reportError",
+	"dom/observable/tentative/observable-toArray.any.js:toArray(): first error() rejects promise; subsequent error()s report the exceptions": "polyfill does not route post-error errors to global reportError",
+
+	// =========================================================================
+	// Scheduler polyfill (scheduler-polyfill@^1.3.0) — residual subtest
+	// failures after unbucketing scheduler/**. Upstream polyfill collapses
+	// all priorities onto setTimeout (MessageChannel+requestIdleCallback
+	// absent), does not expose TaskSignal as a separate global, and has no
+	// continuation-priority-inheritance for scheduler.yield(). The last two
+	// account for the bulk of these failures; fine-grained cross-priority
+	// run-order assertions fail because the setTimeout fallback loses the
+	// MessageChannel-vs-setTimeout priority distinction.
+	// =========================================================================
+	"scheduler/post-task-delay.any.js:Tests basic scheduler.postTask with a delay": "timer precision flake under CI load: host setTimeout fires <1ms early relative to performance.now() (asserts elapsed >= 10, observed 9.95)",
+	"scheduler/task-controller-setPriority-repeated.any.js:TaskController.setPriority() changes the priority of all associated tasks when called repeatedly before tasks run": "polyfill collapses priorities onto setTimeout; in-queue re-prioritisation ordering differs",
+	"scheduler/task-signal-any-abort.tentative.any.js:<setup>": "polyfill does not expose TaskSignal as a global; tests import it as identifier",
+	"scheduler/task-signal-any-post-task-run-order.tentative.any.js:scheduler.postTask() tasks run in priority order with a composite signal whose source has fixed priority": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-post-task-run-order.tentative.any.js:scheduler.postTask() tasks run in priority order with a dynamic priority composite signal": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-post-task-run-order.tentative.any.js:scheduler.postTask() tasks run in priority order with a fixed priority composite signal": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:Priority change events fire for composite signals": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:Priority change events fire for composite signals with intermediate sources": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:Priority change propagates to multiple dependent signals in the right order": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() does not fire prioritychange for dependents added during prioritychange": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() does not propagate abort when not given dependent abort signals": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() propagates abort and priority": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() propagates priority after returning an aborted signal": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() returns a signal with dynamic priority": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() returns a signal with the correct priority when intialized with a TaskSignal": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() returns a signal with the correct priority when intialized with a string": "polyfill does not expose TaskSignal global",
+	"scheduler/task-signal-any-priority.tentative.any.js:TaskSignal.any() returns a user-visible TaskSignal when no priority is specified": "polyfill does not expose TaskSignal global",
+	"scheduler/tentative/yield/yield-abort.any.js:yield() aborted by AbortController in a separate task": "polyfill scheduler.yield() lacks continuation-context (cannot observe outer abort)",
+	"scheduler/tentative/yield/yield-abort.any.js:yield() aborted by TaskController in a separate task": "polyfill scheduler.yield() lacks continuation-context",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits abort across promises": "polyfill scheduler.yield() lacks continuation-context",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits priority (signal) across promises (background)": "polyfill scheduler.yield() lacks continuation-priority inheritance",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits priority (signal) across promises (user-blocking)": "polyfill scheduler.yield() lacks continuation-priority inheritance",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits priority (string) across promises (background)": "polyfill scheduler.yield() lacks continuation-priority inheritance",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits priority (string) across promises (user-blocking)": "polyfill scheduler.yield() lacks continuation-priority inheritance",
+	"scheduler/tentative/yield/yield-inherit-across-promises.any.js:yield() inherits priority in queueMicrotask()": "polyfill scheduler.yield() lacks continuation-priority inheritance",
+	"scheduler/tentative/yield/yield-priority-posttask.any.js:yield() with TaskSignal has dynamic priority": "polyfill scheduler.yield() runs at user-blocking; cannot track TaskSignal dynamic priority",
+	"scheduler/tentative/yield/yield-priority-posttask.any.js:yield() with postTask tasks (priority)": "polyfill scheduler.yield() runs at user-blocking irrespective of enclosing task priority",
+	"scheduler/tentative/yield/yield-priority-posttask.any.js:yield() with postTask tasks (signal)": "polyfill scheduler.yield() lacks signal-priority inheritance",
+	"scheduler/tentative/yield/yield-priority-timers.any.js:yield() with timer tasks (inherit signal)": "polyfill scheduler.yield() lacks signal-priority inheritance",
 
 	// =========================================================================
 	// WebCryptoAPI — remaining failures after subtle-crypto validation shim.

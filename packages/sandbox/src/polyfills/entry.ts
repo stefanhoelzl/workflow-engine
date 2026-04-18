@@ -28,6 +28,13 @@
 //                      package's own index.js: `if (!globalThis.URLPattern)
 //                      globalThis.URLPattern = URLPattern`. No host capability;
 //                      see SECURITY.md §2.
+//   scheduler        — self.scheduler + TaskController/TaskSignal/
+//                      TaskPriorityChangeEvent (scheduler-polyfill). Depends on
+//                      AbortController/AbortSignal + Event from event-target,
+//                      and setTimeout.
+//   observable       — Observable + Subscriber + EventTarget.prototype.when
+//                      (observable-polyfill). Depends on EventTarget,
+//                      AbortController/AbortSignal, Promise, queueMicrotask.
 
 import "./trivial.js";
 import "./event-target.js";
@@ -42,3 +49,5 @@ import "./indexed-db.js";
 import "./user-timing.js";
 import "./subtle-crypto.js";
 import "urlpattern-polyfill";
+import "./scheduler.js";
+import "./observable.js";

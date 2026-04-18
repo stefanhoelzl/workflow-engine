@@ -115,7 +115,7 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setTimeoutFn = b.vm.newFunction(
 		"setTimeout",
 		(callbackHandle, delayHandle) => {
-			const delay = normalizeDelay(delayHandle.toNumber());
+			const delay = delayHandle ? normalizeDelay(delayHandle.toNumber()) : 0;
 			const cb = callbackHandle.dup();
 
 			const id = setTimeout(() => {
@@ -154,7 +154,7 @@ function setupTimers(b: Bridge): TimerCleanup {
 	const setIntervalFn = b.vm.newFunction(
 		"setInterval",
 		(callbackHandle, delayHandle) => {
-			const delay = normalizeDelay(delayHandle.toNumber());
+			const delay = delayHandle ? normalizeDelay(delayHandle.toNumber()) : 0;
 			const cb = callbackHandle.dup();
 
 			const id = setInterval(() => {

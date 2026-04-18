@@ -270,8 +270,27 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   the invoking workflow's worker-thread isolation; the attack surface is
   identical to any unbounded in-guest computation already reachable via
   plain JS. No new host capability is added. Version bumps require a §2
-  re-audit PR — the pin is deliberate, not an oversight),
-  `__dispatchAction` (runtime-
+  re-audit PR — the pin is deliberate, not an oversight), `scheduler`,
+  `TaskController`, `TaskSignal`, and `TaskPriorityChangeEvent` (W3C
+  Scheduler API via `scheduler-polyfill@^1.3.0` (GoogleChromeLabs,
+  Apache-2.0); pure-JS, bundled into the same `virtual:sandbox-polyfills`
+  IIFE. `TaskController` extends the in-guest `AbortController`;
+  `TaskSignal` extends `AbortSignal`; scheduling is backed by the
+  already-allowlisted `setTimeout` bridge and `queueMicrotask` — the
+  polyfill feature-detects `MessageChannel` and `requestIdleCallback`
+  (both absent in the sandbox) and falls back to `setTimeout` for all
+  three priority classes. No new host surface; `postTask(..., {delay})`
+  is equivalent to a `setTimeout` reachability already allowed. Version
+  bumps require a §2 re-audit PR), `Observable`, `Subscriber`, and
+  `EventTarget.prototype.when` (WICG Observable proposal via
+  `observable-polyfill@^0.0.29` (MIT, keithamus; referenced by
+  WICG/observable#107 as the canonical implementation); pure-JS, bundled
+  into the same `virtual:sandbox-polyfills` IIFE. Layered on
+  `queueMicrotask`, `Promise`, `EventTarget`, and the in-guest
+  `AbortController`/`AbortSignal`. No new host surface; `Observable.from`
+  accepts iterables, async iterables, Promises, and existing Observables
+  — all surfaces already reachable from plain JS. Version bumps require
+  a §2 re-audit PR), `__dispatchAction` (runtime-
   appended action dispatcher, locked via
   `Object.defineProperty({writable: false, configurable: false})`),
   plus the host methods registered via `methods`.
@@ -317,8 +336,9 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
   the polyfill source files under `packages/sandbox/src/polyfills/`
   (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
-  `fetch.ts`, `compression.ts`) and the pinned `event-target-shim@^6`
-  and `fflate@^0.8.2` dependencies.
+  `fetch.ts`, `compression.ts`, `scheduler.ts`, `observable.ts`) and the
+  pinned `event-target-shim@^6`, `fflate@^0.8.2`, `scheduler-polyfill@^1.3.0`,
+  and `observable-polyfill@^0.0.29` dependencies.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` via the
   construction-time `methods` argument of its own `sandbox(source,
