@@ -1,10 +1,4 @@
-# Workflow Loading Specification
-
-## Purpose
-
-Load workflow manifests + per-workflow bundles from storage and expose them to the executor via the WorkflowRegistry with one sandbox per workflow.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Workflow loading instantiates one sandbox per workflow
 
@@ -43,13 +37,3 @@ After sandbox initialization completes, the `__hostCallAction` and `__emitEvent`
 - **WHEN** the runtime invokes the trigger via `WorkflowRunner.invokeHandler`
 - **THEN** the runtime SHALL call `Sandbox.run("myTrigger", payload, ctx)` (the user's export name, no shim prefix)
 - **AND** `Sandbox.run` SHALL invoke `globalThis[IIFE_NAMESPACE].myTrigger(payload)` since the trigger value is itself callable
-
-### Requirement: Workflow loading resolves env at load time
-
-The runtime SHALL apply the workflow's manifest `env` map to the loaded workflow object. The `env` resolution (reading `process.env`, applying defaults) happens at build time; the runtime simply reads the resolved values from the manifest.
-
-#### Scenario: Env values match manifest
-
-- **GIVEN** a manifest with `env: { URL: "https://..." }`
-- **WHEN** the workflow is loaded
-- **THEN** the workflow's `env.URL` (referenced by handlers as `workflow.env.URL`) SHALL equal `"https://..."`

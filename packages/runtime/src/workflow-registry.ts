@@ -2,7 +2,6 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
-	IIFE_NAMESPACE,
 	type Manifest,
 	ManifestSchema,
 	type WorkflowManifest,
@@ -170,44 +169,6 @@ function throwValidationError(
 }
 
 // ---------------------------------------------------------------------------
-// Trigger shim + action name binder (unchanged semantics)
-// ---------------------------------------------------------------------------
-
-const TRIGGER_SHIM_PREFIX = "__trigger_";
-
-function triggerShimName(triggerName: string): string {
-	return `${TRIGGER_SHIM_PREFIX}${triggerName}`;
-}
-
-function buildTriggerShim(triggerNames: readonly string[]): string {
-	return triggerNames
-		.map(
-			(name) =>
-				`${IIFE_NAMESPACE}.${triggerShimName(name)} = async (p) => await ${IIFE_NAMESPACE}.${name}.handler(p);`,
-		)
-		.join("\n");
-}
-
-// The SDK's `action()` callable lazily resolves its name via
-// `__setActionName`, which the vite-plugin calls at build time. Hand-rolled
-// test bundles do not call it; even plugin-built bundles rely on the vite-
-// plugin having called `__setActionName` on the SAME Action instance before
-// import. In the sandbox the module is re-evaluated from source, so the
-// sandbox's copy is a fresh instance without a bound name. Append a tiny
-// binder call per action so the sandbox copy is properly named before any
-// trigger handler runs, then delete the `__setActionName` property so guest
-// code cannot rebind post-init.
-function buildActionNameBinder(actionNames: readonly string[]): string {
-	return actionNames
-		.map((name) => {
-			const ref = `${IIFE_NAMESPACE}.${name}`;
-			const literal = JSON.stringify(name);
-			return `if (typeof ${ref} === "function" && typeof ${ref}.__setActionName === "function") { ${ref}.__setActionName(${literal}); delete ${ref}.__setActionName; }`;
-		})
-		.join("\n");
-}
-
-// ---------------------------------------------------------------------------
 // WorkflowRunner construction
 // ---------------------------------------------------------------------------
 
@@ -343,13 +304,8 @@ const ACTION_DISPATCHER_SOURCE = `
 })();
 `;
 
-function buildSandboxSource(
-	workflow: WorkflowManifest,
-	bundleSource: string,
-): string {
-	const shim = buildTriggerShim(workflow.triggers.map((t) => t.name));
-	const nameBinder = buildActionNameBinder(workflow.actions.map((a) => a.name));
-	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}\n${nameBinder}\n${shim}`;
+function buildSandboxSource(bundleSource: string): string {
+	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}`;
 }
 
 function buildInvokeHandler(
@@ -362,8 +318,7 @@ function buildInvokeHandler(
 		triggerName: string,
 		payload: unknown,
 	) {
-		const exportName = triggerShimName(triggerName);
-		const runResult = await sb.run(exportName, payload, {
+		const runResult = await sb.run(triggerName, payload, {
 			invocationId,
 			tenant,
 			workflow: workflow.name,
@@ -386,10 +341,10 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 	const { tenant, workflow, bundleSource, filename, logger } = args;
 
 	const __hostCallAction = buildHostCallAction({ workflow, logger });
-	const sourceWithShim = buildSandboxSource(workflow, bundleSource);
+	const sandboxSource = buildSandboxSource(bundleSource);
 
 	const sb = await sandbox(
-		sourceWithShim,
+		sandboxSource,
 		{ __hostCallAction },
 		{
 			filename,

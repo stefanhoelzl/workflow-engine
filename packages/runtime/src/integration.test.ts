@@ -51,23 +51,19 @@ const TENANT_MANIFEST = { workflows: [WORKFLOW] };
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
 const BUNDLE = `
 var __wfe_exports__ = (function(exports) {
-  exports.echo = Object.assign(
-    async (input) => globalThis.__dispatchAction(
-      "echo",
-      input,
-      async (i) => i,
-      { parse: (x) => x },
-    ),
-    { __setActionName: () => {} },
+  exports.echo = async (input) => globalThis.__dispatchAction(
+    "echo",
+    input,
+    async (i) => i,
+    { parse: (x) => x },
   );
-  exports.ping = {
-    handler: async (payload) => {
+  exports.ping = Object.assign(
+    async (payload) => {
       const e = await exports.echo({ msg: payload.body?.msg ?? "hi" });
       return { status: 200, body: { echoed: e.msg } };
     },
-    body: { parse: (x) => x },
-    schema: { parse: (x) => x },
-  };
+    { body: { parse: (x) => x }, schema: { parse: (x) => x } },
+  );
   return exports;
 })({});
 `;

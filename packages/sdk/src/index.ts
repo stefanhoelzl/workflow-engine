@@ -120,35 +120,21 @@ function isWorkflow(value: unknown): value is Workflow {
 // ---------------------------------------------------------------------------
 
 /**
- * The vite-plugin calls `__setActionName(exportName)` after discovering
- * the action export:
+ * `action({input, output, handler, name})` returns a callable that routes
+ * every invocation through `dispatchAction(name, input, handler, outputSchema)`
+ * — the host-side `__hostCallAction` bridge validates the input, the handler
+ * runs in the same QuickJS context, and the output is validated against the
+ * output schema before being returned.
  *
- * `action({...})` returns a callable carrying the brand + its schemas and
- * handler. The callable, when invoked at runtime inside the sandbox, does
- * three things in order:
- *   1. Notify the host via `globalThis.__hostCallAction(name, input)` —
- *      the host validates input against the manifest's input JSON Schema
- *      and audit-logs the invocation. The host does NOT dispatch the
- *      handler.
- *   2. Call the user-provided `handler(input)` directly (a plain JS
- *      function call, same QuickJS context, no nested `sandbox.run()`).
- *   3. Validate the handler's return value against the captured output
- *      Zod schema (via the Zod bundle that ships inlined in the workflow
- *      bundle) and return the validated output to the caller.
+ * `name` is required. The vite-plugin injects it into each `action({...})`
+ * call expression at build time by AST-transforming `export const X =
+ * action({...})` declarations to `export const X = action({..., name: "X"})`.
+ * Hand-rolled bundles (test fixtures, etc.) must pass `name` explicitly.
+ * Invoking an action constructed without a name throws.
  *
- * The `__hostCallAction` global is looked up lazily so that:
- *   - The SDK module can be imported in Node at build/test time where no
- *     such global exists.
- *   - The vite-plugin can install `__hostCallAction` in the sandbox and
- *     a `name` on each action before the workflow is invoked.
- *
- * The action's `name` starts out as `undefined`. The vite-plugin walks the
- * workflow module's exports, identifies each action by `ACTION_BRAND`, and
- * writes the export name into the callable via the mutable `name` slot
- * (using the `__setActionName(name)` helper). Once assigned, `name` is
- * frozen — subsequent calls to `__setActionName` are a no-op when the new
- * value matches or throw otherwise. This protects against accidental
- * re-naming while keeping the single-pass build simple.
+ * The captured `handler` is closed over the callable but NOT exposed as a
+ * public property — the only way to invoke the handler is through the
+ * callable, which always routes through the dispatcher.
  */
 
 interface Action<I = unknown, O = unknown> {
@@ -156,71 +142,22 @@ interface Action<I = unknown, O = unknown> {
 	readonly [ACTION_BRAND]: true;
 	readonly input: z.ZodType<I>;
 	readonly output: z.ZodType<O>;
-	readonly handler: (input: I) => Promise<O>;
 	readonly name: string;
-	__setActionName(name: string): void;
-}
-
-interface ActionMetadata<I, O> {
-	readonly callable: (input: I) => Promise<O>;
-	readonly input: z.ZodType<I>;
-	readonly output: z.ZodType<O>;
-	readonly handler: (input: I) => Promise<O>;
-	readonly getName: () => string;
-	readonly setName: (name: string) => void;
-}
-
-function attachActionMetadata<I, O>(meta: ActionMetadata<I, O>): Action<I, O> {
-	const { callable } = meta;
-	Object.defineProperty(callable, ACTION_BRAND, {
-		value: true,
-		enumerable: false,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "input", {
-		value: meta.input,
-		enumerable: true,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "output", {
-		value: meta.output,
-		enumerable: true,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "handler", {
-		value: meta.handler,
-		enumerable: true,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "name", {
-		get: meta.getName,
-		configurable: true,
-	});
-	Object.defineProperty(callable, "__setActionName", {
-		value: meta.setName,
-		enumerable: false,
-		writable: false,
-		configurable: true,
-	});
-	return callable as unknown as Action<I, O>;
 }
 
 function action<I, O>(config: {
 	input: z.ZodType<I>;
 	output: z.ZodType<O>;
 	handler: (input: I) => Promise<O>;
+	name?: string;
 }): Action<I, O> {
-	let assignedName: string | undefined;
+	const assignedName = config.name;
 	const outputSchema = config.output;
 	const handler = config.handler;
 	const callable = async function callAction(input: I): Promise<O> {
-		if (assignedName === undefined) {
+		if (assignedName === undefined || assignedName === "") {
 			throw new Error(
-				"Action was invoked before the build system assigned it a name",
+				"Action constructed without a name; pass name explicitly or build via @workflow-engine/sdk/vite-plugin",
 			);
 		}
 		return (await dispatchAction(
@@ -230,25 +167,30 @@ function action<I, O>(config: {
 			outputSchema,
 		)) as O;
 	};
-	const setName = (name: string) => {
-		if (assignedName !== undefined) {
-			if (assignedName === name) {
-				return;
-			}
-			throw new Error(
-				`Action already bound to name "${assignedName}"; refusing to rebind to "${name}"`,
-			);
-		}
-		assignedName = name;
-	};
-	return attachActionMetadata({
-		callable,
-		input: config.input,
-		output: config.output,
-		handler: config.handler,
-		getName: () => assignedName ?? "",
-		setName,
+	Object.defineProperty(callable, ACTION_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
 	});
+	Object.defineProperty(callable, "input", {
+		value: config.input,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "output", {
+		value: config.output,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "name", {
+		value: assignedName ?? "",
+		writable: false,
+		configurable: false,
+	});
+	return callable as unknown as Action<I, O>;
 }
 
 function isAction(value: unknown): value is Action {
@@ -289,28 +231,30 @@ function extractParamNames(path: string): string[] {
 	return names;
 }
 
+// HttpTrigger is a callable: invoking it runs the user's handler. Brand,
+// path, method, body, params, query, schema are attached as readonly
+// properties on the callable. There is no public `.handler` slot; the
+// callable IS the handler invocation path.
 interface HttpTrigger<
 	Path extends string = string,
 	Body extends z.ZodType = z.ZodType,
 	Params extends z.ZodType = z.ZodType,
 	Query extends z.ZodType = z.ZodType,
 > {
+	(
+		payload: HttpTriggerPayload<
+			z.infer<Body>,
+			z.infer<Params> & Record<string, string>,
+			z.infer<Query> & Record<string, unknown>
+		>,
+	): Promise<HttpTriggerResult>;
 	readonly [HTTP_TRIGGER_BRAND]: true;
 	readonly path: Path;
 	readonly method: string;
 	readonly body: Body;
 	readonly params: Params;
 	readonly query: Query | undefined;
-	// Full composite payload schema (body + headers + url + method + params +
-	// query). Serialized to JSON Schema in the manifest for the trigger UI.
 	readonly schema: z.ZodType;
-	readonly handler: (
-		payload: HttpTriggerPayload<
-			z.infer<Body>,
-			z.infer<Params> & Record<string, string>,
-			z.infer<Query> & Record<string, unknown>
-		>,
-	) => Promise<HttpTriggerResult>;
 }
 
 function httpTrigger<
@@ -338,6 +282,11 @@ function httpTrigger<
 	ParamsSchemaFor<P>,
 	Q extends z.ZodObject<z.ZodRawShape> ? Q : z.ZodObject<Record<never, never>>
 > {
+	if (typeof config.handler !== "function") {
+		throw new Error(
+			`httpTrigger({ path: ${JSON.stringify(config.path)} }) is missing a handler function`,
+		);
+	}
 	const bodySchema = (config.body ?? z.unknown()) as B extends z.ZodType
 		? B
 		: z.ZodUnknown;
@@ -358,39 +307,62 @@ function httpTrigger<
 		query: querySchema ?? z.object({}),
 	});
 
-	const trigger: HttpTrigger<
-		P,
-		B extends z.ZodType ? B : z.ZodUnknown,
-		ParamsSchemaFor<P>,
-		Q extends z.ZodObject<z.ZodRawShape> ? Q : z.ZodObject<Record<never, never>>
-	> = {
-		[HTTP_TRIGGER_BRAND]: true,
+	const handler = config.handler;
+	const callable = function callTrigger(
+		payload: Parameters<typeof handler>[0],
+	): Promise<HttpTriggerResult> {
+		return handler(payload);
+	};
+	attachTriggerMetadata(callable, {
 		path: config.path,
 		method,
 		body: bodySchema,
 		params: paramsSchema,
-		query: (querySchema ?? z.object({})) as Q extends z.ZodObject<z.ZodRawShape>
-			? Q
-			: z.ZodObject<Record<never, never>>,
+		query: querySchema,
 		schema: compositeSchema,
-		handler: config.handler as HttpTrigger<
-			P,
-			B extends z.ZodType ? B : z.ZodUnknown,
-			ParamsSchemaFor<P>,
-			Q extends z.ZodObject<z.ZodRawShape>
-				? Q
-				: z.ZodObject<Record<never, never>>
-		>["handler"],
-	};
-	return Object.freeze(trigger);
+	});
+	return callable as unknown as HttpTrigger<
+		P,
+		B extends z.ZodType ? B : z.ZodUnknown,
+		ParamsSchemaFor<P>,
+		Q extends z.ZodObject<z.ZodRawShape> ? Q : z.ZodObject<Record<never, never>>
+	>;
+}
+
+interface TriggerMetadata {
+	path: string;
+	method: string;
+	body: z.ZodType;
+	params: z.ZodType;
+	query: z.ZodType | undefined;
+	schema: z.ZodType;
+}
+
+function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {
+	Object.defineProperty(callable, HTTP_TRIGGER_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
+	});
+	for (const [key, value] of Object.entries(meta)) {
+		Object.defineProperty(callable, key, {
+			value: key === "query" ? (value ?? z.object({})) : value,
+			enumerable: true,
+			writable: false,
+			configurable: false,
+		});
+	}
 }
 
 function isHttpTrigger(value: unknown): value is HttpTrigger {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		(value as Record<symbol, unknown>)[HTTP_TRIGGER_BRAND] === true
-	);
+	if (value === null || value === undefined) {
+		return false;
+	}
+	if (typeof value !== "object" && typeof value !== "function") {
+		return false;
+	}
+	return (value as Record<symbol, unknown>)[HTTP_TRIGGER_BRAND] === true;
 }
 
 // ---------------------------------------------------------------------------

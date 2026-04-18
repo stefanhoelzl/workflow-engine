@@ -80,10 +80,12 @@ sections must append (§7 and onward), not renumber.
   │          ┌───────────────────────────────────────┐          │
   │          │ Trigger handler (UNTRUSTED)           │          │
   │          │   └─► await action(input)             │          │
-  │          │       ├─► __hostCallAction(name, in)  │          │
-  │          │       │   (host: Ajv validate + audit)│          │
-  │          │       └─► action.handler(input)       │          │
-  │          │       └─► Zod validate output         │          │
+  │          │       ├─► __dispatchAction(name, in,  │          │
+  │          │       │     handler, outputSchema)    │          │
+  │          │       │   ├─► __hostCallAction(name,  │          │
+  │          │       │   │     in) — Ajv + audit     │          │
+  │          │       │   ├─► captured handler(input) │          │
+  │          │       │   └─► Zod validate output     │          │
   │          │   └─► fetch(url, …) → __hostFetch     │          │
   │          └───────────────────────────────────────┘          │
   └─────────────────────────────────────────────────────────────┘

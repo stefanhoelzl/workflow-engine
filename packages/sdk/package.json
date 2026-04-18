@@ -28,6 +28,7 @@
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",
 		"citty": "^0.2.2",
+		"magic-string": "^0.30.21",
 		"tar-stream": "^3.1.8",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.2",

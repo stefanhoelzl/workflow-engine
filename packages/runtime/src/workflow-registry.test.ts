@@ -53,20 +53,16 @@ const VALID_TENANT_MANIFEST = { workflows: [VALID_WORKFLOW] };
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
 const BUNDLE_SOURCE = `
 var __wfe_exports__ = (function(exports) {
-  exports.doIt = Object.assign(
-    async (input) => globalThis.__dispatchAction(
-      "doIt",
-      input,
-      async (i) => ({ echoed: i }),
-      { parse: (x) => x },
-    ),
-    { __setActionName: () => {} },
+  exports.doIt = async (input) => globalThis.__dispatchAction(
+    "doIt",
+    input,
+    async (i) => ({ echoed: i }),
+    { parse: (x) => x },
   );
-  exports.onPing = {
-    handler: async (payload) => ({ status: 200, body: { received: payload.body, action: await exports.doIt({ x: 1 }) } }),
-    body: { parse: (x) => x },
-    schema: { parse: (x) => x },
-  };
+  exports.onPing = Object.assign(
+    async (payload) => ({ status: 200, body: { received: payload.body, action: await exports.doIt({ x: 1 }) } }),
+    { body: { parse: (x) => x }, schema: { parse: (x) => x } },
+  );
   return exports;
 })({});
 `;
@@ -175,14 +171,11 @@ describe("workflow registry", () => {
 	it("__hostCallAction and __emitEvent are not on globalThis after workflow load", async () => {
 		const probeBundle = `
 			var __wfe_exports__ = (function(exports) {
-				exports.doIt = Object.assign(
-					async (input) => globalThis.__dispatchAction(
-						"doIt", input, async (i) => i, { parse: (x) => x },
-					),
-					{ __setActionName: () => {} },
+				exports.doIt = async (input) => globalThis.__dispatchAction(
+					"doIt", input, async (i) => i, { parse: (x) => x },
 				);
-				exports.onPing = {
-					handler: async (payload) => ({
+				exports.onPing = Object.assign(
+					async (payload) => ({
 						status: 200,
 						body: {
 							hostCallAction: typeof globalThis.__hostCallAction,
@@ -192,9 +185,8 @@ describe("workflow registry", () => {
 							dispatcher: typeof globalThis.__dispatchAction,
 						},
 					}),
-					body: { parse: (x) => x },
-					schema: { parse: (x) => x },
-				};
+					{ body: { parse: (x) => x }, schema: { parse: (x) => x } },
+				);
 				return exports;
 			})({});
 		`;
@@ -225,14 +217,11 @@ describe("workflow registry", () => {
 	it("__dispatchAction is non-writable and non-configurable after workflow load", async () => {
 		const probeBundle = `
 			var __wfe_exports__ = (function(exports) {
-				exports.doIt = Object.assign(
-					async (input) => globalThis.__dispatchAction(
-						"doIt", input, async (i) => ({ echoed: i }), { parse: (x) => x },
-					),
-					{ __setActionName: () => {} },
+				exports.doIt = async (input) => globalThis.__dispatchAction(
+					"doIt", input, async (i) => ({ echoed: i }), { parse: (x) => x },
 				);
-				exports.onPing = {
-					handler: async (payload) => {
+				exports.onPing = Object.assign(
+					async (payload) => {
 						"use strict";
 						const descriptor = Object.getOwnPropertyDescriptor(
 							globalThis, "__dispatchAction"
@@ -256,9 +245,8 @@ describe("workflow registry", () => {
 							},
 						};
 					},
-					body: { parse: (x) => x },
-					schema: { parse: (x) => x },
-				};
+					{ body: { parse: (x) => x }, schema: { parse: (x) => x } },
+				);
 				return exports;
 			})({});
 		`;
