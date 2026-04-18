@@ -83,6 +83,7 @@ async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 			ref: 0,
 			at: new Date().toISOString(),
 			ts: lastEvent?.ts ?? 0,
+			tenant: firstEvent.tenant,
 			workflow: firstEvent.workflow,
 			workflowSha: firstEvent.workflowSha,
 			name: firstEvent.name,

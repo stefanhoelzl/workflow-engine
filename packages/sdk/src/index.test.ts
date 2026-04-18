@@ -361,7 +361,7 @@ describe("httpTrigger defaults", () => {
 // ---------------------------------------------------------------------------
 
 describe("ManifestSchema", () => {
-	const validManifest = {
+	const validWorkflow = {
 		name: "cronitor",
 		module: "cronitor.js",
 		sha: "0".repeat(64),
@@ -386,60 +386,84 @@ describe("ManifestSchema", () => {
 		],
 	};
 
-	it("accepts a valid v1 manifest", () => {
+	const validManifest = { workflows: [validWorkflow] };
+
+	it("accepts a valid v1 tenant manifest", () => {
 		const parsed = ManifestSchema.parse(validManifest);
-		expect(parsed.name).toBe("cronitor");
-		expect(parsed.module).toBe("cronitor.js");
-		expect(parsed.actions).toHaveLength(1);
-		expect(parsed.triggers).toHaveLength(1);
+		expect(parsed.workflows).toHaveLength(1);
+		const wf = parsed.workflows[0];
+		expect(wf?.name).toBe("cronitor");
+		expect(wf?.module).toBe("cronitor.js");
+		expect(wf?.actions).toHaveLength(1);
+		expect(wf?.triggers).toHaveLength(1);
 	});
 
 	it("accepts an HTTP trigger with an optional query JSON Schema", () => {
 		const parsed = ManifestSchema.parse({
-			...validManifest,
-			triggers: [
+			workflows: [
 				{
-					name: "search",
-					type: "http",
-					path: "search",
-					method: "GET",
-					body: { type: "object" },
-					params: [],
-					query: { type: "object" },
-					schema: { type: "object" },
+					...validWorkflow,
+					triggers: [
+						{
+							name: "search",
+							type: "http",
+							path: "search",
+							method: "GET",
+							body: { type: "object" },
+							params: [],
+							query: { type: "object" },
+							schema: { type: "object" },
+						},
+					],
 				},
 			],
 		});
-		const trigger = parsed.triggers[0];
+		const trigger = parsed.workflows[0]?.triggers[0];
 		if (trigger?.type !== "http") {
 			throw new Error("expected http trigger");
 		}
 		expect(trigger.query).toEqual({ type: "object" });
 	});
 
-	it("rejects a manifest missing the name field", () => {
-		const { name: _name, ...rest } = validManifest;
-		expect(() => ManifestSchema.parse(rest)).toThrow();
+	it("rejects a tenant manifest missing the workflows array", () => {
+		expect(() => ManifestSchema.parse({})).toThrow();
 	});
 
-	it("rejects a manifest missing the module field", () => {
-		const { module: _module, ...rest } = validManifest;
-		expect(() => ManifestSchema.parse(rest)).toThrow();
+	it("rejects a workflow entry missing the name field", () => {
+		const { name: _name, ...rest } = validWorkflow;
+		expect(() => ManifestSchema.parse({ workflows: [rest] })).toThrow();
 	});
 
-	it("rejects a manifest missing the actions field", () => {
-		const { actions: _actions, ...rest } = validManifest;
-		expect(() => ManifestSchema.parse(rest)).toThrow();
+	it("rejects a workflow entry missing the module field", () => {
+		const { module: _module, ...rest } = validWorkflow;
+		expect(() => ManifestSchema.parse({ workflows: [rest] })).toThrow();
+	});
+
+	it("rejects a workflow entry missing the actions field", () => {
+		const { actions: _actions, ...rest } = validWorkflow;
+		expect(() => ManifestSchema.parse({ workflows: [rest] })).toThrow();
+	});
+
+	it("rejects duplicate workflow names within one tenant manifest", () => {
+		expect(() =>
+			ManifestSchema.parse({
+				workflows: [validWorkflow, validWorkflow],
+			}),
+		).toThrow();
 	});
 
 	it("rejects an action entry without input", () => {
 		expect(() =>
 			ManifestSchema.parse({
-				...validManifest,
-				actions: [
+				workflows: [
 					{
-						name: "broken",
-						output: { type: "object" },
+						...validWorkflow,
+						actions: [
+							{
+								name: "broken",
+								output: { type: "object" },
+							},
+						],
 					},
 				],
 			}),
@@ -449,11 +473,15 @@ describe("ManifestSchema", () => {
 	it("rejects an action entry without output", () => {
 		expect(() =>
 			ManifestSchema.parse({
-				...validManifest,
-				actions: [
+				workflows: [
 					{
-						name: "broken",
-						input: { type: "object" },
+						...validWorkflow,
+						actions: [
+							{
+								name: "broken",
+								input: { type: "object" },
+							},
+						],
 					},
 				],
 			}),
@@ -463,14 +491,18 @@ describe("ManifestSchema", () => {
 	it("rejects a trigger without type discriminator", () => {
 		expect(() =>
 			ManifestSchema.parse({
-				...validManifest,
-				triggers: [
+				workflows: [
 					{
-						name: "noType",
-						path: "x",
-						method: "POST",
-						body: { type: "object" },
-						params: [],
+						...validWorkflow,
+						triggers: [
+							{
+								name: "noType",
+								path: "x",
+								method: "POST",
+								body: { type: "object" },
+								params: [],
+							},
+						],
 					},
 				],
 			}),
@@ -480,15 +512,19 @@ describe("ManifestSchema", () => {
 	it("rejects a trigger with an unknown type discriminator", () => {
 		expect(() =>
 			ManifestSchema.parse({
-				...validManifest,
-				triggers: [
+				workflows: [
 					{
-						name: "unknownKind",
-						type: "queue",
-						path: "x",
-						method: "POST",
-						body: { type: "object" },
-						params: [],
+						...validWorkflow,
+						triggers: [
+							{
+								name: "unknownKind",
+								type: "queue",
+								path: "x",
+								method: "POST",
+								body: { type: "object" },
+								params: [],
+							},
+						],
 					},
 				],
 			}),

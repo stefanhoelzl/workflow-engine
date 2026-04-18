@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { createGunzip } from "node:zlib";
+import { extract as tarExtract } from "tar-stream";
 import { build as viteBuild } from "vite";
 import { describe, expect, it } from "vitest";
 import { workflowPlugin } from "./index.js";
@@ -85,9 +89,56 @@ function skipTypecheckPlugin() {
 	};
 }
 
-async function readManifest(outDir: string, name: string): Promise<unknown> {
-	const content = await readFile(join(outDir, name, "manifest.json"), "utf8");
-	return JSON.parse(content);
+async function readTenantBundle(outDir: string): Promise<Map<string, string>> {
+	const bundleBytes = await readFile(join(outDir, "bundle.tar.gz"));
+	const files = new Map<string, string>();
+	const extractor = tarExtract();
+	extractor.on("entry", (header, stream, next) => {
+		if (header.type === "file") {
+			const chunks: Buffer[] = [];
+			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+			stream.on("end", () => {
+				files.set(header.name, Buffer.concat(chunks).toString("utf-8"));
+				next();
+			});
+		} else {
+			stream.on("end", () => next());
+			stream.resume();
+		}
+	});
+	await pipeline(Readable.from(bundleBytes), createGunzip(), extractor);
+	return files;
+}
+
+async function readWorkflowManifest(
+	outDir: string,
+	name: string,
+): Promise<unknown> {
+	const files = await readTenantBundle(outDir);
+	const manifestRaw = files.get("manifest.json");
+	if (!manifestRaw) {
+		throw new Error(`manifest.json missing from bundle.tar.gz at ${outDir}`);
+	}
+	const tenant = JSON.parse(manifestRaw) as {
+		workflows: Array<{ name: string }>;
+	};
+	const wf = tenant.workflows.find((w) => w.name === name);
+	if (!wf) {
+		throw new Error(`workflow "${name}" not in tenant manifest`);
+	}
+	return wf;
+}
+
+async function readWorkflowBundleSource(
+	outDir: string,
+	name: string,
+): Promise<string> {
+	const files = await readTenantBundle(outDir);
+	const src = files.get(`${name}.js`);
+	if (!src) {
+		throw new Error(`${name}.js missing from tenant bundle`);
+	}
+	return src;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +238,7 @@ describe("workflowPlugin: brand-based discovery", () => {
 			files: { "basic.ts": BASIC_WORKFLOW },
 			workflows: ["./basic.ts"],
 		});
-		const manifest = (await readManifest(outDir, "basic")) as {
+		const manifest = (await readWorkflowManifest(outDir, "basic")) as {
 			name: string;
 			module: string;
 			sha: string;
@@ -218,8 +269,7 @@ describe("workflowPlugin: brand-based discovery", () => {
 		// No query supplied → field omitted from manifest entry.
 		expect(manifest.triggers[0]?.query).toBeUndefined();
 
-		const bundlePath = join(outDir, "basic", "basic.js");
-		const bundleSrc = await readFile(bundlePath, "utf8");
+		const bundleSrc = await readWorkflowBundleSource(outDir, "basic");
 		// Bundle is an ES module with the original named exports preserved.
 		expect(bundleSrc).toMatch(EXPORT_ON_EVENT_RE);
 		expect(bundleSrc).toMatch(EXPORT_SEND_NOTIFICATION_RE);
@@ -235,7 +285,7 @@ describe("workflowPlugin: brand-based discovery", () => {
 			files: { "basic.ts": BASIC_WORKFLOW },
 			workflows: ["./basic.ts"],
 		});
-		const manifest = (await readManifest(outDir, "basic")) as {
+		const manifest = (await readWorkflowManifest(outDir, "basic")) as {
 			actions: Array<{
 				input: Record<string, unknown>;
 				output: Record<string, unknown>;
@@ -273,7 +323,7 @@ describe("workflowPlugin: name derivation", () => {
 			files: { "no_define.ts": NO_DEFINE_WORKFLOW },
 			workflows: ["./no_define.ts"],
 		});
-		const manifest = (await readManifest(outDir, "no_define")) as {
+		const manifest = (await readWorkflowManifest(outDir, "no_define")) as {
 			name: string;
 			module: string;
 			env: Record<string, string>;
@@ -288,7 +338,7 @@ describe("workflowPlugin: name derivation", () => {
 			files: { "wf.ts": NAMED_WORKFLOW },
 			workflows: ["./wf.ts"],
 		});
-		const manifest = (await readManifest(outDir, "custom-name")) as {
+		const manifest = (await readWorkflowManifest(outDir, "custom-name")) as {
 			name: string;
 			module: string;
 		};
@@ -303,7 +353,7 @@ describe("workflowPlugin: HTTP trigger entry", () => {
 			files: { "q.ts": TRIGGER_WITH_QUERY },
 			workflows: ["./q.ts"],
 		});
-		const manifest = (await readManifest(outDir, "q")) as {
+		const manifest = (await readWorkflowManifest(outDir, "q")) as {
 			triggers: Array<{
 				name: string;
 				method: string;
@@ -324,7 +374,7 @@ describe("workflowPlugin: HTTP trigger entry", () => {
 			files: { "w.ts": WILDCARD_TRIGGER },
 			workflows: ["./w.ts"],
 		});
-		const manifest = (await readManifest(outDir, "w")) as {
+		const manifest = (await readWorkflowManifest(outDir, "w")) as {
 			triggers: Array<{ params: string[] }>;
 		};
 		expect(manifest.triggers[0]?.params).toEqual(["rest"]);

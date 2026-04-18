@@ -123,7 +123,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 
 	return {
 		invoke(workflow, triggerName, payload) {
-			return queueFor(workflow.name).run(() =>
+			return queueFor(`${workflow.tenant}/${workflow.name}`).run(() =>
 				runInvocation(workflow, triggerName, payload),
 			);
 		},

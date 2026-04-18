@@ -4,6 +4,7 @@ import type { Logger } from "./index.js";
 
 const RUN_OPTS = {
 	invocationId: "evt_test",
+	tenant: "t0",
 	workflow: "wf",
 	workflowSha: "sha",
 };

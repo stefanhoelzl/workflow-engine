@@ -123,6 +123,61 @@ body {
 	font-weight: 700;
 }
 
+.topbar-right {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+}
+
+.topbar-tenant {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--text-muted);
+	margin: 0;
+}
+
+.topbar-tenant-label {
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	font-weight: 600;
+}
+
+.topbar-tenant select {
+	background: var(--bg-surface);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 4px 8px;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: border-color 0.15s ease;
+}
+
+.topbar-tenant select:hover,
+.topbar-tenant select:focus {
+	border-color: var(--accent);
+	outline: none;
+}
+
+.topbar-tenant-go {
+	background: var(--bg-surface);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 4px 10px;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.topbar-tenant-empty {
+	font-size: 13px;
+	color: var(--text-muted);
+	font-style: italic;
+}
+
 .topbar-user {
 	text-align: right;
 }

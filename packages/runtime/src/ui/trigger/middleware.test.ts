@@ -11,7 +11,7 @@ import { prepareSchema } from "./page.js";
 function makeRegistry(entries: HttpTriggerEntry[]): HttpTriggerRegistry {
 	return {
 		register: vi.fn(),
-		removeWorkflow: vi.fn(),
+		removeRunner: vi.fn(),
 		lookup: vi.fn(),
 		list: () => entries,
 		get size() {
@@ -22,6 +22,7 @@ function makeRegistry(entries: HttpTriggerEntry[]): HttpTriggerRegistry {
 
 function makeRunner(name: string): WorkflowRunner {
 	return {
+		tenant: "t0",
 		name,
 		env: {},
 		actions: [],
@@ -42,6 +43,14 @@ function mount(registry: HttpTriggerRegistry) {
 	}
 	return app;
 }
+
+// User name is "user" so alphabetical sort of (orgs ∪ {name}) = ["t0","user"]
+// → active tenant defaults to "t0", the default tenant assigned by makeRunner.
+const AUTH_HEADERS = {
+	"X-Auth-Request-User": "user",
+	"X-Auth-Request-Email": "user@example.test",
+	"X-Auth-Request-Groups": "t0",
+};
 
 describe("triggerMiddleware", () => {
 	it("renders a card per registered trigger including its webhook URL and method", async () => {
@@ -75,11 +84,11 @@ describe("triggerMiddleware", () => {
 		]);
 
 		const app = mount(registry);
-		const res = await app.request("/trigger/");
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("cronitor / onCronitorEvent");
-		expect(body).toContain("/webhooks/cronitor");
+		expect(body).toContain("/webhooks/t0/cronitor/cronitor");
 		expect(body).toContain('data-trigger-method="POST"');
 		// JSON schema is embedded as an inert JSON script tag.
 		expect(body).toContain('{"type":"object"');
@@ -88,7 +97,7 @@ describe("triggerMiddleware", () => {
 	it("renders an empty-state when no triggers are registered", async () => {
 		const registry = makeRegistry([]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/");
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("No triggers registered");
@@ -120,7 +129,7 @@ describe("triggerMiddleware", () => {
 			},
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/");
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		const body = await res.text();
 		const alphaIdx = body.indexOf("alpha / a");
 		const zetaIdx = body.indexOf("zeta / z");

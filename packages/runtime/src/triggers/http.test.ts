@@ -38,8 +38,9 @@ function makeDescriptor(
 	};
 }
 
-function makeRunner(name: string): WorkflowRunner {
+function makeRunner(name: string, tenant = "t0"): WorkflowRunner {
 	return {
+		tenant,
 		name,
 		env: Object.freeze({}),
 		actions: [],
@@ -92,9 +93,10 @@ describe("HttpTriggerRegistry", () => {
 		const r = createHttpTriggerRegistry();
 		const w = makeRunner("w");
 		r.register(w, makeDescriptor({ name: "a", path: "x" }), passValidator());
-		expect(r.lookup("x", "POST")?.descriptor.name).toBe("a");
-		expect(r.lookup("x", "GET")).toBeUndefined();
-		expect(r.lookup("y", "POST")).toBeUndefined();
+		expect(r.lookup("t0", "w", "x", "POST")?.descriptor.name).toBe("a");
+		expect(r.lookup("t0", "w", "x", "GET")).toBeUndefined();
+		expect(r.lookup("t0", "w", "y", "POST")).toBeUndefined();
+		expect(r.lookup("other", "w", "x", "POST")).toBeUndefined();
 	});
 
 	it("prefers static paths over parameterized ones", () => {
@@ -112,9 +114,13 @@ describe("HttpTriggerRegistry", () => {
 			makeDescriptor({ name: "static", path: "users/admin" }),
 			passValidator(),
 		);
-		expect(r.lookup("users/admin", "POST")?.descriptor.name).toBe("static");
-		expect(r.lookup("users/other", "POST")?.descriptor.name).toBe("param");
-		expect(r.lookup("users/other", "POST")?.params).toEqual({
+		expect(r.lookup("t0", "w", "users/admin", "POST")?.descriptor.name).toBe(
+			"static",
+		);
+		expect(r.lookup("t0", "w", "users/other", "POST")?.descriptor.name).toBe(
+			"param",
+		);
+		expect(r.lookup("t0", "w", "users/other", "POST")?.params).toEqual({
 			userId: "other",
 		});
 	});
@@ -127,7 +133,7 @@ describe("HttpTriggerRegistry", () => {
 			makeDescriptor({ name: "files", path: "files/*rest" }),
 			passValidator(),
 		);
-		const match = r.lookup("files/docs/2024/report.pdf", "POST");
+		const match = r.lookup("t0", "w", "files/docs/2024/report.pdf", "POST");
 		expect(match?.descriptor.name).toBe("files");
 		expect(match?.params).toEqual({ rest: "docs/2024/report.pdf" });
 	});
@@ -158,7 +164,7 @@ describe("httpTriggerMiddleware: success path", () => {
 		}));
 		const { app } = mount({ invoke });
 
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({ x: 1 }),
 			headers: { "Content-Type": "application/json" },
@@ -178,7 +184,7 @@ describe("httpTriggerMiddleware: success path", () => {
 		}));
 		const { app } = mount({ invoke });
 
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({}),
 			headers: { "Content-Type": "application/json" },
@@ -201,7 +207,7 @@ describe("httpTriggerMiddleware: success path", () => {
 		const { app } = mount({ invoke, descriptor });
 
 		const res = await app.request(
-			"/webhooks/users/abc?tag=one&tag=two&q=hello",
+			"/webhooks/t0/w/users/abc?tag=one&tag=two&q=hello",
 			{
 				method: "POST",
 				body: JSON.stringify({ active: true }),
@@ -234,7 +240,7 @@ describe("httpTriggerMiddleware: error paths", () => {
 	it("returns 404 when no trigger matches", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
 		const { app } = mount({ invoke });
-		const res = await app.request("/webhooks/nope", {
+		const res = await app.request("/webhooks/t0/w/nope", {
 			method: "POST",
 			body: JSON.stringify({}),
 			headers: { "Content-Type": "application/json" },
@@ -246,7 +252,7 @@ describe("httpTriggerMiddleware: error paths", () => {
 	it("returns 422 on non-JSON body", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
 		const { app } = mount({ invoke });
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: "not json",
 			headers: { "Content-Type": "application/json" },
@@ -271,7 +277,7 @@ describe("httpTriggerMiddleware: error paths", () => {
 			validateParams: (v) => ({ ok: true, value: v }),
 		};
 		const { app } = mount({ invoke, validator });
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({ wrong: true }),
 			headers: { "Content-Type": "application/json" },
@@ -320,7 +326,7 @@ describe("httpTriggerMiddleware: security", () => {
 		// request with NO auth headers.
 		const invoke = vi.fn<Executor["invoke"]>(async () => ({ status: 200 }));
 		const { app } = mount({ invoke });
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({}),
 			headers: { "Content-Type": "application/json" },
@@ -332,7 +338,7 @@ describe("httpTriggerMiddleware: security", () => {
 	it("rejects oversized/malformed JSON at the validation boundary", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
 		const { app } = mount({ invoke });
-		const res = await app.request("/webhooks/webhook", {
+		const res = await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: "{not json",
 			headers: { "Content-Type": "application/json" },
@@ -359,7 +365,7 @@ describe("httpTriggerMiddleware: security", () => {
 			return { status: 200 };
 		});
 		const { app } = mount({ invoke, validator: prototypePollutingValidator });
-		await app.request("/webhooks/webhook", {
+		await app.request("/webhooks/t0/w/webhook", {
 			method: "POST",
 			body: JSON.stringify({
 				__proto__: { polluted: true },

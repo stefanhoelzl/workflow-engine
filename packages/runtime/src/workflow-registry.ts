@@ -1,18 +1,22 @@
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import {
 	IIFE_NAMESPACE,
 	type Manifest,
 	ManifestSchema,
+	type WorkflowManifest,
 } from "@workflow-engine/core";
 import { type Sandbox, sandbox } from "@workflow-engine/sandbox";
 import Ajv2020 from "ajv/dist/2020.js";
+import { extract as tarExtract } from "tar-stream";
 import type {
 	ActionDescriptor,
 	HttpTriggerDescriptor,
 	WorkflowRunner,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
+import type { StorageBackend } from "./storage/index.js";
 import type {
 	HttpTriggerRegistry,
 	PayloadValidator,
@@ -22,47 +26,16 @@ import type {
 import { createHttpTriggerRegistry } from "./triggers/http.js";
 
 // ---------------------------------------------------------------------------
-// Workflow registry (v1)
+// Workflow registry (multi-tenant)
 // ---------------------------------------------------------------------------
 //
-// `createWorkflowRegistry({ logger })` returns an empty registry. Call
-// `loadWorkflows(registry, manifestPaths, { logger })` once at startup to
-// populate it, or `loadWorkflow(registry, manifestPath, { logger })` to
-// add/replace a single workflow at runtime (used by the upload pipeline).
-// Per manifest the registry:
-//   1. Validates the v1 ManifestSchema (Zod).
-//   2. Reads the per-workflow bundle from `<dir>/<manifest.module>`.
-//   3. Constructs a QuickJS `Sandbox` passing `__hostCallAction` as a
-//      per-workflow host method.
-//   4. Builds a `WorkflowRunner` (name/env/actions/triggers/invokeHandler)
-//      and appends it to the registry's runners list.
-//   5. Registers each HTTP trigger with its JSON-Schema-based
-//      `PayloadValidator` against the runtime's `HttpTriggerRegistry`.
-//
-// §1 Corrected dispatch model (design D11):
-//   Action handlers run INSIDE the sandbox via the SDK wrapper (see
-//   `packages/sdk/src/index.ts`). The wrapper calls `__hostCallAction`
-//   for input validation + audit logging only; it then invokes the
-//   author's handler in-sandbox via a direct JS function call (same
-//   QuickJS context, no nested `sandbox.run()`). Output validation
-//   happens in-sandbox via the inlined Zod schema. The host therefore
-//   does NOT re-enter the sandbox to dispatch the handler, and
-//   `sandbox.run()` is never called nested.
-//
-// §2 SECURITY-adjacent: the dispatcher validates action input against the
-// manifest JSON Schema (Ajv) on every call and audit-logs the invocation.
-// Validation errors propagate back to the guest as `Error`s with a
-// JSON-serializable `.issues` array (Zod/Ajv-compatible shape).
-
-// ---------------------------------------------------------------------------
-// Ajv validator helpers
-// ---------------------------------------------------------------------------
+// Runners are keyed by `(tenant, name)`. The registry accepts tenant
+// tarballs via `registerTenant(tenant, files)` and rebuilds from the
+// storage backend at startup via `recover(backend)`.
 
 const ajv = new Ajv2020.default({ allErrors: true, strict: false });
 
 function structuredCloneJson<T>(value: T): T {
-	// JSON round-trip = strip prototype-pollution keys, functions, symbols,
-	// etc. Matches the sandbox's JSON-only contract (SECURITY.md §2/§3 W1).
 	if (value === undefined) {
 		return value;
 	}
@@ -106,37 +79,39 @@ function ajvPathToSegments(instancePath: string): (string | number)[] {
 }
 
 // ---------------------------------------------------------------------------
-// Manifest + bundle loading
+// Tenant tarball extraction
 // ---------------------------------------------------------------------------
 
-interface LoadedBundle {
-	readonly manifestPath: string;
-	readonly manifest: Manifest;
-	readonly bundleSource: string;
-	readonly bundlePath: string;
-}
-
-async function loadOneBundle(manifestPath: string): Promise<LoadedBundle> {
-	const raw = await readFile(manifestPath, "utf8");
-	const parsed: unknown = JSON.parse(raw);
-	const manifest = ManifestSchema.parse(parsed);
-	const bundleDir = dirname(manifestPath);
-	const bundlePath = resolve(bundleDir, manifest.module);
-	const bundleSource = await readFile(bundlePath, "utf8");
-	return { manifestPath, manifest, bundleSource, bundlePath };
+async function extractTenantTarGz(
+	buffer: ArrayBuffer | Uint8Array,
+): Promise<Map<string, string>> {
+	const files = new Map<string, string>();
+	const extractor = tarExtract();
+	extractor.on("entry", (header, stream, next) => {
+		if (header.type === "file") {
+			const chunks: Buffer[] = [];
+			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+			stream.on("end", () => {
+				files.set(header.name, Buffer.concat(chunks).toString("utf-8"));
+				next();
+			});
+		} else {
+			stream.on("end", () => next());
+			stream.resume();
+		}
+	});
+	const input =
+		buffer instanceof Uint8Array ? Buffer.from(buffer) : Buffer.from(buffer);
+	await pipeline(Readable.from(input), createGunzip(), extractor);
+	return files;
 }
 
 // ---------------------------------------------------------------------------
 // __hostCallAction dispatcher (per workflow)
 // ---------------------------------------------------------------------------
-//
-// Responsibility: input validation + audit logging. That's all. The SDK
-// wrapper inside the sandbox runs the handler and validates the output
-// after this returns. We deliberately return `undefined` so the sandbox
-// side doesn't need to care about the host's return value.
 
 interface DispatcherDeps {
-	readonly manifest: Manifest;
+	readonly workflow: WorkflowManifest;
 	readonly logger: Logger;
 }
 
@@ -145,14 +120,10 @@ function buildHostCallAction(deps: DispatcherDeps) {
 		string,
 		(value: unknown) => ValidatorResult<unknown>
 	>();
-	for (const action of deps.manifest.actions) {
+	for (const action of deps.workflow.actions) {
 		inputValidators.set(action.name, compileValidator(action.input));
 	}
 
-	// The dispatcher only validates + logs — no I/O, no awaiting. The
-	// sandbox bridge requires a Promise-returning host method, so we
-	// synchronously build a resolved Promise. Throws propagate as
-	// rejections into the guest.
 	return (...args: unknown[]): Promise<undefined> => {
 		try {
 			dispatchActionCall(deps, inputValidators, args);
@@ -169,13 +140,12 @@ function dispatchActionCall(
 	args: unknown[],
 ): void {
 	const [name, input] = args as [string, unknown];
-	const action = deps.manifest.actions.find((a) => a.name === name);
+	const action = deps.workflow.actions.find((a) => a.name === name);
 	if (!action) {
 		throw new Error(`action "${name}" is not declared in the manifest`);
 	}
 	const validateInput = inputValidators.get(name);
 	if (!validateInput) {
-		// unreachable given the manifest loop above — defensive.
 		throw new Error(`action "${name}" has no validator`);
 	}
 	const inputResult = validateInput(input);
@@ -183,7 +153,7 @@ function dispatchActionCall(
 		throwValidationError("action input validation failed", inputResult.issues);
 	}
 	deps.logger.info("action.invoked", {
-		workflow: deps.manifest.name,
+		workflow: deps.workflow.name,
 		action: name,
 		input: inputResult.value,
 	});
@@ -200,16 +170,8 @@ function throwValidationError(
 }
 
 // ---------------------------------------------------------------------------
-// Trigger dispatcher shim
+// Trigger shim + action name binder (unchanged semantics)
 // ---------------------------------------------------------------------------
-//
-// Trigger exports are plain objects (`{handler, body, ...}`). The sandbox's
-// `run(name, ctx)` calls `<name>(ctx)` which fails for an object. We append
-// a shim per trigger that re-exports `(payload) => <trigger>.handler(payload)`
-// under a deterministic name. The shim name is a reserved namespace
-// (`__trigger_<name>`) guarded by a regex that refuses name clashes at build
-// time — though for v1 we assume trigger export names don't start with
-// `__trigger_`.
 
 const TRIGGER_SHIM_PREFIX = "__trigger_";
 
@@ -217,10 +179,6 @@ function triggerShimName(triggerName: string): string {
 	return `${TRIGGER_SHIM_PREFIX}${triggerName}`;
 }
 
-// The sandbox bundle is an IIFE that assigns its exports to
-// `globalThis[IIFE_NAMESPACE]`. The trigger shim rewrites every trigger export
-// to also be callable as `globalThis[IIFE_NAMESPACE].__trigger_<name>(payload)`
-// so `sandbox.run(__trigger_<name>, payload)` resolves the correct handler.
 function buildTriggerShim(triggerNames: readonly string[]): string {
 	return triggerNames
 		.map(
@@ -265,14 +223,15 @@ interface RunnerArtifacts {
 	readonly httpTriggers: HttpTriggerBinding[];
 }
 
+interface RunnerLifetime {
+	readonly sandbox: Sandbox;
+	isBusy: boolean;
+	retiring: boolean;
+}
+
 function buildTriggerDescriptor(
-	manifestEntry: Manifest["triggers"][number],
+	manifestEntry: WorkflowManifest["triggers"][number],
 ): HttpTriggerDescriptor {
-	// The executor treats schemas as opaque `{ parse(data) }` containers —
-	// the descriptor's schema slots are reserved for future typed programmatic
-	// trigger invocation. At runtime, payload validation for HTTP ingress is
-	// driven by the JSON-Schema `PayloadValidator`, not these descriptor
-	// schemas.
 	const fallback = { parse: (x: unknown) => x };
 	const descriptor: HttpTriggerDescriptor = {
 		name: manifestEntry.name,
@@ -289,7 +248,7 @@ function buildTriggerDescriptor(
 }
 
 function buildValidatorFromManifestTrigger(
-	manifestEntry: Manifest["triggers"][number],
+	manifestEntry: WorkflowManifest["triggers"][number],
 ): PayloadValidator {
 	const validateBody = compileValidator(manifestEntry.body);
 	const validateParams = compileValidator({
@@ -307,28 +266,31 @@ function buildValidatorFromManifestTrigger(
 }
 
 interface BuildRunnerArgs {
-	readonly manifest: Manifest;
+	readonly tenant: string;
+	readonly workflow: WorkflowManifest;
 	readonly bundleSource: string;
 	readonly filename: string;
 	readonly logger: Logger;
 }
 
-function buildActionDescriptors(manifest: Manifest): ActionDescriptor[] {
+function buildActionDescriptors(
+	workflow: WorkflowManifest,
+): ActionDescriptor[] {
 	const fallback = { parse: (x: unknown) => x };
-	return manifest.actions.map((a) => ({
+	return workflow.actions.map((a) => ({
 		name: a.name,
 		input: fallback,
 		output: fallback,
 	}));
 }
 
-function buildHttpTriggers(manifest: Manifest): {
+function buildHttpTriggers(workflow: WorkflowManifest): {
 	descriptors: HttpTriggerDescriptor[];
 	bindings: HttpTriggerBinding[];
 } {
 	const descriptors: HttpTriggerDescriptor[] = [];
 	const bindings: HttpTriggerBinding[] = [];
-	for (const manifestTrigger of manifest.triggers) {
+	for (const manifestTrigger of workflow.triggers) {
 		const descriptor = buildTriggerDescriptor(manifestTrigger);
 		descriptors.push(descriptor);
 		bindings.push({
@@ -381,13 +343,20 @@ const ACTION_DISPATCHER_SOURCE = `
 })();
 `;
 
-function buildSandboxSource(manifest: Manifest, bundleSource: string): string {
-	const shim = buildTriggerShim(manifest.triggers.map((t) => t.name));
-	const nameBinder = buildActionNameBinder(manifest.actions.map((a) => a.name));
+function buildSandboxSource(
+	workflow: WorkflowManifest,
+	bundleSource: string,
+): string {
+	const shim = buildTriggerShim(workflow.triggers.map((t) => t.name));
+	const nameBinder = buildActionNameBinder(workflow.actions.map((a) => a.name));
 	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}\n${nameBinder}\n${shim}`;
 }
 
-function buildInvokeHandler(sb: Sandbox, manifest: Manifest) {
+function buildInvokeHandler(
+	sb: Sandbox,
+	tenant: string,
+	workflow: WorkflowManifest,
+) {
 	return async function invokeHandler(
 		invocationId: string,
 		triggerName: string,
@@ -396,8 +365,9 @@ function buildInvokeHandler(sb: Sandbox, manifest: Manifest) {
 		const exportName = triggerShimName(triggerName);
 		const runResult = await sb.run(exportName, payload, {
 			invocationId,
-			workflow: manifest.name,
-			workflowSha: manifest.sha,
+			tenant,
+			workflow: workflow.name,
+			workflowSha: workflow.sha,
 		});
 		if (!runResult.ok) {
 			const err = new Error(runResult.error.message);
@@ -413,10 +383,10 @@ function buildInvokeHandler(sb: Sandbox, manifest: Manifest) {
 }
 
 async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
-	const { manifest, bundleSource, filename, logger } = args;
+	const { tenant, workflow, bundleSource, filename, logger } = args;
 
-	const __hostCallAction = buildHostCallAction({ manifest, logger });
-	const sourceWithShim = buildSandboxSource(manifest, bundleSource);
+	const __hostCallAction = buildHostCallAction({ workflow, logger });
+	const sourceWithShim = buildSandboxSource(workflow, bundleSource);
 
 	const sb = await sandbox(
 		sourceWithShim,
@@ -427,16 +397,17 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 		},
 	);
 
-	const actionDescriptors = buildActionDescriptors(manifest);
+	const actionDescriptors = buildActionDescriptors(workflow);
 	const { descriptors: triggerDescriptors, bindings: httpTriggers } =
-		buildHttpTriggers(manifest);
+		buildHttpTriggers(workflow);
 
 	const runner: WorkflowRunner = {
-		name: manifest.name,
-		env: Object.freeze({ ...manifest.env }),
+		tenant,
+		name: workflow.name,
+		env: Object.freeze({ ...workflow.env }),
 		actions: actionDescriptors,
 		triggers: triggerDescriptors,
-		invokeHandler: buildInvokeHandler(sb, manifest),
+		invokeHandler: buildInvokeHandler(sb, tenant, workflow),
 		onEvent(cb) {
 			sb.onEvent(cb);
 		},
@@ -446,147 +417,339 @@ async function buildRunner(args: BuildRunnerArgs): Promise<RunnerArtifacts> {
 }
 
 // ---------------------------------------------------------------------------
-// Registry factory + load APIs
+// Registry factory
 // ---------------------------------------------------------------------------
+
+function runnerKey(tenant: string, name: string): string {
+	return `${tenant}/${name}`;
+}
 
 interface WorkflowRegistryOptions {
 	readonly logger: Logger;
+	readonly storageBackend?: StorageBackend;
+}
+
+interface RegisterTenantOptions {
+	readonly tarballBytes?: Uint8Array;
 }
 
 interface WorkflowRegistry {
 	readonly runners: readonly WorkflowRunner[];
 	readonly triggerRegistry: HttpTriggerRegistry;
-	lookupRunner(workflowName: string): WorkflowRunner | undefined;
+	lookupRunner(tenant: string, name: string): WorkflowRunner | undefined;
+	registerTenant(
+		tenant: string,
+		files: Map<string, string>,
+		opts?: RegisterTenantOptions,
+	): Promise<RegisterResult>;
+	recover(): Promise<void>;
 	dispose(): void;
 }
 
-interface RegistryInternals {
-	readonly addRunner: (runner: WorkflowRunner, sandbox: Sandbox) => void;
-	readonly replaceRunner: (runner: WorkflowRunner, sandbox: Sandbox) => void;
-}
-
-const INTERNALS = new WeakMap<WorkflowRegistry, RegistryInternals>();
-
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes all registry state and operations
 function createWorkflowRegistry(
 	options: WorkflowRegistryOptions,
 ): WorkflowRegistry {
 	const triggerRegistry = createHttpTriggerRegistry();
 	const runners: WorkflowRunner[] = [];
-	const sandboxes: Sandbox[] = [];
-	const runnersByName = new Map<string, WorkflowRunner>();
-	const sandboxesByName = new Map<string, Sandbox>();
+	const runnersByKey = new Map<string, WorkflowRunner>();
+	const lifetimes = new Map<string, RunnerLifetime>();
+	const retiringLifetimes = new Set<RunnerLifetime>();
+	const backend = options.storageBackend;
 
 	options.logger.info("workflow-registry.created");
 
-	const registry: WorkflowRegistry = {
+	function removeRunner(key: string): void {
+		const existing = runnersByKey.get(key);
+		const lifetime = lifetimes.get(key);
+		if (!(existing && lifetime)) {
+			return;
+		}
+		const idx = runners.findIndex((r) => runnerKey(r.tenant, r.name) === key);
+		if (idx >= 0) {
+			runners.splice(idx, 1);
+		}
+		runnersByKey.delete(key);
+		lifetimes.delete(key);
+		triggerRegistry.removeRunner(existing.tenant, existing.name);
+
+		// Per-workflow serialization (executor runQueue) guarantees at most one
+		// in-flight invocation per sandbox at any moment. If idle, dispose now;
+		// if busy, let the currently-running invocation finish, then dispose on
+		// its terminal event (see onEvent hook in addRunner).
+		if (lifetime.isBusy) {
+			lifetime.retiring = true;
+			retiringLifetimes.add(lifetime);
+		} else {
+			lifetime.sandbox.dispose();
+		}
+	}
+
+	function addRunner(
+		runner: WorkflowRunner,
+		sb: Sandbox,
+		bindings: HttpTriggerBinding[],
+	): void {
+		const key = runnerKey(runner.tenant, runner.name);
+		const lifetime: RunnerLifetime = {
+			sandbox: sb,
+			isBusy: false,
+			retiring: false,
+		};
+		runner.onEvent((event) => {
+			if (event.kind === "trigger.request") {
+				lifetime.isBusy = true;
+			} else if (
+				event.kind === "trigger.response" ||
+				event.kind === "trigger.error"
+			) {
+				lifetime.isBusy = false;
+				if (lifetime.retiring) {
+					lifetime.sandbox.dispose();
+					retiringLifetimes.delete(lifetime);
+				}
+			}
+		});
+		runners.push(runner);
+		runnersByKey.set(key, runner);
+		lifetimes.set(key, lifetime);
+		for (const binding of bindings) {
+			triggerRegistry.register(runner, binding.descriptor, binding.validator, {
+				schema: binding.schema,
+			});
+		}
+	}
+
+	function parseManifest(
+		tenant: string,
+		manifestRaw: string,
+	): { ok: true; manifest: Manifest } | { ok: false; result: RegisterResult } {
+		try {
+			const parsed: unknown = JSON.parse(manifestRaw);
+			const manifest = ManifestSchema.parse(parsed);
+			return { ok: true, manifest };
+		} catch (err) {
+			const shape = toRegisterIssue(err);
+			options.logger.warn("workflow-registry.register-failed", {
+				tenant,
+				...shape,
+			});
+			return { ok: false, result: { ok: false, ...shape } };
+		}
+	}
+
+	function validateModulesPresent(
+		tenant: string,
+		manifest: Manifest,
+		files: Map<string, string>,
+	): RegisterResult | undefined {
+		for (const wf of manifest.workflows) {
+			if (!files.has(wf.module)) {
+				const error = `missing workflow module: ${wf.module}`;
+				options.logger.warn("workflow-registry.register-failed", {
+					tenant,
+					workflow: wf.name,
+					error,
+				});
+				return { ok: false, error };
+			}
+		}
+	}
+
+	async function buildTenantArtifacts(
+		tenant: string,
+		manifest: Manifest,
+		files: Map<string, string>,
+	): Promise<RunnerArtifacts[]> {
+		const artifacts: RunnerArtifacts[] = [];
+		for (const wf of manifest.workflows) {
+			const bundleSource = files.get(wf.module);
+			if (bundleSource === undefined) {
+				continue;
+			}
+			// biome-ignore lint/performance/noAwaitInLoops: sequential sandbox construction avoids concurrent worker startup
+			const artifact = await buildRunner({
+				tenant,
+				workflow: wf,
+				bundleSource,
+				filename: `${wf.name}.js`,
+				logger: options.logger,
+			});
+			artifacts.push(artifact);
+		}
+		return artifacts;
+	}
+
+	function swapTenantRunners(
+		tenant: string,
+		artifacts: RunnerArtifacts[],
+	): void {
+		for (const key of Array.from(runnersByKey.keys())) {
+			if (key.startsWith(`${tenant}/`)) {
+				removeRunner(key);
+			}
+		}
+		for (const artifact of artifacts) {
+			addRunner(artifact.runner, artifact.sandbox, artifact.httpTriggers);
+		}
+	}
+
+	async function persistTarball(
+		tenant: string,
+		bytes: Uint8Array,
+	): Promise<{ ok: true } | { ok: false; error: string }> {
+		if (!backend) {
+			return { ok: true };
+		}
+		const finalKey = `workflows/${tenant}.tar.gz`;
+		const tempKey = `${finalKey}.upload-${crypto.randomUUID()}`;
+		try {
+			await backend.writeBytes(tempKey, bytes);
+			await backend.move(tempKey, finalKey);
+			return { ok: true };
+		} catch (err) {
+			try {
+				await backend.remove(tempKey);
+			} catch {
+				// best-effort cleanup
+			}
+			return {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
+
+	async function persistIfRequested(
+		tenant: string,
+		artifacts: RunnerArtifacts[],
+		opts: RegisterTenantOptions | undefined,
+	): Promise<RegisterResult | undefined> {
+		if (!(opts?.tarballBytes && backend)) {
+			return;
+		}
+		const persisted = await persistTarball(tenant, opts.tarballBytes);
+		if (persisted.ok) {
+			return;
+		}
+		// Persistence failed; discard freshly built artifacts to avoid sandbox
+		// leaks. Keep existing runners unchanged.
+		for (const a of artifacts) {
+			a.sandbox.dispose();
+		}
+		const error = `failed to persist tenant bundle: ${persisted.error}`;
+		options.logger.error("workflow-registry.persist-failed", {
+			tenant,
+			error,
+		});
+		return { ok: false, error };
+	}
+
+	async function registerTenant(
+		tenant: string,
+		files: Map<string, string>,
+		opts?: RegisterTenantOptions,
+	): Promise<RegisterResult> {
+		const manifestRaw = files.get("manifest.json");
+		if (manifestRaw === undefined) {
+			options.logger.warn("workflow-registry.register-failed", {
+				tenant,
+				error: "missing manifest.json",
+			});
+			return { ok: false, error: "missing manifest.json" };
+		}
+		const parseResult = parseManifest(tenant, manifestRaw);
+		if (!parseResult.ok) {
+			return parseResult.result;
+		}
+		const { manifest } = parseResult;
+		const modulesCheck = validateModulesPresent(tenant, manifest, files);
+		if (modulesCheck) {
+			return modulesCheck;
+		}
+		const artifacts = await buildTenantArtifacts(tenant, manifest, files);
+		const persistFailure = await persistIfRequested(tenant, artifacts, opts);
+		if (persistFailure) {
+			return persistFailure;
+		}
+		swapTenantRunners(tenant, artifacts);
+		options.logger.info("workflow-registry.registered", {
+			tenant,
+			workflows: manifest.workflows.length,
+		});
+		return {
+			ok: true,
+			tenant,
+			workflows: manifest.workflows.map((w) => w.name),
+		};
+	}
+
+	async function recoverOne(
+		tenantBackend: StorageBackend,
+		key: string,
+	): Promise<void> {
+		const tenant = key.slice(
+			"workflows/".length,
+			key.length - ".tar.gz".length,
+		);
+		try {
+			const bytes = await tenantBackend.readBytes(key);
+			const files = await extractTenantTarGz(bytes);
+			const result = await registerTenant(tenant, files);
+			if (!result.ok) {
+				options.logger.error("workflow-registry.recover-failed", {
+					tenant,
+					error: result.error,
+				});
+			}
+		} catch (err) {
+			options.logger.error("workflow-registry.recover-failed", {
+				tenant,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	async function recover(): Promise<void> {
+		if (!backend) {
+			return;
+		}
+		for await (const key of backend.list("workflows/")) {
+			if (!key.endsWith(".tar.gz")) {
+				continue;
+			}
+			await recoverOne(backend, key);
+		}
+	}
+
+	return {
 		get runners() {
 			return runners;
 		},
 		get triggerRegistry() {
 			return triggerRegistry;
 		},
-		lookupRunner(name: string) {
-			return runnersByName.get(name);
+		lookupRunner(tenant: string, name: string) {
+			return runnersByKey.get(runnerKey(tenant, name));
 		},
+		registerTenant,
+		recover,
 		dispose() {
-			for (const sb of sandboxes) {
-				sb.dispose();
+			for (const lifetime of lifetimes.values()) {
+				lifetime.sandbox.dispose();
 			}
+			lifetimes.clear();
+			for (const lifetime of retiringLifetimes) {
+				lifetime.sandbox.dispose();
+			}
+			retiringLifetimes.clear();
 		},
 	};
-	INTERNALS.set(registry, {
-		addRunner(runner, sb) {
-			runners.push(runner);
-			runnersByName.set(runner.name, runner);
-			sandboxes.push(sb);
-			sandboxesByName.set(runner.name, sb);
-		},
-		replaceRunner(runner, sb) {
-			const oldSandbox = sandboxesByName.get(runner.name);
-			const oldIdx = runners.findIndex((r) => r.name === runner.name);
-			if (oldIdx >= 0) {
-				runners.splice(oldIdx, 1);
-			}
-			if (oldSandbox) {
-				const si = sandboxes.indexOf(oldSandbox);
-				if (si >= 0) {
-					sandboxes.splice(si, 1);
-				}
-				oldSandbox.dispose();
-			}
-			triggerRegistry.removeWorkflow(runner.name);
-			runners.push(runner);
-			runnersByName.set(runner.name, runner);
-			sandboxes.push(sb);
-			sandboxesByName.set(runner.name, sb);
-		},
-	});
-	return registry;
-}
-
-interface LoadWorkflowsOptions {
-	readonly logger: Logger;
-}
-
-async function loadWorkflows(
-	registry: WorkflowRegistry,
-	manifestPaths: readonly string[],
-	options: LoadWorkflowsOptions,
-): Promise<void> {
-	for (const manifestPath of manifestPaths) {
-		// biome-ignore lint/performance/noAwaitInLoops: sequential loading avoids spawning many worker threads at once
-		await loadOne(registry, manifestPath, options);
-	}
-}
-
-async function loadOne(
-	registry: WorkflowRegistry,
-	manifestPath: string,
-	options: LoadWorkflowsOptions,
-): Promise<void> {
-	const internals = INTERNALS.get(registry);
-	if (!internals) {
-		throw new Error("workflow-registry: internals not initialised");
-	}
-	try {
-		const loaded = await loadOneBundle(manifestPath);
-		const artifacts = await buildRunner({
-			manifest: loaded.manifest,
-			bundleSource: loaded.bundleSource,
-			filename: `${loaded.manifest.name}.js`,
-			logger: options.logger,
-		});
-		internals.addRunner(artifacts.runner, artifacts.sandbox);
-		for (const binding of artifacts.httpTriggers) {
-			registry.triggerRegistry.register(
-				artifacts.runner,
-				binding.descriptor,
-				binding.validator,
-				{ schema: binding.schema },
-			);
-		}
-		options.logger.info("workflow-registry.loaded", {
-			workflow: loaded.manifest.name,
-			actions: loaded.manifest.actions.length,
-			triggers: loaded.manifest.triggers.length,
-		});
-	} catch (err) {
-		options.logger.error("workflow-registry.load-failed", {
-			manifestPath,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
 }
 
 // ---------------------------------------------------------------------------
-// Upload path: register a workflow from in-memory files
+// Upload result
 // ---------------------------------------------------------------------------
-//
-// The /api/workflows upload endpoint POSTs a tarball containing
-// `manifest.json` + `<name>.js`. The api/upload handler extracts the files
-// and calls `registerFromFiles()`. On success, the workflow is added to the
-// registry; on manifest validation failure a structured `RegisterResult` is
-// returned for the HTTP layer to surface as 422.
 
 interface ManifestIssue {
 	readonly path: (string | number)[];
@@ -594,65 +757,8 @@ interface ManifestIssue {
 }
 
 type RegisterResult =
-	| { ok: true; name: string }
+	| { ok: true; tenant: string; workflows: string[] }
 	| { ok: false; error: string; issues?: ManifestIssue[] };
-
-interface RegisterFromFilesOptions {
-	readonly logger: Logger;
-}
-
-async function registerFromFiles(
-	registry: WorkflowRegistry,
-	files: Map<string, string>,
-	options: RegisterFromFilesOptions,
-): Promise<RegisterResult> {
-	const manifestRaw = files.get("manifest.json");
-	if (manifestRaw === undefined) {
-		options.logger.warn("workflow-registry.register-failed", {
-			error: "missing manifest.json",
-		});
-		return { ok: false, error: "missing manifest.json" };
-	}
-	let manifest: Manifest;
-	try {
-		const parsed: unknown = JSON.parse(manifestRaw);
-		manifest = ManifestSchema.parse(parsed);
-	} catch (err) {
-		const shape = toRegisterIssue(err);
-		options.logger.warn("workflow-registry.register-failed", shape);
-		return { ok: false, ...shape };
-	}
-	const bundleSource = files.get(manifest.module);
-	if (bundleSource === undefined) {
-		const error = `missing action module: ${manifest.module}`;
-		options.logger.warn("workflow-registry.register-failed", {
-			name: manifest.name,
-			error,
-		});
-		return { ok: false, error };
-	}
-	const internals = INTERNALS.get(registry);
-	if (!internals) {
-		throw new Error("workflow-registry: internals not initialised");
-	}
-	const artifacts = await buildRunner({
-		manifest,
-		bundleSource,
-		filename: `${manifest.name}.js`,
-		logger: options.logger,
-	});
-	internals.replaceRunner(artifacts.runner, artifacts.sandbox);
-	for (const binding of artifacts.httpTriggers) {
-		registry.triggerRegistry.register(
-			artifacts.runner,
-			binding.descriptor,
-			binding.validator,
-			{ schema: binding.schema },
-		);
-	}
-	options.logger.info("workflow-registry.registered", { name: manifest.name });
-	return { ok: true, name: manifest.name };
-}
 
 function normalizeIssue(raw: unknown): ManifestIssue | undefined {
 	if (typeof raw !== "object" || raw === null) {
@@ -694,11 +800,9 @@ function toRegisterIssue(err: unknown): {
 }
 
 export type {
-	LoadWorkflowsOptions,
 	ManifestIssue,
-	RegisterFromFilesOptions,
 	RegisterResult,
 	WorkflowRegistry,
 	WorkflowRegistryOptions,
 };
-export { createWorkflowRegistry, loadWorkflows, registerFromFiles };
+export { createWorkflowRegistry, extractTenantTarGz };

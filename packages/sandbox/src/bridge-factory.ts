@@ -10,6 +10,7 @@ const US_PER_MS = 1000;
 
 interface RunContext {
 	readonly invocationId: string;
+	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 }
@@ -258,6 +259,7 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 			ref,
 			at: new Date().toISOString(),
 			ts: tsUs(),
+			tenant: runContext.tenant,
 			workflow: runContext.workflow,
 			workflowSha: runContext.workflowSha,
 			name: method,

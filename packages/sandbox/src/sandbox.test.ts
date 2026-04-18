@@ -35,6 +35,7 @@ const SHA256_FIRST_16_RE = /^[0-9a-f]{32}$/;
 
 const RUN_OPTS = {
 	invocationId: "evt_test",
+	tenant: "t0",
 	workflow: "wf",
 	workflowSha: "sha-abc",
 };

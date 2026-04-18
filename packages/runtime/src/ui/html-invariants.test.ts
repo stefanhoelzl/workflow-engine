@@ -36,6 +36,7 @@ const DATA_EVENT_PAIR_0_6_RE = /data-event-pair="0-6"/;
 
 function makeRunner(name: string): WorkflowRunner {
 	return {
+		tenant: "t0",
 		name,
 		env: {},
 		actions: [],
@@ -95,7 +96,12 @@ const sampleRows: readonly InvocationRow[] = [
 describe("HTML CSP invariants", () => {
 	it("renderDashboardPage (shell) output has no forbidden inline patterns", async () => {
 		const html = (
-			await renderDashboardPage("user", "user@example.com")
+			await renderDashboardPage({
+				user: "user",
+				email: "user@example.com",
+				tenants: ["acme"],
+				activeTenant: "acme",
+			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);
 		expect(html).not.toMatch(EVENT_HANDLER_RE);
@@ -122,7 +128,13 @@ describe("HTML CSP invariants", () => {
 	it("renderTriggerPage output has no forbidden inline patterns", async () => {
 		const entries: HttpTriggerEntry[] = [makeTriggerEntry()];
 		const html = (
-			await renderTriggerPage(entries, "user", "user@example.com")
+			await renderTriggerPage({
+				entries,
+				user: "user",
+				email: "user@example.com",
+				tenants: ["t0"],
+				activeTenant: "t0",
+			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);
 		expect(html).not.toMatch(EVENT_HANDLER_RE);

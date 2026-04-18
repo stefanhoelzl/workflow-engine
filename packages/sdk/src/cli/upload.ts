@@ -1,12 +1,14 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { build, NoWorkflowsFoundError } from "./build.js";
+import { build } from "./build.js";
 
 const TRAILING_SLASHES = /\/+$/;
+const TENANT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 
 interface UploadOptions {
 	cwd: string;
 	url: string;
+	tenant: string;
 }
 
 interface UploadResult {
@@ -24,35 +26,11 @@ interface ErrorBody {
 	issues?: unknown;
 }
 
-interface BundleFailure {
-	name: string;
+interface UploadFailure {
+	tenant: string;
 	status: number | "network-error";
 	error: string;
 	issues?: ManifestIssue[];
-}
-
-async function findBundles(
-	distDir: string,
-): Promise<Array<{ name: string; path: string }>> {
-	const entries: Array<{ name: string; path: string }> = [];
-	let subdirs: string[];
-	try {
-		const list = await readdir(distDir, { withFileTypes: true });
-		subdirs = list.filter((e) => e.isDirectory()).map((e) => e.name);
-	} catch {
-		return [];
-	}
-	for (const sub of subdirs.sort()) {
-		const bundlePath = join(distDir, sub, "bundle.tar.gz");
-		try {
-			// biome-ignore lint/performance/noAwaitInLoops: sequential discovery
-			await readFile(bundlePath);
-			entries.push({ name: sub, path: bundlePath });
-		} catch {
-			// no bundle in this subdir, skip
-		}
-	}
-	return entries;
 }
 
 function parseManifestIssues(value: unknown): ManifestIssue[] | undefined {
@@ -116,8 +94,8 @@ function formatIssuePath(path: Array<string | number>): string {
 	return parts.join("");
 }
 
-function formatFailure(failure: BundleFailure): string {
-	const lines = [`✗ ${failure.name}`];
+function formatFailure(failure: UploadFailure): string {
+	const lines = [`✗ ${failure.tenant}`];
 	lines.push(`    status: ${String(failure.status)}`);
 	lines.push(`    error: ${failure.error}`);
 	if (failure.issues && failure.issues.length > 0) {
@@ -131,10 +109,10 @@ function formatFailure(failure: BundleFailure): string {
 
 async function uploadBundle(
 	url: string,
-	name: string,
+	tenant: string,
 	path: string,
 	token: string | undefined,
-): Promise<BundleFailure | null> {
+): Promise<UploadFailure | null> {
 	const body = await readFile(path);
 	const headers: Record<string, string> = {
 		"Content-Type": "application/gzip",
@@ -145,7 +123,7 @@ async function uploadBundle(
 	let response: Response;
 	try {
 		response = await fetch(
-			`${url.replace(TRAILING_SLASHES, "")}/api/workflows`,
+			`${url.replace(TRAILING_SLASHES, "")}/api/workflows/${tenant}`,
 			{
 				method: "POST",
 				headers,
@@ -154,7 +132,7 @@ async function uploadBundle(
 		);
 	} catch (error) {
 		return {
-			name,
+			tenant,
 			status: "network-error",
 			error: error instanceof Error ? error.message : String(error),
 		};
@@ -164,53 +142,41 @@ async function uploadBundle(
 	}
 	const { error, issues } = await extractErrorBody(response);
 	return issues
-		? { name, status: response.status, error, issues }
-		: { name, status: response.status, error };
+		? { tenant, status: response.status, error, issues }
+		: { tenant, status: response.status, error };
 }
 
 async function upload(options: UploadOptions): Promise<UploadResult> {
-	await build({ cwd: options.cwd });
-
-	const distDir = join(options.cwd, "dist");
-	const bundles = await findBundles(distDir);
-	if (bundles.length === 0) {
-		throw new NoWorkflowsFoundError(
-			`no bundles found under ${distDir} after build`,
+	if (!TENANT_RE.test(options.tenant)) {
+		throw new Error(
+			`tenant "${options.tenant}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
 		);
 	}
+
+	await build({ cwd: options.cwd });
+
+	const bundlePath = join(options.cwd, "dist", "bundle.tar.gz");
+	// Throws if absent — build() above should have produced it.
+	await readFile(bundlePath);
 
 	// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
 	const token = process.env.GITHUB_TOKEN?.trim();
 	const tokenOrUndefined = token && token.length > 0 ? token : undefined;
 
-	let uploaded = 0;
-	let failed = 0;
-
-	for (const bundle of bundles) {
-		// biome-ignore lint/performance/noAwaitInLoops: sequential for deterministic output
-		const failure = await uploadBundle(
-			options.url,
-			bundle.name,
-			bundle.path,
-			tokenOrUndefined,
-		);
-		if (failure === null) {
-			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-			console.error(`✓ ${bundle.name}`);
-			uploaded++;
-		} else {
-			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-			console.error(formatFailure(failure));
-			failed++;
-		}
+	const failure = await uploadBundle(
+		options.url,
+		options.tenant,
+		bundlePath,
+		tokenOrUndefined,
+	);
+	if (failure === null) {
+		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+		console.error(`✓ ${options.tenant}`);
+		return { uploaded: 1, failed: 0 };
 	}
-
 	// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-	console.error(`Uploaded: ${String(uploaded)}`);
-	// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-	console.error(`Failed: ${String(failed)}`);
-
-	return { uploaded, failed };
+	console.error(formatFailure(failure));
+	return { uploaded: 0, failed: 1 };
 }
 
 export type { UploadOptions, UploadResult };

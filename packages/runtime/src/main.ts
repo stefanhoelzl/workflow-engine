@@ -1,5 +1,3 @@
-import { readdir, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
 import { apiMiddleware } from "./api/index.js";
 import { createConfig } from "./config.js";
 import { createEventStore } from "./event-bus/event-store.js";
@@ -24,7 +22,7 @@ import { httpTriggerMiddleware } from "./triggers/http.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
-import { createWorkflowRegistry, loadWorkflows } from "./workflow-registry.js";
+import { createWorkflowRegistry } from "./workflow-registry.js";
 
 function createStorageBackend(
 	config: ReturnType<typeof createConfig>,
@@ -57,40 +55,6 @@ function initPersistence(
 		return;
 	}
 	return createPersistence(backend, { logger });
-}
-
-// Discover manifest files under `<workflowsDir>/<name>/manifest.json`. Does
-// not recurse beyond one level — the v1 Vite plugin emits exactly that
-// layout.
-async function discoverManifests(
-	workflowsDir: string,
-	logger: ReturnType<typeof createLogger>,
-): Promise<string[]> {
-	let entries: string[];
-	try {
-		entries = await readdir(workflowsDir);
-	} catch (err) {
-		logger.warn("workflows.dir-not-found", {
-			workflowsDir,
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return [];
-	}
-	const found: string[] = [];
-	for (const entry of entries) {
-		const child = join(workflowsDir, entry);
-		// biome-ignore lint/performance/noAwaitInLoops: sequential stat per entry is fine for small dirs; workflows count is tiny
-		const s = await stat(child).catch(() => undefined);
-		if (!s?.isDirectory()) {
-			continue;
-		}
-		const manifestPath = join(child, "manifest.json");
-		const manifestStat = await stat(manifestPath).catch(() => undefined);
-		if (manifestStat?.isFile()) {
-			found.push(manifestPath);
-		}
-	}
-	return found;
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: entry-point initialization wires all components
@@ -132,29 +96,27 @@ async function init() {
 	consumers.push(eventStore, logging);
 	const eventBus: EventBus = createEventBus(consumers);
 
-	// 3. Workflow registry. Empty by default — workflows arrive via
-	//    POST /api/workflows (see `api/upload.ts`). When the
-	//    `WORKFLOWS_DIR` env var is set AND the directory exists,
-	//    additionally preload every manifest found in it at startup
-	//    (useful for local dev + test harnesses that build bundles to a
-	//    known location). In production, workflows land via the upload
-	//    endpoint after the runtime is reachable.
-	const registry = createWorkflowRegistry({ logger: runtimeLogger });
-	// biome-ignore lint/style/noProcessEnv: entry-point config read
-	const workflowsDirEnv = process.env.WORKFLOWS_DIR;
-	if (workflowsDirEnv) {
-		const workflowsDir = resolve(workflowsDirEnv);
-		const manifests = await discoverManifests(workflowsDir, runtimeLogger);
-		if (manifests.length > 0) {
-			await loadWorkflows(registry, manifests, { logger: runtimeLogger });
-		}
-		runtimeLogger.info("workflows.loaded", {
-			count: registry.runners.length,
-			workflowsDir,
+	// 3. Workflow registry. Boots from the storage backend by LISTing
+	//    `workflows/*.tar.gz` tenant bundles. Previously supported a
+	//    filesystem bootstrap via `WORKFLOWS_DIR` — removed; operators
+	//    who still have either env var set get a warn log.
+	const legacyWorkflowsDir =
+		// biome-ignore lint/style/noProcessEnv: entry-point config read for deprecation warning
+		process.env.WORKFLOWS_DIR ?? process.env.WORKFLOW_DIR;
+	if (legacyWorkflowsDir) {
+		runtimeLogger.warn("workflows.dir-env-ignored", {
+			value: legacyWorkflowsDir,
+			note: "workflow bootstrap is now storage-backend only; upload via `wfe upload --tenant <name>`",
 		});
-	} else {
-		runtimeLogger.info("workflows.dir-unset.awaiting-upload");
 	}
+	const registry = createWorkflowRegistry({
+		logger: runtimeLogger,
+		...(storageBackend ? { storageBackend } : {}),
+	});
+	if (storageBackend) {
+		await registry.recover();
+	}
+	runtimeLogger.info("workflows.loaded", { count: registry.runners.length });
 
 	// 4. Create the executor (serializes per-workflow invocations; emits
 	//    started/completed/failed through the bus).
@@ -181,7 +143,7 @@ async function init() {
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		staticMiddleware(),
 		httpTriggerMiddleware(registry, executor),
-		dashboardMiddleware({ eventStore }),
+		dashboardMiddleware({ eventStore, registry }),
 		triggerMiddleware({ triggerRegistry: registry.triggerRegistry }),
 		apiMiddleware({
 			githubAuth: config.githubAuth,

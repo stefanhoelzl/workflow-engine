@@ -171,6 +171,7 @@ function installEmitEvent(bridge: Bridge): void {
 			ref,
 			at: new Date().toISOString(),
 			ts: bridge.tsUs(),
+			tenant: ctx.tenant,
 			workflow: ctx.workflow,
 			workflowSha: ctx.workflowSha,
 			name,
@@ -366,6 +367,7 @@ function emitTriggerEvent(
 		ref,
 		at: new Date().toISOString(),
 		ts: bridge.tsUs(),
+		tenant: ctx.tenant,
 		workflow: ctx.workflow,
 		workflowSha: ctx.workflowSha,
 		name,
@@ -483,6 +485,7 @@ async function handleRun(
 	bridge.resetAnchor();
 	bridge.setRunContext({
 		invocationId: msg.invocationId,
+		tenant: msg.tenant,
 		workflow: msg.workflow,
 		workflowSha: msg.workflowSha,
 	});

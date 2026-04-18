@@ -65,6 +65,7 @@ interface InvocationEvent {
 	readonly ref: number | null;
 	readonly at: string;
 	readonly ts: number;
+	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 	readonly name: string;
@@ -134,7 +135,7 @@ const triggerManifestSchema = z.discriminatedUnion("type", [
 	httpTriggerManifestSchema,
 ]);
 
-const ManifestSchema = z.object({
+const workflowManifestSchema = z.object({
 	name: z.string(),
 	module: z.string(),
 	sha: z.string(),
@@ -143,7 +144,26 @@ const ManifestSchema = z.object({
 	triggers: z.array(triggerManifestSchema),
 });
 
+const ManifestSchema = z
+	.object({
+		workflows: z.array(workflowManifestSchema),
+	})
+	.refine(
+		(m) => {
+			const seen = new Set<string>();
+			for (const w of m.workflows) {
+				if (seen.has(w.name)) {
+					return false;
+				}
+				seen.add(w.name);
+			}
+			return true;
+		},
+		{ error: "workflow names must be unique within a tenant" },
+	);
+
 type Manifest = z.infer<typeof ManifestSchema>;
+type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
 
 // ---------------------------------------------------------------------------
 // IIFE namespace
@@ -168,5 +188,6 @@ export type {
 	InvocationEvent,
 	InvocationEventError,
 	Manifest,
+	WorkflowManifest,
 };
 export { dispatchAction, IIFE_NAMESPACE, ManifestSchema, z };

@@ -18,6 +18,7 @@
 ## Upgrade notes
 
 - **monotonic-event-timestamps** (event shape changed: `ts` is now per-run µs, new `at` field carries wall-clock ISO). Upgrading past this change requires wiping the `pending/` and `archive/` prefixes under the storage backend; the in-memory DuckDB index rebuilds on its own from the (now-empty) archive.
+- **multi-tenant-workflows** (BREAKING). Every `InvocationEvent` now carries a required `tenant` field, the tenant-manifest format changes (root `{ workflows: [...] }`), and URLs change: upload is `POST /api/workflows/<tenant>`, webhooks are `/webhooks/<tenant>/<workflow-name>/<trigger-path>`. Bundle bootstrap no longer reads `WORKFLOW_DIR` / `WORKFLOWS_DIR`; runtime loads tenants from `workflows/<tenant>.tar.gz` on the storage backend. Upgrade steps: (1) wipe `pending/`, `archive/`, and `workflows/` prefixes on the storage backend; (2) remove `WORKFLOW_DIR` / `WORKFLOWS_DIR` from env/manifests; (3) after redeploy, re-upload each tenant via `wfe upload --tenant <name>`.
 
 ## Infrastructure (OpenTofu + kind)
 
@@ -103,6 +104,8 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
 - **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
+- **NEVER** accept a `<tenant>` URL parameter without validating against the tenant regex (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) AND the `isMember(user, tenant)` predicate; both paths must fail-closed with a `404 Not Found` identical to "tenant does not exist" to prevent enumeration (§4).
+- **NEVER** expose workflow or invocation data cross-tenant in API responses, dashboard queries, or trigger listings — every query must be scoped by `tenant` (§4).
 - **NEVER** trust `X-Auth-Request-*` or `X-Forwarded-*` headers as authoritative while a K8s `NetworkPolicy` is absent (§4 / §5).
 - **NEVER** hardcode or commit a secret; route all secrets through K8s Secrets injected via `envFrom.secretRef` (§5).
 - **NEVER** log, emit, or store the `Authorization` header, session cookies, or OAuth secrets (§4).

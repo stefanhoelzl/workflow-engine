@@ -28,6 +28,7 @@ describe("watchdog force-kill pattern", () => {
 					{},
 					{
 						invocationId: "wpt_watchdog",
+						tenant: "wpt",
 						workflow: "wpt",
 						workflowSha: "",
 					},

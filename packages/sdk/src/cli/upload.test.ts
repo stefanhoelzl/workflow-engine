@@ -3,8 +3,9 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NoWorkflowsFoundError } from "./build.js";
 import { upload } from "./upload.js";
+
+const MUST_MATCH_RE = /must match/;
 
 interface CapturedRequest {
 	path: string;
@@ -84,19 +85,14 @@ async function startMockRuntime(): Promise<MockRuntime> {
 	};
 }
 
-async function createProjectWithBundles(
-	names: string[],
-): Promise<{ cwd: string; cleanup: () => Promise<void> }> {
+async function createProjectWithTenantBundle(): Promise<{
+	cwd: string;
+	cleanup: () => Promise<void>;
+}> {
 	const cwd = await mkdtemp(join(tmpdir(), "wfe-cli-upload-"));
 	const distDir = join(cwd, "dist");
 	await mkdir(distDir);
-	await Promise.all(
-		names.map(async (name) => {
-			const sub = join(distDir, name);
-			await mkdir(sub);
-			await writeFile(join(sub, "bundle.tar.gz"), `${name}-bundle-contents`);
-		}),
-	);
+	await writeFile(join(distDir, "bundle.tar.gz"), "tenant-bundle-contents");
 	await writeFile(
 		join(cwd, "package.json"),
 		JSON.stringify({ type: "module", name: "wfe-cli-upload-test" }),
@@ -129,15 +125,15 @@ describe("upload", () => {
 		delete process.env.GITHUB_TOKEN;
 	});
 
-	it("uploads all bundles and reports success", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha", "beta"]);
+	it("uploads the tenant bundle and reports success", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
 		runtime.setResponder(() => ({ status: 204 }));
 
-		const result = await upload({ cwd, url: runtime.url });
+		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
 
-		expect(result).toEqual({ uploaded: 2, failed: 0 });
-		expect(runtime.requests).toHaveLength(2);
-		expect(runtime.requests[0]?.path).toBe("/api/workflows");
+		expect(result).toEqual({ uploaded: 1, failed: 0 });
+		expect(runtime.requests).toHaveLength(1);
+		expect(runtime.requests[0]?.path).toBe("/api/workflows/acme");
 		expect(runtime.requests[0]?.headers["content-type"]).toBe(
 			"application/gzip",
 		);
@@ -145,83 +141,73 @@ describe("upload", () => {
 	});
 
 	it("sends Authorization header when GITHUB_TOKEN is set", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha"]);
+		const { cwd } = await createProjectWithTenantBundle();
 		// biome-ignore lint/style/noProcessEnv: test needs to manipulate the CLI's documented env var
 		process.env.GITHUB_TOKEN = "ghp_test";
 		runtime.setResponder(() => ({ status: 204 }));
 
-		await upload({ cwd, url: runtime.url });
+		await upload({ cwd, url: runtime.url, tenant: "acme" });
 
 		expect(runtime.requests[0]?.headers.authorization).toBe("Bearer ghp_test");
 	});
 
-	it("continues after one bundle fails (best-effort)", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha", "beta", "gamma"]);
-		runtime.setResponder((req) => {
-			if (req.body.toString().startsWith("beta")) {
-				return {
-					status: 422,
-					body: { error: "missing action module: actions.js" },
-				};
-			}
-			return { status: 204 };
-		});
-
-		const result = await upload({ cwd, url: runtime.url });
-
-		expect(result).toEqual({ uploaded: 2, failed: 1 });
-		expect(runtime.requests).toHaveLength(3);
-	});
-
 	it("surfaces 401 as a failure", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha"]);
+		const { cwd } = await createProjectWithTenantBundle();
 		runtime.setResponder(() => ({
 			status: 401,
 			body: { error: "Unauthorized" },
 		}));
 
-		const result = await upload({ cwd, url: runtime.url });
+		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 	});
 
 	it("surfaces 422 with issues as a failure and formats them", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha"]);
+		const { cwd } = await createProjectWithTenantBundle();
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		runtime.setResponder(() => ({
 			status: 422,
 			body: {
 				error: "invalid manifest",
 				issues: [
-					{ path: ["actions", 0, "name"], message: "Required" },
-					{ path: ["triggers", 0, "path"], message: "must match /^[a-z]+$/" },
+					{
+						path: ["workflows", 0, "actions", 0, "name"],
+						message: "Required",
+					},
+					{
+						path: ["workflows", 0, "triggers", 0, "path"],
+						message: "must match /^[a-z]+$/",
+					},
 				],
 			},
 		}));
 
-		const result = await upload({ cwd, url: runtime.url });
+		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 		const joined = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
-		expect(joined).toContain("actions[0].name: Required");
-		expect(joined).toContain("triggers[0].path: must match /^[a-z]+$/");
+		expect(joined).toContain("workflows[0].actions[0].name: Required");
+		expect(joined).toContain(
+			"workflows[0].triggers[0].path: must match /^[a-z]+$/",
+		);
 		errorSpy.mockRestore();
 	});
 
 	it("reports network errors without retrying", async () => {
-		const { cwd } = await createProjectWithBundles(["alpha"]);
+		const { cwd } = await createProjectWithTenantBundle();
 		await runtime.close();
 
-		const result = await upload({ cwd, url: runtime.url });
+		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 	});
 
-	it("throws NoWorkflowsFoundError when dist is empty after build", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "wfe-cli-empty-"));
-
-		await expect(upload({ cwd, url: runtime.url })).rejects.toBeInstanceOf(
-			NoWorkflowsFoundError,
-		);
+	it("rejects invalid tenant names client-side", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
+		await expect(
+			upload({ cwd, url: runtime.url, tenant: "bad/name" }),
+		).rejects.toThrow(MUST_MATCH_RE);
+		expect(runtime.requests).toHaveLength(0);
 	});
 });

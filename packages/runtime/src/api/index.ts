@@ -41,6 +41,14 @@ function apiMiddleware(options: ApiOptions): Middleware {
 			app.use("/*", rejectAllMiddleware());
 			break;
 		case "open":
+			// Open mode is dev-only (explicit __DISABLE_AUTH__ sentinel); skip the
+			// tenant-membership check in handlers. The `authOpen` flag signals
+			// downstream handlers that they must not treat `user` absence as
+			// fail-closed.
+			app.use("/*", async (c, next) => {
+				c.set("authOpen", true);
+				await next();
+			});
 			break;
 		default: {
 			const exhaustive: never = options.githubAuth;
@@ -49,7 +57,7 @@ function apiMiddleware(options: ApiOptions): Middleware {
 	}
 
 	app.post(
-		"/workflows",
+		"/workflows/:tenant",
 		createUploadHandler({ registry: options.registry, logger: options.logger }),
 	);
 

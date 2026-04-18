@@ -99,11 +99,16 @@ interface HttpTriggerRegistry {
 		validator: PayloadValidator,
 		options?: HttpTriggerRegisterOptions,
 	): void;
-	// Removes every trigger entry owned by the given workflow name. Used by
-	// the upload pipeline when a workflow is replaced (re-registered) so the
+	// Removes every trigger entry owned by the given (tenant, workflow-name)
+	// pair. Used by the upload pipeline when a workflow is replaced so the
 	// old triggers don't linger alongside the new ones.
-	removeWorkflow(workflowName: string): void;
-	lookup(path: string, method: string): TriggerMatch | undefined;
+	removeRunner(tenant: string, workflowName: string): void;
+	lookup(
+		tenant: string,
+		workflowName: string,
+		path: string,
+		method: string,
+	): TriggerMatch | undefined;
 	// Read-only view for UI rendering. Returns a snapshot array so callers
 	// can iterate without risking mutation of the registry's internals.
 	list(): HttpTriggerEntry[];
@@ -151,19 +156,6 @@ function tryMatch(
 function createHttpTriggerRegistry(): HttpTriggerRegistry {
 	const entries: RegisteredTrigger[] = [];
 
-	function matchAt(
-		pathname: string,
-		method: string,
-		isStatic: boolean,
-	): TriggerMatch | undefined {
-		for (const entry of entries) {
-			const match = tryMatch(entry, pathname, method, isStatic);
-			if (match) {
-				return match;
-			}
-		}
-	}
-
 	return {
 		register(workflow, descriptor, validator, options) {
 			const entry: RegisteredTrigger = {
@@ -178,19 +170,33 @@ function createHttpTriggerRegistry(): HttpTriggerRegistry {
 			};
 			entries.push(entry);
 		},
-		removeWorkflow(workflowName: string) {
+		removeRunner(tenant: string, workflowName: string) {
 			for (let i = entries.length - 1; i >= 0; i--) {
-				if (entries[i]?.workflow.name === workflowName) {
+				const e = entries[i];
+				if (
+					e &&
+					e.workflow.tenant === tenant &&
+					e.workflow.name === workflowName
+				) {
 					entries.splice(i, 1);
 				}
 			}
 		},
-		lookup(path, method) {
+		lookup(tenant, workflowName, path, method) {
 			const pathname = `/${path}`;
-			// Static triggers take priority over parameterized.
-			return (
-				matchAt(pathname, method, true) ?? matchAt(pathname, method, false)
+			const scopedEntries = entries.filter(
+				(e) => e.workflow.tenant === tenant && e.workflow.name === workflowName,
 			);
+			const scopedRegistry = { entries: scopedEntries };
+			const inScope = (isStatic: boolean): TriggerMatch | undefined => {
+				for (const entry of scopedRegistry.entries) {
+					const match = tryMatch(entry, pathname, method, isStatic);
+					if (match) {
+						return match;
+					}
+				}
+			};
+			return inScope(true) ?? inScope(false);
 		},
 		list() {
 			return entries.map((e) => ({
@@ -338,6 +344,8 @@ async function handleTriggerRequest(
 	return serializeHttpResult(c, result);
 }
 
+const TENANT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+
 function httpTriggerMiddleware(
 	source: { readonly triggerRegistry: HttpTriggerRegistry },
 	executor: Executor,
@@ -345,9 +353,9 @@ function httpTriggerMiddleware(
 	return {
 		match: `${WEBHOOKS_PREFIX}*`,
 		handler: (c: Context) => {
-			const triggerPath = c.req.path.slice(WEBHOOKS_PREFIX.length);
+			const afterPrefix = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
-			if (triggerPath === "" && c.req.method === "GET") {
+			if (afterPrefix === "" && c.req.method === "GET") {
 				const status =
 					source.triggerRegistry.size > 0
 						? HTTP_NO_CONTENT
@@ -355,7 +363,29 @@ function httpTriggerMiddleware(
 				return Promise.resolve(c.body(null, status));
 			}
 
-			const match = source.triggerRegistry.lookup(triggerPath, c.req.method);
+			// Parse /webhooks/<tenant>/<workflow-name>/<trigger-path>
+			const slashOne = afterPrefix.indexOf("/");
+			if (slashOne <= 0) {
+				return Promise.resolve(c.notFound());
+			}
+			const tenant = afterPrefix.slice(0, slashOne);
+			const rest = afterPrefix.slice(slashOne + 1);
+			const slashTwo = rest.indexOf("/");
+			if (slashTwo <= 0) {
+				return Promise.resolve(c.notFound());
+			}
+			const workflowName = rest.slice(0, slashTwo);
+			const triggerPath = rest.slice(slashTwo + 1);
+			if (!(TENANT_NAME_RE.test(tenant) && TENANT_NAME_RE.test(workflowName))) {
+				return Promise.resolve(c.notFound());
+			}
+
+			const match = source.triggerRegistry.lookup(
+				tenant,
+				workflowName,
+				triggerPath,
+				c.req.method,
+			);
 			if (!match) {
 				return Promise.resolve(c.notFound());
 			}

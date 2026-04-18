@@ -29,23 +29,67 @@ interface LayoutOptions {
 	email: string;
 	head?: HtmlEscapedString | Promise<HtmlEscapedString>;
 	bodyAttrs?: string;
+	tenants?: readonly string[];
+	activeTenant?: string;
+}
+
+function renderTenantSelector(
+	tenants: readonly string[],
+	activeTenant: string | undefined,
+	activePath: string,
+) {
+	if (tenants.length === 0) {
+		return html`<div class="topbar-tenant empty" aria-label="No tenants available">
+      <span class="topbar-tenant-label">Tenant</span>
+      <span class="topbar-tenant-empty">(none)</span>
+    </div>`;
+	}
+	const options = tenants.map(
+		(t) =>
+			html`<option value="${t}"${t === activeTenant ? raw(" selected") : ""}>${t}</option>`,
+	);
+	// No inline handlers (CSP §6). The `data-tenant-selector` hook in
+	// /static/tenant-selector.js wires auto-submit on change.
+	return html`<form class="topbar-tenant" method="get" action="${activePath}" data-tenant-selector>
+      <label class="topbar-tenant-label" for="tenant-select">Tenant</label>
+      <select id="tenant-select" name="tenant">
+        ${options}
+      </select>
+      <button class="topbar-tenant-go" type="submit">Go</button>
+    </form>`;
 }
 
 function renderLayout(
 	options: LayoutOptions,
 	content: HtmlEscapedString | Promise<HtmlEscapedString>,
 ) {
-	const { title, activePath, user, email, head, bodyAttrs } = options;
+	const {
+		title,
+		activePath,
+		user,
+		email,
+		head,
+		bodyAttrs,
+		tenants,
+		activeTenant,
+	} = options;
 
-	const userSection = user
-		? html`<div class="topbar-user">
+	const tenantSection = tenants
+		? renderTenantSelector(tenants, activeTenant, activePath)
+		: "";
+
+	const displayName = user || "anonymous";
+	const userSection = html`<div class="topbar-user">
       <div class="topbar-user-line">
-        <span class="topbar-username">${user}</span>
-        <a class="topbar-signout" href="/oauth2/sign_out?rd=%2Foauth2%2Fsign_in%3Finfo%3DSigned%2Bout">Sign out</a>
+        <span class="topbar-username">${displayName}</span>
+        ${
+					user
+						? html`<a class="topbar-signout" href="/oauth2/sign_out?rd=%2Foauth2%2Fsign_in%3Finfo%3DSigned%2Bout">Sign out</a>`
+						: ""
+				}
       </div>
       ${email ? html`<div class="topbar-email">${email}</div>` : ""}
-    </div>`
-		: "";
+    </div>`;
 
 	return html`<!DOCTYPE html>
 <html lang="en">
@@ -57,6 +101,7 @@ function renderLayout(
   <script defer src="/static/alpine.js"></script>
   <script src="/static/htmx.js"></script>
   <script defer src="/static/result-dialog.js"></script>
+  <script defer src="/static/tenant-selector.js"></script>
 ${head ?? ""}
 </head>
 <body${bodyAttrs ? raw(` ${bodyAttrs}`) : ""}>
@@ -66,7 +111,10 @@ ${head ?? ""}
       <span class="icon">W</span>
       Workflow Engine
     </div>
-    ${userSection}
+    <div class="topbar-right">
+      ${tenantSection}
+      ${userSection}
+    </div>
   </div>
 
   <nav class="sidebar">

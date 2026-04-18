@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+// writeFile retained for packTarGz output; keep import.
 import { pipeline } from "node:stream/promises";
 import { createContext, runInContext } from "node:vm";
 import { createGzip } from "node:zlib";
@@ -105,18 +106,39 @@ async function runAllWorkflows(
 	ctx: PluginContext,
 ): Promise<void> {
 	const outDir = resolve(resolvedConfig.root, resolvedConfig.build.outDir);
-	await Promise.all(
+	const built = await Promise.all(
 		options.workflows.map((wf) => {
 			const workflowPath = resolve(resolvedConfig.root, wf);
 			const filestem = basename(wf, ".ts");
 			return buildOneWorkflow({
 				workflowPath,
 				filestem,
-				outDir,
 				root: resolvedConfig.root,
 				ctx,
 			});
 		}),
+	);
+
+	// Assemble the tenant tarball:
+	//   dist/bundle.tar.gz
+	//     manifest.json   ({ workflows: [...] })
+	//     <name>.js       (one per workflow)
+	const tenantManifest = { workflows: built.map((b) => b.manifest) };
+	const manifestJson = `${JSON.stringify(tenantManifest, null, 2)}\n`;
+
+	const files: { name: string; content: string }[] = [
+		{ name: "manifest.json", content: manifestJson },
+	];
+	for (const b of built) {
+		files.push({ name: `${b.manifest.name}.js`, content: b.bundleSource });
+	}
+	await mkdir(outDir, { recursive: true });
+	const tarGzPath = join(outDir, "bundle.tar.gz");
+	await packTarGz(tarGzPath, files);
+
+	// biome-ignore lint/suspicious/noConsole: intentional build output
+	console.log(
+		`Tenant bundle: ${built.length} workflow(s) packed to ${tarGzPath}`,
 	);
 }
 
@@ -160,13 +182,19 @@ function workflowPlugin(options: WorkflowPluginOptions): Plugin {
 interface BuildOneWorkflowArgs {
 	workflowPath: string;
 	filestem: string;
-	outDir: string;
 	root: string;
 	ctx: PluginContext;
 }
 
-async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
-	const { workflowPath, filestem, outDir, root, ctx } = args;
+interface BuiltWorkflow {
+	manifest: BuiltManifest;
+	bundleSource: string;
+}
+
+async function buildOneWorkflow(
+	args: BuildOneWorkflowArgs,
+): Promise<BuiltWorkflow> {
+	const { workflowPath, filestem, root, ctx } = args;
 
 	const bundleSource = await bundleWorkflow(workflowPath, root);
 
@@ -178,33 +206,11 @@ async function buildOneWorkflow(args: BuildOneWorkflowArgs): Promise<void> {
 	const sha = createHash("sha256").update(bundleSource).digest("hex");
 	const manifest = buildManifest(mod, filestem, sha, ctx);
 
-	const outWorkflowDir = join(outDir, manifest.name);
-	await mkdir(outWorkflowDir, { recursive: true });
-	await writeFile(
-		join(outWorkflowDir, `${manifest.name}.js`),
-		bundleSource,
-		"utf8",
-	);
-	await writeFile(
-		join(outWorkflowDir, "manifest.json"),
-		`${JSON.stringify(manifest, null, 2)}\n`,
-		"utf8",
-	);
-
-	// Pack a .tar.gz containing manifest.json + <name>.js for the upload
-	// pipeline (POST /api/workflows). The dev script and CI can POST this
-	// file directly instead of tarring at upload time.
-	const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
-	const tarGzPath = join(outWorkflowDir, "bundle.tar.gz");
-	await packTarGz(tarGzPath, [
-		{ name: "manifest.json", content: manifestJson },
-		{ name: `${manifest.name}.js`, content: bundleSource },
-	]);
-
 	// biome-ignore lint/suspicious/noConsole: intentional build output
 	console.log(
 		`Workflow "${manifest.name}": ${manifest.actions.length} action(s), ${manifest.triggers.length} trigger(s) bundled`,
 	);
+	return { manifest, bundleSource };
 }
 
 function runIifeInVmContext(
