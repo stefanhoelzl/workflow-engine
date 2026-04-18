@@ -276,31 +276,26 @@ async function handleInit(
 
 	installEmitEvent(bridge);
 
+	// Two-pass host-method install. Pass 1 installs only `__*` names so the
+	// polyfill bundle below can capture-and-delete bridges like __reportError.
+	// Pass 2 installs the rest after polyfill eval, so a host method named
+	// `fetch`/`console`/`EventTarget`/etc. shadows the polyfill (last writer
+	// wins, matching browser/Node platform semantics).
+	const pass1Names = msg.methodNames.filter((n) => n.startsWith("__"));
+	const pass2Names = msg.methodNames.filter((n) => !n.startsWith("__"));
 	installRpcMethods(
 		bridge,
 		bridge.vm.global,
-		msg.methodNames,
+		pass1Names,
 		sendRequest,
 		msg.methodEventNames,
 	);
 
-	// Consolidated guest-side polyfill bundle — installs (in order):
-	//   trivial (self, navigator), event-target (EventTarget/Event/ErrorEvent/
-	//   AbortController/AbortSignal + globalThis-as-EventTarget hybrid install),
-	//   report-error (ErrorEvent dispatch + __reportError host forwarding),
-	//   microtask (queueMicrotask wrap routing errors through reportError),
-	//   fetch (fetch shim on __hostFetch),
-	//   subtle-crypto (validation + DOMException translation around the
-	//   cryptoExtension's native crypto.subtle; also promise-wraps the
-	//   synchronous native methods).
-	// Evaluated AFTER __hostFetch (from bridgeHostFetch above) and __reportError
-	// (from installRpcMethods). Generated at consumer build time by
-	// `sandboxPolyfills()` vite plugin; see packages/sandbox/src/polyfills/.
 	const polyfillResult = vm.evalCode(SANDBOX_POLYFILLS, "<sandbox-polyfills>");
 	polyfillResult.dispose();
 
-	// Init-assertion: guard against future quickjs-wasi upgrades breaking the
-	// hybrid globalThis-as-EventTarget install. Evaluated in the guest heap.
+	// Init-assertion runs before pass-2 host install so a host stub that
+	// shadows `EventTarget` cannot break the polyfill self-check.
 	const assertResult = vm.evalCode(
 		`(function(){
 			if (typeof globalThis.addEventListener !== 'function')
@@ -311,6 +306,14 @@ async function handleInit(
 		"<sandbox-polyfill-assert>",
 	);
 	assertResult.dispose();
+
+	installRpcMethods(
+		bridge,
+		bridge.vm.global,
+		pass2Names,
+		sendRequest,
+		msg.methodEventNames,
+	);
 
 	try {
 		const evalResult = vm.evalCode(msg.source, msg.filename);

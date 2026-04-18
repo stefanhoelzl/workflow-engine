@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { IIFE_NAMESPACE, type InvocationEvent } from "@workflow-engine/core";
+import type { InvocationEvent } from "@workflow-engine/core";
 import type { MethodMap } from "./install-host-methods.js";
 import { dispatchLog } from "./log-dispatch.js";
 import type {
@@ -67,55 +67,6 @@ const DEFAULT_RUN_OPTIONS: RunOptions = {
 	workflow: "test",
 	workflowSha: "",
 };
-
-// Hiding of sandbox-internal bridges (__hostFetch, __emitEvent) is enforced
-// by capture-and-delete shims in globals.ts / worker.ts — not by this list.
-// A host that deliberately passes `extraMethods: { __hostFetch: ... }` is
-// honoring their conscious choice to reinstall the name for the duration of
-// a single run; the sandbox's shim-captured reference from init is invariant
-// regardless.
-const RESERVED_BUILTIN_GLOBALS = new Set([
-	"console",
-	"performance",
-	"crypto",
-	"setTimeout",
-	"clearTimeout",
-	"setInterval",
-	"clearInterval",
-	"fetch",
-	"reportError",
-	"self",
-	"navigator",
-	"URL",
-	"URLSearchParams",
-	"URLPattern",
-	"TextEncoder",
-	"TextDecoder",
-	"atob",
-	"btoa",
-	"structuredClone",
-	"Headers",
-	"EventTarget",
-	"Event",
-	"ErrorEvent",
-	"AbortController",
-	"AbortSignal",
-	"DOMException",
-	"PerformanceEntry",
-	"PerformanceMark",
-	"PerformanceMeasure",
-]);
-
-function collisionName(
-	reserved: ReadonlySet<string>,
-	extra: MethodMap,
-): string | undefined {
-	for (const key of Object.keys(extra)) {
-		if (reserved.has(key)) {
-			return key;
-		}
-	}
-}
 
 const RESERVED_ERROR_KEYS = new Set(["name", "message", "stack", "issues"]);
 
@@ -184,20 +135,6 @@ async function sandbox(
 ): Promise<Sandbox> {
 	const filename = options?.filename ?? "action.js";
 	const methodNames = Object.keys(methods);
-	// extraMethods collision set contains only true built-ins + the IIFE
-	// namespace. Extra-methods MAY override construction-time methods (the
-	// per-run override pattern used by __reportError in tests).
-	const extraMethodsReserved = new Set<string>(RESERVED_BUILTIN_GLOBALS);
-	extraMethodsReserved.add(IIFE_NAMESPACE);
-
-	// Check construction-time method names against the same built-in set.
-	for (const name of methodNames) {
-		if (extraMethodsReserved.has(name)) {
-			throw new Error(
-				`method name '${name}' collides with a reserved global or the IIFE namespace`,
-			);
-		}
-	}
 
 	const worker = new Worker(resolveWorkerUrl());
 
@@ -367,15 +304,6 @@ async function sandbox(
 		}
 
 		const extraMethods = runOptions.extraMethods ?? {};
-		const collision = collisionName(extraMethodsReserved, extraMethods);
-		if (collision) {
-			return Promise.reject(
-				new Error(
-					`extraMethods name '${collision}' collides with a reserved global or the IIFE namespace`,
-				),
-			);
-		}
-
 		const allMethods: MethodMap = { ...methods, ...extraMethods };
 		const extraNames = Object.keys(extraMethods);
 
