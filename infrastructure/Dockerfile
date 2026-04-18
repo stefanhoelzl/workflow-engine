@@ -7,18 +7,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && r
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/core/package.json packages/core/
 COPY packages/runtime/package.json packages/runtime/
 COPY packages/sandbox/package.json packages/sandbox/
 COPY packages/sdk/package.json packages/sdk/
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.base.json ./
+COPY packages/core/tsconfig.json packages/core/
+COPY packages/core/src/ packages/core/src/
 COPY packages/runtime/tsconfig.json packages/runtime/vite.config.ts packages/runtime/
 COPY packages/runtime/src/ packages/runtime/src/
 COPY packages/sandbox/tsconfig.json packages/sandbox/
 COPY packages/sandbox/src/ packages/sandbox/src/
-COPY packages/sdk/tsconfig.json packages/sdk/
-COPY packages/sdk/src/ packages/sdk/src/
 RUN pnpm --filter @workflow-engine/runtime exec vite build
 RUN pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy
 RUN cp -r packages/runtime/dist/* /app/deploy/

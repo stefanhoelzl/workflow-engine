@@ -5,9 +5,12 @@
 !pnpm-workspace.yaml
 !.npmrc
 !tsconfig.base.json
+!packages/core/
 !packages/runtime/
 !packages/sandbox/
 !packages/sdk/
+packages/core/node_modules
+packages/core/dist
 packages/runtime/node_modules
 packages/runtime/dist
 packages/sandbox/node_modules
