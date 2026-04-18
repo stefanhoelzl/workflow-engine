@@ -1206,6 +1206,37 @@ describe("DOMException availability (quickjs-wasi native)", () => {
 	});
 });
 
+describe("structuredClone polyfill (overrides quickjs-wasi native)", () => {
+	// All other behaviour (wrapper objects, Map/Set/Date/RegExp/typed arrays,
+	// BigInt, cycles, sparse arrays, function rejection) is covered by
+	// html/webappapis/structured-clone/structured-clone.any.js in pnpm test:wpt.
+	// This case is the one WPT doesn't cover: WPT's transfer subtests assume a
+	// working ArrayBuffer.prototype.transfer, which QuickJS lacks, so they're
+	// skipped — leaving our deliberate "always reject transfer" behaviour
+	// otherwise untested.
+	it("throws DataCloneError when transfer option is supplied", async () => {
+		const { result } = await runSource(
+			defaultHandler(`
+				const buf = new ArrayBuffer(8);
+				try {
+					structuredClone({ buf }, { transfer: [buf] });
+					return { threw: false };
+				} catch (e) {
+					return { threw: true, name: e.name, isDOM: e instanceof DOMException };
+				}
+			`),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				threw: true,
+				name: "DataCloneError",
+				isDOM: true,
+			});
+		}
+	});
+});
+
 describe("self as EventTarget (hybrid install)", () => {
 	it("self === globalThis and self instanceof EventTarget", async () => {
 		const { result } = await runSource(

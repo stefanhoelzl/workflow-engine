@@ -115,6 +115,9 @@ importers:
 
   packages/sandbox:
     dependencies:
+      '@ungap/structured-clone':
+        specifier: ^1.3.0
+        version: 1.3.0
       '@workflow-engine/core':
         specifier: workspace:*
         version: link:../core
@@ -131,6 +134,9 @@ importers:
       '@rollup/plugin-replace':
         specifier: ^6.0.2
         version: 6.0.3(rollup@4.60.1)
+      '@types/ungap__structured-clone':
+        specifier: ^1.2.0
+        version: 1.2.0
       rollup:
         specifier: ^4.30.1
         version: 4.60.1
@@ -1296,6 +1302,12 @@ packages:
 
   '@types/triple-beam@1.3.5':
     resolution: {integrity: sha512-6WaYesThRMCl19iryMYP7/x2OVgCtbIVflDGFpWnb9irXI3UjYE4AzmYuiUKY1AJstGijoY+MgUszMgRxIYTYw==}
+
+  '@types/ungap__structured-clone@1.2.0':
+    resolution: {integrity: sha512-ZoaihZNLeZSxESbk9PUAPZOlSpcKx81I1+4emtULDVmBLkYutTcMlCj2K9VNlf9EWODxdO6gkAqEaLorXwZQVA==}
+
+  '@ungap/structured-clone@1.3.0':
+    resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
 
   '@vitest/expect@4.1.4':
     resolution: {integrity: sha512-iPBpra+VDuXmBFI3FMKHSFXp3Gx5HfmSCE8X67Dn+bwephCnQCaB7qWK2ldHa+8ncN8hJU8VTMcxjPpyMkUjww==}
@@ -3938,6 +3950,10 @@ snapshots:
       '@types/node': 25.5.2
 
   '@types/triple-beam@1.3.5': {}
+
+  '@types/ungap__structured-clone@1.2.0': {}
+
+  '@ungap/structured-clone@1.3.0': {}
 
   '@vitest/expect@4.1.4':
     dependencies:
