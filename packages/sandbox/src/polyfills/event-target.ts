@@ -50,6 +50,60 @@ class ErrorEvent extends (Event as unknown as typeof globalThis.Event) {
 // instance-property observation ordering.
 const ABORT_REASONS = new WeakMap<AbortSignal, unknown>();
 
+// Event-handler IDL attribute backing store. Shared so TaskSignal and any other
+// AbortSignal subclass installed later (e.g. via scheduler-polyfill) can reuse
+// the same onabort accessor without re-implementing the slot machinery.
+const EVENT_HANDLERS = new WeakMap<
+	object,
+	Map<string, { handler: unknown; listener: EventListener | null }>
+>();
+
+function defineEventHandler(proto: object, eventName: string): void {
+	Object.defineProperty(proto, `on${eventName}`, {
+		configurable: true,
+		enumerable: true,
+		get(this: object): unknown {
+			return EVENT_HANDLERS.get(this)?.get(eventName)?.handler ?? null;
+		},
+		set(this: object, value: unknown): void {
+			let perTarget = EVENT_HANDLERS.get(this);
+			if (!perTarget) {
+				perTarget = new Map();
+				EVENT_HANDLERS.set(this, perTarget);
+			}
+			let entry = perTarget.get(eventName);
+			if (!entry) {
+				entry = { handler: null, listener: null };
+				perTarget.set(eventName, entry);
+			}
+			if (entry.listener) {
+				(
+					this as unknown as {
+						removeEventListener: (t: string, l: EventListener) => void;
+					}
+				).removeEventListener(eventName, entry.listener);
+				entry.listener = null;
+			}
+			const handler = typeof value === "function" ? value : null;
+			entry.handler = handler;
+			if (handler) {
+				const listener: EventListener = (event: Event): void => {
+					const h = EVENT_HANDLERS.get(this)?.get(eventName)?.handler;
+					if (typeof h === "function") {
+						(h as (this: object, ev: Event) => unknown).call(this, event);
+					}
+				};
+				entry.listener = listener;
+				(
+					this as unknown as {
+						addEventListener: (t: string, l: EventListener) => void;
+					}
+				).addEventListener(eventName, listener);
+			}
+		},
+	});
+}
+
 class AbortSignal extends (EventTarget as unknown as typeof globalThis.EventTarget) {
 	get aborted(): boolean {
 		return ABORT_REASONS.has(this);
@@ -123,6 +177,11 @@ class AbortController {
 		this.signal.dispatchEvent(new Event("abort"));
 	}
 }
+
+// AbortSignal.onabort — event-handler IDL attribute. WPT `dom/abort/event.any.js`
+// installs handlers via `signal.onabort = fn`; without a setter the handler
+// never fires and timer-driven tests hit the watchdog.
+defineEventHandler(AbortSignal.prototype, "abort");
 
 // ───── Install on globalThis (hybrid H) ─────
 

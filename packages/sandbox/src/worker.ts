@@ -300,6 +300,14 @@ async function handleInit(
 				throw new Error('sandbox init: globalThis.addEventListener missing');
 			if (!(globalThis instanceof EventTarget))
 				throw new Error('sandbox init: globalThis is not an EventTarget');
+			if (typeof globalThis.scheduler?.postTask !== 'function')
+				throw new Error('sandbox init: scheduler.postTask missing');
+			if (typeof globalThis.TaskController !== 'function')
+				throw new Error('sandbox init: TaskController missing');
+			if (typeof globalThis.Observable !== 'function')
+				throw new Error('sandbox init: Observable missing');
+			if (typeof EventTarget.prototype.when !== 'function')
+				throw new Error('sandbox init: EventTarget.prototype.when missing');
 		})();`,
 		"<sandbox-polyfill-assert>",
 	);
