@@ -10,6 +10,10 @@
 //   structured-clone — structuredClone override (uses native DOMException)
 //   user-timing      — performance.mark/measure + PerformanceEntry classes
 //                      (depends on structuredClone + DOMException)
+//   subtle-crypto    — validation + DOMException translation wrapper around
+//                      the native crypto.subtle from quickjs-wasi's
+//                      cryptoExtension; also promise-wraps the synchronous
+//                      native methods.
 
 import "./trivial.js";
 import "./event-target.js";
@@ -18,3 +22,4 @@ import "./microtask.js";
 import "./fetch.js";
 import "./structured-clone.js";
 import "./user-timing.js";
+import "./subtle-crypto.js";
