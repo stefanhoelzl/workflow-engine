@@ -46,7 +46,8 @@ interface CteChain {
 }
 
 interface EventStore extends BusConsumer {
-	readonly query: SelectQueryBuilder<Database, "events", object>;
+	query(tenant: string): SelectQueryBuilder<Database, "events", object>;
+	ping(): Promise<void>;
 	with(name: string, fn: CteCallback): CteChain;
 	readonly initialized: Promise<void>;
 }
@@ -142,11 +143,19 @@ async function createEventStore(
 	return {
 		initialized,
 
-		query: db.selectFrom("events") as SelectQueryBuilder<
-			Database,
-			"events",
-			object
-		>,
+		query(tenant: string): SelectQueryBuilder<Database, "events", object> {
+			return db
+				.selectFrom("events")
+				.where("tenant", "=", tenant) as SelectQueryBuilder<
+				Database,
+				"events",
+				object
+			>;
+		},
+
+		async ping(): Promise<void> {
+			await db.executeQuery(CompiledQuery.raw("SELECT 1"));
+		},
 
 		async handle(event: InvocationEvent): Promise<void> {
 			try {

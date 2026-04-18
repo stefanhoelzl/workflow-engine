@@ -317,7 +317,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations/evt_a/flamegraph");
+		const res = await app.request("/dashboard/invocations/evt_a/flamegraph", {
+			headers: AUTH_HEADERS,
+		});
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain('class="flame-fragment"');
@@ -330,6 +332,7 @@ describe("dashboard middleware — fragment", () => {
 		const app = await mount(store);
 		const res = await app.request(
 			"/dashboard/invocations/evt_missing/flamegraph",
+			{ headers: AUTH_HEADERS },
 		);
 		expect(res.status).toBe(200);
 		const html = await res.text();
@@ -340,7 +343,9 @@ describe("dashboard middleware — fragment", () => {
 	it("flamegraph fragment returns empty state for pending invocation with 200", async () => {
 		await store.handle(event({ kind: "trigger.request", seq: 0, ts: 0 }));
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations/evt_a/flamegraph");
+		const res = await app.request("/dashboard/invocations/evt_a/flamegraph", {
+			headers: AUTH_HEADERS,
+		});
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain('class="flame-empty"');
@@ -351,10 +356,67 @@ describe("dashboard middleware — fragment", () => {
 		const app = await mount(store);
 		const res = await app.request(
 			"/dashboard/invocations/evt_with%20space/flamegraph",
+			{ headers: AUTH_HEADERS },
 		);
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain('class="flame-empty"');
+	});
+
+	it("flamegraph fragment does not leak events from another tenant", async () => {
+		await store.handle(
+			event({
+				id: "evt_xyz",
+				kind: "trigger.request",
+				tenant: "other",
+				seq: 0,
+				ts: 0,
+				input: { secretFromOtherTenant: "leaked-input-marker" },
+			}),
+		);
+		await store.handle(
+			event({
+				id: "evt_xyz",
+				kind: "trigger.response",
+				tenant: "other",
+				seq: 1,
+				ref: 0,
+				ts: 1000,
+				output: { status: 200, body: "leaked-output-marker" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations/evt_xyz/flamegraph", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-empty"');
+		expect(html).not.toContain('class="flame-graph"');
+		expect(html).not.toContain("leaked-input-marker");
+		expect(html).not.toContain("leaked-output-marker");
+	});
+
+	it("flamegraph fragment returns empty state when there is no active tenant", async () => {
+		await store.handle(
+			event({
+				id: "evt_anything",
+				kind: "trigger.request",
+				seq: 0,
+				ts: 0,
+				input: { shouldNotAppear: "no-tenant-leak-marker" },
+			}),
+		);
+		const app = await mount(store);
+		// No AUTH_HEADERS — registry is empty so sortedTenants returns [].
+		const res = await app.request(
+			"/dashboard/invocations/evt_anything/flamegraph",
+		);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('class="flame-empty"');
+		expect(html).not.toContain('class="flame-graph"');
+		expect(html).not.toContain("no-tenant-leak-marker");
 	});
 
 	it("formatDurationUs renders smart-unit bands at the four boundaries", async () => {

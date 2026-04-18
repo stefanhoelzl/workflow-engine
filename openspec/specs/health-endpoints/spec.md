@@ -1,3 +1,7 @@
+## Purpose
+
+Expose IETF-shaped HTTP health endpoints (`/livez`, `/healthz`, `/readyz`) so Kubernetes probes and operators can distinguish process liveness, individual dependency health, and aggregate readiness.
+## Requirements
 ### Requirement: Liveness endpoint
 The runtime SHALL expose a `GET /livez` endpoint that always returns HTTP `200` with `Content-Type: application/health+json` and body `{"status":"pass"}`.
 
@@ -84,15 +88,18 @@ All health endpoint responses SHALL use `Content-Type: application/health+json`.
 - **THEN** the check result SHALL include `"status":"fail"`, `"observedValue":5000`, `"observedUnit":"ms"`, `"output":"timeout after 5000ms"`
 
 ### Requirement: Eventstore deep check
-The eventstore check SHALL execute `SELECT count(*) FROM events` via the EventStore `query` property using Kysely's `fn.countAll()`. It SHALL report `componentType: "datastore"` and the query duration in milliseconds as `observedValue`.
+The eventstore check SHALL execute `eventStore.ping()` (a `SELECT 1` round-trip) against the EventStore. It SHALL report `componentType: "datastore"` and the round-trip duration in milliseconds as `observedValue`.
+
+The check SHALL NOT depend on the contents of the `events` table or on any tenant. A successful ping confirms DB connectivity and read latency without scanning rows.
 
 #### Scenario: Eventstore check passes
 - **GIVEN** the event store is responsive
 - **WHEN** the eventstore check runs
-- **THEN** it SHALL return `"status":"pass"` with the query duration in ms
+- **THEN** it SHALL invoke `eventStore.ping()`
+- **AND** SHALL return `"status":"pass"` with the round-trip duration in ms as `observedValue`
 
 #### Scenario: Eventstore check fails
-- **GIVEN** the event store query throws an error
+- **GIVEN** the event store ping throws an error (DuckDB unavailable or query error)
 - **WHEN** the eventstore check runs
 - **THEN** it SHALL return `"status":"fail"` with the error message in `"output"`
 
@@ -178,3 +185,4 @@ The health endpoints SHALL be implemented as a Hono middleware factory `healthMi
 - **GIVEN** a health middleware created with all dependencies
 - **WHEN** mounted in the Hono app
 - **THEN** `/livez`, `/readyz`, and `/healthz` SHALL all be routable
+

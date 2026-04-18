@@ -86,9 +86,9 @@ async function fetchInvocationRows(
 	tenant: string,
 	limit: number,
 ): Promise<InvocationRow[]> {
-	const requests = (await eventStore.query
+	const requests = (await eventStore
+		.query(tenant)
 		.where("kind", "=", "trigger.request")
-		.where("tenant", "=", tenant)
 		.select(["id", "workflow", "name", "at", "ts"])
 		.orderBy("at", "desc")
 		.orderBy("id", "desc")
@@ -99,9 +99,9 @@ async function fetchInvocationRows(
 	const terminals =
 		ids.length === 0
 			? []
-			: ((await eventStore.query
+			: ((await eventStore
+					.query(tenant)
 					.where("kind", "in", ["trigger.response", "trigger.error"])
-					.where("tenant", "=", tenant)
 					.where("id", "in", ids)
 					.select(["id", "kind", "at", "ts", "error"])
 					.execute()) as RawTerminalRow[]);
@@ -129,8 +129,10 @@ async function fetchInvocationRows(
 async function fetchInvocationEvents(
 	eventStore: EventStore,
 	id: string,
+	tenant: string,
 ): Promise<InvocationEvent[]> {
-	const rows = (await eventStore.query
+	const rows = (await eventStore
+		.query(tenant)
 		.where("id", "=", id)
 		.selectAll()
 		.orderBy("seq", "asc")
@@ -215,8 +217,17 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	});
 	app.get("/invocations/:id/flamegraph", async (c) => {
 		const id = c.req.param("id");
-		logger?.debug("dashboard.flamegraph.request", { id });
-		const events = await fetchInvocationEvents(deps.eventStore, id);
+		const tenants = sortedTenants(c, deps.registry);
+		const activeTenant = resolveActiveTenant(c, tenants);
+		logger?.debug("dashboard.flamegraph.request", { id, tenant: activeTenant });
+		if (!activeTenant) {
+			return c.html(renderFlamegraph([]));
+		}
+		const events = await fetchInvocationEvents(
+			deps.eventStore,
+			id,
+			activeTenant,
+		);
 		return c.html(renderFlamegraph(events));
 	});
 
