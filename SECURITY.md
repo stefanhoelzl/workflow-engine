@@ -914,6 +914,27 @@ and any future authenticated UI prefix.
 - **Separate trust domains for UI vs API** — the UI's cookie does not
   authenticate the API; the API's Bearer token does not sign a UI
   session.
+- **App-side trust-domain split for user-context population.** The
+  middleware that builds `UserContext` is split into two modules that
+  share only the data type: `packages/runtime/src/auth/bearer-user.ts`
+  (used on `/api/*`, reads only the `Authorization: Bearer` header;
+  resolves orgs/teams/name from GitHub) and
+  `packages/runtime/src/auth/header-user.ts` (used on `/dashboard` and
+  `/trigger`, reads only `X-Auth-Request-*`; never calls GitHub). A
+  forged `X-Auth-Request-Groups` on `/api/*` cannot inject a tenant
+  into `UserContext.orgs` — the API path structurally does not read
+  the header. This is the correctness control against cross-tenant
+  escalation by allow-listed Bearer callers (closes R-A4a below).
+- **Edge-side strip of forward-auth headers.** The Traefik `Middleware`
+  CR `strip-auth-headers`
+  (`infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`)
+  clears every oauth2-proxy-emitted `X-Auth-Request-*` header on every
+  IngressRoute path except `/dashboard` and `/trigger` (the only routes
+  where oauth2-proxy is authoritative over these headers via
+  `authResponseHeaders`). This is a containment control: forged
+  headers from external callers do not reach any handler or log on
+  `/api/*`, `/webhooks/*`, `/static/*`, `/oauth2/*`, `/livez`, or `/`.
+  Closes R-A4b below.
 
 ### Residual risks
 
@@ -921,8 +942,9 @@ and any future authenticated UI prefix.
 |----|-----|--------|--------|
 | R-A1 | The `__DISABLE_AUTH__` sentinel exists for local development; a production deployment that sets it puts `/api/*` into `open` mode. The `warn`-level startup log is the only guard against accidental production use. | A5 | Mitigated by operational discipline and startup logs; consider refusing `open` mode when a production marker is set |
 | R-A2 | No caching of GitHub token validation — every `/api/*` request makes a live GitHub API call. Exposes the application to GitHub availability and rate limits (A7, A8). | High | Design follow-up |
-| R-A3 | K8s `NetworkPolicy` restricts app-pod ingress on `:8080` to Traefik pods only (`app.kubernetes.io/name=traefik`) plus the UpCloud node CIDR for kubelet probes. Forged `X-Auth-Request-User` from a neighbouring pod is no longer possible. | High | **Resolved** (see §5 R-I1) |
-| R-A4 | Forwarded-header trust is implicit — the application does not verify requests came via Traefik / oauth2-proxy; it just reads `X-Auth-Request-User`. Now load-bearing on the NetworkPolicy from R-A3 to ensure only Traefik is a legitimate source. | Medium | Accepted given R-A3 resolution |
+| R-A3 | K8s `NetworkPolicy` restricts app-pod ingress on `:8080` to Traefik pods only (`app.kubernetes.io/name=traefik`) plus the UpCloud node CIDR for kubelet probes. Forged `X-Auth-Request-User` from a neighbouring pod is no longer possible. No longer load-bearing for the cross-tenant threat vector (R-A4a closes it at the app layer), but retained as defence-in-depth. | High | **Resolved** (see §5 R-I1) |
+| R-A4a | App-side forwarded-header trust: the `/api/*` middleware does not read `X-Auth-Request-*`. `bearerUserMiddleware` resolves `UserContext` exclusively from GitHub using the Bearer token, so a forged `X-Auth-Request-Groups` cannot inject a tenant into `UserContext.orgs`. | High | **Resolved** (`packages/runtime/src/auth/bearer-user.ts`) |
+| R-A4b | Edge-side forwarded-header trust: Traefik strips every `X-Auth-Request-*` header on every IngressRoute path except `/dashboard` and `/trigger`, so forged values never reach the app, its logs, or future handlers that might read them. | Medium | **Resolved** (Traefik `strip-auth-headers` middleware in `routes-chart`) |
 | R-A5 | No logout-on-allowlist-removal — removing a user from `OAUTH2_PROXY_GITHUB_USERS` does not invalidate existing sessions until cookie expiry. | Low-Medium | Accept or add session store |
 | R-A6 | No explicit request / response logging policy for `Authorization` headers — nothing guarantees tokens are redacted from pino logs. | Medium | Verify logger config |
 | R-A7 | GitHub OAuth is the only identity provider — no local fallback, no MFA enforcement beyond what GitHub offers. | Accepted | By design |

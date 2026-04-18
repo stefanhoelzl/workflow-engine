@@ -1,13 +1,7 @@
 import type { MiddlewareHandler } from "hono";
+import type { UserContext } from "./user-context.js";
 
-interface UserContext {
-	readonly name: string;
-	readonly mail: string;
-	readonly orgs: readonly string[];
-	readonly teams: readonly string[];
-}
-
-interface UserMiddlewareOptions {
+interface BearerUserMiddlewareOptions {
 	readonly fetchFn?: typeof globalThis.fetch;
 }
 
@@ -73,40 +67,11 @@ async function fetchBearerUser(
 	};
 }
 
-function parseHeaderUser(
-	name: string,
-	mail: string,
-	groupsHeader: string,
-): UserContext {
-	const groups = groupsHeader
-		.split(",")
-		.map((g) => g.trim())
-		.filter((g) => g.length > 0);
-	return {
-		name,
-		mail,
-		orgs: groups.filter((g) => !g.includes(":")),
-		teams: groups.filter((g) => g.includes(":")),
-	};
-}
-
-function userMiddleware(
-	options: UserMiddlewareOptions = {},
+function bearerUserMiddleware(
+	options: BearerUserMiddlewareOptions = {},
 ): MiddlewareHandler {
 	const fetchFn = options.fetchFn ?? globalThis.fetch;
 	return async (c, next) => {
-		const headerUser = c.req.header("X-Auth-Request-User");
-		if (headerUser) {
-			const user = parseHeaderUser(
-				headerUser,
-				c.req.header("X-Auth-Request-Email") ?? "",
-				c.req.header("X-Auth-Request-Groups") ?? "",
-			);
-			c.set("user", user);
-			await next();
-			return;
-		}
-
 		const auth = c.req.header("authorization");
 		if (auth?.startsWith("Bearer ")) {
 			const token = auth.slice("Bearer ".length);
@@ -119,15 +84,5 @@ function userMiddleware(
 	};
 }
 
-declare module "hono" {
-	interface ContextVariableMap {
-		user: UserContext;
-		// Set by `/api/*` middleware when auth mode is `open` (dev-only).
-		// Signals that membership checks should be skipped. The regex-based
-		// tenant-identifier validation in handlers is NOT skipped.
-		authOpen: boolean;
-	}
-}
-
-export type { UserContext, UserMiddlewareOptions };
-export { userMiddleware };
+export type { BearerUserMiddlewareOptions };
+export { bearerUserMiddleware };

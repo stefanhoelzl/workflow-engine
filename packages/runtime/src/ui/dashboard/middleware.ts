@@ -1,8 +1,8 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { headerUserMiddleware } from "../../auth/header-user.js";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
-import { userMiddleware } from "../../auth/user.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
 import type { Middleware } from "../../triggers/http.js";
@@ -182,7 +182,7 @@ function parseJsonField(value: unknown): unknown {
 
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
-	app.use("*", userMiddleware());
+	app.use("*", headerUserMiddleware());
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 

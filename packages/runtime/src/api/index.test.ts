@@ -13,12 +13,42 @@ const logger = {
 	child: vi.fn(() => logger),
 };
 
-function mountApi(githubAuth: GitHubAuth) {
+function mountApi(githubAuth: GitHubAuth, fetchFn?: typeof globalThis.fetch) {
 	const registry = createWorkflowRegistry({ logger });
-	const middleware = apiMiddleware({ githubAuth, registry, logger });
+	const middleware = apiMiddleware({
+		githubAuth,
+		registry,
+		logger,
+		...(fetchFn ? { fetchFn } : {}),
+	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
 	return app;
+}
+
+function jsonResponse(body: unknown, status = 200) {
+	return new Response(JSON.stringify(body), { status });
+}
+
+function githubFetch(
+	user: { login: string; email: string | null } | null,
+	orgs: Array<{ login: string }> | null,
+	teams: Array<{ slug: string; organization: { login: string } }> | null,
+) {
+	const routes = new Map<string, Response>([
+		["/user/orgs", orgs ? jsonResponse(orgs) : jsonResponse({}, 403)],
+		["/user/teams", teams ? jsonResponse(teams) : jsonResponse({}, 403)],
+		["/user", user ? jsonResponse(user) : jsonResponse({}, 401)],
+	]);
+	return vi.fn(async (input: RequestInfo | URL) => {
+		const url = input.toString();
+		for (const [suffix, response] of routes) {
+			if (url.endsWith(suffix)) {
+				return response.clone();
+			}
+		}
+		return jsonResponse({}, 404);
+	});
 }
 
 describe("apiMiddleware", () => {
@@ -76,6 +106,24 @@ describe("apiMiddleware", () => {
 			});
 
 			expect(res.status).toBe(401);
+		});
+
+		it("forged X-Auth-Request-Groups cannot grant cross-tenant upload", async () => {
+			const fetchFn = githubFetch({ login: "stefan", email: null }, [], []);
+			const app = mountApi({ mode: "restricted", users: ["stefan"] }, fetchFn);
+
+			const res = await app.request("/api/workflows/victim-tenant", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer valid-token",
+					"X-Auth-Request-User": "stefan",
+					"X-Auth-Request-Groups": "victim-tenant",
+				},
+				body: new Uint8Array(),
+			});
+
+			expect(res.status).toBe(404);
+			expect(await res.json()).toEqual({ error: "Not Found" });
 		});
 	});
 });

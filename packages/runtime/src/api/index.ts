@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { userMiddleware } from "../auth/user.js";
+import { bearerUserMiddleware } from "../auth/bearer-user.js";
 import type { GitHubAuth } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { Middleware } from "../triggers/http.js";
@@ -24,6 +24,9 @@ interface ApiOptions {
 	registry: WorkflowRegistry;
 	githubAuth: GitHubAuth;
 	logger: Logger;
+	// Test seam: overrides the `fetch` used by both `githubAuthMiddleware`
+	// (allow-list probe) and `bearerUserMiddleware` (user resolution).
+	fetchFn?: typeof globalThis.fetch;
 }
 
 function apiMiddleware(options: ApiOptions): Middleware {
@@ -33,9 +36,17 @@ function apiMiddleware(options: ApiOptions): Middleware {
 		case "restricted":
 			app.use(
 				"/*",
-				githubAuthMiddleware({ githubUsers: options.githubAuth.users }),
+				githubAuthMiddleware({
+					githubUsers: options.githubAuth.users,
+					...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
+				}),
 			);
-			app.use("/*", userMiddleware());
+			app.use(
+				"/*",
+				bearerUserMiddleware(
+					options.fetchFn ? { fetchFn: options.fetchFn } : {},
+				),
+			);
 			break;
 		case "disabled":
 			app.use("/*", rejectAllMiddleware());

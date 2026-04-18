@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isMember, tenantSet, validateTenant } from "./tenant.js";
-import type { UserContext } from "./user.js";
+import type { UserContext } from "./user-context.js";
 
 function user(overrides: Partial<UserContext> = {}): UserContext {
 	return {

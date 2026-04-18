@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { UserContext } from "./user.js";
-import { userMiddleware } from "./user.js";
+import { bearerUserMiddleware } from "./bearer-user.js";
+import type { UserContext } from "./user-context.js";
 
 function createApp(fetchFn?: typeof globalThis.fetch) {
 	const app = new Hono();
-	app.use("*", userMiddleware(fetchFn ? { fetchFn } : {}));
+	app.use("*", bearerUserMiddleware(fetchFn ? { fetchFn } : {}));
 	app.get("/probe", (c) => {
 		const user = c.get("user") as UserContext | undefined;
 		return c.json(user ?? null);
@@ -17,101 +17,28 @@ function jsonResponse(body: unknown, status = 200) {
 	return new Response(JSON.stringify(body), { status });
 }
 
-describe("userMiddleware (forward-auth headers)", () => {
-	it("builds user from X-Auth-Request-* headers with orgs and teams", async () => {
-		const app = createApp();
-
-		const res = await app.request("/probe", {
-			headers: {
-				"X-Auth-Request-User": "alice",
-				"X-Auth-Request-Email": "alice@acme.test",
-				"X-Auth-Request-Groups": "acme,contoso,acme:engineering,acme:ops",
-			},
-		});
-
-		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({
-			name: "alice",
-			mail: "alice@acme.test",
-			orgs: ["acme", "contoso"],
-			teams: ["acme:engineering", "acme:ops"],
-		});
-	});
-
-	it("handles an empty groups header", async () => {
-		const app = createApp();
-
-		const res = await app.request("/probe", {
-			headers: {
-				"X-Auth-Request-User": "bob",
-				"X-Auth-Request-Email": "bob@acme.test",
-				"X-Auth-Request-Groups": "",
-			},
-		});
-
-		expect(await res.json()).toEqual({
-			name: "bob",
-			mail: "bob@acme.test",
-			orgs: [],
-			teams: [],
-		});
-	});
-
-	it("handles org-only membership (no teams)", async () => {
-		const app = createApp();
-
-		const res = await app.request("/probe", {
-			headers: {
-				"X-Auth-Request-User": "carol",
-				"X-Auth-Request-Groups": "acme",
-			},
-		});
-
-		expect(await res.json()).toEqual({
-			name: "carol",
-			mail: "",
-			orgs: ["acme"],
-			teams: [],
-		});
-	});
-
-	it("ignores Authorization header when forward-auth header is present", async () => {
-		const fetchFn = vi.fn();
-		const app = createApp(fetchFn);
-
-		await app.request("/probe", {
-			headers: {
-				"X-Auth-Request-User": "alice",
-				authorization: "Bearer some-token",
-			},
-		});
-
-		expect(fetchFn).not.toHaveBeenCalled();
-	});
-});
-
-describe("userMiddleware (Bearer token)", () => {
-	function githubFetch(
-		user: { login: string; email: string | null } | null,
-		orgs: Array<{ login: string }> | null,
-		teams: Array<{ slug: string; organization: { login: string } }> | null,
-	) {
-		const routes = new Map<string, Response>([
-			["/user/orgs", orgs ? jsonResponse(orgs) : jsonResponse({}, 403)],
-			["/user/teams", teams ? jsonResponse(teams) : jsonResponse({}, 403)],
-			["/user", user ? jsonResponse(user) : jsonResponse({}, 401)],
-		]);
-		return vi.fn(async (input: RequestInfo | URL) => {
-			const url = input.toString();
-			for (const [suffix, response] of routes) {
-				if (url.endsWith(suffix)) {
-					return response.clone();
-				}
+function githubFetch(
+	user: { login: string; email: string | null } | null,
+	orgs: Array<{ login: string }> | null,
+	teams: Array<{ slug: string; organization: { login: string } }> | null,
+) {
+	const routes = new Map<string, Response>([
+		["/user/orgs", orgs ? jsonResponse(orgs) : jsonResponse({}, 403)],
+		["/user/teams", teams ? jsonResponse(teams) : jsonResponse({}, 403)],
+		["/user", user ? jsonResponse(user) : jsonResponse({}, 401)],
+	]);
+	return vi.fn(async (input: RequestInfo | URL) => {
+		const url = input.toString();
+		for (const [suffix, response] of routes) {
+			if (url.endsWith(suffix)) {
+				return response.clone();
 			}
-			return jsonResponse({}, 404);
-		});
-	}
+		}
+		return jsonResponse({}, 404);
+	});
+}
 
+describe("bearerUserMiddleware (Bearer token)", () => {
 	it("fetches user, orgs, and teams from GitHub", async () => {
 		const fetchFn = githubFetch(
 			{ login: "alice", email: "alice@acme.test" },
@@ -186,7 +113,50 @@ describe("userMiddleware (Bearer token)", () => {
 	});
 });
 
-describe("userMiddleware (no auth context)", () => {
+describe("bearerUserMiddleware (forward-auth headers ignored)", () => {
+	it("ignores forged X-Auth-Request-* headers; orgs come from GitHub", async () => {
+		const fetchFn = githubFetch(
+			{ login: "alice", email: "alice@acme.test" },
+			[{ login: "acme" }],
+			[],
+		);
+		const app = createApp(fetchFn);
+
+		const res = await app.request("/probe", {
+			headers: {
+				authorization: "Bearer valid-token",
+				"X-Auth-Request-User": "attacker",
+				"X-Auth-Request-Email": "attacker@evil.test",
+				"X-Auth-Request-Groups": "victim-tenant,another-victim",
+			},
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			name: "alice",
+			mail: "alice@acme.test",
+			orgs: ["acme"],
+			teams: [],
+		});
+	});
+
+	it("leaves user unset when only X-Auth-Request-User is present (no Bearer)", async () => {
+		const fetchFn = vi.fn();
+		const app = createApp(fetchFn);
+
+		const res = await app.request("/probe", {
+			headers: {
+				"X-Auth-Request-User": "attacker",
+				"X-Auth-Request-Groups": "victim-tenant",
+			},
+		});
+
+		expect(await res.json()).toBeNull();
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe("bearerUserMiddleware (no auth context)", () => {
 	it("leaves user unset when no headers or token are present", async () => {
 		const fetchFn = vi.fn();
 		const app = createApp(fetchFn);

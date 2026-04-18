@@ -1,4 +1,4 @@
-import type { UserContext } from "./user.js";
+import type { UserContext } from "./user-context.js";
 
 const TENANT_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 
