@@ -229,7 +229,23 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `worker_thread` isolation; the host main thread and other workflows'
   workers remain responsive. No new attacker capability beyond what
   `RegExp` already exposes. Version bumps require a §2 re-audit PR —
-  the pin is deliberate, not an oversight), `__dispatchAction` (runtime-
+  the pin is deliberate, not an oversight), `CompressionStream` and
+  `DecompressionStream` (pure-JS polyfills in
+  `packages/sandbox/src/polyfills/compression.ts` wrapping `TransformStream`
+  and the `fflate@^0.8.2` deflate/gzip implementation (pinned in
+  `packages/sandbox/package.json`), bundled into the same
+  `virtual:sandbox-polyfills` IIFE by the `sandboxPolyfills()` Vite plugin.
+  Supports the three WHATWG formats — `gzip` (fflate `Gzip`/`Gunzip`),
+  `deflate` = zlib-wrapped deflate (fflate `Zlib`/`Unzlib`), and
+  `deflate-raw` (fflate `Deflate`/`Inflate`). No host bridge; all
+  compression and decompression runs inside the QuickJS VM's linear
+  memory. Adversarial inputs (zip-bomb-style expansion, pathological
+  deflate sequences) are bounded by the existing QuickJS memory cap and
+  the invoking workflow's worker-thread isolation; the attack surface is
+  identical to any unbounded in-guest computation already reachable via
+  plain JS. No new host capability is added. Version bumps require a §2
+  re-audit PR — the pin is deliberate, not an oversight),
+  `__dispatchAction` (runtime-
   appended action dispatcher, locked via
   `Object.defineProperty({writable: false, configurable: false})`),
   plus the host methods registered via `methods`.
@@ -275,7 +291,8 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
   the polyfill source files under `packages/sandbox/src/polyfills/`
   (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
-  `fetch.ts`) and the pinned `event-target-shim@^6` dependency.
+  `fetch.ts`, `compression.ts`) and the pinned `event-target-shim@^6`
+  and `fflate@^0.8.2` dependencies.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` via the
   construction-time `methods` argument of its own `sandbox(source,
