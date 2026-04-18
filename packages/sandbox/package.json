@@ -14,6 +14,7 @@
 		"@workflow-engine/core": "workspace:*",
 		"event-target-shim": "^6.0.2",
 		"fake-indexeddb": "^6.2.5",
+		"fflate": "^0.8.2",
 		"quickjs-wasi": "^2.2.0",
 		"urlpattern-polyfill": "10.0.0",
 		"web-streams-polyfill": "^4.2.0"

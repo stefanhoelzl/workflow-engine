@@ -6,6 +6,9 @@
 //   microtask        — queueMicrotask wrap (depends on reportError)
 //   streams          — Readable/Writable/TransformStream + queuing strategies
 //                      + TextEncoder/DecoderStream (ponyfill, no deps)
+//   compression      — CompressionStream/DecompressionStream (WHATWG). Pure-JS
+//                      TransformStream wrappers around fflate's gzip/deflate/
+//                      inflate streaming classes. Depends on TransformStream.
 //   fetch            — fetch shim (depends on Headers/TextEncoder from WASM ext;
 //                      independent of event stack but bundled together for
 //                      single-eval simplicity in worker.ts)
@@ -31,6 +34,7 @@ import "./event-target.js";
 import "./report-error.js";
 import "./microtask.js";
 import "./streams.js";
+import "./compression.js";
 import "./fetch.js";
 import "./structured-clone.js";
 import "./idb-domexception-fix.js";
