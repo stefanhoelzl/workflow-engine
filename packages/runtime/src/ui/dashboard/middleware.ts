@@ -1,10 +1,12 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { tenantSet, validateTenant } from "../../auth/tenant.js";
 import { userMiddleware } from "../../auth/user.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
 import type { Middleware } from "../../triggers/http.js";
+import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
 import { renderDashboardPage, renderInvocationList } from "./page.js";
@@ -13,6 +15,7 @@ const DEFAULT_LIMIT = 100;
 
 interface DashboardMiddlewareDeps {
 	readonly eventStore: EventStore;
+	readonly registry: WorkflowRegistry;
 	readonly limit?: number;
 	readonly logger?: Logger;
 }
@@ -47,17 +50,45 @@ function statusFromTerminal(kind: string | undefined): string {
 	return "pending";
 }
 
-function renderShell(c: Context) {
+function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
-	return c.html(renderDashboardPage(user?.name ?? "", user?.mail ?? ""));
+	if (user) {
+		return Array.from(tenantSet(user)).sort();
+	}
+	// Dev/unauthenticated fallback: show all tenants the runtime knows about.
+	// In production, oauth2-proxy forward-auth ensures a user is always set on
+	// `/dashboard/*`; arriving without one means auth is disabled (open mode).
+	const fromRegistry = new Set<string>();
+	for (const runner of registry.runners) {
+		if (validateTenant(runner.tenant)) {
+			fromRegistry.add(runner.tenant);
+		}
+	}
+	return Array.from(fromRegistry).sort();
+}
+
+function resolveActiveTenant(
+	c: Context,
+	tenants: string[],
+): string | undefined {
+	if (tenants.length === 0) {
+		return;
+	}
+	const requested = c.req.query("tenant");
+	if (requested && tenants.includes(requested)) {
+		return requested;
+	}
+	return tenants[0];
 }
 
 async function fetchInvocationRows(
 	eventStore: EventStore,
+	tenant: string,
 	limit: number,
 ): Promise<InvocationRow[]> {
 	const requests = (await eventStore.query
 		.where("kind", "=", "trigger.request")
+		.where("tenant", "=", tenant)
 		.select(["id", "workflow", "name", "at", "ts"])
 		.orderBy("at", "desc")
 		.orderBy("id", "desc")
@@ -70,6 +101,7 @@ async function fetchInvocationRows(
 			? []
 			: ((await eventStore.query
 					.where("kind", "in", ["trigger.response", "trigger.error"])
+					.where("tenant", "=", tenant)
 					.where("id", "in", ids)
 					.select(["id", "kind", "at", "ts", "error"])
 					.execute()) as RawTerminalRow[]);
@@ -110,6 +142,7 @@ function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 	const base = {
 		kind: row.kind as InvocationEvent["kind"],
 		id: row.id as string,
+		tenant: row.tenant as string,
 		seq: Number(row.seq),
 		ref: row.ref === null || row.ref === undefined ? null : Number(row.ref),
 		at: row.at as string,
@@ -151,10 +184,33 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 
+	const renderShell = (c: Context) => {
+		const user = c.get("user");
+		const tenants = sortedTenants(c, deps.registry);
+		const activeTenant = resolveActiveTenant(c, tenants);
+		return c.html(
+			renderDashboardPage({
+				user: user?.name ?? "",
+				email: user?.mail ?? "",
+				tenants,
+				activeTenant,
+			}),
+		);
+	};
+
 	app.get("/", renderShell);
 	app.get("", renderShell);
 	app.get("/invocations", async (c) => {
-		const rows = await fetchInvocationRows(deps.eventStore, limit);
+		const tenants = sortedTenants(c, deps.registry);
+		const activeTenant = resolveActiveTenant(c, tenants);
+		if (!activeTenant) {
+			return c.html(renderInvocationList([]));
+		}
+		const rows = await fetchInvocationRows(
+			deps.eventStore,
+			activeTenant,
+			limit,
+		);
 		return c.html(renderInvocationList(rows));
 	});
 	app.get("/invocations/:id/flamegraph", async (c) => {

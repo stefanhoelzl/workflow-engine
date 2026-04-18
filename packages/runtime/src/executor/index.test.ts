@@ -11,6 +11,7 @@ function makeRunner(
 	overrides: Partial<WorkflowRunner> & Pick<WorkflowRunner, "name">,
 ): WorkflowRunner {
 	const base: WorkflowRunner = {
+		tenant: "t0",
 		name: overrides.name,
 		env: Object.freeze({}),
 		actions: [],

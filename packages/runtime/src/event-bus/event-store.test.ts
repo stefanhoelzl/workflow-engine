@@ -37,10 +37,33 @@ describe("event store", () => {
 			seq: 0,
 			kind: "trigger.request",
 			ref: null,
+			tenant: "t0",
 			workflow: "wf",
 			workflowSha: "sha",
 			name: "on-push",
 		});
+	});
+
+	it("filters by tenant via WHERE clause", async () => {
+		await store.handle(
+			event({ kind: "trigger.request", seq: 0, id: "evt_a", tenant: "acme" }),
+		);
+		await store.handle(
+			event({
+				kind: "trigger.request",
+				seq: 0,
+				id: "evt_b",
+				tenant: "contoso",
+			}),
+		);
+		await store.handle(
+			event({ kind: "trigger.request", seq: 0, id: "evt_c", tenant: "acme" }),
+		);
+		const rows = await store.query
+			.where("tenant", "=", "acme")
+			.selectAll()
+			.execute();
+		expect(rows.map((r) => r.id).sort()).toEqual(["evt_a", "evt_c"]);
 	});
 
 	it("appends rows — does not update on subsequent emits", async () => {

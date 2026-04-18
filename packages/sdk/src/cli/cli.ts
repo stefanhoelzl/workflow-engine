@@ -16,12 +16,24 @@ const uploadCommand = defineCommand({
 			description: "Target runtime URL",
 			default: DEFAULT_URL,
 		},
+		tenant: {
+			type: "string",
+			description: "Target tenant (falls back to WFE_TENANT env var)",
+		},
 	},
 	async run({ args }) {
+		// biome-ignore lint/style/noProcessEnv: reading WFE_TENANT is the documented fallback
+		const tenant = args.tenant ?? process.env.WFE_TENANT?.trim() ?? "";
+		if (!tenant) {
+			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+			console.error("tenant required: pass --tenant <name> or set WFE_TENANT");
+			process.exit(1);
+		}
 		try {
 			const { failed } = await upload({
 				cwd: process.cwd(),
 				url: args.url,
+				tenant,
 			});
 			process.exit(failed === 0 ? 0 : 1);
 		} catch (error) {

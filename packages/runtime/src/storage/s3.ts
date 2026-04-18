@@ -52,11 +52,30 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 			);
 		},
 
+		async writeBytes(path, data) {
+			await client.send(
+				new PutObjectCommand({
+					Bucket: bucket,
+					Key: path,
+					Body: data,
+					ContentType: "application/octet-stream",
+				}),
+			);
+		},
+
 		async read(path) {
 			const response = await client.send(
 				new GetObjectCommand({ Bucket: bucket, Key: path }),
 			);
 			return (await response.Body?.transformToString("utf-8")) ?? "";
+		},
+
+		async readBytes(path) {
+			const response = await client.send(
+				new GetObjectCommand({ Bucket: bucket, Key: path }),
+			);
+			const bytes = await response.Body?.transformToByteArray();
+			return bytes ?? new Uint8Array(0);
 		},
 
 		async *list(prefix) {

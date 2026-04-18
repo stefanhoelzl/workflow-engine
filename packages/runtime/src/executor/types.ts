@@ -25,6 +25,7 @@ type TriggerDescriptor = HttpTriggerDescriptor;
 // WorkflowRunner: invokes a trigger handler with an invocation id, and
 // allows the executor to subscribe to events emitted from the sandbox.
 interface WorkflowRunner {
+	readonly tenant: string;
 	readonly name: string;
 	readonly env: Readonly<Record<string, string>>;
 	readonly actions: readonly ActionDescriptor[];

@@ -17,6 +17,7 @@ interface EventsTable {
 	ref: number | null;
 	at: string;
 	ts: number;
+	tenant: string;
 	workflow: string;
 	workflowSha: string;
 	name: string;
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS events (
 	ref INTEGER,
 	"at" TIMESTAMPTZ NOT NULL,
 	ts BIGINT NOT NULL,
+	tenant TEXT NOT NULL,
 	workflow TEXT NOT NULL,
 	workflowSha TEXT NOT NULL,
 	name TEXT NOT NULL,
@@ -94,6 +96,7 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		ref: event.ref,
 		at: event.at,
 		ts: event.ts,
+		tenant: event.tenant,
 		workflow: event.workflow,
 		workflowSha: event.workflowSha,
 		name: event.name,

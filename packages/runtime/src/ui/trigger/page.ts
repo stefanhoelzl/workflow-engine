@@ -51,6 +51,7 @@ function prepareSchema(schema: unknown): unknown {
 }
 
 interface TriggerCardData {
+	readonly tenant: string;
 	readonly workflow: string;
 	readonly trigger: string;
 	readonly path: string;
@@ -60,8 +61,8 @@ interface TriggerCardData {
 
 function renderTriggerCard(data: TriggerCardData) {
 	const schemaJson = JSON.stringify(prepareSchema(data.schema));
-	const webhookUrl = `/webhooks/${data.path}`;
-	const cardId = `trigger-${data.workflow}-${data.trigger}`
+	const webhookUrl = `/webhooks/${data.tenant}/${data.workflow}/${data.path}`;
+	const cardId = `trigger-${data.tenant}-${data.workflow}-${data.trigger}`
 		.replace(/[^a-zA-Z0-9_-]/g, "-")
 		.toLowerCase();
 	return html`<details class="trigger-details" id="${cardId}">
@@ -82,14 +83,20 @@ function renderTriggerCard(data: TriggerCardData) {
     </details>`;
 }
 
-function renderTriggerPage(
-	triggers: readonly HttpTriggerEntry[],
-	user: string,
-	email: string,
-) {
-	const cards = triggers
+interface TriggerPageOptions {
+	readonly entries: readonly HttpTriggerEntry[];
+	readonly user: string;
+	readonly email: string;
+	readonly tenants: readonly string[];
+	readonly activeTenant: string | undefined;
+}
+
+function renderTriggerPage(options: TriggerPageOptions) {
+	const { entries, user, email, tenants, activeTenant } = options;
+	const cards = entries
 		.map(
 			(entry): TriggerCardData => ({
+				tenant: entry.workflow.tenant,
 				workflow: entry.workflow.name,
 				trigger: entry.descriptor.name,
 				path: entry.descriptor.path,
@@ -116,7 +123,15 @@ function renderTriggerPage(
   </div>`;
 
 	return renderLayout(
-		{ title: "Trigger", activePath: "/trigger", user, email, head },
+		{
+			title: "Trigger",
+			activePath: "/trigger",
+			user,
+			email,
+			head,
+			tenants,
+			...(activeTenant === undefined ? {} : { activeTenant }),
+		},
 		content,
 	);
 }

@@ -34,7 +34,9 @@ function stubStorageBackend(): StorageBackend {
 	return {
 		init: vi.fn().mockResolvedValue(undefined),
 		write: vi.fn().mockResolvedValue(undefined),
+		writeBytes: vi.fn().mockResolvedValue(undefined),
 		read: vi.fn().mockResolvedValue("2026-01-01T00:00:00.000Z"),
+		readBytes: vi.fn().mockResolvedValue(new Uint8Array(0)),
 		list: vi.fn().mockImplementation(async function* () {
 			// empty iterator
 		}),

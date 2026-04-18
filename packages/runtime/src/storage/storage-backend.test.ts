@@ -43,6 +43,20 @@ function storageBackendTests(
 			expect(data).toBe('{"id":"evt_1"}');
 		});
 
+		it("writeBytes and readBytes roundtrip arbitrary binary data", async () => {
+			const payload = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe]);
+			await backend.writeBytes("dir/bundle.tar.gz", payload);
+			const data = await backend.readBytes("dir/bundle.tar.gz");
+			expect(Array.from(data)).toEqual(Array.from(payload));
+		});
+
+		it("writeBytes overwrites existing key", async () => {
+			await backend.writeBytes("dir/bundle.tar.gz", new Uint8Array([1, 2, 3]));
+			await backend.writeBytes("dir/bundle.tar.gz", new Uint8Array([9, 8]));
+			const data = await backend.readBytes("dir/bundle.tar.gz");
+			expect(Array.from(data)).toEqual([9, 8]);
+		});
+
 		it("list yields matching paths", async () => {
 			await backend.write("pending/a.json", "a");
 			await backend.write("pending/b.json", "b");

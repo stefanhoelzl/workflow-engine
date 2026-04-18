@@ -122,6 +122,10 @@ function userMiddleware(
 declare module "hono" {
 	interface ContextVariableMap {
 		user: UserContext;
+		// Set by `/api/*` middleware when auth mode is `open` (dev-only).
+		// Signals that membership checks should be skipped. The regex-based
+		// tenant-identifier validation in handlers is NOT skipped.
+		authOpen: boolean;
 	}
 }
 

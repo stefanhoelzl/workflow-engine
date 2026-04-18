@@ -6,7 +6,25 @@ import {
 	createEventStore,
 	type EventStore,
 } from "../../event-bus/event-store.js";
+import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { dashboardMiddleware } from "./middleware.js";
+
+const emptyRegistry: WorkflowRegistry = {
+	runners: [],
+	triggerRegistry: {
+		register: () => undefined,
+		removeRunner: () => undefined,
+		lookup: () => undefined,
+		list: () => [],
+		get size(): number {
+			return 0;
+		},
+	},
+	lookupRunner: () => undefined,
+	registerTenant: async () => ({ ok: false, error: "unused" }),
+	recover: async () => undefined,
+	dispose: () => undefined,
+};
 
 const SUCCEEDED_BADGE_RE = /class="badge succeeded"[^>]*>succeeded</;
 const DETAILS_OK_RE = /<details[^>]*id="inv-evt_ok"/;
@@ -28,7 +46,7 @@ function event(
 
 async function mount(eventStore: EventStore): Promise<Hono> {
 	const app = new Hono();
-	const m = dashboardMiddleware({ eventStore });
+	const m = dashboardMiddleware({ eventStore, registry: emptyRegistry });
 	const noopNext = async () => {
 		/* no-op */
 	};
@@ -38,6 +56,17 @@ async function mount(eventStore: EventStore): Promise<Hono> {
 	});
 	return app;
 }
+
+// Events written via makeEvent() carry tenant "t0" by default; auth the
+// request as a user whose groups include "t0" so the active-tenant selector
+// resolves and the scoped query returns the seeded rows.
+// User name is "user" so alphabetical sort of (orgs ∪ {name}) = ["t0","user"]
+// → active tenant defaults to "t0", matching the seeded events' default tenant.
+const AUTH_HEADERS = {
+	"X-Auth-Request-User": "user",
+	"X-Auth-Request-Email": "user@example.test",
+	"X-Auth-Request-Groups": "t0",
+};
 
 describe("dashboard middleware — shell", () => {
 	let store: EventStore;
@@ -49,13 +78,13 @@ describe("dashboard middleware — shell", () => {
 	it("renders the loading-state shell without invocation data", async () => {
 		await store.handle(event({ kind: "trigger.request", seq: 0 }));
 		const app = await mount(store);
-		const res = await app.request("/dashboard");
+		const res = await app.request("/dashboard", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		// Loading-state skeleton placeholders are present
 		expect(html).toContain('class="entry skeleton"');
 		// Fragment is wired to load via HTMX
-		expect(html).toContain('hx-get="/dashboard/invocations"');
+		expect(html).toContain('hx-get="/dashboard/invocations?tenant=t0"');
 		expect(html).toContain('hx-trigger="load"');
 		// No invocation data is rendered into the shell
 		expect(html).not.toContain("on-push");
@@ -72,7 +101,9 @@ describe("dashboard middleware — fragment", () => {
 
 	it("renders an empty state when there are no invocations", async () => {
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain("No invocations yet");
@@ -81,7 +112,9 @@ describe("dashboard middleware — fragment", () => {
 	it("renders a card with status=pending for an invocation with no terminal event", async () => {
 		await store.handle(event({ kind: "trigger.request", seq: 0 }));
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toContain("on-push");
 		expect(html).toContain("pending");
@@ -100,7 +133,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toContain("succeeded");
 	});
@@ -118,7 +153,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toContain("failed");
 	});
@@ -139,7 +176,9 @@ describe("dashboard middleware — fragment", () => {
 			),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		// most recent first → tr_2 appears before tr_0 in the rendered HTML
 		expect(html.indexOf("tr_2")).toBeLessThan(html.indexOf("tr_0"));
@@ -161,7 +200,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toMatch(DETAILS_OK_RE);
 		expect(html).toContain('hx-get="/dashboard/invocations/evt_ok/flamegraph"');
@@ -186,7 +227,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toMatch(DETAILS_ERR_RE);
 		expect(html).toContain(
@@ -204,7 +247,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).not.toMatch(DETAILS_PENDING_RE);
 		expect(html).not.toContain("/dashboard/invocations/evt_pending/flamegraph");
@@ -233,7 +278,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_success"');
 		// Colored status label: badge.succeeded carries the status color + text
@@ -345,7 +392,9 @@ describe("dashboard middleware — fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/invocations");
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
 		const html = await res.text();
 		for (const { expected } of bands) {
 			expect(html).toContain(expected);

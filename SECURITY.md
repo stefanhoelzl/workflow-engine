@@ -659,11 +659,16 @@ exists. Each item should be tracked as a follow-up security task.
 
 ### Trust level
 
-**PUBLIC.** `POST /webhooks/{name}` is reachable by anyone on the
-Internet without authentication. This is an **intentional design
+**PUBLIC.** `POST /webhooks/{tenant}/{workflow}/{trigger_path}` is reachable by
+anyone on the Internet without authentication. This is an **intentional design
 choice**: webhooks are how external systems deliver events. Do not add
 authentication here without an OpenSpec change proposal — existing
 integrations depend on unauthenticated ingress.
+
+The tenant and workflow-name prefixes in the URL are **identification, not
+authorization**: knowledge of a valid `(tenant, workflow, path)` tuple is
+sufficient to trigger the workflow. These segments exist to disambiguate
+tenants and workflows at the routing layer, not to gate access.
 
 Everything received on this surface must be treated as
 attacker-controlled: body, headers, query string, URL parameters, and
@@ -671,10 +676,12 @@ timing.
 
 ### Entry points
 
-- `POST /webhooks/{trigger_path}` (or whatever `method` the trigger
-  declares; default POST) with JSON body.
-- Path matching via URLPattern; supports `:param` path segments and
-  `*wildcard` tail segments. Static segments are prioritized over
+- `POST /webhooks/{tenant}/{workflow}/{trigger_path}` (or whatever `method` the
+  trigger declares; default POST) with JSON body.
+- `{tenant}` and `{workflow}` are validated against the tenant identifier regex
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); non-matching values receive 404.
+- Path matching via URLPattern (for `{trigger_path}`); supports `:param` path
+  segments and `*wildcard` tail segments. Static segments are prioritized over
   parameterized (`packages/runtime/src/triggers/http.ts`).
 - Request data delivered to the trigger handler as the `payload`
   argument:
@@ -842,6 +849,7 @@ and any future authenticated UI prefix.
 | A9 | Bearer token is logged via request / response logging or included in an event payload | Information disclosure |
 | A10 | User is removed from the `GITHUB_USER` / `OAUTH2_PROXY_GITHUB_USERS` allowlist but an existing session cookie stays valid until expiry | EoP (stale access) |
 | A11 | Open redirect via `/oauth2` callback parameters | Spoofing (phishing) |
+| A12 | Allow-listed user uploads to a tenant they are not a member of (or enumerates tenants) to discover tenant names | EoP (cross-tenant) / Information disclosure |
 
 ### Mitigations (current)
 
@@ -874,6 +882,21 @@ and any future authenticated UI prefix.
   GitHub network error) return `401 Unauthorized` with an identical
   body; the status code does not distinguish "wrong user" from "bad
   token", preventing enumeration by holders of valid PATs.
+- **Tenant membership enforcement for `/api/workflows/<tenant>` (R-A12).**
+  The upload handler runs `githubAuthMiddleware` first (allow-list gate),
+  then `userMiddleware` (which populates `UserContext.orgs` and `.name`
+  by hitting `/user`, `/user/orgs`, `/user/teams` on GitHub for Bearer
+  tokens and by parsing `X-Auth-Request-Groups` for oauth2-proxy). The
+  handler then validates `<tenant>` against the identifier regex
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) and evaluates
+  `isMember(user, tenant) := user.orgs.includes(tenant) || user.name === tenant`.
+  Both failures (invalid regex, non-member) return `404 Not Found` with
+  body `{ "error": "Not Found" }`, indistinguishable from "tenant does
+  not exist," which prevents allow-listed users from enumerating tenant
+  names. Teams (`UserContext.teams`, populated from colon-separated
+  groups) are **not** consulted for membership.
+  (`packages/runtime/src/auth/tenant.ts`,
+  `packages/runtime/src/api/upload.ts`)
 - **Startup-logged auth mode.** The runtime emits a log record at
   startup identifying the effective `githubAuth.mode`, at `warn` level
   for `disabled` or `open`. Misconfigured deployments are visible in

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
@@ -13,7 +13,6 @@ import { recover } from "./recovery.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
 	createWorkflowRegistry,
-	loadWorkflows,
 	type WorkflowRegistry,
 } from "./workflow-registry.js";
 
@@ -26,7 +25,7 @@ function makeLogger(): Logger {
 	} as unknown as Logger;
 }
 
-const MANIFEST = {
+const WORKFLOW = {
 	name: "demo",
 	module: "demo.js",
 	sha: "1".repeat(64),
@@ -46,6 +45,7 @@ const MANIFEST = {
 		},
 	],
 };
+const TENANT_MANIFEST = { workflows: [WORKFLOW] };
 
 // IIFE bundle: the vite-plugin emits `format: "iife"` and assigns exports to
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
@@ -101,10 +101,13 @@ describe("end-to-end event flow", () => {
 		const bus = createEventBus([persistence, store]);
 
 		registry = createWorkflowRegistry({ logger });
-		const manifestPath = join(dir, "manifest.json");
-		await writeFile(manifestPath, JSON.stringify(MANIFEST), "utf8");
-		await writeFile(join(dir, "demo.js"), BUNDLE, "utf8");
-		await loadWorkflows(registry, [manifestPath], { logger });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(TENANT_MANIFEST)],
+				["demo.js", BUNDLE],
+			]),
+		);
 		const runner = registry.runners[0];
 		if (!runner) {
 			throw new Error("expected at least one runner");
@@ -172,8 +175,9 @@ describe("end-to-end event flow", () => {
 			ref: null,
 			at: new Date().toISOString(),
 			ts: 0,
+			tenant: "acme",
 			workflow: "demo",
-			workflowSha: MANIFEST.sha,
+			workflowSha: WORKFLOW.sha,
 			name: "ping",
 		});
 		await backend.write(
@@ -219,7 +223,7 @@ describe("end-to-end event flow", () => {
 				at: "2026-04-16T10:00:00.000Z",
 				ts: 100,
 				workflow: "demo",
-				workflowSha: MANIFEST.sha,
+				workflowSha: WORKFLOW.sha,
 				name: "ping",
 				input: { hello: "world" },
 			}),
@@ -231,7 +235,7 @@ describe("end-to-end event flow", () => {
 				at: "2026-04-16T10:00:00.001Z",
 				ts: 101,
 				workflow: "demo",
-				workflowSha: MANIFEST.sha,
+				workflowSha: WORKFLOW.sha,
 				name: "host.validate",
 			}),
 			makeEvent({
@@ -242,7 +246,7 @@ describe("end-to-end event flow", () => {
 				at: "2026-04-16T10:00:00.002Z",
 				ts: 102,
 				workflow: "demo",
-				workflowSha: MANIFEST.sha,
+				workflowSha: WORKFLOW.sha,
 				name: "host.validate",
 				output: {},
 			}),
@@ -254,7 +258,7 @@ describe("end-to-end event flow", () => {
 				at: "2026-04-16T10:00:00.003Z",
 				ts: 103,
 				workflow: "demo",
-				workflowSha: MANIFEST.sha,
+				workflowSha: WORKFLOW.sha,
 				name: "ping",
 				output: { status: 200 },
 			}),

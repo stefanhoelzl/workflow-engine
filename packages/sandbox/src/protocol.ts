@@ -33,6 +33,7 @@ type MainToWorker =
 			ctx: unknown;
 			extraNames: string[];
 			invocationId: string;
+			tenant: string;
 			workflow: string;
 			workflowSha: string;
 	  }

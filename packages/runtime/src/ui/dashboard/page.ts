@@ -91,9 +91,19 @@ function renderSkeletonCards() {
 	)}`;
 }
 
-function renderDashboardPage(user: string, email: string) {
-	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
+interface DashboardPageOptions {
+	readonly user: string;
+	readonly email: string;
+	readonly tenants: readonly string[];
+	readonly activeTenant: string | undefined;
+}
 
+function renderDashboardPage(options: DashboardPageOptions) {
+	const { user, email, tenants, activeTenant } = options;
+	const invocationsUrl = activeTenant
+		? `/dashboard/invocations?tenant=${encodeURIComponent(activeTenant)}`
+		: "/dashboard/invocations";
+	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
 	const content = html`
   <div class="page-header">
     <h1>Dashboard</h1>
@@ -101,7 +111,7 @@ function renderDashboardPage(user: string, email: string) {
 
   <div class="list">
     <div id="invocation-list"
-         hx-get="/dashboard/invocations"
+         hx-get="${invocationsUrl}"
          hx-trigger="load"
          hx-swap="innerHTML">
       ${renderSkeletonCards()}
@@ -109,7 +119,15 @@ function renderDashboardPage(user: string, email: string) {
   </div>`;
 
 	return renderLayout(
-		{ title: "Dashboard", activePath: "/dashboard", user, email, head },
+		{
+			title: "Dashboard",
+			activePath: "/dashboard",
+			user,
+			email,
+			tenants,
+			head,
+			...(activeTenant === undefined ? {} : { activeTenant }),
+		},
 		content,
 	);
 }

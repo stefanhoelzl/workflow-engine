@@ -47,12 +47,12 @@ pnpm build
 pnpm start
 ```
 
-This builds the runtime and workflows, then starts the server with `WORKFLOW_DIR` pointing at the built output.
+This builds the runtime and starts the server. Workflows no longer bootstrap from disk — upload your tenant's bundle with `wfe upload --tenant <name>` once the server is reachable.
 
 Trigger a workflow:
 
 ```bash
-curl -X POST http://localhost:8080/webhooks/order \
+curl -X POST http://localhost:8080/webhooks/<tenant>/<workflow-name>/<trigger-path> \
   -H 'Content-Type: application/json' \
   -d '{"orderId": "abc-123"}'
 ```
@@ -62,8 +62,7 @@ curl -X POST http://localhost:8080/webhooks/order \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
-| `WORKFLOW_DIR` | — | Path to built workflow artifacts |
-| `PERSISTENCE_PATH` | — | Filesystem persistence directory |
+| `PERSISTENCE_PATH` | — | Filesystem persistence directory (also hosts tenant bundles at `workflows/<tenant>.tar.gz`) |
 | `PERSISTENCE_S3_BUCKET` | — | S3 bucket for persistence |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 

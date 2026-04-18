@@ -74,6 +74,7 @@ async function runWpt(
 			{},
 			{
 				invocationId: `wpt_${path}`,
+				tenant: "wpt",
 				workflow: "wpt",
 				workflowSha: "",
 				extraMethods: {

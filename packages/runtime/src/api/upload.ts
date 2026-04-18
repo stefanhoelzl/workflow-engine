@@ -1,40 +1,26 @@
 import { constants } from "node:http2";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import { createGunzip } from "node:zlib";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { extract as tarExtract } from "tar-stream";
+import { isMember, validateTenant } from "../auth/tenant.js";
+import type { UserContext } from "../auth/user.js";
 import type { Logger } from "../logger.js";
 import {
-	registerFromFiles,
+	extractTenantTarGz,
 	type WorkflowRegistry,
 } from "../workflow-registry.js";
 
 // ---------------------------------------------------------------------------
-// POST /api/workflows — upload a single workflow bundle (v1)
+// POST /api/workflows/:tenant — upload a tenant bundle
 // ---------------------------------------------------------------------------
 //
-// Payload: gzip-compressed tarball containing exactly the per-workflow
-// output of the vite-plugin bundling step:
-//   - manifest.json  (v1 ManifestSchema)
-//   - <name>.js      (the bundled workflow source; `name` matches
-//                     `manifest.module`)
+// Payload: gzip-compressed tarball containing the root `manifest.json`
+// (tenant manifest with `workflows: [...]`) plus one `<name>.js` per
+// workflow at the tarball root.
 //
-// Flow:
-//   1. Read body into an ArrayBuffer, pipe through gunzip + tar-stream.
-//   2. Validate the tarball: reject unreadable streams with 415.
-//   3. Call `registerFromFiles()` on the workflow registry — it validates
-//      the manifest, loads the bundle into a new sandbox, and swaps in
-//      the new workflow (or fails with a structured RegisterResult).
-//   4. 204 on success; 422 + JSON body on validation / missing-module
-//      failures (the registry's RegisterResult shape).
-//
-// SECURITY: this endpoint is mounted under `/api/*` and therefore
-// inherits `githubAuthMiddleware` (see `api/index.ts`). Unauthenticated
-// requests are rejected upstream and never reach this handler. The tar
-// extractor is an in-memory accumulator — upload size is bounded by the
-// HTTP server's max-body config.
+// Auth: `githubAuthMiddleware` gates the /api/* surface; `userMiddleware`
+// populates `UserContext` (orgs + name). The handler performs a tenant
+// membership check — non-members (and invalid tenant strings) receive
+// 404 Not Found, indistinguishable from "tenant does not exist."
 
 const HTTP_NO_CONTENT =
 	constants.HTTP_STATUS_NO_CONTENT as ContentfulStatusCode;
@@ -42,42 +28,45 @@ const HTTP_UNSUPPORTED_MEDIA_TYPE =
 	constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE as ContentfulStatusCode;
 const HTTP_UNPROCESSABLE_ENTITY =
 	constants.HTTP_STATUS_UNPROCESSABLE_ENTITY as ContentfulStatusCode;
-
-async function extractTarGz(buffer: ArrayBuffer): Promise<Map<string, string>> {
-	const files = new Map<string, string>();
-	const extractor = tarExtract();
-
-	extractor.on("entry", (header, stream, next) => {
-		if (header.type === "file") {
-			const chunks: Buffer[] = [];
-			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-			stream.on("end", () => {
-				files.set(header.name, Buffer.concat(chunks).toString("utf-8"));
-				next();
-			});
-		} else {
-			stream.on("end", () => next());
-			stream.resume();
-		}
-	});
-
-	await pipeline(Readable.from(Buffer.from(buffer)), createGunzip(), extractor);
-
-	return files;
-}
+const HTTP_NOT_FOUND = constants.HTTP_STATUS_NOT_FOUND as ContentfulStatusCode;
 
 interface UploadDeps {
 	readonly registry: WorkflowRegistry;
 	readonly logger: Logger;
 }
 
+function notFound(c: Context): Response {
+	return c.json({ error: "Not Found" }, HTTP_NOT_FOUND);
+}
+
+function checkTenantAccess(c: Context, tenant: string): Response | undefined {
+	if (c.get("authOpen")) {
+		return;
+	}
+	const user = c.get("user") as UserContext | undefined;
+	if (user && isMember(user, tenant)) {
+		return;
+	}
+	return notFound(c);
+}
+
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
-		const body = await c.req.arrayBuffer();
+		const tenant = c.req.param("tenant") ?? "";
+		if (!validateTenant(tenant)) {
+			return notFound(c);
+		}
 
+		const accessDenied = checkTenantAccess(c, tenant);
+		if (accessDenied) {
+			return accessDenied;
+		}
+
+		const body = await c.req.arrayBuffer();
+		const tarballBytes = new Uint8Array(body);
 		let files: Map<string, string>;
 		try {
-			files = await extractTarGz(body);
+			files = await extractTenantTarGz(tarballBytes);
 		} catch {
 			return c.json(
 				{ error: "Not a valid gzip/tar archive" },
@@ -85,8 +74,8 @@ function createUploadHandler(deps: UploadDeps) {
 			);
 		}
 
-		const result = await registerFromFiles(deps.registry, files, {
-			logger: deps.logger,
+		const result = await deps.registry.registerTenant(tenant, files, {
+			tarballBytes,
 		});
 		if (!result.ok) {
 			const payload = result.issues
@@ -100,4 +89,4 @@ function createUploadHandler(deps: UploadDeps) {
 }
 
 export type { UploadDeps };
-export { createUploadHandler, extractTarGz };
+export { createUploadHandler };

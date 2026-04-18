@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import type { StorageBackend } from "./index.js";
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups all FS storage operations
 function createFsStorage(root: string): StorageBackend {
 	return {
 		async init() {
@@ -25,8 +26,22 @@ function createFsStorage(root: string): StorageBackend {
 			await rename(tmp, fullPath);
 		},
 
+		async writeBytes(path, data) {
+			const fullPath = join(root, path);
+			const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
+			await mkdir(dir, { recursive: true });
+			const tmp = `${fullPath}.tmp`;
+			await writeFile(tmp, data);
+			await rename(tmp, fullPath);
+		},
+
 		async read(path) {
 			return await readFile(join(root, path), "utf-8");
+		},
+
+		async readBytes(path) {
+			const buf = await readFile(join(root, path));
+			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 		},
 
 		async *list(prefix) {

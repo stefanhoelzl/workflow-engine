@@ -25,6 +25,7 @@ type RunResult =
 
 interface RunOptions {
 	readonly invocationId: string;
+	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 	readonly extraMethods?: MethodMap;
@@ -62,6 +63,7 @@ interface Sandbox {
 
 const DEFAULT_RUN_OPTIONS: RunOptions = {
 	invocationId: "evt_test",
+	tenant: "t0",
 	workflow: "test",
 	workflowSha: "",
 };
@@ -454,6 +456,7 @@ async function sandbox(
 				ctx,
 				extraNames,
 				invocationId: runOptions.invocationId,
+				tenant: runOptions.tenant,
 				workflow: runOptions.workflow,
 				workflowSha: runOptions.workflowSha,
 			};
