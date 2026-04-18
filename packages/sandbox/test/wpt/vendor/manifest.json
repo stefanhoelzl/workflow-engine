@@ -1,6 +1,6 @@
 {
-	"wptSha": "b645fd8ab482d61a66c3ebc400adc0b97e14a4da",
-	"vendoredAt": "2026-04-17T22:50:33.154Z",
+	"wptSha": "6a34b275b9d700a104215c91045ada3c82f6ab8b",
+	"vendoredAt": "2026-04-18T09:39:37.853Z",
 	"tests": {
 		"FileAPI/FileReaderSync.worker.js": {
 			"scripts": [
