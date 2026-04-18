@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { headerUserMiddleware } from "../../auth/header-user.js";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
-import { userMiddleware } from "../../auth/user.js";
 import type { HttpTriggerRegistry, Middleware } from "../../triggers/http.js";
 import { renderTriggerPage } from "./page.js";
 
@@ -59,7 +59,7 @@ function resolveActiveTenant(
 
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
-	app.use("*", userMiddleware());
+	app.use("*", headerUserMiddleware());
 
 	const render = (c: Context) => {
 		const user = c.get("user");

@@ -2,7 +2,7 @@ import { constants } from "node:http2";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { isMember, validateTenant } from "../auth/tenant.js";
-import type { UserContext } from "../auth/user.js";
+import type { UserContext } from "../auth/user-context.js";
 import type { Logger } from "../logger.js";
 import {
 	extractTenantTarGz,

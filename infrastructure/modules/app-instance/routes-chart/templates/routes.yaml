@@ -13,6 +13,31 @@ spec:
       - X-Auth-Request-Groups
       - X-Auth-Request-Redirect
 ---
+# Clears every X-Auth-Request-* header oauth2-proxy emits from the
+# incoming request before it reaches any backend. Attached to every
+# route EXCEPT /dashboard and /trigger (the only routes where
+# oauth2-proxy is authoritative over these headers via
+# `oauth2-forward-auth.authResponseHeaders`). Empty string removes
+# the header per Traefik semantics.
+#
+# The reader of these headers on UI routes is
+# `packages/runtime/src/auth/header-user.ts`. When a new
+# X-Auth-Request-* reader is added there, append the header name below.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-auth-headers
+  namespace: {{ .Release.Namespace }}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Auth-Request-User: ""
+      X-Auth-Request-Email: ""
+      X-Auth-Request-Preferred-Username: ""
+      X-Auth-Request-Groups: ""
+      X-Auth-Request-Access-Token: ""
+      X-Auth-Request-Redirect: ""
+---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -124,35 +149,44 @@ spec:
     - match: Host(`{{ .Values.domain }}`) && Path(`/`)
       kind: Rule
       middlewares:
+        - name: strip-auth-headers
         - name: redirect-root
       services:
         - name: {{ .Values.appServiceName }}
           port: {{ .Values.appServicePort }}
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/oauth2`)
       kind: Rule
+      middlewares:
+        - name: strip-auth-headers
       services:
         - name: {{ .Values.oauth2ServiceName }}
           port: {{ .Values.oauth2ServicePort }}
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/static`)
       kind: Rule
+      middlewares:
+        - name: strip-auth-headers
       services:
         - name: {{ .Values.appServiceName }}
           port: {{ .Values.appServicePort }}
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/webhooks`)
       kind: Rule
       middlewares:
+        - name: strip-auth-headers
         - name: server-error
       services:
         - name: {{ .Values.appServiceName }}
           port: {{ .Values.appServicePort }}
     - match: Host(`{{ .Values.domain }}`) && Path(`/livez`)
       kind: Rule
+      middlewares:
+        - name: strip-auth-headers
       services:
         - name: {{ .Values.appServiceName }}
           port: {{ .Values.appServicePort }}
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
       kind: Rule
       middlewares:
+        - name: strip-auth-headers
         - name: server-error
       services:
         - name: {{ .Values.appServiceName }}
@@ -161,6 +195,7 @@ spec:
       kind: Rule
       priority: 1
       middlewares:
+        - name: strip-auth-headers
         - name: not-found
       services:
         - name: {{ .Values.appServiceName }}
