@@ -130,6 +130,9 @@ importers:
       urlpattern-polyfill:
         specifier: 10.0.0
         version: 10.0.0
+      web-streams-polyfill:
+        specifier: ^4.2.0
+        version: 4.2.0
     devDependencies:
       '@rollup/plugin-node-resolve':
         specifier: ^16.0.0
@@ -2580,6 +2583,10 @@ packages:
         optional: true
       jsdom:
         optional: true
+
+  web-streams-polyfill@4.2.0:
+    resolution: {integrity: sha512-0rYDzGOh9EZpig92umN5g5D/9A1Kff7k0/mzPSSCY8jEQeYkgRMoY7LhbXtUCWzLCMX0TUE9aoHkjFNB7D9pfA==}
+    engines: {node: '>= 8'}
 
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
@@ -5079,6 +5086,8 @@ snapshots:
       '@types/node': 25.5.2
     transitivePeerDependencies:
       - msw
+
+  web-streams-polyfill@4.2.0: {}
 
   why-is-node-running@2.3.0:
     dependencies:

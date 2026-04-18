@@ -4,6 +4,8 @@
 //   event-target     — EventTarget/Event/ErrorEvent/AbortController/AbortSignal
 //   report-error     — reportError (depends on ErrorEvent + globalThis.dispatchEvent)
 //   microtask        — queueMicrotask wrap (depends on reportError)
+//   streams          — Readable/Writable/TransformStream + queuing strategies
+//                      + TextEncoder/DecoderStream (ponyfill, no deps)
 //   fetch            — fetch shim (depends on Headers/TextEncoder from WASM ext;
 //                      independent of event stack but bundled together for
 //                      single-eval simplicity in worker.ts)
@@ -23,6 +25,7 @@ import "./trivial.js";
 import "./event-target.js";
 import "./report-error.js";
 import "./microtask.js";
+import "./streams.js";
 import "./fetch.js";
 import "./structured-clone.js";
 import "./user-timing.js";

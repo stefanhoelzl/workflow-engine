@@ -14,7 +14,8 @@
 		"@workflow-engine/core": "workspace:*",
 		"event-target-shim": "^6.0.2",
 		"quickjs-wasi": "^2.2.0",
-		"urlpattern-polyfill": "10.0.0"
+		"urlpattern-polyfill": "10.0.0",
+		"web-streams-polyfill": "^4.2.0"
 	},
 	"devDependencies": {
 		"@rollup/plugin-node-resolve": "^16.0.0",
