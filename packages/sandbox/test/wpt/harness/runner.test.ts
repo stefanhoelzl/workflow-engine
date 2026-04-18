@@ -1,37 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { sandbox } from "../../../src/index.js";
-import { findMissingSkips } from "./runner.js";
-
-describe("findMissingSkips", () => {
-	it("returns empty list when no declared skips", () => {
-		expect(findMissingSkips(undefined, [])).toEqual([]);
-		expect(findMissingSkips({}, [])).toEqual([]);
-	});
-
-	it("returns empty list when every declared skip was observed", () => {
-		const declared = { a: "r1", b: "r2" };
-		const observed = [
-			{ name: "a", status: "PASS", message: "" },
-			{ name: "b", status: "PASS", message: "" },
-			{ name: "c", status: "PASS", message: "" },
-		];
-		expect(findMissingSkips(declared, observed)).toEqual([]);
-	});
-
-	it("returns names of declared skips that were not observed (drift signal)", () => {
-		const declared = {
-			"renamed upstream": "stale",
-			"still here": "kept",
-		};
-		const observed = [{ name: "still here", status: "FAIL", message: "" }];
-		expect(findMissingSkips(declared, observed)).toEqual(["renamed upstream"]);
-	});
-
-	it("returns all declared names when nothing was observed", () => {
-		const declared = { x: "r1", y: "r2" };
-		expect(findMissingSkips(declared, [])).toEqual(["x", "y"]);
-	});
-});
 
 describe("watchdog force-kill pattern", () => {
 	// The WPT runner's watchdog: setTimeout(deadlineMs) → sb.dispose() →
@@ -66,7 +34,6 @@ describe("watchdog force-kill pattern", () => {
 				),
 			).rejects.toThrow(/Sandbox is disposed|worker/i);
 			const elapsed = Date.now() - started;
-			// Should settle within deadlineMs + a small margin for Worker.terminate().
 			expect(elapsed).toBeLessThan(deadlineMs + 2000);
 		} finally {
 			clearTimeout(watchdog);

@@ -1,16 +1,4 @@
-// Pattern matching for the WPT spec map.
-//
-// Keys in spec.ts are either file-paths (e.g. "fetch/api/basic/foo.any.js")
-// or file:subtest (e.g. "foo.any.js:subtest name"). Patterns support glob
-// wildcards `*` (matches anything except `/`) and `**` (matches anything
-// including `/`).
-//
-// findMostSpecific returns the winning Expectation by rules:
-//   1. Highest specificity wins. Specificity is non-wildcard char count in
-//      the file-part; subtest-targeted patterns get a +1_000_000 boost.
-//   2. Severity breaks ties: skip > pass.
-
-type Expectation = { expected: "pass" } | { expected: "skip"; reason: string };
+// Skip-map lookup for the WPT runner. See ../README.md §"skip.ts conventions".
 
 function splitKey(key: string): { file: string; subtest: string | null } {
 	const idx = key.indexOf(":");
@@ -20,7 +8,13 @@ function splitKey(key: string): { file: string; subtest: string | null } {
 	return { file: key.slice(0, idx), subtest: key.slice(idx + 1) };
 }
 
+const REGEX_CACHE = new Map<string, RegExp>();
+
 function globToRegex(pattern: string): RegExp {
+	const cached = REGEX_CACHE.get(pattern);
+	if (cached !== undefined) {
+		return cached;
+	}
 	let src = "";
 	for (let i = 0; i < pattern.length; i++) {
 		const c = pattern[i];
@@ -31,26 +25,21 @@ function globToRegex(pattern: string): RegExp {
 			} else {
 				src += "[^/]*";
 			}
-		} else if (c === "?") {
-			src += "[^/]";
 		} else if (c && /[.+^${}()|[\]\\]/.test(c)) {
 			src += `\\${c}`;
 		} else if (c !== undefined) {
 			src += c;
 		}
 	}
-	return new RegExp(`^${src}$`);
+	const re = new RegExp(`^${src}$`);
+	REGEX_CACHE.set(pattern, re);
+	return re;
 }
 
 function matchPattern(pattern: string, key: string): boolean {
 	const p = splitKey(pattern);
 	const k = splitKey(key);
-	if (p.subtest === null && k.subtest !== null) {
-		// File-level pattern matches any subtest-level key if the file matches.
-		return globToRegex(p.file).test(k.file);
-	}
 	if (p.subtest !== null && k.subtest === null) {
-		// Subtest-level pattern never matches a file-only key.
 		return false;
 	}
 	if (!globToRegex(p.file).test(k.file)) {
@@ -59,43 +48,73 @@ function matchPattern(pattern: string, key: string): boolean {
 	if (p.subtest === null) {
 		return true;
 	}
-	// Subtest names are matched literally (no glob), which avoids surprising
-	// behavior when subtest names themselves contain characters like `*`.
+	// Subtest names are matched literally (no glob), to avoid surprises when
+	// names themselves contain `*`.
 	return p.subtest === k.subtest;
 }
 
-function specificity(pattern: string): number {
-	const { file, subtest } = splitKey(pattern);
-	const subtestBoost = subtest === null ? 0 : 1_000_000;
-	const literalChars = file.replace(/[*?]/g, "").length;
-	return subtestBoost + literalChars;
+const GLOBS_CACHE = new WeakMap<
+	object,
+	ReadonlyArray<readonly [string, string]>
+>();
+
+function globEntries(
+	skip: Record<string, string>,
+): ReadonlyArray<readonly [string, string]> {
+	let cached = GLOBS_CACHE.get(skip);
+	if (cached === undefined) {
+		cached = Object.entries(skip).filter(([k]) => k.includes("*"));
+		GLOBS_CACHE.set(skip, cached);
+	}
+	return cached;
 }
 
-function findMostSpecific(
-	spec: Record<string, Expectation>,
-	key: string,
-): Expectation | null {
-	let winner: { pattern: string; exp: Expectation; score: number } | null =
-		null;
-	for (const [pattern, exp] of Object.entries(spec)) {
-		if (!matchPattern(pattern, key)) {
-			continue;
-		}
-		const score = specificity(pattern);
-		if (
-			winner === null ||
-			score > winner.score ||
-			(score === winner.score && isHigherSeverity(exp, winner.exp))
-		) {
-			winner = { pattern, exp, score };
+function findReason(skip: Record<string, string>, key: string): string | null {
+	if (skip[key] !== undefined) {
+		return skip[key];
+	}
+	for (const [pattern, reason] of globEntries(skip)) {
+		if (matchPattern(pattern, key)) {
+			return reason;
 		}
 	}
-	return winner ? winner.exp : null;
+	return null;
 }
 
-function isHigherSeverity(a: Expectation, b: Expectation): boolean {
-	return a.expected === "skip" && b.expected === "pass";
+const SUBTEST_INDEX_CACHE = new WeakMap<object, Map<string, string[]>>();
+
+function declaredSubtestSkips(
+	skip: Record<string, string>,
+	path: string,
+): readonly string[] {
+	let cached = SUBTEST_INDEX_CACHE.get(skip);
+	if (cached === undefined) {
+		cached = new Map();
+		for (const key of Object.keys(skip)) {
+			const colon = key.indexOf(":");
+			if (colon < 0) {
+				continue;
+			}
+			const file = key.slice(0, colon);
+			const name = key.slice(colon + 1);
+			const arr = cached.get(file) ?? [];
+			arr.push(name);
+			cached.set(file, arr);
+		}
+		SUBTEST_INDEX_CACHE.set(skip, cached);
+	}
+	return cached.get(path) ?? [];
 }
 
-export type { Expectation };
-export { findMostSpecific, matchPattern, specificity, splitKey };
+function findMissingSubtestSkips(
+	declared: readonly string[],
+	observed: readonly { name: string }[],
+): string[] {
+	if (declared.length === 0) {
+		return [];
+	}
+	const observedNames = new Set(observed.map((r) => r.name));
+	return declared.filter((n) => !observedNames.has(n));
+}
+
+export { declaredSubtestSkips, findMissingSubtestSkips, findReason };

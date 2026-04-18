@@ -1,142 +1,115 @@
 import { describe, expect, it } from "vitest";
 import {
-	type Expectation,
-	findMostSpecific,
-	matchPattern,
-	specificity,
+	declaredSubtestSkips,
+	findMissingSubtestSkips,
+	findReason,
 } from "./match.js";
 
-describe("matchPattern", () => {
-	it("exact file match", () => {
-		expect(matchPattern("a/b.any.js", "a/b.any.js")).toBe(true);
-		expect(matchPattern("a/b.any.js", "a/c.any.js")).toBe(false);
+describe("findReason", () => {
+	it("returns null when nothing matches (implicit pass)", () => {
+		expect(findReason({}, "a.any.js")).toBeNull();
+		expect(
+			findReason({ "fetch/api/**": "needs Request" }, "url/foo.any.js"),
+		).toBeNull();
 	});
 
-	it("** matches any path", () => {
-		expect(matchPattern("**", "a/b/c.any.js")).toBe(true);
-		expect(matchPattern("fetch/api/**", "fetch/api/basic/x.any.js")).toBe(true);
-		expect(matchPattern("fetch/api/**", "fetch/other/x.any.js")).toBe(false);
+	it("exact key match wins (literal lookup)", () => {
+		expect(findReason({ "a/b.any.js": "exact" }, "a/b.any.js")).toBe("exact");
+		expect(findReason({ "a/b.any.js": "no" }, "a/c.any.js")).toBeNull();
+	});
+
+	it("** glob matches any path", () => {
+		expect(findReason({ "**": "all" }, "a/b/c.any.js")).toBe("all");
+		expect(
+			findReason({ "fetch/api/**": "r" }, "fetch/api/basic/x.any.js"),
+		).toBe("r");
+		expect(
+			findReason({ "fetch/api/**": "r" }, "fetch/other/x.any.js"),
+		).toBeNull();
 	});
 
 	it("* does not match slashes", () => {
-		expect(matchPattern("a/*.any.js", "a/b.any.js")).toBe(true);
-		expect(matchPattern("a/*.any.js", "a/b/c.any.js")).toBe(false);
+		expect(findReason({ "a/*.any.js": "r" }, "a/b.any.js")).toBe("r");
+		expect(findReason({ "a/*.any.js": "r" }, "a/b/c.any.js")).toBeNull();
 	});
 
-	it("filename glob anywhere", () => {
+	it("filename glob anywhere in tree", () => {
+		const skip = { "**/idlharness-*.any.js": "r" };
+		expect(findReason(skip, "dom/events/idlharness-foo.any.js")).toBe("r");
+		expect(findReason(skip, "dom/events/other.any.js")).toBeNull();
+	});
+
+	it("file-level glob matches any subtest of any covered file", () => {
 		expect(
-			matchPattern(
-				"**/idlharness-*.any.js",
-				"dom/events/idlharness-foo.any.js",
+			findReason(
+				{ "streams/**": "needs streams polyfill" },
+				"streams/foo.any.js:bar",
 			),
-		).toBe(true);
+		).toBe("needs streams polyfill");
+	});
+
+	it("subtest-level pattern only matches subtest keys", () => {
 		expect(
-			matchPattern("**/idlharness-*.any.js", "dom/events/other.any.js"),
-		).toBe(false);
+			findReason({ "a/b.any.js:sub name": "r" }, "a/b.any.js:sub name"),
+		).toBe("r");
+		expect(findReason({ "a/b.any.js:x": "r" }, "a/b.any.js:y")).toBeNull();
+		expect(findReason({ "a/b.any.js:x": "r" }, "a/b.any.js")).toBeNull();
 	});
 
-	it("subtest-level pattern matches subtest-level key", () => {
-		expect(matchPattern("a/b.any.js:sub name", "a/b.any.js:sub name")).toBe(
-			true,
-		);
-		expect(matchPattern("a/b.any.js:x", "a/b.any.js:y")).toBe(false);
-	});
-
-	it("file-level pattern matches any subtest key of that file", () => {
-		expect(matchPattern("a/b.any.js", "a/b.any.js:anything")).toBe(true);
-	});
-
-	it("subtest pattern never matches a file-only key", () => {
-		expect(matchPattern("a/b.any.js:x", "a/b.any.js")).toBe(false);
+	it("exact subtest match wins over file-level glob", () => {
+		const skip = {
+			"streams/**": "broad",
+			"streams/foo.any.js:specific": "narrow",
+		};
+		expect(findReason(skip, "streams/foo.any.js:specific")).toBe("narrow");
 	});
 });
 
-describe("specificity", () => {
-	it("more non-wildcard characters wins", () => {
-		expect(specificity("fetch/api/cors/**")).toBeGreaterThan(
-			specificity("fetch/api/**"),
-		);
+describe("declaredSubtestSkips", () => {
+	it("returns empty list when no subtest entries match the path", () => {
+		expect(declaredSubtestSkips({}, "foo.any.js")).toEqual([]);
+		expect(
+			declaredSubtestSkips({ "other.any.js:x": "r" }, "foo.any.js"),
+		).toEqual([]);
 	});
 
-	it("filename pattern may beat dir pattern", () => {
-		// "idlharness-.any.js" literal = 17
-		// "dom/events/" literal = 11
-		expect(specificity("**/idlharness-*.any.js")).toBeGreaterThan(
-			specificity("dom/events/**"),
-		);
+	it("returns subtest names for matching path-prefixed entries", () => {
+		const skip = {
+			"foo.any.js:one": "r1",
+			"foo.any.js:two": "r2",
+			"foo.any.js": "file-level",
+			"bar.any.js:other": "r3",
+		};
+		expect([...declaredSubtestSkips(skip, "foo.any.js")].sort()).toEqual([
+			"one",
+			"two",
+		]);
 	});
 
-	it("subtest pattern beats any file pattern", () => {
-		expect(specificity("a:b")).toBeGreaterThan(
-			specificity(
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.any.js",
-			),
-		);
-	});
-
-	it("exact file beats glob", () => {
-		expect(specificity("a/b.any.js")).toBeGreaterThan(specificity("a/**"));
+	it("preserves literal subtest names containing wildcard chars", () => {
+		const skip = { "foo.any.js:glob*name": "r" };
+		expect(declaredSubtestSkips(skip, "foo.any.js")).toEqual(["glob*name"]);
 	});
 });
 
-describe("findMostSpecific", () => {
-	const pass: Expectation = { expected: "pass" };
-	const skip = (r: string): Expectation => ({ expected: "skip", reason: r });
-
-	it("returns null when no pattern matches", () => {
-		expect(findMostSpecific({}, "a.any.js")).toBeNull();
+describe("findMissingSubtestSkips", () => {
+	it("returns empty list when no declared skips", () => {
+		expect(findMissingSubtestSkips([], [])).toEqual([]);
 	});
 
-	it("most specific dir pattern wins", () => {
-		const spec = {
-			"fetch/api/**": skip("outer"),
-			"fetch/api/cors/**": skip("inner"),
-		};
-		const r = findMostSpecific(spec, "fetch/api/cors/foo.any.js");
-		expect(r?.expected).toBe("skip");
-		expect((r as { reason: string }).reason).toBe("inner");
+	it("returns empty list when every declared skip was observed", () => {
+		const observed = [{ name: "a" }, { name: "b" }, { name: "c" }];
+		expect(findMissingSubtestSkips(["a", "b"], observed)).toEqual([]);
 	});
 
-	it("subtest pattern beats file pattern for subtest key", () => {
-		const spec = {
-			"a/b.any.js": pass,
-			"a/b.any.js:one": skip("specific"),
-		};
-		const r = findMostSpecific(spec, "a/b.any.js:one");
-		expect(r?.expected).toBe("skip");
+	it("returns names of declared skips that were not observed (drift signal)", () => {
+		const observed = [{ name: "still here" }];
+		expect(
+			findMissingSubtestSkips(["renamed upstream", "still here"], observed),
+		).toEqual(["renamed upstream"]);
 	});
 
-	it("file-level pass applies to any subtest of that file", () => {
-		const spec = { "a/b.any.js": pass };
-		const r = findMostSpecific(spec, "a/b.any.js:anything");
-		expect(r?.expected).toBe("pass");
-	});
-
-	it("exact file beats shallow dir glob", () => {
-		const spec = {
-			"a/b.any.js": pass, // 10 literal chars
-			"a/**": skip("glob"), // 2 literal chars
-		};
-		const r = findMostSpecific(spec, "a/b.any.js");
-		expect(r?.expected).toBe("pass");
-	});
-
-	it("severity tiebreak: skip wins at equal specificity", () => {
-		// Two patterns with identical literal-char counts (12 each).
-		const spec = {
-			"a/*/foo.any.js": pass,
-			"*/b/foo.any.js": skip("skip wins"),
-		};
-		const r = findMostSpecific(spec, "a/b/foo.any.js");
-		expect(r?.expected).toBe("skip");
-	});
-
-	it("catchall ** with dir override", () => {
-		const spec = {
-			"**": skip("not yet classified"),
-			"encoding/**": pass,
-		};
-		expect(findMostSpecific(spec, "fetch/api/x.any.js")?.expected).toBe("skip");
-		expect(findMostSpecific(spec, "encoding/x.any.js")?.expected).toBe("pass");
+	it("returns all declared names when nothing was observed", () => {
+		expect(findMissingSubtestSkips(["x", "y"], [])).toEqual(["x", "y"]);
 	});
 });
