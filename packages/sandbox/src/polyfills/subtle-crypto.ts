@@ -687,7 +687,6 @@ function isDetached(buf: ArrayBuffer): boolean {
 }
 
 const RE_PSA_149 = /PSA error -149/;
-const RE_PSA_13X = /PSA error -13[3-7]/;
 const RE_BAD_HASH =
 	/bad\s+hash\s+name|Unrecognized\s+algorithm\s+name\s+for\s+digest/i;
 const RE_UNSUPPORTED =
