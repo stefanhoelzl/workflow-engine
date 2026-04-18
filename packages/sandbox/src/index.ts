@@ -98,6 +98,9 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"AbortController",
 	"AbortSignal",
 	"DOMException",
+	"PerformanceEntry",
+	"PerformanceMark",
+	"PerformanceMeasure",
 ]);
 
 function collisionName(
