@@ -148,6 +148,16 @@ resource "helm_release" "traefik" {
         }
       }
 
+      # Allow IngressRoutes / Middlewares to reference services in other
+      # namespaces — required by the `server-error` middleware in
+      # `modules/app-instance/routes-chart` which targets `traefik/traefik`
+      # from the workflow-engine namespace.
+      providers = {
+        kubernetesCRD = {
+          allowCrossNamespace = true
+        }
+      }
+
       deployment = {
         initContainers = [{
           name    = "load-inline-response-plugin"

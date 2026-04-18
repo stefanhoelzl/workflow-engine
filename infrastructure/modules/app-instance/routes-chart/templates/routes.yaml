@@ -5,7 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   forwardAuth:
-    address: http://{{ .Values.oauth2ServiceName }}:{{ .Values.oauth2ServicePort }}/oauth2/auth
+    address: http://{{ .Values.oauth2ServiceName }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.oauth2ServicePort }}/oauth2/auth
     trustForwardHeader: true
     authResponseHeaders:
       - X-Auth-Request-User
@@ -73,6 +73,7 @@ spec:
       - "500-599"
     service:
       name: traefik
+      namespace: traefik
       port: 80
     query: /error
 ---
