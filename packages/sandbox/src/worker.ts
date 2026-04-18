@@ -19,11 +19,7 @@ import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
 import { urlExtension } from "quickjs-wasi/url";
 import { bridgeHostFetch } from "./bridge.js";
 import { type Bridge, createBridge } from "./bridge-factory.js";
-import {
-	CRYPTO_PROMISE_SHIM,
-	setupGlobals,
-	type TimerCleanup,
-} from "./globals.js";
+import { setupGlobals, type TimerCleanup } from "./globals.js";
 import { installRpcMethods, uninstallGlobals } from "./install-host-methods.js";
 import type {
 	MainToWorker,
@@ -246,13 +242,6 @@ async function handleInit(
 	bridge.setSink((event) => post({ type: "event", event }));
 	const timers = setupGlobals(bridge);
 
-	// Install crypto.subtle Promise shim AFTER globals so the ordering is
-	// consistent with how the fetch shim is layered (shim eval runs once the
-	// VM is ready). Must run before workflow code that touches crypto.subtle;
-	// the workflow source is evaluated further below.
-	const cryptoShimResult = vm.evalCode(CRYPTO_PROMISE_SHIM, "<crypto-shim>");
-	cryptoShimResult.dispose();
-
 	const fetchImpl: typeof globalThis.fetch = msg.forwardFetch
 		? ((async (input, init) => {
 				const url = typeof input === "string" ? input : String(input);
@@ -299,7 +288,10 @@ async function handleInit(
 	//   AbortController/AbortSignal + globalThis-as-EventTarget hybrid install),
 	//   report-error (ErrorEvent dispatch + __reportError host forwarding),
 	//   microtask (queueMicrotask wrap routing errors through reportError),
-	//   fetch (fetch shim on __hostFetch).
+	//   fetch (fetch shim on __hostFetch),
+	//   subtle-crypto (validation + DOMException translation around the
+	//   cryptoExtension's native crypto.subtle; also promise-wraps the
+	//   synchronous native methods).
 	// Evaluated AFTER __hostFetch (from bridgeHostFetch above) and __reportError
 	// (from installRpcMethods). Generated at consumer build time by
 	// `sandboxPolyfills()` vite plugin; see packages/sandbox/src/polyfills/.

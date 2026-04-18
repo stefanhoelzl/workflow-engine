@@ -208,23 +208,5 @@ function setupTimers(b: Bridge): TimerCleanup {
 	};
 }
 
-// JS shim that wraps crypto.subtle methods so they return Promises, matching
-// the standard WebCrypto spec. The WASM crypto extension returns synchronously
-// — this shim runs inside the VM to wrap each method.
-const CRYPTO_PROMISE_SHIM = `(function() {
-  var _subtle = crypto.subtle;
-  var _methods = ['digest','importKey','exportKey','sign','verify','encrypt','decrypt','generateKey','deriveBits','deriveKey','wrapKey','unwrapKey'];
-  for (var i = 0; i < _methods.length; i++) {
-    var m = _methods[i];
-    var orig = _subtle[m].bind(_subtle);
-    _subtle[m] = (function(fn) {
-      return function() {
-        try { return Promise.resolve(fn.apply(null, arguments)); }
-        catch (e) { return Promise.reject(e); }
-      };
-    })(orig);
-  }
-})();`;
-
 export type { TimerCleanup };
-export { CRYPTO_PROMISE_SHIM, setupGlobals };
+export { setupGlobals };
