@@ -10,6 +10,11 @@
 //                      independent of event stack but bundled together for
 //                      single-eval simplicity in worker.ts)
 //   structured-clone — structuredClone override (uses native DOMException)
+//   idb-domexception-fix — wraps DOMException in a construct-trap Proxy so
+//                      fake-indexeddb's subclass `throw new DataError()`
+//                      ends up as a plain DOMException instance (must run
+//                      before indexed-db imports fake-indexeddb).
+//   indexed-db       — fake-indexeddb (depends on structuredClone)
 //   user-timing      — performance.mark/measure + PerformanceEntry classes
 //                      (depends on structuredClone + DOMException)
 //   subtle-crypto    — validation + DOMException translation wrapper around
@@ -28,6 +33,8 @@ import "./microtask.js";
 import "./streams.js";
 import "./fetch.js";
 import "./structured-clone.js";
+import "./idb-domexception-fix.js";
+import "./indexed-db.js";
 import "./user-timing.js";
 import "./subtle-crypto.js";
 import "urlpattern-polyfill";
