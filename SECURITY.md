@@ -211,7 +211,22 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `event-target-shim`'s EventTarget; `AbortSignal` includes the static
   factories `abort(reason?)`, `timeout(ms)` — which uses the
   allowlisted `setTimeout` bridge — and `any(signals)`; default abort
-  reasons are native `DOMException`s), `__dispatchAction` (runtime-
+  reasons are native `DOMException`s), `URLPattern` (pure-JS polyfill
+  `urlpattern-polyfill@10.0.0` (exact-pinned in
+  `packages/sandbox/package.json`), bundled into the same
+  `virtual:sandbox-polyfills` IIFE by the `sandboxPolyfills()` Vite
+  plugin. The polyfill's own `index.js` self-installs the class on
+  initial evaluation with `if (!globalThis.URLPattern) globalThis.URLPattern = URLPattern;`
+  — a §2 reader does not need to open `node_modules/` to audit the
+  install site. No host bridge; pure compute. Pattern-side user input
+  can trigger catastrophic regex backtracking in QuickJS's engine —
+  identical attack surface to the already-exposed `RegExp` (guest-
+  crafted regex patterns can do the same today). Blast radius is
+  bounded to the invoking workflow's own worker thread by per-workflow
+  `worker_thread` isolation; the host main thread and other workflows'
+  workers remain responsive. No new attacker capability beyond what
+  `RegExp` already exposes. Version bumps require a §2 re-audit PR —
+  the pin is deliberate, not an oversight), `__dispatchAction` (runtime-
   appended action dispatcher, locked via
   `Object.defineProperty({writable: false, configurable: false})`),
   plus the host methods registered via `methods` and `extraMethods`.

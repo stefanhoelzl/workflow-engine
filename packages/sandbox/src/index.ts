@@ -86,6 +86,7 @@ const RESERVED_BUILTIN_GLOBALS = new Set([
 	"navigator",
 	"URL",
 	"URLSearchParams",
+	"URLPattern",
 	"TextEncoder",
 	"TextDecoder",
 	"atob",

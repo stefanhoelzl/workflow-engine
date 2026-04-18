@@ -1402,7 +1402,7 @@ describe("security invariants", () => {
 		}
 	});
 
-	it("reserved globals reject extraMethods that would shadow EventTarget / AbortController / DOMException", async () => {
+	it("reserved globals reject extraMethods that would shadow EventTarget / AbortController / DOMException / URLPattern", async () => {
 		const reservedNames = [
 			"EventTarget",
 			"Event",
@@ -1410,6 +1410,7 @@ describe("security invariants", () => {
 			"AbortController",
 			"AbortSignal",
 			"DOMException",
+			"URLPattern",
 		];
 		const attempts = await Promise.all(
 			reservedNames.map((reserved) =>
