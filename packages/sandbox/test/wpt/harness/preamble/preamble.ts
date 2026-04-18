@@ -79,4 +79,30 @@ G.__wpt = {
 	results: [],
 };
 
+// --- importScripts polyfill --------------------------------------------
+// Test-harness-only shim. The composer injects `globalThis.__wptScripts`
+// (a URL→source map) and `globalThis.__wptScriptsLoaded` (URLs already
+// inlined by the composer — e.g. testharness.js and META deps) between
+// this preamble and testharness.js. We eval each requested URL in the
+// current realm synchronously via indirect eval, matching worker
+// `importScripts()` semantics. Idempotent: a URL already loaded — either
+// pre-marked by the composer or re-requested by the test — is a no-op.
+G.__wptScripts = G.__wptScripts ?? {};
+G.__wptScriptsLoaded = G.__wptScriptsLoaded ?? new Set<string>();
+// biome-ignore lint/security/noGlobalEval: test-harness-only; importScripts semantics require synchronous top-level eval of vendored WPT sources in the current realm
+const indirectEval = eval;
+G.importScripts = (...urls: string[]): void => {
+	for (const url of urls) {
+		if (G.__wptScriptsLoaded.has(url)) {
+			continue;
+		}
+		const src = G.__wptScripts[url];
+		if (typeof src !== "string") {
+			throw new Error(`importScripts: unregistered URL: ${url}`);
+		}
+		G.__wptScriptsLoaded.add(url);
+		indirectEval(src);
+	}
+};
+
 export type {};

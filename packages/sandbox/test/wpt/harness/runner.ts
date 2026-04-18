@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Sandbox, sandbox } from "../../../src/index.js";
 import { compose } from "./composer.js";
@@ -47,14 +47,94 @@ function fileCache(): (relPath: string) => string {
 }
 const readVendor = fileCache();
 
+// Match `importScripts("x", 'y', ...)`. Captures the comma-separated arg
+// list; individual literals are pulled out with ARG_RE. Matches both
+// single and double quotes; deliberately ignores template literals and
+// dynamic expressions (WPT tests use string literals).
+const IMPORT_SCRIPTS_RE =
+	/importScripts\s*\(\s*((?:["'][^"']*["']\s*,?\s*)+)\)/g;
+const ARG_RE = /["']([^"']+)["']/g;
+
+function resolveImportScriptPath(ref: string, fromFileRel: string): string {
+	if (ref.startsWith("/")) {
+		return ref.slice(1);
+	}
+	return join(dirname(fromFileRel), ref);
+}
+
+// Normalise resolved vendor-relative path back to the canonical URL key
+// the guest code uses (leading "/" for absolute, unchanged for relative).
+function urlKey(ref: string, resolved: string): string {
+	return ref.startsWith("/") ? `/${resolved}` : ref;
+}
+
+function* extractRefs(source: string): Generator<string> {
+	for (const match of source.matchAll(IMPORT_SCRIPTS_RE)) {
+		const argList = match[1];
+		if (!argList) {
+			continue;
+		}
+		for (const arg of argList.matchAll(ARG_RE)) {
+			const ref = arg[1];
+			if (ref) {
+				yield ref;
+			}
+		}
+	}
+}
+
+function collectImportScripts(
+	rootFileRel: string,
+	rootSource: string,
+): Record<string, string> {
+	const registry: Record<string, string> = {};
+	const queue: Array<{ src: string; from: string }> = [
+		{ src: rootSource, from: rootFileRel },
+	];
+	const visited = new Set<string>();
+
+	while (queue.length > 0) {
+		const item = queue.shift();
+		if (!item) {
+			break;
+		}
+		for (const ref of extractRefs(item.src)) {
+			const resolved = resolveImportScriptPath(ref, item.from);
+			const key = urlKey(ref, resolved);
+			if (visited.has(key)) {
+				continue;
+			}
+			visited.add(key);
+			// Unreadable refs are left out of the registry; the polyfill
+			// throws at call time so the failure is visible and
+			// attributable to the test.
+			let src: string | null = null;
+			try {
+				src = readVendor(resolved);
+			} catch {
+				src = null;
+			}
+			if (src !== null) {
+				registry[key] = src;
+				queue.push({ src, from: resolved });
+			}
+		}
+	}
+	return registry;
+}
+
 async function runWpt(
 	path: string,
 	entry: RunnableEntry,
 ): Promise<SubtestResult[]> {
+	const fileSrc = readVendor(path);
+	const depPaths = entry.scripts.filter((s) => s !== TESTHARNESS_REL);
 	const source = compose({
 		testharness: readVendor(TESTHARNESS_REL),
-		deps: entry.scripts.filter((s) => s !== TESTHARNESS_REL).map(readVendor),
-		file: readVendor(path),
+		deps: depPaths.map(readVendor),
+		file: fileSrc,
+		scripts: collectImportScripts(path, fileSrc),
+		inlinedPaths: [TESTHARNESS_REL, ...depPaths],
 	});
 
 	const captured: SubtestResult[] = [];

@@ -327,8 +327,11 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   production sandbox construction; its presence is scoped to the WPT
   test runner only. Vendored WPT files, the harness adapter (preamble,
   composer, runner), and `scripts/wpt-refresh.ts` are test-time artifacts
-  and do not extend the production sandbox surface. See
-  `packages/sandbox/test/wpt/README.md`.
+  and do not extend the production sandbox surface. The harness also
+  exposes `importScripts()` as a guest-only shim backed by a
+  compose-time source registry (`globalThis.__wptScripts`) populated by
+  the runner; it is not a host bridge and is never installed in
+  production sandboxes. See `packages/sandbox/test/wpt/README.md`.
 - **`__emitEvent(event)`** — write-only telemetry primitive installed
   at init directly on `globalThis` via `vm.newFunction` (NOT through
   `bridge.sync()` / `bridge.async()`, so it does not itself appear in
