@@ -1,5 +1,3 @@
-import type { HttpTriggerResult, InvocationEvent } from "@workflow-engine/core";
-
 // ---------------------------------------------------------------------------
 // Action + trigger descriptors (shared by executor + workflow-registry)
 // ---------------------------------------------------------------------------
@@ -22,25 +20,4 @@ interface HttpTriggerDescriptor {
 
 type TriggerDescriptor = HttpTriggerDescriptor;
 
-// WorkflowRunner: invokes a trigger handler with an invocation id, and
-// allows the executor to subscribe to events emitted from the sandbox.
-interface WorkflowRunner {
-	readonly tenant: string;
-	readonly name: string;
-	readonly env: Readonly<Record<string, string>>;
-	readonly actions: readonly ActionDescriptor[];
-	readonly triggers: readonly TriggerDescriptor[];
-	invokeHandler(
-		invocationId: string,
-		triggerName: string,
-		payload: unknown,
-	): Promise<HttpTriggerResult>;
-	onEvent(cb: (event: InvocationEvent) => void): void;
-}
-
-export type {
-	ActionDescriptor,
-	HttpTriggerDescriptor,
-	TriggerDescriptor,
-	WorkflowRunner,
-};
+export type { ActionDescriptor, HttpTriggerDescriptor, TriggerDescriptor };

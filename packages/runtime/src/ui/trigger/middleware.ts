@@ -2,7 +2,8 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { headerUserMiddleware } from "../../auth/header-user.js";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
-import type { HttpTriggerRegistry, Middleware } from "../../triggers/http.js";
+import type { Middleware } from "../../triggers/http.js";
+import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderTriggerPage } from "./page.js";
 
 // ---------------------------------------------------------------------------
@@ -23,21 +24,21 @@ import { renderTriggerPage } from "./page.js";
 // still unauthenticated per §3.
 
 interface TriggerMiddlewareDeps {
-	readonly triggerRegistry: HttpTriggerRegistry;
+	readonly registry: WorkflowRegistry;
 }
 
-function sortedTenants(c: Context, registry: HttpTriggerRegistry): string[] {
+function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
 	if (user) {
 		return Array.from(tenantSet(user)).sort();
 	}
-	// Dev/unauthenticated fallback: show tenants present in the trigger
-	// registry. In production, oauth2-proxy ensures a user header is always
-	// set on `/trigger/*`; reaching this branch means open-mode dev.
+	// Dev/unauthenticated fallback: show tenants present in the registry.
+	// In production, oauth2-proxy ensures a user header is always set on
+	// `/trigger/*`; reaching this branch means open-mode dev.
 	const fromRegistry = new Set<string>();
-	for (const entry of registry.list()) {
-		if (validateTenant(entry.workflow.tenant)) {
-			fromRegistry.add(entry.workflow.tenant);
+	for (const tenant of registry.tenants()) {
+		if (validateTenant(tenant)) {
+			fromRegistry.add(tenant);
 		}
 	}
 	return Array.from(fromRegistry).sort();
@@ -63,12 +64,9 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 
 	const render = (c: Context) => {
 		const user = c.get("user");
-		const tenants = sortedTenants(c, deps.triggerRegistry);
+		const tenants = sortedTenants(c, deps.registry);
 		const activeTenant = resolveActiveTenant(c, tenants);
-		const allEntries = deps.triggerRegistry.list();
-		const scopedEntries = activeTenant
-			? allEntries.filter((e) => e.workflow.tenant === activeTenant)
-			: [];
+		const scopedEntries = activeTenant ? deps.registry.list(activeTenant) : [];
 		return c.html(
 			renderTriggerPage({
 				entries: scopedEntries,

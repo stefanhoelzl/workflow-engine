@@ -10,17 +10,12 @@ import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { dashboardMiddleware } from "./middleware.js";
 
 const emptyRegistry: WorkflowRegistry = {
-	runners: [],
-	triggerRegistry: {
-		register: () => undefined,
-		removeRunner: () => undefined,
-		lookup: () => undefined,
-		list: () => [],
-		get size(): number {
-			return 0;
-		},
+	get size(): number {
+		return 0;
 	},
-	lookupRunner: () => undefined,
+	tenants: () => [],
+	list: () => [],
+	lookup: () => undefined,
 	registerTenant: async () => ({ ok: false, error: "unused" }),
 	recover: async () => undefined,
 	dispose: () => undefined,

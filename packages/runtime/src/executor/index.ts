@@ -1,16 +1,21 @@
-import type { HttpTriggerResult } from "@workflow-engine/core";
+import type {
+	HttpTriggerResult,
+	WorkflowManifest,
+} from "@workflow-engine/core";
+import type { Sandbox } from "@workflow-engine/sandbox";
 import type { EventBus } from "../event-bus/index.js";
+import type { SandboxStore } from "../sandbox-store.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";
-import type { WorkflowRunner } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 //
-// The executor generates an invocation id, wires the workflow's onEvent stream
-// to the bus, and calls invokeHandler. The sandbox emits trigger.request /
-// trigger.response / trigger.error events itself — the executor no longer
-// constructs lifecycle events.
+// The executor takes (tenant, workflow, triggerName, payload, bundleSource),
+// resolves the sandbox via the injected SandboxStore, serializes invocations
+// per (tenant, workflow.sha), wires the sandbox's onEvent stream to the bus,
+// and calls sandbox.run. The sandbox emits trigger.request/response/error
+// events itself — the executor does not construct lifecycle events.
 
 const DEFAULT_STATUS = 200;
 const DEFAULT_BODY = "";
@@ -46,13 +51,16 @@ const ERROR_RESPONSE: HttpTriggerResult = {
 
 interface ExecutorOptions {
 	readonly bus: EventBus;
+	readonly sandboxStore: SandboxStore;
 }
 
 interface Executor {
 	invoke(
-		workflow: WorkflowRunner,
+		tenant: string,
+		workflow: WorkflowManifest,
 		triggerName: string,
 		payload: unknown,
+		bundleSource: string,
 	): Promise<HttpTriggerResult>;
 }
 
@@ -62,69 +70,80 @@ function newInvocationId(): string {
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups runQueue management, onEvent wiring, sequential emit tail, and HTTP-result shaping
 function createExecutor(options: ExecutorOptions): Executor {
-	const { bus } = options;
+	const { bus, sandboxStore } = options;
 	const queues = new Map<string, RunQueue>();
-	// Per-workflow queue of pending bus.emit promises. The onEvent callback
+	// Per-sandbox queue of pending bus.emit promises. The onEvent callback
 	// chains each new emit onto this tail so emits stay sequential per
-	// workflow, and runInvocation awaits the tail before returning to give
+	// sandbox, and runInvocation awaits the tail before returning to give
 	// callers a "events committed before HTTP response" guarantee.
-	const emitTails = new WeakMap<WorkflowRunner, Promise<void>>();
-	const wired = new WeakSet<WorkflowRunner>();
+	const emitTails = new WeakMap<Sandbox, Promise<void>>();
+	const wired = new WeakSet<Sandbox>();
 
-	function queueFor(name: string): RunQueue {
-		let q = queues.get(name);
+	function queueFor(key: string): RunQueue {
+		let q = queues.get(key);
 		if (!q) {
 			q = createRunQueue();
-			queues.set(name, q);
+			queues.set(key, q);
 		}
 		return q;
 	}
 
-	function ensureWired(workflow: WorkflowRunner): void {
-		if (wired.has(workflow)) {
+	function ensureWired(sb: Sandbox): void {
+		if (wired.has(sb)) {
 			return;
 		}
-		emitTails.set(workflow, Promise.resolve());
-		workflow.onEvent((event) => {
-			const prev = emitTails.get(workflow) ?? Promise.resolve();
+		emitTails.set(sb, Promise.resolve());
+		sb.onEvent((event) => {
+			const prev = emitTails.get(sb) ?? Promise.resolve();
 			const next = prev.then(() =>
 				bus.emit(event).catch(() => {
 					/* swallow consumer errors — they shouldn't block the next emit */
 				}),
 			);
-			emitTails.set(workflow, next);
+			emitTails.set(sb, next);
 		});
-		wired.add(workflow);
+		wired.add(sb);
 	}
 
+	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — tenant + workflow metadata + trigger name + payload + bundle source are orthogonal and already packaged by the caller
 	async function runInvocation(
-		workflow: WorkflowRunner,
+		tenant: string,
+		workflow: WorkflowManifest,
 		triggerName: string,
 		payload: unknown,
+		bundleSource: string,
 	): Promise<HttpTriggerResult> {
-		ensureWired(workflow);
+		const sb = await sandboxStore.get(tenant, workflow, bundleSource);
+		ensureWired(sb);
 		const invocationId = newInvocationId();
 		let result: HttpTriggerResult;
 		try {
-			const raw = await workflow.invokeHandler(
+			const runResult = await sb.run(triggerName, payload, {
 				invocationId,
-				triggerName,
-				payload,
-			);
-			result = shapeResult(raw);
+				tenant,
+				workflow: workflow.name,
+				workflowSha: workflow.sha,
+			});
+			if (!runResult.ok) {
+				const err = new Error(runResult.error.message);
+				err.stack = runResult.error.stack;
+				throw err;
+			}
+			result = shapeResult(runResult.result);
 		} catch {
 			result = ERROR_RESPONSE;
 		}
 		// Wait for all in-flight bus emits to settle so callers see a
 		// "persistence committed before response" guarantee.
-		await (emitTails.get(workflow) ?? Promise.resolve());
+		await (emitTails.get(sb) ?? Promise.resolve());
 		return result;
 	}
 
 	return {
-		invoke(workflow, triggerName, payload) {
-			return queueFor(`${workflow.tenant}/${workflow.name}`).run(() =>
-				runInvocation(workflow, triggerName, payload),
+		// biome-ignore lint/complexity/useMaxParams: matches Executor.invoke contract
+		invoke(tenant, workflow, triggerName, payload, bundleSource) {
+			return queueFor(`${tenant}/${workflow.sha}`).run(() =>
+				runInvocation(tenant, workflow, triggerName, payload, bundleSource),
 			);
 		},
 	};
@@ -137,7 +156,6 @@ export type {
 	ActionDescriptor,
 	HttpTriggerDescriptor,
 	TriggerDescriptor,
-	WorkflowRunner,
 } from "./types.js";
 export type { Executor, ExecutorOptions };
 export { createExecutor };

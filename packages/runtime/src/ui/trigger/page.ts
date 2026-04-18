@@ -1,5 +1,5 @@
 import { html, raw } from "hono/html";
-import type { HttpTriggerEntry } from "../../triggers/http.js";
+import type { WorkflowEntry } from "../../workflow-registry.js";
 import { renderLayout } from "../layout.js";
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ function renderTriggerCard(data: TriggerCardData) {
 }
 
 interface TriggerPageOptions {
-	readonly entries: readonly HttpTriggerEntry[];
+	readonly entries: readonly WorkflowEntry[];
 	readonly user: string;
 	readonly email: string;
 	readonly tenants: readonly string[];
@@ -93,17 +93,20 @@ interface TriggerPageOptions {
 
 function renderTriggerPage(options: TriggerPageOptions) {
 	const { entries, user, email, tenants, activeTenant } = options;
-	const cards = entries
-		.map(
-			(entry): TriggerCardData => ({
-				tenant: entry.workflow.tenant,
+	const cards: TriggerCardData[] = [];
+	for (const entry of entries) {
+		for (const trigger of entry.triggers) {
+			cards.push({
+				tenant: entry.tenant,
 				workflow: entry.workflow.name,
-				trigger: entry.descriptor.name,
-				path: entry.descriptor.path,
-				method: entry.descriptor.method,
-				schema: (entry.schema ?? { type: "object" }) as object,
-			}),
-		)
+				trigger: trigger.triggerName,
+				path: trigger.path,
+				method: trigger.method,
+				schema: (trigger.schema ?? { type: "object" }) as object,
+			});
+		}
+	}
+	const renderedCards = cards
 		.sort((a, b) =>
 			`${a.workflow}/${a.trigger}`.localeCompare(`${b.workflow}/${b.trigger}`),
 		)
@@ -119,7 +122,7 @@ function renderTriggerPage(options: TriggerPageOptions) {
   </div>
 
   <div class="trigger-content">
-    ${cards.length > 0 ? cards : html`<div class="empty-state">No triggers registered</div>`}
+    ${renderedCards.length > 0 ? renderedCards : html`<div class="empty-state">No triggers registered</div>`}
   </div>`;
 
 	return renderLayout(

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
+import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -10,6 +11,7 @@ import { createPersistence } from "./event-bus/persistence.js";
 import { createExecutor } from "./executor/index.js";
 import type { Logger } from "./logger.js";
 import { recover } from "./recovery.js";
+import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
 	createWorkflowRegistry,
@@ -72,6 +74,7 @@ describe("end-to-end event flow", () => {
 	let dir: string;
 	let registry: WorkflowRegistry;
 	let store: EventStore;
+	let sandboxStore: SandboxStore;
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "integration-test-"));
@@ -79,6 +82,7 @@ describe("end-to-end event flow", () => {
 
 	afterEach(async () => {
 		registry?.dispose();
+		sandboxStore?.dispose();
 		await rm(dir, { recursive: true, force: true });
 	});
 
@@ -104,15 +108,21 @@ describe("end-to-end event flow", () => {
 				["demo.js", BUNDLE],
 			]),
 		);
-		const runner = registry.runners[0];
-		if (!runner) {
-			throw new Error("expected at least one runner");
+		const lookup = registry.lookup("acme", "demo", "ping", "POST");
+		if (!lookup) {
+			throw new Error("expected lookup to succeed");
 		}
 
-		const executor = createExecutor({ bus });
-		const result = await executor.invoke(runner, "ping", {
-			body: { msg: "hello" },
-		});
+		const sandboxFactory = createSandboxFactory({ logger });
+		sandboxStore = createSandboxStore({ sandboxFactory, logger });
+		const executor = createExecutor({ bus, sandboxStore });
+		const result = await executor.invoke(
+			"acme",
+			lookup.workflow,
+			lookup.triggerName,
+			{ body: { msg: "hello" } },
+			lookup.bundleSource,
+		);
 		expect(result.status).toBe(200);
 		expect(result.body).toEqual({ echoed: "hello" });
 

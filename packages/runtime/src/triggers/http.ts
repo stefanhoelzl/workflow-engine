@@ -3,28 +3,22 @@ import type { HttpTriggerResult } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Executor } from "../executor/index.js";
-import type {
-	HttpTriggerDescriptor,
-	WorkflowRunner,
-} from "../executor/types.js";
+import type { LookupResult, WorkflowRegistry } from "../workflow-registry.js";
 
 // ---------------------------------------------------------------------------
-// HTTP trigger registry + middleware (v1, executor-backed)
+// HTTP trigger middleware (v1, executor-backed)
 // ---------------------------------------------------------------------------
 //
-// The registry stores one entry per (workflow, trigger) pair with a compiled
-// URLPattern. `lookup(path, method)` returns the first match, preferring
-// static paths over parameterized ones (http-trigger spec). The middleware:
+// The registry owns the routing index. The middleware:
 //   1. Handles GET /webhooks/ health probe (204 if any trigger registered,
 //      503 otherwise).
-//   2. Looks up the matched trigger, returns 404 if none.
-//   3. Parses JSON body; 422 on parse failure.
-//   4. Builds payload {body, headers, url, method, params, query}.
-//   5. Validates payload against the trigger's registered validator; 422 on
-//      failure with {error, issues}.
-//   6. Calls executor.invoke(workflow, trigger.name, payload); serializes
-//      the returned HttpTriggerResult as the HTTP response (200/""/{}
-//      defaults applied by the executor per D5/D13).
+//   2. Parses /webhooks/<tenant>/<workflow>/<trigger-path> into components.
+//   3. Calls `registry.lookup(tenant, workflow, triggerPath, method)`; 404
+//      if no match.
+//   4. Parses JSON body; 422 on parse failure.
+//   5. Validates payload via the match's `validator`; 422 on failure.
+//   6. Calls `executor.invoke(tenant, workflow, triggerName, payload,
+//      bundleSource)` and serializes the HttpTriggerResult response.
 
 interface Middleware {
 	match: string;
@@ -50,165 +44,6 @@ interface PayloadValidator {
 	validateBody(value: unknown): ValidatorResult<unknown>;
 	validateQuery(value: unknown): ValidatorResult<unknown>;
 	validateParams(value: unknown): ValidatorResult<unknown>;
-}
-
-// ---------------------------------------------------------------------------
-// Registry definition (internal)
-// ---------------------------------------------------------------------------
-
-const PARAM_SEGMENT_RE = /[:*]/;
-const WILDCARD_SEGMENT_RE = /\*(\w+)/g;
-
-function toUrlPatternPath(path: string): string {
-	return path.replace(WILDCARD_SEGMENT_RE, ":$1+");
-}
-
-interface RegisteredTrigger {
-	readonly workflow: WorkflowRunner;
-	readonly descriptor: HttpTriggerDescriptor;
-	readonly validator: PayloadValidator;
-	readonly pattern: URLPattern;
-	readonly isStatic: boolean;
-	readonly schema?: Record<string, unknown>;
-}
-
-interface TriggerMatch {
-	readonly workflow: WorkflowRunner;
-	readonly descriptor: HttpTriggerDescriptor;
-	readonly validator: PayloadValidator;
-	readonly params: Record<string, string>;
-}
-
-interface HttpTriggerEntry {
-	readonly workflow: WorkflowRunner;
-	readonly descriptor: HttpTriggerDescriptor;
-	// Full composite payload JSON Schema (body + headers + url + method +
-	// params + query) from the manifest. Used by the trigger UI to render
-	// the form. Optional because test fixtures may omit it.
-	readonly schema?: Record<string, unknown>;
-}
-
-interface HttpTriggerRegisterOptions {
-	readonly schema?: Record<string, unknown>;
-}
-
-interface HttpTriggerRegistry {
-	register(
-		workflow: WorkflowRunner,
-		descriptor: HttpTriggerDescriptor,
-		validator: PayloadValidator,
-		options?: HttpTriggerRegisterOptions,
-	): void;
-	// Removes every trigger entry owned by the given (tenant, workflow-name)
-	// pair. Used by the upload pipeline when a workflow is replaced so the
-	// old triggers don't linger alongside the new ones.
-	removeRunner(tenant: string, workflowName: string): void;
-	lookup(
-		tenant: string,
-		workflowName: string,
-		path: string,
-		method: string,
-	): TriggerMatch | undefined;
-	// Read-only view for UI rendering. Returns a snapshot array so callers
-	// can iterate without risking mutation of the registry's internals.
-	list(): HttpTriggerEntry[];
-	readonly size: number;
-}
-
-function extractParams(
-	groups: Record<string, string | undefined>,
-): Record<string, string> {
-	const params: Record<string, string> = {};
-	for (const [key, value] of Object.entries(groups)) {
-		if (value !== undefined) {
-			params[key] = value;
-		}
-	}
-	return params;
-}
-
-function tryMatch(
-	entry: RegisteredTrigger,
-	pathname: string,
-	method: string,
-	isStatic: boolean,
-): TriggerMatch | undefined {
-	if (entry.isStatic !== isStatic) {
-		return;
-	}
-	if (entry.descriptor.method !== method) {
-		return;
-	}
-	const result = entry.pattern.exec({ pathname });
-	if (!result) {
-		return;
-	}
-	return {
-		workflow: entry.workflow,
-		descriptor: entry.descriptor,
-		validator: entry.validator,
-		params: extractParams(
-			result.pathname.groups as Record<string, string | undefined>,
-		),
-	};
-}
-
-function createHttpTriggerRegistry(): HttpTriggerRegistry {
-	const entries: RegisteredTrigger[] = [];
-
-	return {
-		register(workflow, descriptor, validator, options) {
-			const entry: RegisteredTrigger = {
-				workflow,
-				descriptor,
-				validator,
-				pattern: new URLPattern({
-					pathname: `/${toUrlPatternPath(descriptor.path)}`,
-				}),
-				isStatic: !PARAM_SEGMENT_RE.test(descriptor.path),
-				...(options?.schema ? { schema: options.schema } : {}),
-			};
-			entries.push(entry);
-		},
-		removeRunner(tenant: string, workflowName: string) {
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i];
-				if (
-					e &&
-					e.workflow.tenant === tenant &&
-					e.workflow.name === workflowName
-				) {
-					entries.splice(i, 1);
-				}
-			}
-		},
-		lookup(tenant, workflowName, path, method) {
-			const pathname = `/${path}`;
-			const scopedEntries = entries.filter(
-				(e) => e.workflow.tenant === tenant && e.workflow.name === workflowName,
-			);
-			const scopedRegistry = { entries: scopedEntries };
-			const inScope = (isStatic: boolean): TriggerMatch | undefined => {
-				for (const entry of scopedRegistry.entries) {
-					const match = tryMatch(entry, pathname, method, isStatic);
-					if (match) {
-						return match;
-					}
-				}
-			};
-			return inScope(true) ?? inScope(false);
-		},
-		list() {
-			return entries.map((e) => ({
-				workflow: e.workflow,
-				descriptor: e.descriptor,
-				...(e.schema ? { schema: e.schema } : {}),
-			}));
-		},
-		get size(): number {
-			return entries.length;
-		},
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -259,9 +94,6 @@ function serializeHttpResult(c: Context, result: HttpTriggerResult): Response {
 	const status = (result.status ?? DEFAULT_HTTP_STATUS) as ContentfulStatusCode;
 	const body = result.body ?? "";
 	const headers: Record<string, string> = { ...(result.headers ?? {}) };
-	// Preserve existing default body shape: if the caller returns a string,
-	// ship it as-is; for object/array returns, JSON-stringify (matching
-	// c.json). Headers defaulting, plus Content-Type, are handled per-branch.
 	if (typeof body === "string") {
 		return c.body(body, status, headers);
 	}
@@ -288,7 +120,7 @@ async function parseBody(
 }
 
 function runValidators(
-	match: TriggerMatch,
+	match: LookupResult,
 	body: unknown,
 	rawQuery: Record<string, string[]>,
 ):
@@ -316,7 +148,8 @@ function runValidators(
 
 async function handleTriggerRequest(
 	c: Context,
-	match: TriggerMatch,
+	tenant: string,
+	match: LookupResult,
 	executor: Executor,
 ): Promise<Response> {
 	const bodyParse = await parseBody(c);
@@ -337,9 +170,11 @@ async function handleTriggerRequest(
 		query: validated.query,
 	};
 	const result = await executor.invoke(
+		tenant,
 		match.workflow,
-		match.descriptor.name,
+		match.triggerName,
 		payload,
+		match.bundleSource,
 	);
 	return serializeHttpResult(c, result);
 }
@@ -347,7 +182,7 @@ async function handleTriggerRequest(
 const TENANT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 
 function httpTriggerMiddleware(
-	source: { readonly triggerRegistry: HttpTriggerRegistry },
+	registry: WorkflowRegistry,
 	executor: Executor,
 ): Middleware {
 	return {
@@ -357,9 +192,7 @@ function httpTriggerMiddleware(
 
 			if (afterPrefix === "" && c.req.method === "GET") {
 				const status =
-					source.triggerRegistry.size > 0
-						? HTTP_NO_CONTENT
-						: HTTP_SERVICE_UNAVAILABLE;
+					registry.size > 0 ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
 				return Promise.resolve(c.body(null, status));
 			}
 
@@ -380,7 +213,7 @@ function httpTriggerMiddleware(
 				return Promise.resolve(c.notFound());
 			}
 
-			const match = source.triggerRegistry.lookup(
+			const match = registry.lookup(
 				tenant,
 				workflowName,
 				triggerPath,
@@ -389,18 +222,10 @@ function httpTriggerMiddleware(
 			if (!match) {
 				return Promise.resolve(c.notFound());
 			}
-			return handleTriggerRequest(c, match, executor);
+			return handleTriggerRequest(c, tenant, match, executor);
 		},
 	};
 }
 
-export type {
-	HttpTriggerEntry,
-	HttpTriggerRegistry,
-	Middleware,
-	PayloadValidator,
-	TriggerMatch,
-	ValidationIssue,
-	ValidatorResult,
-};
-export { createHttpTriggerRegistry, httpTriggerMiddleware };
+export type { Middleware, PayloadValidator, ValidationIssue, ValidatorResult };
+export { httpTriggerMiddleware };

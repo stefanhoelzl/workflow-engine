@@ -5,15 +5,19 @@ import {
 	type SandboxOptions,
 	sandbox,
 } from "./index.js";
+import type { MethodMap } from "./install-host-methods.js";
+
+interface FactoryCreateOptions extends SandboxOptions {
+	methods?: MethodMap;
+}
 
 interface SandboxFactory {
-	create(source: string, options?: SandboxOptions): Promise<Sandbox>;
+	create(source: string, options?: FactoryCreateOptions): Promise<Sandbox>;
 	dispose(): Promise<void>;
 }
 
 const HASH_PREFIX_LEN = 12;
 
-// Log-safe identifier for a source string: short, stable, no bundle content.
 function sourceHash(source: string): string {
 	return createHash("sha256")
 		.update(source)
@@ -23,52 +27,40 @@ function sourceHash(source: string): string {
 
 function createSandboxFactory(opts: { logger: Logger }): SandboxFactory {
 	const { logger } = opts;
-	const cache = new Map<string, Sandbox>();
+	const created = new Set<Sandbox>();
 
 	async function create(
 		source: string,
-		options?: SandboxOptions,
+		options?: FactoryCreateOptions,
 	): Promise<Sandbox> {
-		const existing = cache.get(source);
-		if (existing) {
-			return existing;
-		}
-
 		const hash = sourceHash(source);
 		const start = performance.now();
-		const sb = await sandbox(source, {}, { ...options, logger });
+		const { methods, ...rest } = options ?? {};
+		const sb = await sandbox(source, methods ?? {}, { ...rest, logger });
 		const durationMs = Math.round(performance.now() - start);
 
-		sb.onDied((err) => {
-			logger.warn("sandbox died", {
-				sourceHash: hash,
-				error: err.message,
-			});
-			if (cache.get(source) === sb) {
-				cache.delete(source);
-			}
-			sb.dispose();
+		created.add(sb);
+		sb.onDied(() => {
+			created.delete(sb);
 		});
 
-		cache.set(source, sb);
 		logger.info("sandbox created", { sourceHash: hash, durationMs });
 		return sb;
 	}
 
 	function dispose(): Promise<void> {
-		for (const [source, sb] of cache) {
+		for (const sb of created) {
 			sb.dispose();
 			logger.info("sandbox disposed", {
-				sourceHash: sourceHash(source),
 				reason: "factory.dispose",
 			});
 		}
-		cache.clear();
+		created.clear();
 		return Promise.resolve();
 	}
 
 	return { create, dispose };
 }
 
-export type { SandboxFactory };
+export type { FactoryCreateOptions, SandboxFactory };
 export { createSandboxFactory };

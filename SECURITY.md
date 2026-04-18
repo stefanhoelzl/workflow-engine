@@ -153,10 +153,14 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `onDied` to the worker and services per-run `request` / `response`
   bridge messages. Guest code never observes the worker boundary —
   the set of exposed globals is unchanged from the pre-worker design.
-- `createSandboxFactory({ logger })` — the supported lifecycle owner
-  for `Sandbox` instances. Caches sandboxes by source, registers a
-  death callback on each, and evicts on unexpected worker termination
-  so the next `create(source)` spawns a fresh worker.
+- `createSandboxFactory({ logger })` — construction primitive for
+  `Sandbox` instances. Every `create(source, options?)` call spawns a
+  new worker and evaluates the module source; the factory does NOT
+  cache by source. Tenant-scoped sandbox reuse is owned by the
+  runtime-level `SandboxStore` (`packages/runtime/src/sandbox-store.ts`),
+  which keys sandboxes by `(tenant, workflow.sha)` and holds them for
+  process lifetime. The store is the sole accessor consumed by the
+  executor when it resolves a sandbox to dispatch a trigger handler.
 - `Sandbox.run(name, ctx, runOptions)` — invokes a named export from
   the workflow module with a JSON-shaped `ctx` argument. `runOptions`
   carries `invocationId`, `workflow`, and `workflowSha`. The worker uses
@@ -495,7 +499,7 @@ of scope here.
   the same workflow. Disposal happens on workflow reload/unload via
   `Sandbox.dispose()`. Each VM has its own dedicated WASM linear
   memory; cross-VM memory access is physically impossible.
-  (`packages/sandbox/src/index.ts`, `packages/runtime/src/workflow-registry.ts`)
+  (`packages/sandbox/src/index.ts`, `packages/runtime/src/sandbox-store.ts`)
 - **Cross-workflow isolation preserved.** Each workflow gets its own
   `Sandbox` instance with its own QuickJS VM and its own WASM linear
   memory. State leaking within a workflow is self-leakage (same trust
@@ -530,7 +534,7 @@ of scope here.
 - **Action input validation at the host bridge.** When a handler does
   `await sendNotification(input)`, the SDK wrapper calls
   `__hostCallAction("sendNotification", input)`. The runtime's
-  dispatcher (`workflow-registry.ts`'s `buildHostCallAction()`) looks
+  dispatcher (`sandbox-store.ts`'s `buildHostCallAction()`) looks
   up the action in the manifest, runs `input` through a pre-compiled
   Ajv validator against the manifest's JSON Schema, and audit-logs the
   invocation. The host does NOT dispatch the handler — the SDK wrapper
@@ -539,7 +543,7 @@ of scope here.
   preserved as a JSON-marshaled own property on the Error. This makes
   input validation authoritative (the manifest schemas live on the
   host) even if the guest-side Zod bundle is compromised.
-  (`packages/runtime/src/workflow-registry.ts`,
+  (`packages/runtime/src/sandbox-store.ts`,
   `packages/runtime/src/triggers/http.ts`)
 - **Action output validation in-sandbox.** The SDK wrapper validates
   the handler's return value against the output Zod schema using the
@@ -666,7 +670,8 @@ exists. Each item should be tracked as a follow-up security task.
 - Host-method installer (internal): `packages/sandbox/src/install-host-methods.ts`
 - Globals allowlist + fetch / crypto-subtle-Promise JS shims: `packages/sandbox/src/globals.ts`
 - WebCrypto: provided natively by the `quickjs-wasi` `cryptoExtension` WASM extension (loaded in `worker.ts`); a JS Promise shim in `globals.ts` wraps `crypto.subtle.*` to return Promises per WebCrypto spec
-- Workflow registry (owns per-workflow sandbox map + `__hostCallAction` dispatcher): `packages/runtime/src/workflow-registry.ts`
+- Workflow registry (metadata + per-tenant trigger index): `packages/runtime/src/workflow-registry.ts`
+- Sandbox store (per-`(tenant, sha)` sandbox cache + `__hostCallAction` dispatcher): `packages/runtime/src/sandbox-store.ts`
 - HTTP trigger middleware (payload validation + executor delegation): `packages/runtime/src/triggers/http.ts`
 - Executor (per-workflow runQueue + lifecycle emission): `packages/runtime/src/executor/`
 - SDK (authoring API + in-sandbox action wrapper): `packages/sdk/src/index.ts`
