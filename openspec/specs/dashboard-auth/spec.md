@@ -66,26 +66,37 @@ bindings that determine which UI routes require forward-auth; the
 threat model treats the UI prefix family (`/dashboard`, `/trigger`,
 and future authenticated UIs) as a single trust domain.
 
+The implementation SHALL additionally conform to the tenant isolation
+invariant documented at `/SECURITY.md §1 "Tenant isolation invariants"`
+(I-T2). Every authenticated UI handler that reads workflow or
+invocation-event data SHALL constrain the read to the caller's active
+tenant; identifier-based lookups (by invocation id, workflow name,
+event id) SHALL NOT substitute for a tenant scope.
+
 Changes to this capability that introduce new threats, weaken or remove
 a documented mitigation, add new authenticated UI route prefixes, remove
-forward-auth coverage from an existing UI route, or conflict with the
-rules listed in `/SECURITY.md §4` MUST update `/SECURITY.md §4` in the
-same change proposal.
+forward-auth coverage from an existing UI route, add a new UI handler
+that reads workflow or invocation-event data without a tenant scope, or
+conflict with the rules listed in `/SECURITY.md §4` or the invariant
+statement in `/SECURITY.md §1` MUST update the corresponding section(s)
+of `/SECURITY.md` in the same change proposal.
 
 #### Scenario: Change alters behaviors covered by the threat model
 
 - **GIVEN** a change proposal that modifies this capability
 - **WHEN** the change affects a threat, mitigation, residual risk, or
-  rule enumerated in `/SECURITY.md §4`
+  rule enumerated in `/SECURITY.md §4`, or the tenant-isolation
+  invariant in `/SECURITY.md §1`
 - **THEN** the proposal SHALL include the corresponding updates to
-  `/SECURITY.md §4`
+  `/SECURITY.md §4` and/or `/SECURITY.md §1`
 - **AND** the updates SHALL be reviewed before the change is archived
 
 #### Scenario: Change is orthogonal to the threat model
 
 - **GIVEN** a change proposal that modifies this capability
 - **WHEN** the change does not affect any item enumerated in
-  `/SECURITY.md §4`
-- **THEN** no update to `/SECURITY.md §4` is required
+  `/SECURITY.md §4` or the tenant-isolation invariant in
+  `/SECURITY.md §1`
+- **THEN** no update to `/SECURITY.md` is required
 - **AND** the proposal SHALL note that threat-model alignment was
   checked

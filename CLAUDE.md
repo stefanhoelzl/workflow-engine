@@ -106,8 +106,9 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 - **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
 - **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
 - **NEVER** accept a `<tenant>` URL parameter without validating against the tenant regex (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) AND the `isMember(user, tenant)` predicate; both paths must fail-closed with a `404 Not Found` identical to "tenant does not exist" to prevent enumeration (§4).
-- **NEVER** expose workflow or invocation data cross-tenant in API responses, dashboard queries, or trigger listings — every query must be scoped by `tenant` (§4).
-- **NEVER** trust `X-Auth-Request-*` or `X-Forwarded-*` headers as authoritative while a K8s `NetworkPolicy` is absent (§4 / §5).
+- **NEVER** expose workflow or invocation data cross-tenant in API responses, dashboard queries, or trigger listings — every query must be scoped by `tenant`. For invocation events, the only scoped read API is `EventStore.query(tenant)` (do not construct raw queries against the `events` table); for workflows, route through `WorkflowRegistry`, which is keyed by tenant (§1 I-T2, §4).
+- **NEVER** read `X-Auth-Request-*` on any code path reachable from `/api/*`, `/webhooks/*`, `/static/*`, or any non-UI route. They are stripped by Traefik's `strip-auth-headers` middleware and ignored by `bearerUserMiddleware`; reading them anywhere else would break both guards simultaneously. The only legitimate reader is `headerUserMiddleware` on `/dashboard` and `/trigger` (§4 A13).
+- **NEVER** weaken the app-pod `NetworkPolicy` (§5 R-I1). It is defence-in-depth for the forged-header threat (the load-bearing controls are now app-side + edge-side, per §4 A13) and a baseline for blast radius on any future in-cluster compromise.
 - **NEVER** hardcode or commit a secret; route all secrets through K8s Secrets injected via `envFrom.secretRef` (§5).
 - **NEVER** log, emit, or store the `Authorization` header, session cookies, or OAuth secrets (§4).
 - **NEVER** add a config field sourced from a K8s Secret without wrapping it in `createSecret()` at the zod field level (§5).
