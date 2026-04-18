@@ -17,6 +17,10 @@ const ERR_AT_MOST_ONE_DEFINE = /at most one defineWorkflow/;
 const ERR_ACTION_MULTI_NAME = /exported under multiple names/;
 const ERR_MISSING_HANDLER = /missing a handler function/;
 const ERR_NOT_ZOD_SCHEMA = /is not a Zod schema/;
+const ERR_ACTION_NOT_TRANSFORMED =
+	/was not transformed at build time. Actions must be declared as/;
+const ERR_ACTION_DEFAULT_EXPORT =
+	/action cannot be a default export; use .export const./;
 // The IIFE bundle assigns its exports as properties on the namespace object,
 // so the bundle source contains lines like `exports.onEvent = ...` / `exports.sendNotification = ...`.
 const EXPORT_ON_EVENT_RE = /exports\.onEvent\s*=/;
@@ -189,7 +193,28 @@ export const a = defineWorkflow({ name: "a" });
 export const b = defineWorkflow({ name: "b" });
 `;
 
+// Alias-only: `inner` IS declared via `export const` (so the AST transform
+// injects `name: "inner"`), but `alias` exports the same callable under a
+// second name. The plugin's identity-set check catches this at build time.
 const ACTION_TWO_NAMES = `
+import { action, defineWorkflow, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const inner = action({
+	input: z.object({}),
+	output: z.string(),
+	handler: async () => "x",
+});
+
+export { inner as alias };
+`;
+
+// Detached export: the variable is declared with `const` (not `export const`)
+// and then exported via a named-export specifier. The AST transform only
+// matches `export const X = action({...})` declarations, so `inner` here is
+// not transformed; the post-bundle "every action has a name" check catches it.
+const ACTION_DETACHED_EXPORT = `
 import { action, defineWorkflow, z } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow();
@@ -201,7 +226,37 @@ const inner = action({
 });
 
 export { inner };
-export { inner as alias };
+`;
+
+const ACTION_DEFAULT_EXPORT = `
+import { action, defineWorkflow, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export default action({
+	input: z.object({}),
+	output: z.string(),
+	handler: async () => "x",
+});
+`;
+
+// Factory wrapper: the action() call is hidden inside a helper, so the AST
+// transform cannot see it. Runtime detection kicks in via the "every action
+// has a name" check.
+const ACTION_FACTORY_WRAPPER = `
+import { action, defineWorkflow, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+function makeAction() {
+	return action({
+		input: z.object({}),
+		output: z.string(),
+		handler: async () => "x",
+	});
+}
+
+export const wrapped = makeAction();
 `;
 
 const TRIGGER_WITH_QUERY = `
@@ -272,6 +327,10 @@ describe("workflowPlugin: brand-based discovery", () => {
 		const bundleSrc = await readWorkflowBundleSource(outDir, "basic");
 		// Bundle is an ES module with the original named exports preserved.
 		expect(bundleSrc).toMatch(EXPORT_ON_EVENT_RE);
+		// The AST transform injects `name: "sendNotification"` into the
+		// `action({...})` call at build time. Confirm the literal appears
+		// in the emitted bundle source.
+		expect(bundleSrc).toContain('name: "sendNotification"');
 		expect(bundleSrc).toMatch(EXPORT_SEND_NOTIFICATION_RE);
 
 		// sha matches SHA-256 of the bundle source bytes — verify by recomputing.
@@ -398,6 +457,33 @@ describe("workflowPlugin: build failures", () => {
 				workflows: ["./dup.ts"],
 			}),
 		).rejects.toThrow(ERR_ACTION_MULTI_NAME);
+	});
+
+	it("fails when an action is declared detached from its export", async () => {
+		await expect(
+			buildFixture({
+				files: { "detached.ts": ACTION_DETACHED_EXPORT },
+				workflows: ["./detached.ts"],
+			}),
+		).rejects.toThrow(ERR_ACTION_NOT_TRANSFORMED);
+	});
+
+	it("fails when an action is default-exported", async () => {
+		await expect(
+			buildFixture({
+				files: { "default.ts": ACTION_DEFAULT_EXPORT },
+				workflows: ["./default.ts"],
+			}),
+		).rejects.toThrow(ERR_ACTION_DEFAULT_EXPORT);
+	});
+
+	it("fails when an action is wrapped in a factory (not a direct call)", async () => {
+		await expect(
+			buildFixture({
+				files: { "factory.ts": ACTION_FACTORY_WRAPPER },
+				workflows: ["./factory.ts"],
+			}),
+		).rejects.toThrow(ERR_ACTION_NOT_TRANSFORMED);
 	});
 
 	it("fails when a trigger has no handler function", async () => {

@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { createContext, runInContext } from "node:vm";
 import { createGzip } from "node:zlib";
 import { IIFE_NAMESPACE } from "@workflow-engine/core";
+import MagicString from "magic-string";
 import { pack as tarPack } from "tar-stream";
 import ts from "typescript";
 import { build, type Plugin, type ResolvedConfig } from "vite";
@@ -286,11 +287,20 @@ interface DiscoveredExports {
 	triggerEntries: [string, HttpTrigger][];
 }
 
-function discoverExports(mod: Record<string, unknown>): DiscoveredExports {
+function discoverExports(
+	mod: Record<string, unknown>,
+	filestem: string,
+	ctx: PluginContext,
+): DiscoveredExports {
 	const workflowEntries: [string, Workflow][] = [];
 	const actionEntries: [string, Action][] = [];
 	const triggerEntries: [string, HttpTrigger][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
+		if (exportName === "default" && isAction(value)) {
+			ctx.error(
+				`Workflow "${filestem}": action cannot be a default export; use \`export const X = action({...})\``,
+			);
+		}
 		if (isWorkflow(value)) {
 			workflowEntries.push([exportName, value]);
 		} else if (isAction(value)) {
@@ -307,25 +317,38 @@ function buildActionEntries(
 	workflowName: string,
 	ctx: PluginContext,
 ): ManifestActionEntry[] {
-	// Detect aliased action exports (same action object under multiple names)
-	// and assign each action its export name via __setActionName. That helper
-	// is write-once and same-name idempotent (SDK contract), so exporting the
-	// same action twice under the same alias is fine; different aliases throw.
-	const seenActions = new Map<Action, string>();
-	const actions: ManifestActionEntry[] = [];
+	// Alias check first: if the same callable is exported under multiple
+	// names, fail before any per-entry validation runs so the user sees the
+	// most specific error.
+	const exportNamesByAction = new Map<Action, string[]>();
 	for (const [exportName, actionObj] of entries) {
-		const previous = seenActions.get(actionObj);
-		if (previous !== undefined && previous !== exportName) {
+		const list = exportNamesByAction.get(actionObj) ?? [];
+		list.push(exportName);
+		exportNamesByAction.set(actionObj, list);
+	}
+	for (const names of exportNamesByAction.values()) {
+		if (names.length > 1) {
 			ctx.error(
-				`Workflow "${workflowName}": action exported under multiple names ("${previous}" and "${exportName}"); action identity is the export name`,
+				`Workflow "${workflowName}": action exported under multiple names ("${names[0]}" and "${names[1]}"); action identity is the export name`,
 			);
 		}
-		seenActions.set(actionObj, exportName);
-		try {
-			actionObj.__setActionName(exportName);
-		} catch (err) {
+	}
+
+	const actions: ManifestActionEntry[] = [];
+	for (const [exportName, actionObj] of entries) {
+		// Every action must have been named at build time by the AST
+		// transform. An empty name means the declaration didn't match
+		// the `export const X = action({...})` pattern the transform
+		// recognises; surface that as a build-time error rather than
+		// letting the bundle ship and fail at first invocation.
+		if (actionObj.name === "") {
 			ctx.error(
-				`Workflow "${workflowName}": failed to bind action name "${exportName}": ${errorMessage(err)}`,
+				`Workflow "${workflowName}": action "${exportName}" was not transformed at build time. Actions must be declared as: export const ${exportName} = action({...})`,
+			);
+		}
+		if (actionObj.name !== exportName) {
+			ctx.error(
+				`Workflow "${workflowName}": action "${exportName}" was built-time named "${actionObj.name}"; the name must match the export name`,
 			);
 		}
 		const inputLabel = `action "${exportName}".input`;
@@ -347,7 +370,7 @@ function buildTriggerEntry(
 	workflowName: string,
 	ctx: PluginContext,
 ): ManifestHttpTriggerEntry {
-	if (typeof trigger.handler !== "function") {
+	if (typeof trigger !== "function") {
 		ctx.error(
 			`Workflow "${workflowName}": trigger "${exportName}" is missing a handler function`,
 		);
@@ -384,8 +407,11 @@ function buildManifest(
 	sha: string,
 	ctx: PluginContext,
 ): BuiltManifest {
-	const { workflowEntries, actionEntries, triggerEntries } =
-		discoverExports(mod);
+	const { workflowEntries, actionEntries, triggerEntries } = discoverExports(
+		mod,
+		filestem,
+		ctx,
+	);
 
 	if (workflowEntries.length > 1) {
 		ctx.error(
@@ -476,6 +502,152 @@ function isEmptyObjectSchema(schema: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// AST transform: inject `name: "<exportName>"` into `action({...})` calls
+// ---------------------------------------------------------------------------
+
+// Minimal ESTree shapes we use. Rollup exposes a full typed AST via
+// `this.parse`; we only care about a few node kinds.
+interface AstNodeBase {
+	type: string;
+	start: number;
+	end: number;
+}
+interface IdentifierNode extends AstNodeBase {
+	type: "Identifier";
+	name: string;
+}
+interface ObjectExpressionNode extends AstNodeBase {
+	type: "ObjectExpression";
+	properties: AstNodeBase[];
+}
+interface CallExpressionNode extends AstNodeBase {
+	type: "CallExpression";
+	callee: AstNodeBase;
+	arguments: AstNodeBase[];
+}
+interface VariableDeclaratorNode extends AstNodeBase {
+	type: "VariableDeclarator";
+	id: AstNodeBase;
+	init: AstNodeBase | null;
+}
+interface VariableDeclarationNode extends AstNodeBase {
+	type: "VariableDeclaration";
+	kind: "var" | "let" | "const";
+	declarations: VariableDeclaratorNode[];
+}
+interface ExportNamedDeclarationNode extends AstNodeBase {
+	type: "ExportNamedDeclaration";
+	declaration: AstNodeBase | null;
+}
+
+// Fast-path gate: only parse files that plausibly contain `action(...)` calls.
+function sourceMightContainActionCall(code: string): boolean {
+	return code.includes("action(");
+}
+
+interface InjectResult {
+	code: string;
+	map: ReturnType<InstanceType<typeof MagicString>["generateMap"]>;
+}
+
+// Return the `action({...})` call expression and the exported identifier
+// for a single top-level statement, or null if it doesn't match the
+// canonical `export const X = action({...})` shape the transform supports.
+function matchActionExport(
+	top: AstNodeBase,
+): { id: IdentifierNode; call: CallExpressionNode } | null {
+	if (top.type !== "ExportNamedDeclaration") {
+		return null;
+	}
+	const decl = (top as ExportNamedDeclarationNode).declaration;
+	if (!decl || decl.type !== "VariableDeclaration") {
+		return null;
+	}
+	const varDecl = decl as VariableDeclarationNode;
+	if (varDecl.kind !== "const" || varDecl.declarations.length !== 1) {
+		return null;
+	}
+	const declarator = varDecl.declarations[0];
+	if (!declarator || declarator.id.type !== "Identifier") {
+		return null;
+	}
+	const init = declarator.init;
+	if (!init || init.type !== "CallExpression") {
+		return null;
+	}
+	const call = init as CallExpressionNode;
+	if (
+		call.callee.type !== "Identifier" ||
+		(call.callee as IdentifierNode).name !== "action"
+	) {
+		return null;
+	}
+	const arg0 = call.arguments[0];
+	if (!arg0 || arg0.type !== "ObjectExpression") {
+		return null;
+	}
+	return { id: declarator.id as IdentifierNode, call };
+}
+
+function injectNameIntoCall(
+	magic: MagicString,
+	call: CallExpressionNode,
+	idName: string,
+): void {
+	const obj = call.arguments[0] as ObjectExpressionNode;
+	// Insert `name: "<id>"` just before the closing `}` of the object
+	// literal. `obj.end` is the position AFTER the closing `}`, so we
+	// insert at `end - 1`. Prefix with `, ` when the object already has
+	// properties.
+	const insertPos = obj.end - 1;
+	const sep = obj.properties.length === 0 ? "" : ", ";
+	magic.appendLeft(insertPos, `${sep}name: ${JSON.stringify(idName)}`);
+}
+
+function injectActionNames(
+	code: string,
+	parse: (src: string) => unknown,
+): InjectResult | null {
+	if (!sourceMightContainActionCall(code)) {
+		return null;
+	}
+	const ast = parse(code) as { body: AstNodeBase[] };
+	const magic = new MagicString(code);
+	let changed = false;
+	for (const top of ast.body) {
+		const match = matchActionExport(top);
+		if (match) {
+			injectNameIntoCall(magic, match.call, match.id.name);
+			changed = true;
+		}
+	}
+	if (!changed) {
+		return null;
+	}
+	return {
+		code: magic.toString(),
+		map: magic.generateMap({ hires: true }),
+	};
+}
+
+// Vite/Rollup plugin that AST-transforms the workflow's source file during
+// the per-workflow sub-build. Only the workflow file itself is transformed;
+// transitive imports are unaffected (the `One workflow per file` rule keeps
+// action declarations in the workflow file).
+function actionNameInjectionPlugin(workflowPath: string): Plugin {
+	return {
+		name: "workflow-engine:inject-action-names",
+		enforce: "post",
+		transform(code, id) {
+			if (id !== workflowPath) {
+				return null;
+			}
+			return injectActionNames(code, (src) => this.parse(src));
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Workflow bundling (one Vite build per workflow)
 // ---------------------------------------------------------------------------
 
@@ -487,6 +659,7 @@ async function bundleWorkflow(
 		configFile: false,
 		logLevel: "silent",
 		root,
+		plugins: [actionNameInjectionPlugin(workflowPath)],
 		build: {
 			write: false,
 			minify: false,
@@ -521,4 +694,4 @@ async function bundleWorkflow(
 }
 
 export type { WorkflowPluginOptions };
-export { typecheckWorkflows, workflowPlugin };
+export { injectActionNames, typecheckWorkflows, workflowPlugin };

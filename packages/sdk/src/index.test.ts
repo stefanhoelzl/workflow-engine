@@ -14,9 +14,7 @@ import {
 	z,
 } from "./index.js";
 
-const ACTION_NAME_NOT_ASSIGNED_RE =
-	/invoked before the build system assigned it a name/;
-const ACTION_ALREADY_BOUND_RE = /Action already bound to name "n"/;
+const ACTION_NAME_MISSING_RE = /Action constructed without a name/;
 const HOST_CALL_UNAVAILABLE_RE = /No action dispatcher installed/;
 
 // ---------------------------------------------------------------------------
@@ -29,32 +27,38 @@ describe("brands and type guards", () => {
 			input: z.object({}),
 			output: z.string(),
 			handler: async () => "x",
+			name: "a",
 		});
 		expect(typeof a).toBe("function");
 		expect((a as unknown as Record<symbol, unknown>)[ACTION_BRAND]).toBe(true);
 		expect(isAction(a)).toBe(true);
 	});
 
-	it("action exposes input, output, handler as readable properties", () => {
+	it("action exposes input, output as readable properties; handler is not a public property", () => {
 		const input = z.object({ x: z.number() });
 		const output = z.string();
 		const handler = async ({ x }: { x: number }) => String(x);
-		const a = action({ input, output, handler });
+		const a = action({ input, output, handler, name: "a" });
 		expect(a.input).toBe(input);
 		expect(a.output).toBe(output);
-		expect(a.handler).toBe(handler);
+		expect(a.name).toBe("a");
+		// No public `.handler` slot — guest code cannot bypass the dispatcher.
+		expect((a as unknown as Record<string, unknown>).handler).toBeUndefined();
 	});
 
-	it("httpTrigger() returns an object branded with HTTP_TRIGGER_BRAND", () => {
+	it("httpTrigger() returns a callable branded with HTTP_TRIGGER_BRAND", () => {
 		const t = httpTrigger({
 			path: "x",
 			body: z.object({}),
 			handler: async () => ({}),
 		});
+		expect(typeof t).toBe("function");
 		expect((t as unknown as Record<symbol, unknown>)[HTTP_TRIGGER_BRAND]).toBe(
 			true,
 		);
 		expect(isHttpTrigger(t)).toBe(true);
+		// No public `.handler` slot — the callable IS the handler invocation path.
+		expect((t as unknown as Record<string, unknown>).handler).toBeUndefined();
 	});
 
 	it("defineWorkflow() returns an object branded with WORKFLOW_BRAND", () => {
@@ -71,6 +75,10 @@ describe("brands and type guards", () => {
 
 	it("isHttpTrigger rejects a plain object", () => {
 		expect(isHttpTrigger({ path: "x" })).toBe(false);
+	});
+
+	it("isHttpTrigger rejects a plain callable without brand", () => {
+		expect(isHttpTrigger(() => 1)).toBe(false);
 	});
 
 	it("isWorkflow rejects a plain object", () => {
@@ -119,8 +127,8 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 			input: z.object({ x: z.number() }),
 			output: z.string(),
 			handler,
+			name: "sendNotification",
 		});
-		a.__setActionName("sendNotification");
 
 		const result = await a({ x: 42 });
 
@@ -148,8 +156,8 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 			input: z.object({ x: z.number() }),
 			output: z.string(),
 			handler,
+			name: "sendNotification",
 		});
-		a.__setActionName("sendNotification");
 
 		// biome-ignore lint/suspicious/noExplicitAny: exercising the runtime rejection, input schema is permissive here
 		await expect(a({ x: "bad" } as any)).rejects.toThrow(
@@ -165,33 +173,35 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 			input: z.unknown(),
 			output: z.string(),
 			handler,
+			name: "bad",
 		});
-		a.__setActionName("bad");
 
 		await expect(a(undefined)).rejects.toThrow();
 		expect(handler).toHaveBeenCalledTimes(1);
 	});
 
-	it("throws when invoked before a name is assigned; handler MUST NOT run", async () => {
+	it("throws when invoked without a name; handler MUST NOT run", async () => {
 		const handler = vi.fn(async () => undefined);
 		const a = action({
 			input: z.unknown(),
 			output: z.unknown(),
 			handler,
 		});
-		await expect(a(undefined)).rejects.toThrow(ACTION_NAME_NOT_ASSIGNED_RE);
+		await expect(a(undefined)).rejects.toThrow(ACTION_NAME_MISSING_RE);
 		expect(handler).not.toHaveBeenCalled();
 	});
 
-	it("__setActionName is idempotent for the same name and rejects re-binding", () => {
+	it("dispatches with the configured name", async () => {
+		hostCallMock.mockResolvedValue(undefined);
+		const handler = vi.fn(async () => "ok");
 		const a = action({
 			input: z.unknown(),
-			output: z.unknown(),
-			handler: async () => undefined,
+			output: z.string(),
+			handler,
+			name: "myAction",
 		});
-		a.__setActionName("n");
-		a.__setActionName("n");
-		expect(() => a.__setActionName("other")).toThrow(ACTION_ALREADY_BOUND_RE);
+		await a(undefined);
+		expect(hostCallMock).toHaveBeenCalledWith("myAction", undefined);
 	});
 });
 
@@ -209,8 +219,8 @@ describe("action callable without sandbox globals", () => {
 			input: z.unknown(),
 			output: z.unknown(),
 			handler,
+			name: "x",
 		});
-		a.__setActionName("x");
 		await expect(a(undefined)).rejects.toThrow(HOST_CALL_UNAVAILABLE_RE);
 		expect(handler).not.toHaveBeenCalled();
 	});
@@ -345,14 +355,25 @@ describe("httpTrigger defaults", () => {
 		expect(t.body).toBe(body);
 	});
 
-	it("exposes path and handler as readonly properties", () => {
-		const handler = async () => ({ status: 202 });
+	it("exposes path as a readonly property and invokes the handler when called", async () => {
+		const handler = vi.fn(async () => ({ status: 202 }));
 		const t = httpTrigger({
 			path: "orders/:orderId",
 			handler,
 		});
 		expect(t.path).toBe("orders/:orderId");
-		expect(t.handler).toBe(handler);
+		const result = await t({
+			body: undefined,
+			headers: {},
+			url: "/orders/1",
+			method: "POST",
+			// biome-ignore lint/suspicious/noExplicitAny: type widening for the generic payload
+			params: { orderId: "1" } as any,
+			// biome-ignore lint/suspicious/noExplicitAny: type widening for the generic payload
+			query: {} as any,
+		});
+		expect(result).toEqual({ status: 202 });
+		expect(handler).toHaveBeenCalledTimes(1);
 	});
 });
 
