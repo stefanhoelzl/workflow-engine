@@ -24,6 +24,32 @@ const esbuild = ((esbuildMod as { default?: unknown }).default ??
 const VIRTUAL_ID = "virtual:sandbox-polyfills";
 const RESOLVED_ID = `\0${VIRTUAL_ID}`;
 
+// fetch-blob v4's index.js has a top-level `if (!globalThis.ReadableStream)
+// { await import('node:process'); ... }` Node fallback. Rollup's IIFE
+// format rejects top-level await even when the branch is dead at runtime.
+// Strip the block — streams.ts installs ReadableStream before blob.ts loads.
+// (No-op for fetch-blob v3 pulled in transitively by formdata-polyfill;
+// v3 has no TLA, so a downstream TLA-detection failure remains the signal
+// if a future fetch-blob version changes shape.)
+const FETCH_BLOB_TLA_RE =
+	/^if \(!globalThis\.ReadableStream\) \{[\s\S]*?^\}\n/m;
+
+function stripFetchBlobTLA(): RollupPlugin {
+	return {
+		name: "strip-fetch-blob-tla",
+		transform(code, id) {
+			if (!id.endsWith("/fetch-blob/index.js")) {
+				return;
+			}
+			const stripped = code.replace(
+				FETCH_BLOB_TLA_RE,
+				"// fetch-blob TLA Node fallback removed — streams.ts polyfill provides ReadableStream\n",
+			);
+			return stripped === code ? undefined : { code: stripped, map: null };
+		},
+	};
+}
+
 function readSandboxVersion(): string {
 	const pkgPath = resolve(
 		dirname(fileURLToPath(import.meta.url)),
@@ -67,6 +93,7 @@ export function sandboxPolyfills(): Plugin {
 						values: { __WFE_VERSION__: JSON.stringify(version) },
 						preventAssignment: true,
 					}),
+					stripFetchBlobTLA(),
 					esbuild({ target: "es2022", tsconfig: false }),
 					nodeResolve(),
 				],

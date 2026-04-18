@@ -9,9 +9,17 @@
 //   compression      — CompressionStream/DecompressionStream (WHATWG). Pure-JS
 //                      TransformStream wrappers around fflate's gzip/deflate/
 //                      inflate streaming classes. Depends on TransformStream.
-//   fetch            — fetch shim (depends on Headers/TextEncoder from WASM ext;
-//                      independent of event stack but bundled together for
-//                      single-eval simplicity in worker.ts)
+//   blob             — Blob, File from fetch-blob@4 (depends on streams; the
+//                      vite plugin strips fetch-blob's TLA Node fallback —
+//                      ReadableStream is provided by streams above)
+//   form-data        — FormData from formdata-polyfill@4 (depends on Blob/File
+//                      via fetch-blob v3 transitive; v3's CJS Node prelude is
+//                      try/catch'd at runtime and is a no-op once
+//                      globalThis.ReadableStream is present)
+//   response         — hand-rolled WHATWG Response (depends on body-mixin)
+//   request          — hand-rolled WHATWG Request (depends on body-mixin)
+//   fetch            — fetch shim wrapping __hostFetch; accepts Request input
+//                      and returns a real Response (depends on response/request)
 //   structured-clone — structuredClone override (uses native DOMException)
 //   idb-domexception-fix — wraps DOMException in a construct-trap Proxy so
 //                      fake-indexeddb's subclass `throw new DataError()`
@@ -42,6 +50,10 @@ import "./report-error.js";
 import "./microtask.js";
 import "./streams.js";
 import "./compression.js";
+import "./blob.js";
+import "./form-data.js";
+import "./response.js";
+import "./request.js";
 import "./fetch.js";
 import "./structured-clone.js";
 import "./idb-domexception-fix.js";

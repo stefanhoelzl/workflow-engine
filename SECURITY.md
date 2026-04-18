@@ -300,6 +300,30 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   implemented in C/WASM inside the WASM linear memory, not as host
   bridges.
 
+  **Fetch interfaces (`Blob`, `File`, `FormData`, `Request`, `Response`)** —
+  pure-JS classes added inside the polyfill IIFE. No host bridge; no
+  new attacker capability. Body data lives in JS-side typed arrays
+  inside QuickJS linear memory and is bounded by the existing memory
+  cap. `Blob` and `File` come from `fetch-blob@^4.0.0` (pin in
+  `packages/sandbox/package.json`); the `sandboxPolyfills()` Vite
+  plugin strips fetch-blob's top-level Node-fallback `await import`
+  prelude — `globalThis.ReadableStream` is provided by the
+  `web-streams-polyfill` ponyfill loaded immediately before. `FormData`
+  comes from `formdata-polyfill@^4.0.10`; it transitively pulls
+  `fetch-blob@^3.x` for type marker checks (its CJS Node fallback
+  inside `streams.cjs` is wrapped in try/catch and is a no-op once
+  `globalThis.ReadableStream` is set, so its `require()` ReferenceError
+  is silently caught at QuickJS eval time — reviewers should confirm
+  this when bumping either package). `Request` and `Response` are
+  hand-rolled in `packages/sandbox/src/polyfills/request.ts` and
+  `response.ts`; `Request.signal` exists per spec but is **not**
+  threaded through to `__hostFetch` (the bridge ignores it — adding
+  abort plumbing requires a host wire change). The `Response` class
+  replaces the previous duck-typed object literal in `fetch.ts` and is
+  guest-constructible per spec; that grants no new host capability
+  (guest could already mint plain objects with the same shape). Bumps
+  to `fetch-blob` or `formdata-polyfill` require a §2 re-audit PR.
+
   The host-bridged names `__hostFetch`, `__emitEvent`, `__hostCallAction`,
   and `__reportError` are each installed on `globalThis` briefly at
   initialization time for exactly one consumer shim to capture into an
@@ -336,9 +360,12 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
   the polyfill source files under `packages/sandbox/src/polyfills/`
   (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
-  `fetch.ts`, `compression.ts`, `scheduler.ts`, `observable.ts`) and the
-  pinned `event-target-shim@^6`, `fflate@^0.8.2`, `scheduler-polyfill@^1.3.0`,
-  and `observable-polyfill@^0.0.29` dependencies.
+  `fetch.ts`, `compression.ts`, `scheduler.ts`, `observable.ts`,
+  `blob.ts`, `form-data.ts`, `body-mixin.ts`, `request.ts`,
+  `response.ts`) and the pinned dependencies `event-target-shim@^6`,
+  `fflate@^0.8.2`, `scheduler-polyfill@^1.3.0`,
+  `observable-polyfill@^0.0.29`, `fetch-blob@^4.0.0`, and
+  `formdata-polyfill@^4.0.10`.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` via the
   construction-time `methods` argument of its own `sandbox(source,
