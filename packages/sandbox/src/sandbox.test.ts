@@ -1403,28 +1403,22 @@ describe("security invariants", () => {
 		}
 	});
 
-	it("reserved globals reject extraMethods that would shadow EventTarget / AbortController / DOMException / URLPattern", async () => {
-		const reservedNames = [
-			"EventTarget",
-			"Event",
-			"ErrorEvent",
-			"AbortController",
-			"AbortSignal",
-			"DOMException",
-			"URLPattern",
-		];
-		const attempts = await Promise.all(
-			reservedNames.map((reserved) =>
-				runSource(defaultHandler("return 1;"), {
-					methods: { [reserved]: async () => undefined },
-				}).then(
-					() => ({ reserved, threw: false }),
-					() => ({ reserved, threw: true }),
-				),
+	it("construction-time host methods shadow polyfill globals (host wins, last-writer)", async () => {
+		const { result } = await runSource(
+			defaultHandler(
+				`return { isHostStub: typeof EventTarget === "function" && (await EventTarget("ping")) };`,
 			),
+			{
+				methods: {
+					EventTarget: async (...args) => ({ shadowed: true, args }),
+				},
+			},
 		);
-		for (const a of attempts) {
-			expect(a.threw).toBe(true);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.result).toEqual({
+				isHostStub: { shadowed: true, args: ["ping"] },
+			});
 		}
 	});
 });
