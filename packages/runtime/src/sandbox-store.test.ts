@@ -33,7 +33,8 @@ const WORKFLOW: WorkflowManifest = {
 			method: "POST",
 			body: { type: "object" },
 			params: [],
-			schema: { type: "object" },
+			inputSchema: { type: "object" },
+			outputSchema: { type: "object" },
 		},
 	],
 };

@@ -43,7 +43,8 @@ const WORKFLOW = {
 			method: "POST",
 			body: { type: "object" },
 			params: [],
-			schema: { type: "object" },
+			inputSchema: { type: "object" },
+			outputSchema: { type: "object" },
 		},
 	],
 };
@@ -108,9 +109,11 @@ describe("end-to-end event flow", () => {
 				["demo.js", BUNDLE],
 			]),
 		);
-		const lookup = registry.lookup("acme", "demo", "ping", "POST");
-		if (!lookup) {
-			throw new Error("expected lookup to succeed");
+		const entries = registry.list("acme");
+		const entry = entries[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "ping");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a ping trigger descriptor");
 		}
 
 		const sandboxFactory = createSandboxFactory({ logger });
@@ -118,13 +121,18 @@ describe("end-to-end event flow", () => {
 		const executor = createExecutor({ bus, sandboxStore });
 		const result = await executor.invoke(
 			"acme",
-			lookup.workflow,
-			lookup.triggerName,
+			entry.workflow,
+			descriptor,
 			{ body: { msg: "hello" } },
-			lookup.bundleSource,
+			entry.bundleSource,
 		);
-		expect(result.status).toBe(200);
-		expect(result.body).toEqual({ echoed: "hello" });
+		expect(result.ok).toBe(true);
+		if (!result.ok) {
+			throw new Error("expected result.ok");
+		}
+		const output = result.output as { status: number; body: unknown };
+		expect(output.status).toBe(200);
+		expect(output.body).toEqual({ echoed: "hello" });
 
 		// Allow any onEvent forwarding to settle (executor wires fire-and-forget).
 		await new Promise((r) => setImmediate(r));

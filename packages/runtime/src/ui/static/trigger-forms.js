@@ -274,23 +274,22 @@ function submitTrigger(btn) {
 	if (!jedison) {
 		return;
 	}
-	const formValue = jedison.getValue();
 	const url = btn.dataset.triggerUrl;
 	const method = btn.dataset.triggerMethod || "POST";
 
-	// The form renders a composite schema (body + headers + url + method +
-	// params). Extract the sub-fields and build the fetch call.
-	const requestBody = formValue.body;
-	const extraHeaders = formValue.headers || {};
-	const headers = {
-		"Content-Type": "application/json",
-		...extraHeaders,
-	};
+	// The form's JSON Schema is the wire-format for the submission:
+	//   - For HTTP kind (posts to /webhooks/<tenant>/<workflow>/<path>),
+	//     the schema is the body JSON Schema — the HTTP source fills in
+	//     headers/url/method/params/query from the real HTTP request.
+	//   - For non-HTTP kinds (posts to /trigger/<tenant>/<workflow>/<name>),
+	//     the schema is the full inputSchema.
+	// Either way, jedison.getValue() is exactly what we POST.
+	const formValue = jedison.getValue();
 
 	fetch(url, {
 		method,
-		headers,
-		body: JSON.stringify(requestBody),
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(formValue),
 	})
 		.then(async (r) => {
 			const text = await r.text();

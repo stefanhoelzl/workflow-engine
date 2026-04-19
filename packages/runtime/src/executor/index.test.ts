@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createEventBus, type EventBus } from "../event-bus/index.js";
 import type { SandboxStore } from "../sandbox-store.js";
 import { createExecutor } from "./index.js";
+import type { HttpTriggerDescriptor } from "./types.js";
 
 const EVT_ID_RE = /^evt_/;
 
@@ -16,6 +17,20 @@ function makeManifest(name: string, sha = "0".repeat(64)): WorkflowManifest {
 		env: {},
 		actions: [],
 		triggers: [],
+	};
+}
+
+function makeDescriptor(name: string): HttpTriggerDescriptor {
+	return {
+		kind: "http",
+		type: "http",
+		name,
+		path: name,
+		method: "POST",
+		params: [],
+		body: { type: "object" },
+		inputSchema: { type: "object" },
+		outputSchema: { type: "object" },
 	};
 }
 
@@ -68,7 +83,7 @@ describe("executor", () => {
 		await executor.invoke(
 			"t0",
 			makeManifest("wf"),
-			"trig",
+			makeDescriptor("trig"),
 			{ hello: "world" },
 			"source",
 		);
@@ -99,8 +114,8 @@ describe("executor", () => {
 		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
 		const wf = makeManifest("wf");
 
-		await executor.invoke("t0", wf, "t", null, "source");
-		await executor.invoke("t0", wf, "t", null, "source");
+		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
+		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
 
 		// onEvent should be wired exactly once across multiple invocations.
 		expect(capture.eventCallbacks).toHaveLength(1);
@@ -122,8 +137,10 @@ describe("executor", () => {
 		expect(seen).toContain(evt);
 	});
 
-	it("shapes a missing return value into a default 200 response", async () => {
-		const sandbox = makeSandbox({ onRun: async () => undefined });
+	it("returns { ok: true, output } when the handler returns normally", async () => {
+		const sandbox = makeSandbox({
+			onRun: async () => ({ status: 202, body: { ok: true } }),
+		});
 		const executor = createExecutor({
 			bus: createEventBus([]),
 			sandboxStore: makeStore(sandbox),
@@ -131,18 +148,21 @@ describe("executor", () => {
 		const result = await executor.invoke(
 			"t0",
 			makeManifest("wf"),
-			"t",
+			makeDescriptor("t"),
 			null,
 			"source",
 		);
-		expect(result.status).toBe(200);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.output).toEqual({ status: 202, body: { ok: true } });
+		}
 	});
 
-	it("returns a 500 response when sandbox.run reports an error", async () => {
+	it("returns { ok: false, error } when sandbox.run reports an error", async () => {
 		const sandbox: Sandbox = {
 			run: vi.fn().mockResolvedValue({
 				ok: false,
-				error: { message: "boom", stack: "" },
+				error: { message: "boom", stack: "s" },
 			}),
 			onEvent: vi.fn(),
 			dispose: vi.fn(),
@@ -155,12 +175,14 @@ describe("executor", () => {
 		const result = await executor.invoke(
 			"t0",
 			makeManifest("wf"),
-			"t",
+			makeDescriptor("t"),
 			null,
 			"source",
 		);
-		expect(result.status).toBe(500);
-		expect(result.body).toEqual({ error: "internal_error" });
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.message).toBe("boom");
+		}
 	});
 
 	it("serializes invocations of the same workflow via the runQueue", async () => {
@@ -186,9 +208,9 @@ describe("executor", () => {
 		const wf = makeManifest("wf");
 
 		await Promise.all([
-			executor.invoke("t0", wf, "t", null, "source"),
-			executor.invoke("t0", wf, "t", null, "source"),
-			executor.invoke("t0", wf, "t", null, "source"),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
 		]);
 
 		expect(maxActive).toBe(1);

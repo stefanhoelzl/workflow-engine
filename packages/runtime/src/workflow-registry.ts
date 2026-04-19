@@ -2,76 +2,36 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
+	type HttpTriggerManifest,
 	type Manifest,
 	ManifestSchema,
 	type WorkflowManifest,
 } from "@workflow-engine/core";
-import Ajv2020 from "ajv/dist/2020.js";
 import { extract as tarExtract } from "tar-stream";
+import type {
+	HttpTriggerDescriptor,
+	TriggerDescriptor,
+} from "./executor/types.js";
 import type { Logger } from "./logger.js";
 import type { StorageBackend } from "./storage/index.js";
-import type {
-	PayloadValidator,
-	ValidationIssue,
-	ValidatorResult,
-} from "./triggers/http.js";
+import type { TriggerSource, TriggerViewEntry } from "./triggers/source.js";
 
 // ---------------------------------------------------------------------------
 // Workflow registry (multi-tenant, metadata-only)
 // ---------------------------------------------------------------------------
 //
-// The registry owns tenant manifests, their bundle sources, and a per-tenant
-// HTTP-trigger index. It does NOT own sandboxes (see `sandbox-store.ts`) or
-// runners (removed in the sandbox-store change). Consumers:
-//   - Executor: calls `registry.lookup(tenant, method, path)` to get routing
-//     info; resolves sandbox via the store.
-//   - UI (dashboard / trigger): calls `registry.tenants()` / `registry.list()`
-//     for presentation.
-
-const ajv = new Ajv2020.default({ allErrors: true, strict: false });
-
-function structuredCloneJson<T>(value: T): T {
-	if (value === undefined) {
-		return value;
-	}
-	try {
-		return JSON.parse(JSON.stringify(value)) as T;
-	} catch {
-		return value;
-	}
-}
-
-function ajvPathToSegments(instancePath: string): (string | number)[] {
-	if (instancePath === "") {
-		return [];
-	}
-	return instancePath
-		.split("/")
-		.slice(1)
-		.map((seg) => {
-			const n = Number(seg);
-			return Number.isFinite(n) && seg !== "" ? n : seg;
-		});
-}
-
-function compileValidator(
-	schema: unknown,
-): (value: unknown) => ValidatorResult<unknown> {
-	// biome-ignore lint/suspicious/noExplicitAny: Ajv's compile signature uses a broad generic
-	const validate = ajv.compile(schema as any);
-	return (value: unknown) => {
-		const copy = structuredCloneJson(value);
-		const ok = validate(copy);
-		if (ok) {
-			return { ok: true, value: copy };
-		}
-		const issues: ValidationIssue[] = (validate.errors ?? []).map((err) => ({
-			path: ajvPathToSegments(err.instancePath),
-			message: err.message ?? "validation failed",
-		}));
-		return { ok: false, issues };
-	};
-}
+// The registry owns tenant manifests, their bundle sources, and the
+// derived list of trigger descriptors. It does NOT own sandboxes
+// (see `sandbox-store.ts`) or perform HTTP URL routing (the HTTP
+// TriggerSource does, via `reconfigure(view)` pushes from this registry).
+//
+// Consumers:
+//   - TriggerSource plugins: receive `reconfigure(kindFilteredView)` on
+//     every state change. Sources build their own kind-specific indexes
+//     (URL-pattern map for HTTP, schedule set for cron, etc.).
+//   - Executor: receives `(tenant, workflow, descriptor, input, bundleSource)`
+//     from a source and runs the invocation.
+//   - UI (dashboard / trigger): `list(tenant?)` / `tenants()` for presentation.
 
 // ---------------------------------------------------------------------------
 // Tenant tarball extraction
@@ -102,107 +62,39 @@ async function extractTenantTarGz(
 }
 
 // ---------------------------------------------------------------------------
-// Trigger payload validator (body / query / params)
+// Descriptor construction (manifest entry -> TriggerDescriptor)
 // ---------------------------------------------------------------------------
 
-function buildValidatorFromManifestTrigger(
-	manifestEntry: WorkflowManifest["triggers"][number],
-): PayloadValidator {
-	const validateBody = compileValidator(manifestEntry.body);
-	const validateParams = compileValidator({
-		type: "object",
-		properties: Object.fromEntries(
-			manifestEntry.params.map((p) => [p, { type: "string" }]),
-		),
-		required: manifestEntry.params,
-		additionalProperties: true,
-	});
-	const validateQuery = manifestEntry.query
-		? compileValidator(manifestEntry.query)
-		: (value: unknown): ValidatorResult<unknown> => ({ ok: true, value });
-	return { validateBody, validateQuery, validateParams };
-}
-
-// ---------------------------------------------------------------------------
-// Trigger index (per tenant + per workflow)
-// ---------------------------------------------------------------------------
-
-const PARAM_SEGMENT_RE = /[:*]/;
-const WILDCARD_SEGMENT_RE = /\*(\w+)/g;
-
-function toUrlPatternPath(path: string): string {
-	return path.replace(WILDCARD_SEGMENT_RE, ":$1+");
-}
-
-interface TriggerIndexEntry {
-	readonly workflow: WorkflowManifest;
-	readonly triggerName: string;
-	readonly method: string;
-	readonly path: string;
-	readonly schema: Record<string, unknown>;
-	readonly validator: PayloadValidator;
-	readonly pattern: URLPattern;
-	readonly isStatic: boolean;
-}
-
-interface TriggerMatch {
-	readonly workflow: WorkflowManifest;
-	readonly triggerName: string;
-	readonly validator: PayloadValidator;
-	readonly params: Record<string, string>;
-}
-
-function buildTriggerIndexEntries(
-	workflow: WorkflowManifest,
-): TriggerIndexEntry[] {
-	return workflow.triggers.map((trigger) => ({
-		workflow,
-		triggerName: trigger.name,
-		method: trigger.method,
-		path: trigger.path,
-		schema: trigger.schema as Record<string, unknown>,
-		validator: buildValidatorFromManifestTrigger(trigger),
-		pattern: new URLPattern({ pathname: `/${toUrlPatternPath(trigger.path)}` }),
-		isStatic: !PARAM_SEGMENT_RE.test(trigger.path),
-	}));
-}
-
-function extractParams(
-	groups: Record<string, string | undefined>,
-): Record<string, string> {
-	const params: Record<string, string> = {};
-	for (const [key, value] of Object.entries(groups)) {
-		if (value !== undefined) {
-			params[key] = value;
-		}
-	}
-	return params;
-}
-
-function tryMatch(
-	entry: TriggerIndexEntry,
-	pathname: string,
-	method: string,
-	isStatic: boolean,
-): TriggerMatch | undefined {
-	if (entry.isStatic !== isStatic) {
-		return;
-	}
-	if (entry.method !== method) {
-		return;
-	}
-	const result = entry.pattern.exec({ pathname });
-	if (!result) {
-		return;
-	}
-	return {
-		workflow: entry.workflow,
-		triggerName: entry.triggerName,
-		validator: entry.validator,
-		params: extractParams(
-			result.pathname.groups as Record<string, string | undefined>,
-		),
+function buildHttpDescriptor(
+	entry: HttpTriggerManifest,
+): HttpTriggerDescriptor {
+	const descriptor: HttpTriggerDescriptor = {
+		kind: "http",
+		type: "http",
+		name: entry.name,
+		path: entry.path,
+		method: entry.method,
+		params: [...entry.params],
+		body: entry.body as Record<string, unknown>,
+		inputSchema: entry.inputSchema as Record<string, unknown>,
+		outputSchema: entry.outputSchema as Record<string, unknown>,
 	};
+	if (entry.query) {
+		return { ...descriptor, query: entry.query as Record<string, unknown> };
+	}
+	return descriptor;
+}
+
+function buildDescriptors(workflow: WorkflowManifest): TriggerDescriptor[] {
+	return workflow.triggers.map((entry) => {
+		if (entry.type === "http") {
+			return buildHttpDescriptor(entry);
+		}
+		// Future kinds plug in here. The discriminator keeps TS honest.
+		throw new Error(
+			`unsupported trigger type: ${(entry as { type: string }).type}`,
+		);
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +104,7 @@ function tryMatch(
 interface TenantState {
 	readonly workflows: Map<string, WorkflowManifest>;
 	readonly bundleSources: Map<string, string>;
-	readonly triggerEntries: TriggerIndexEntry[];
+	readonly descriptors: Map<string, TriggerDescriptor[]>;
 }
 
 function buildTenantState(
@@ -221,7 +113,7 @@ function buildTenantState(
 ): TenantState {
 	const workflows = new Map<string, WorkflowManifest>();
 	const bundleSources = new Map<string, string>();
-	const triggerEntries: TriggerIndexEntry[] = [];
+	const descriptors = new Map<string, TriggerDescriptor[]>();
 	for (const wf of manifest.workflows) {
 		const bundleSource = files.get(wf.module);
 		if (bundleSource === undefined) {
@@ -229,9 +121,9 @@ function buildTenantState(
 		}
 		workflows.set(wf.name, wf);
 		bundleSources.set(wf.name, bundleSource);
-		triggerEntries.push(...buildTriggerIndexEntries(wf));
+		descriptors.set(wf.name, buildDescriptors(wf));
 	}
-	return { workflows, bundleSources, triggerEntries };
+	return { workflows, bundleSources, descriptors };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +133,11 @@ function buildTenantState(
 interface WorkflowRegistryOptions {
 	readonly logger: Logger;
 	readonly storageBackend?: StorageBackend;
+	// TriggerSource plugins. On every workflow-state mutation the registry
+	// calls `source.reconfigure(kindFilteredView)` synchronously. The registry
+	// does NOT manage source lifecycle (start/stop); the caller (main.ts) owns
+	// that.
+	readonly sources?: readonly TriggerSource[];
 }
 
 interface RegisterTenantOptions {
@@ -251,34 +148,13 @@ interface WorkflowEntry {
 	readonly tenant: string;
 	readonly workflow: WorkflowManifest;
 	readonly bundleSource: string;
-	readonly triggers: readonly TriggerEntry[];
-}
-
-interface TriggerEntry {
-	readonly triggerName: string;
-	readonly method: string;
-	readonly path: string;
-	readonly schema: Record<string, unknown>;
-}
-
-interface LookupResult {
-	readonly workflow: WorkflowManifest;
-	readonly triggerName: string;
-	readonly validator: PayloadValidator;
-	readonly params: Record<string, string>;
-	readonly bundleSource: string;
+	readonly triggers: readonly TriggerDescriptor[];
 }
 
 interface WorkflowRegistry {
 	readonly size: number;
 	tenants(): string[];
 	list(tenant?: string): WorkflowEntry[];
-	lookup(
-		tenant: string,
-		workflowName: string,
-		path: string,
-		method: string,
-	): LookupResult | undefined;
 	registerTenant(
 		tenant: string,
 		files: Map<string, string>,
@@ -288,14 +164,55 @@ interface WorkflowRegistry {
 	dispose(): void;
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state (per-tenant maps, trigger index) and the suite of operations (register, recover, lookup, list, dispose) with their shared helpers
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state, manifest parsing, tenant swap, and reconfigure-push to sources — grouping is intentional
 function createWorkflowRegistry(
 	options: WorkflowRegistryOptions,
 ): WorkflowRegistry {
 	const tenantStates = new Map<string, TenantState>();
 	const backend = options.storageBackend;
+	const sources: readonly TriggerSource[] = options.sources ?? [];
 
 	options.logger.info("workflow-registry.created");
+
+	function collectEntries(): WorkflowEntry[] {
+		const entries: WorkflowEntry[] = [];
+		for (const [tenant, state] of tenantStates) {
+			for (const [name, workflow] of state.workflows) {
+				const bundleSource = state.bundleSources.get(name);
+				const descriptors = state.descriptors.get(name);
+				if (bundleSource === undefined || descriptors === undefined) {
+					continue;
+				}
+				entries.push({ tenant, workflow, bundleSource, triggers: descriptors });
+			}
+		}
+		return entries;
+	}
+
+	function notifySources(): void {
+		// Partition all active triggers by kind, then hand each source its
+		// kind-filtered slice. Sources are responsible for replacing their
+		// internal index atomically on reconfigure.
+		const entries = collectEntries();
+		const byKind = new Map<string, TriggerViewEntry[]>();
+		for (const entry of entries) {
+			for (const descriptor of entry.triggers) {
+				const slice = byKind.get(descriptor.kind) ?? [];
+				slice.push({
+					tenant: entry.tenant,
+					workflow: entry.workflow,
+					bundleSource: entry.bundleSource,
+					descriptor,
+				});
+				byKind.set(descriptor.kind, slice);
+			}
+		}
+		for (const source of sources) {
+			source.reconfigure(
+				(byKind.get(source.kind) ?? []) as TriggerViewEntry<string>[],
+			);
+		}
+	}
 
 	function parseManifest(
 		tenant: string,
@@ -393,6 +310,7 @@ function createWorkflowRegistry(
 			}
 		}
 		tenantStates.set(tenant, buildTenantState(manifest, files));
+		notifySources();
 		options.logger.info("workflow-registry.registered", {
 			tenant,
 			workflows: manifest.workflows.length,
@@ -442,94 +360,21 @@ function createWorkflowRegistry(
 		}
 	}
 
-	function triggerEntriesFor(
-		tenant: string,
-		workflowName: string,
-	): TriggerIndexEntry[] {
-		const state = tenantStates.get(tenant);
-		if (!state) {
-			return [];
-		}
-		return state.triggerEntries.filter((e) => e.workflow.name === workflowName);
-	}
-
-	function lookup(
-		tenant: string,
-		workflowName: string,
-		path: string,
-		method: string,
-	): LookupResult | undefined {
-		const entries = triggerEntriesFor(tenant, workflowName);
-		if (entries.length === 0) {
-			return;
-		}
-		const pathname = `/${path}`;
-		const bundleSource = tenantStates
-			.get(tenant)
-			?.bundleSources.get(workflowName);
-		if (bundleSource === undefined) {
-			return;
-		}
-		const findMatch = (isStatic: boolean): TriggerMatch | undefined => {
-			for (const entry of entries) {
-				const match = tryMatch(entry, pathname, method, isStatic);
-				if (match) {
-					return match;
-				}
-			}
-		};
-		const match = findMatch(true) ?? findMatch(false);
-		if (!match) {
-			return;
-		}
-		return {
-			workflow: match.workflow,
-			triggerName: match.triggerName,
-			validator: match.validator,
-			params: match.params,
-			bundleSource,
-		};
-	}
-
 	function list(tenant?: string): WorkflowEntry[] {
-		const entries: WorkflowEntry[] = [];
-		const appendTenant = (t: string, state: TenantState) => {
-			for (const [name, workflow] of state.workflows) {
-				const bundleSource = state.bundleSources.get(name);
-				if (bundleSource === undefined) {
-					continue;
-				}
-				const triggers = state.triggerEntries
-					.filter((e) => e.workflow.name === name)
-					.map(
-						(e): TriggerEntry => ({
-							triggerName: e.triggerName,
-							method: e.method,
-							path: e.path,
-							schema: e.schema,
-						}),
-					);
-				entries.push({ tenant: t, workflow, bundleSource, triggers });
-			}
-		};
+		const entries = collectEntries();
 		if (tenant === undefined) {
-			for (const [t, state] of tenantStates) {
-				appendTenant(t, state);
-			}
-		} else {
-			const state = tenantStates.get(tenant);
-			if (state) {
-				appendTenant(tenant, state);
-			}
+			return entries;
 		}
-		return entries;
+		return entries.filter((e) => e.tenant === tenant);
 	}
 
 	return {
 		get size(): number {
 			let total = 0;
 			for (const state of tenantStates.values()) {
-				total += state.triggerEntries.length;
+				for (const descriptors of state.descriptors.values()) {
+					total += descriptors.length;
+				}
 			}
 			return total;
 		},
@@ -537,7 +382,6 @@ function createWorkflowRegistry(
 			return Array.from(tenantStates.keys());
 		},
 		list,
-		lookup,
 		registerTenant,
 		recover,
 		dispose() {
@@ -599,10 +443,8 @@ function toRegisterIssue(err: unknown): {
 }
 
 export type {
-	LookupResult,
-	ManifestIssue,
 	RegisterResult,
-	TriggerEntry,
+	RegisterTenantOptions,
 	WorkflowEntry,
 	WorkflowRegistry,
 	WorkflowRegistryOptions,

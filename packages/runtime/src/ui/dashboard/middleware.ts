@@ -81,8 +81,24 @@ function resolveActiveTenant(
 	return tenants[0];
 }
 
+function lookupTriggerKind(
+	registry: WorkflowRegistry,
+	tenant: string,
+	workflow: string,
+	triggerName: string,
+): string | undefined {
+	for (const entry of registry.list(tenant)) {
+		if (entry.workflow.name !== workflow) {
+			continue;
+		}
+		const descriptor = entry.triggers.find((t) => t.name === triggerName);
+		return descriptor?.kind;
+	}
+}
+
 async function fetchInvocationRows(
 	eventStore: EventStore,
+	registry: WorkflowRegistry,
 	tenant: string,
 	limit: number,
 ): Promise<InvocationRow[]> {
@@ -113,7 +129,8 @@ async function fetchInvocationRows(
 
 	return requests.map((r) => {
 		const t = terminalById.get(r.id);
-		return {
+		const kind = lookupTriggerKind(registry, tenant, r.workflow, r.name);
+		const row: InvocationRow = {
 			id: r.id,
 			workflow: r.workflow,
 			trigger: r.name,
@@ -122,7 +139,9 @@ async function fetchInvocationRows(
 			completedAt: t?.at ?? null,
 			startedTs: toNumber(r.ts),
 			completedTs: t ? toNumber(t.ts) : null,
+			...(kind ? { triggerKind: kind } : {}),
 		};
+		return row;
 	});
 }
 
@@ -210,6 +229,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		}
 		const rows = await fetchInvocationRows(
 			deps.eventStore,
+			deps.registry,
 			activeTenant,
 			limit,
 		);

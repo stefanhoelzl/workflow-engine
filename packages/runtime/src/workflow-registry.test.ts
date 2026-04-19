@@ -41,7 +41,8 @@ const VALID_WORKFLOW = {
 			method: "POST",
 			body: { type: "object" },
 			params: [],
-			schema: { type: "object" },
+			inputSchema: { type: "object" },
+			outputSchema: { type: "object" },
 		},
 	],
 };
@@ -80,7 +81,7 @@ describe("workflow registry", () => {
 		registry?.dispose();
 	});
 
-	it("registers a tenant and exposes its metadata via list/lookup", async () => {
+	it("registers a tenant and exposes its metadata via list()", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger });
 		const result = await registry.registerTenant("acme", tenantFiles());
@@ -92,23 +93,10 @@ describe("workflow registry", () => {
 		expect(entries[0]?.tenant).toBe("acme");
 		expect(entries[0]?.workflow.name).toBe("demo");
 		expect(entries[0]?.bundleSource).toBe(BUNDLE_SOURCE);
-
-		const lookup = registry.lookup("acme", "demo", "ping", "POST");
-		expect(lookup?.workflow.name).toBe("demo");
-		expect(lookup?.triggerName).toBe("onPing");
-		expect(lookup?.bundleSource).toBe(BUNDLE_SOURCE);
-	});
-
-	it("returns undefined for wrong method / wrong path / wrong tenant", async () => {
-		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
-		await registry.registerTenant("acme", tenantFiles());
-
-		expect(registry.lookup("acme", "demo", "ping", "GET")).toBeUndefined();
-		expect(registry.lookup("acme", "demo", "other", "POST")).toBeUndefined();
-		expect(
-			registry.lookup("other-tenant", "demo", "ping", "POST"),
-		).toBeUndefined();
+		const triggers = entries[0]?.triggers ?? [];
+		expect(triggers).toHaveLength(1);
+		expect(triggers[0]?.kind).toBe("http");
+		expect(triggers[0]?.name).toBe("onPing");
 	});
 
 	it("same workflow name in two tenants is isolated by tenant", async () => {
@@ -117,9 +105,9 @@ describe("workflow registry", () => {
 		await registry.registerTenant("acme", tenantFiles());
 		await registry.registerTenant("contoso", tenantFiles());
 		expect(registry.tenants().sort()).toEqual(["acme", "contoso"]);
-		expect(registry.lookup("acme", "demo", "ping", "POST")).toBeDefined();
-		expect(registry.lookup("contoso", "demo", "ping", "POST")).toBeDefined();
-		expect(registry.lookup("other", "demo", "ping", "POST")).toBeUndefined();
+		expect(registry.list("acme")).toHaveLength(1);
+		expect(registry.list("contoso")).toHaveLength(1);
+		expect(registry.list("other")).toHaveLength(0);
 	});
 
 	it("re-registering a tenant atomically replaces its workflow set", async () => {
@@ -133,7 +121,6 @@ describe("workflow registry", () => {
 		]);
 		await registry.registerTenant("acme", empty);
 		expect(registry.list("acme")).toHaveLength(0);
-		expect(registry.lookup("acme", "demo", "ping", "POST")).toBeUndefined();
 	});
 
 	it("rejects upload when a referenced workflow module is missing (all-or-nothing)", async () => {
