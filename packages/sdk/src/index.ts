@@ -232,9 +232,9 @@ function extractParamNames(path: string): string[] {
 }
 
 // HttpTrigger is a callable: invoking it runs the user's handler. Brand,
-// path, method, body, params, query, schema are attached as readonly
-// properties on the callable. There is no public `.handler` slot; the
-// callable IS the handler invocation path.
+// path, method, body, params, query, inputSchema, outputSchema are attached
+// as readonly properties on the callable. There is no public `.handler` slot;
+// the callable IS the handler invocation path.
 interface HttpTrigger<
 	Path extends string = string,
 	Body extends z.ZodType = z.ZodType,
@@ -254,8 +254,20 @@ interface HttpTrigger<
 	readonly body: Body;
 	readonly params: Params;
 	readonly query: Query | undefined;
-	readonly schema: z.ZodType;
+	// Composite input schema (body + headers + url + method + params + query).
+	// Serialized to JSON Schema in the manifest for the UI + host-side shared
+	// validator.
+	readonly inputSchema: z.ZodType;
+	// Output schema (HttpTriggerResult shape). Serialized to JSON Schema in
+	// the manifest for uniform output rendering.
+	readonly outputSchema: z.ZodType;
 }
+
+const httpTriggerOutputSchema = z.object({
+	status: z.number().optional(),
+	body: z.unknown().optional(),
+	headers: z.record(z.string(), z.string()).optional(),
+});
 
 function httpTrigger<
 	const P extends string,
@@ -319,7 +331,8 @@ function httpTrigger<
 		body: bodySchema,
 		params: paramsSchema,
 		query: querySchema,
-		schema: compositeSchema,
+		inputSchema: compositeSchema,
+		outputSchema: httpTriggerOutputSchema,
 	});
 	return callable as unknown as HttpTrigger<
 		P,
@@ -335,7 +348,8 @@ interface TriggerMetadata {
 	body: z.ZodType;
 	params: z.ZodType;
 	query: z.ZodType | undefined;
-	schema: z.ZodType;
+	inputSchema: z.ZodType;
+	outputSchema: z.ZodType;
 }
 
 function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {

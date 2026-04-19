@@ -47,13 +47,18 @@ function makeWorkflowEntry(): WorkflowEntry {
 		bundleSource: "",
 		triggers: [
 			{
-				triggerName: "t",
+				kind: "http",
+				type: "http",
+				name: "t",
 				method: "POST",
 				path: "w/t",
-				schema: {
+				params: [],
+				body: { type: "object", properties: { id: { type: "string" } } },
+				inputSchema: {
 					type: "object",
 					properties: { body: { type: "object" } },
 				},
+				outputSchema: { type: "object" },
 			},
 		],
 	};

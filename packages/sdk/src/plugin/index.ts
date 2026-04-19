@@ -267,7 +267,8 @@ interface ManifestHttpTriggerEntry {
 	body: Record<string, unknown>;
 	params: string[];
 	query?: Record<string, unknown>;
-	schema: Record<string, unknown>;
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown>;
 }
 
 type ManifestTriggerEntry = ManifestHttpTriggerEntry;
@@ -377,8 +378,10 @@ function buildTriggerEntry(
 	}
 	const bodyLabel = `trigger "${exportName}".body`;
 	assertZodSchema(trigger.body, bodyLabel, workflowName, ctx);
-	const schemaLabel = `trigger "${exportName}".schema`;
-	assertZodSchema(trigger.schema, schemaLabel, workflowName, ctx);
+	const inputSchemaLabel = `trigger "${exportName}".inputSchema`;
+	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
+	const outputSchemaLabel = `trigger "${exportName}".outputSchema`;
+	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
 	const entry: ManifestHttpTriggerEntry = {
 		name: exportName,
 		type: "http",
@@ -386,7 +389,18 @@ function buildTriggerEntry(
 		method: trigger.method,
 		body: toJsonSchema(trigger.body, bodyLabel, workflowName, ctx),
 		params: extractParamNames(trigger.path),
-		schema: toJsonSchema(trigger.schema, schemaLabel, workflowName, ctx),
+		inputSchema: toJsonSchema(
+			trigger.inputSchema,
+			inputSchemaLabel,
+			workflowName,
+			ctx,
+		),
+		outputSchema: toJsonSchema(
+			trigger.outputSchema,
+			outputSchemaLabel,
+			workflowName,
+			ctx,
+		),
 	};
 	// The SDK defaults trigger.query to z.object({}) (an empty object schema)
 	// when the author did not supply one; treat that default as "no query"

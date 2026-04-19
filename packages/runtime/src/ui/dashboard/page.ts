@@ -16,6 +16,24 @@ interface InvocationRow {
 	readonly completedAt: string | Date | null;
 	readonly startedTs: number;
 	readonly completedTs: number | null;
+	// Optional trigger kind ("http" for HTTP triggers). Resolved from the
+	// workflow registry at render time. May be undefined if the trigger was
+	// unloaded since the invocation was recorded.
+	readonly triggerKind?: string;
+}
+
+// Kind → glyph mapping — shared in concept with the trigger-ui's KIND_ICONS
+// map (adding a new kind requires a line in each).
+const KIND_ICONS: Record<string, string> = {
+	http: "\u{1F310}", // globe
+};
+
+function renderKindIcon(kind: string | undefined) {
+	if (!kind) {
+		return "";
+	}
+	const glyph = KIND_ICONS[kind] ?? "\u{25CF}";
+	return html`<span class="entry-kind-icon" title="${kind}" aria-label="${kind}">${glyph}</span>`;
 }
 
 function formatTimestamp(ts: string | Date): string {
@@ -39,6 +57,7 @@ function formatDurationUs(us: number): string {
 
 function renderCardSummary(row: InvocationRow, duration: string) {
 	return html`<div class="entry-header">
+      ${renderKindIcon(row.triggerKind)}
       <span class="entry-workflow">${row.workflow}</span>
       <span class="entry-trigger">${row.trigger}</span>
       <span class="badge ${row.status}">${row.status}</span>

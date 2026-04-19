@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Executor } from "../../executor/index.js";
+import type { HttpTriggerDescriptor } from "../../executor/types.js";
 import type {
 	WorkflowEntry,
 	WorkflowRegistry,
@@ -17,7 +19,6 @@ function makeRegistry(entries: WorkflowEntry[]): WorkflowRegistry {
 			tenant === undefined
 				? entries
 				: entries.filter((e) => e.tenant === tenant),
-		lookup: () => undefined,
 		registerTenant: async () => ({ ok: false, error: "unused" }),
 		recover: async () => undefined,
 		dispose: () => undefined,
@@ -28,12 +29,24 @@ function makeEntry(
 	tenant: string,
 	workflowName: string,
 	triggerSpec: {
-		triggerName: string;
+		name: string;
 		path: string;
 		method: string;
-		schema?: Record<string, unknown>;
+		body?: Record<string, unknown>;
+		inputSchema?: Record<string, unknown>;
 	},
 ): WorkflowEntry {
+	const descriptor: HttpTriggerDescriptor = {
+		kind: "http",
+		type: "http",
+		name: triggerSpec.name,
+		path: triggerSpec.path,
+		method: triggerSpec.method,
+		params: [],
+		body: triggerSpec.body ?? { type: "object" },
+		inputSchema: triggerSpec.inputSchema ?? { type: "object" },
+		outputSchema: { type: "object" },
+	};
 	return {
 		tenant,
 		workflow: {
@@ -45,19 +58,22 @@ function makeEntry(
 			triggers: [],
 		},
 		bundleSource: "",
-		triggers: [
-			{
-				triggerName: triggerSpec.triggerName,
-				path: triggerSpec.path,
-				method: triggerSpec.method,
-				schema: triggerSpec.schema ?? { type: "object" },
-			},
-		],
+		triggers: [descriptor],
 	};
 }
 
-function mount(registry: WorkflowRegistry) {
-	const m = triggerMiddleware({ registry });
+function defaultInvoke(): Executor["invoke"] {
+	return async () => ({ ok: true as const, output: { status: 200 } });
+}
+
+function mount(
+	registry: WorkflowRegistry,
+	invoke: Executor["invoke"] = defaultInvoke(),
+) {
+	const m = triggerMiddleware({
+		registry,
+		executor: { invoke } as Executor,
+	});
 	const app = new Hono();
 	app.all(m.match, m.handler);
 	if (m.match.endsWith("/*")) {
@@ -74,26 +90,17 @@ const AUTH_HEADERS = {
 	"X-Auth-Request-Groups": "t0",
 };
 
-describe("triggerMiddleware", () => {
-	it("renders a card per registered trigger including its webhook URL and method", async () => {
+describe("triggerMiddleware: page rendering", () => {
+	it("renders a card per registered trigger with kind icon, webhook URL and method", async () => {
 		const registry = makeRegistry([
 			makeEntry("t0", "cronitor", {
-				triggerName: "onCronitorEvent",
+				name: "onCronitorEvent",
 				path: "cronitor",
 				method: "POST",
-				schema: {
+				body: {
 					type: "object",
-					properties: {
-						body: {
-							type: "object",
-							properties: { id: { type: "string" } },
-							required: ["id"],
-						},
-						headers: { type: "object" },
-						url: { type: "string" },
-						method: { type: "string" },
-						params: { type: "object" },
-					},
+					properties: { id: { type: "string" } },
+					required: ["id"],
 				},
 			}),
 		]);
@@ -103,10 +110,13 @@ describe("triggerMiddleware", () => {
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("cronitor / onCronitorEvent");
-		expect(body).toContain("/webhooks/t0/cronitor/cronitor");
+		// HTTP-kind submit URL is the public webhook URL.
+		expect(body).toContain('data-trigger-url="/webhooks/t0/cronitor/cronitor"');
 		expect(body).toContain('data-trigger-method="POST"');
-		// JSON schema is embedded as an inert JSON script tag.
+		// JSON body schema is embedded as an inert JSON script tag.
 		expect(body).toContain('{"type":"object"');
+		// Kind icon.
+		expect(body).toContain('title="http"');
 	});
 
 	it("renders an empty-state when no triggers are registered", async () => {
@@ -120,16 +130,8 @@ describe("triggerMiddleware", () => {
 
 	it("sorts cards by workflow/trigger name (stable output)", async () => {
 		const registry = makeRegistry([
-			makeEntry("t0", "zeta", {
-				triggerName: "z",
-				path: "z",
-				method: "POST",
-			}),
-			makeEntry("t0", "alpha", {
-				triggerName: "a",
-				path: "a",
-				method: "GET",
-			}),
+			makeEntry("t0", "zeta", { name: "z", path: "z", method: "POST" }),
+			makeEntry("t0", "alpha", { name: "a", path: "a", method: "GET" }),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
@@ -138,6 +140,104 @@ describe("triggerMiddleware", () => {
 		const zetaIdx = body.indexOf("zeta / z");
 		expect(alphaIdx).toBeGreaterThan(-1);
 		expect(zetaIdx).toBeGreaterThan(alphaIdx);
+	});
+});
+
+describe("triggerMiddleware: POST dispatch", () => {
+	it("validates + dispatches a matching POST via the executor", async () => {
+		const registry = makeRegistry([
+			makeEntry("t0", "demo", {
+				name: "onPing",
+				path: "ping",
+				method: "POST",
+				inputSchema: {
+					type: "object",
+					properties: { x: { type: "number" } },
+					required: ["x"],
+				},
+			}),
+		]);
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true,
+			output: { status: 202, body: { echoed: true } },
+		}));
+		const app = mount(registry, invoke);
+		const res = await app.request("/trigger/t0/demo/onPing", {
+			method: "POST",
+			body: JSON.stringify({ x: 42 }),
+			headers: {
+				"Content-Type": "application/json",
+				...AUTH_HEADERS,
+			},
+		});
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { ok: boolean; output: unknown };
+		expect(json.ok).toBe(true);
+		expect(json.output).toEqual({ status: 202, body: { echoed: true } });
+		expect(invoke).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns 422 when the body fails inputSchema validation", async () => {
+		const registry = makeRegistry([
+			makeEntry("t0", "demo", {
+				name: "onPing",
+				path: "ping",
+				method: "POST",
+				inputSchema: {
+					type: "object",
+					properties: { x: { type: "number" } },
+					required: ["x"],
+				},
+			}),
+		]);
+		const invoke = vi.fn<Executor["invoke"]>();
+		const app = mount(registry, invoke);
+		const res = await app.request("/trigger/t0/demo/onPing", {
+			method: "POST",
+			body: JSON.stringify({ x: "not-a-number" }),
+			headers: {
+				"Content-Type": "application/json",
+				...AUTH_HEADERS,
+			},
+		});
+		expect(res.status).toBe(422);
+		expect(invoke).not.toHaveBeenCalled();
+	});
+
+	it("returns 404 for an unknown trigger name", async () => {
+		const registry = makeRegistry([
+			makeEntry("t0", "demo", { name: "onPing", path: "ping", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/demo/nonexistent", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				...AUTH_HEADERS,
+			},
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 500 when the executor returns an error sentinel", async () => {
+		const registry = makeRegistry([
+			makeEntry("t0", "demo", { name: "onPing", path: "ping", method: "POST" }),
+		]);
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: false,
+			error: { message: "boom" },
+		}));
+		const app = mount(registry, invoke);
+		const res = await app.request("/trigger/t0/demo/onPing", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				...AUTH_HEADERS,
+			},
+		});
+		expect(res.status).toBe(500);
 	});
 });
 

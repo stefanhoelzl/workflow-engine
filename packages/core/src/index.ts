@@ -128,12 +128,16 @@ const httpTriggerManifestSchema = z.object({
 	body: jsonSchemaValidator,
 	params: z.array(z.string()),
 	query: z.exactOptional(jsonSchemaValidator),
-	schema: jsonSchemaValidator,
+	inputSchema: jsonSchemaValidator,
+	outputSchema: jsonSchemaValidator,
 });
 
 const triggerManifestSchema = z.discriminatedUnion("type", [
 	httpTriggerManifestSchema,
 ]);
+
+type HttpTriggerManifest = z.infer<typeof httpTriggerManifestSchema>;
+type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 
 const workflowManifestSchema = z.object({
 	name: z.string(),
@@ -183,11 +187,13 @@ const IIFE_NAMESPACE = "__wfe_exports__";
 export type {
 	ActionDispatcher,
 	EventKind,
+	HttpTriggerManifest,
 	HttpTriggerPayload,
 	HttpTriggerResult,
 	InvocationEvent,
 	InvocationEventError,
 	Manifest,
+	TriggerManifest,
 	WorkflowManifest,
 };
 export { dispatchAction, IIFE_NAMESPACE, ManifestSchema, z };

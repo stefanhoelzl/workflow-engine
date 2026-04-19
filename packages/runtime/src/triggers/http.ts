@@ -1,54 +1,58 @@
 import { constants } from "node:http2";
-import type { HttpTriggerResult } from "@workflow-engine/core";
+import type {
+	HttpTriggerResult,
+	WorkflowManifest,
+} from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Executor } from "../executor/index.js";
-import type { LookupResult, WorkflowRegistry } from "../workflow-registry.js";
+import type { HttpTriggerDescriptor } from "../executor/types.js";
+import type { TriggerSource, TriggerViewEntry } from "./source.js";
+import { validate } from "./validator.js";
 
 // ---------------------------------------------------------------------------
-// HTTP trigger middleware (v1, executor-backed)
+// HTTP TriggerSource
 // ---------------------------------------------------------------------------
 //
-// The registry owns the routing index. The middleware:
-//   1. Handles GET /webhooks/ health probe (204 if any trigger registered,
-//      503 otherwise).
-//   2. Parses /webhooks/<tenant>/<workflow>/<trigger-path> into components.
-//   3. Calls `registry.lookup(tenant, workflow, triggerPath, method)`; 404
-//      if no match.
-//   4. Parses JSON body; 422 on parse failure.
-//   5. Validates payload via the match's `validator`; 422 on failure.
-//   6. Calls `executor.invoke(tenant, workflow, triggerName, payload,
-//      bundleSource)` and serializes the HttpTriggerResult response.
+// `createHttpTriggerSource` is the HTTP-kind protocol adapter. The source:
+//   - Owns its internal URL-pattern map keyed by (tenant, workflow, path, method).
+//   - Receives a kind-filtered view of HTTP descriptors via `reconfigure()`
+//     on every workflow state change (the WorkflowRegistry pushes these).
+//   - Exposes a Hono middleware mounted at `/webhooks/*` by `main.ts`.
+//   - Validates incoming requests against `descriptor.inputSchema` via the
+//     shared `validate()` function.
+//   - Dispatches via `executor.invoke(tenant, workflow, descriptor, input,
+//     bundleSource)` and serializes the executor's `{ ok, output }`
+//     envelope as the HTTP response (200 default; 500 on error sentinel).
 
 interface Middleware {
 	match: string;
 	handler: MiddlewareHandler;
 }
 
-// ---------------------------------------------------------------------------
-// Payload validator (JSON Schema -> validator function)
-// ---------------------------------------------------------------------------
-
 interface ValidationIssue {
 	readonly path: (string | number)[];
 	readonly message: string;
 }
 
-interface ValidatorResult<T> {
-	readonly ok: boolean;
-	readonly value?: T;
-	readonly issues?: ValidationIssue[];
+const PARAM_SEGMENT_RE = /[:*]/;
+const WILDCARD_SEGMENT_RE = /\*(\w+)/g;
+
+function toUrlPatternPath(path: string): string {
+	return path.replace(WILDCARD_SEGMENT_RE, ":$1+");
 }
 
-interface PayloadValidator {
-	validateBody(value: unknown): ValidatorResult<unknown>;
-	validateQuery(value: unknown): ValidatorResult<unknown>;
-	validateParams(value: unknown): ValidatorResult<unknown>;
+function extractParams(
+	groups: Record<string, string | undefined>,
+): Record<string, string> {
+	const params: Record<string, string> = {};
+	for (const [key, value] of Object.entries(groups)) {
+		if (value !== undefined) {
+			params[key] = value;
+		}
+	}
+	return params;
 }
-
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
 
 const WEBHOOKS_PREFIX = "/webhooks/";
 const HTTP_NO_CONTENT =
@@ -57,6 +61,9 @@ const HTTP_SERVICE_UNAVAILABLE =
 	constants.HTTP_STATUS_SERVICE_UNAVAILABLE as ContentfulStatusCode;
 const HTTP_UNPROCESSABLE_ENTITY =
 	constants.HTTP_STATUS_UNPROCESSABLE_ENTITY as ContentfulStatusCode;
+const DEFAULT_HTTP_STATUS = 200;
+const HTTP_INTERNAL_ERROR = 500;
+const TENANT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 
 function extractQueryParams(url: string): Record<string, string[]> {
 	const parsed = new URL(url);
@@ -80,17 +87,13 @@ function validationFailure(
 	issues: ValidationIssue[] | undefined,
 ): Response {
 	return c.json(
-		{
-			error: "payload_validation_failed",
-			issues: issues ?? [],
-		},
+		{ error: "payload_validation_failed", issues: issues ?? [] },
 		HTTP_UNPROCESSABLE_ENTITY,
 	);
 }
 
-const DEFAULT_HTTP_STATUS = 200;
-
-function serializeHttpResult(c: Context, result: HttpTriggerResult): Response {
+function serializeHttpResult(c: Context, output: unknown): Response {
+	const result = (output ?? {}) as HttpTriggerResult;
 	const status = (result.status ?? DEFAULT_HTTP_STATUS) as ContentfulStatusCode;
 	const body = result.body ?? "";
 	const headers: Record<string, string> = { ...(result.headers ?? {}) };
@@ -101,6 +104,13 @@ function serializeHttpResult(c: Context, result: HttpTriggerResult): Response {
 		return c.body("", status, headers);
 	}
 	return c.json(body, status, headers);
+}
+
+function internalErrorResponse(c: Context): Response {
+	return c.json(
+		{ error: "internal_error" },
+		HTTP_INTERNAL_ERROR as ContentfulStatusCode,
+	);
 }
 
 async function parseBody(
@@ -119,113 +129,177 @@ async function parseBody(
 	}
 }
 
-function runValidators(
-	match: LookupResult,
-	body: unknown,
-	rawQuery: Record<string, string[]>,
-):
-	| { ok: true; body: unknown; query: unknown; params: unknown }
-	| { ok: false; issues: ValidationIssue[] | undefined } {
-	const bodyResult = match.validator.validateBody(body);
-	if (!bodyResult.ok) {
-		return { ok: false, issues: bodyResult.issues };
-	}
-	const queryResult = match.validator.validateQuery(rawQuery);
-	if (!queryResult.ok) {
-		return { ok: false, issues: queryResult.issues };
-	}
-	const paramsResult = match.validator.validateParams(match.params);
-	if (!paramsResult.ok) {
-		return { ok: false, issues: paramsResult.issues };
-	}
-	return {
-		ok: true,
-		body: bodyResult.value,
-		query: queryResult.value ?? rawQuery,
-		params: paramsResult.value ?? match.params,
-	};
+interface HttpTriggerSourceDeps {
+	readonly executor: Executor;
 }
 
-async function handleTriggerRequest(
-	c: Context,
-	tenant: string,
-	match: LookupResult,
-	executor: Executor,
-): Promise<Response> {
-	const bodyParse = await parseBody(c);
-	if (!bodyParse.ok) {
-		return validationFailure(c, bodyParse.issues);
-	}
-	const rawQuery = extractQueryParams(c.req.url);
-	const validated = runValidators(match, bodyParse.value, rawQuery);
-	if (!validated.ok) {
-		return validationFailure(c, validated.issues);
-	}
-	const payload = {
-		body: validated.body,
-		headers: headersToRecord(c.req.raw.headers),
-		url: c.req.url,
-		method: c.req.method,
-		params: validated.params,
-		query: validated.query,
-	};
-	const result = await executor.invoke(
-		tenant,
-		match.workflow,
-		match.triggerName,
-		payload,
-		match.bundleSource,
+interface HttpTriggerSource extends TriggerSource<"http"> {
+	readonly middleware: Middleware;
+}
+
+interface SourceEntry {
+	readonly tenant: string;
+	readonly workflow: WorkflowManifest;
+	readonly bundleSource: string;
+	readonly descriptor: HttpTriggerDescriptor;
+	readonly pattern: URLPattern;
+	readonly isStatic: boolean;
+}
+
+interface SourceMatch {
+	readonly tenant: string;
+	readonly workflow: WorkflowManifest;
+	readonly bundleSource: string;
+	readonly descriptor: HttpTriggerDescriptor;
+	readonly params: Record<string, string>;
+}
+
+interface LookupArgs {
+	readonly entries: readonly SourceEntry[];
+	readonly tenant: string;
+	readonly workflowName: string;
+	readonly path: string;
+	readonly method: string;
+}
+
+function sourceLookup(args: LookupArgs): SourceMatch | undefined {
+	const pathname = `/${args.path}`;
+	const scoped = args.entries.filter(
+		(e) => e.tenant === args.tenant && e.workflow.name === args.workflowName,
 	);
-	return serializeHttpResult(c, result);
+	const inScope = (isStatic: boolean): SourceMatch | undefined => {
+		for (const entry of scoped) {
+			if (entry.isStatic !== isStatic) {
+				continue;
+			}
+			if (entry.descriptor.method !== args.method) {
+				continue;
+			}
+			const result = entry.pattern.exec({ pathname });
+			if (!result) {
+				continue;
+			}
+			return {
+				tenant: entry.tenant,
+				workflow: entry.workflow,
+				bundleSource: entry.bundleSource,
+				descriptor: entry.descriptor,
+				params: extractParams(
+					result.pathname.groups as Record<string, string | undefined>,
+				),
+			};
+		}
+	};
+	return inScope(true) ?? inScope(false);
 }
 
-const TENANT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, middleware handler, and TriggerSource lifecycle methods
+function createHttpTriggerSource(
+	deps: HttpTriggerSourceDeps,
+): HttpTriggerSource {
+	let entries: readonly SourceEntry[] = [];
 
-function httpTriggerMiddleware(
-	registry: WorkflowRegistry,
-	executor: Executor,
-): Middleware {
-	return {
+	const middleware: Middleware = {
 		match: `${WEBHOOKS_PREFIX}*`,
-		handler: (c: Context) => {
+		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the middleware handler fuses URL parsing, lookup, validation, and dispatch in sequence — splitting hurts readability
+		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: the middleware handler is inherently a sequential pipeline
+		handler: async (c: Context) => {
 			const afterPrefix = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (afterPrefix === "" && c.req.method === "GET") {
 				const status =
-					registry.size > 0 ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
-				return Promise.resolve(c.body(null, status));
+					entries.length > 0 ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
+				return c.body(null, status);
 			}
 
 			// Parse /webhooks/<tenant>/<workflow-name>/<trigger-path>
 			const slashOne = afterPrefix.indexOf("/");
 			if (slashOne <= 0) {
-				return Promise.resolve(c.notFound());
+				return c.notFound();
 			}
 			const tenant = afterPrefix.slice(0, slashOne);
 			const rest = afterPrefix.slice(slashOne + 1);
 			const slashTwo = rest.indexOf("/");
 			if (slashTwo <= 0) {
-				return Promise.resolve(c.notFound());
+				return c.notFound();
 			}
 			const workflowName = rest.slice(0, slashTwo);
 			const triggerPath = rest.slice(slashTwo + 1);
 			if (!(TENANT_NAME_RE.test(tenant) && TENANT_NAME_RE.test(workflowName))) {
-				return Promise.resolve(c.notFound());
+				return c.notFound();
 			}
 
-			const match = registry.lookup(
+			const match = sourceLookup({
+				entries,
 				tenant,
 				workflowName,
-				triggerPath,
-				c.req.method,
-			);
+				path: triggerPath,
+				method: c.req.method,
+			});
 			if (!match) {
-				return Promise.resolve(c.notFound());
+				return c.notFound();
 			}
-			return handleTriggerRequest(c, tenant, match, executor);
+
+			const bodyParse = await parseBody(c);
+			if (!bodyParse.ok) {
+				return validationFailure(c, bodyParse.issues);
+			}
+			const rawQuery = extractQueryParams(c.req.url);
+			const rawInput = {
+				body: bodyParse.value,
+				headers: headersToRecord(c.req.raw.headers),
+				url: c.req.url,
+				method: c.req.method,
+				params: match.params,
+				query: rawQuery,
+			};
+			const validated = validate(match.descriptor, rawInput);
+			if (!validated.ok) {
+				return validationFailure(c, validated.issues);
+			}
+			const result = await deps.executor.invoke(
+				match.tenant,
+				match.workflow,
+				match.descriptor,
+				validated.input,
+				match.bundleSource,
+			);
+			if (!result.ok) {
+				return internalErrorResponse(c);
+			}
+			return serializeHttpResult(c, result.output);
 		},
+	};
+
+	return {
+		kind: "http",
+		start() {
+			return Promise.resolve();
+		},
+		stop() {
+			entries = [];
+			return Promise.resolve();
+		},
+		reconfigure(view: readonly TriggerViewEntry<"http">[]) {
+			const next: SourceEntry[] = [];
+			for (const entry of view) {
+				const descriptor = entry.descriptor as HttpTriggerDescriptor;
+				next.push({
+					tenant: entry.tenant,
+					workflow: entry.workflow,
+					bundleSource: entry.bundleSource,
+					descriptor,
+					pattern: new URLPattern({
+						pathname: `/${toUrlPatternPath(descriptor.path)}`,
+					}),
+					isStatic: !PARAM_SEGMENT_RE.test(descriptor.path),
+				});
+			}
+			entries = next;
+		},
+		middleware,
 	};
 }
 
-export type { Middleware, PayloadValidator, ValidationIssue, ValidatorResult };
-export { httpTriggerMiddleware };
+export type { HttpTriggerSource, Middleware, ValidationIssue };
+export { createHttpTriggerSource };

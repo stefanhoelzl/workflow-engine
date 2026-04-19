@@ -20,7 +20,7 @@ import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
-import { httpTriggerMiddleware } from "./triggers/http.js";
+import { createHttpTriggerSource } from "./triggers/http.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
@@ -111,16 +111,7 @@ async function init() {
 			note: "workflow bootstrap is now storage-backend only; upload via `wfe upload --tenant <name>`",
 		});
 	}
-	const registry = createWorkflowRegistry({
-		logger: runtimeLogger,
-		...(storageBackend ? { storageBackend } : {}),
-	});
-	if (storageBackend) {
-		await registry.recover();
-	}
-	runtimeLogger.info("workflows.loaded", { count: registry.size });
-
-	// 4. Construct the sandbox factory + store. The store is keyed by
+	// 3. Construct the sandbox factory + store. The store is keyed by
 	//    (tenant, workflow.sha); sandboxes live for process lifetime.
 	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
 	const sandboxStore = createSandboxStore({
@@ -132,6 +123,27 @@ async function init() {
 	//    resolves sandboxes via the store; emits trigger.* events through
 	//    the bus).
 	const executor = createExecutor({ bus: eventBus, sandboxStore });
+
+	// 5a. Construct trigger sources. Each source is a protocol adapter for
+	//     one trigger kind; sources plug into WorkflowRegistry as plugin-host
+	//     and receive `reconfigure(kindView)` on every workflow state change.
+	//     main.ts owns start/stop lifecycle.
+	const httpSource = createHttpTriggerSource({ executor });
+	const triggerSources = [httpSource];
+	await Promise.all(triggerSources.map((s) => s.start()));
+
+	// 6. Workflow registry. Boots from the storage backend by LISTing
+	//    `workflows/*.tar.gz` tenant bundles. Pushes `reconfigure(view)` to
+	//    every registered source on every state change.
+	const registry = createWorkflowRegistry({
+		logger: runtimeLogger,
+		sources: triggerSources,
+		...(storageBackend ? { storageBackend } : {}),
+	});
+	if (storageBackend) {
+		await registry.recover();
+	}
+	runtimeLogger.info("workflows.loaded", { count: registry.size });
 
 	// 5. Sweep crashed pending invocations before binding the HTTP port.
 	if (storageBackend) {
@@ -153,9 +165,9 @@ async function init() {
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		staticMiddleware(),
-		httpTriggerMiddleware(registry, executor),
+		httpSource.middleware,
 		dashboardMiddleware({ eventStore, registry }),
-		triggerMiddleware({ registry }),
+		triggerMiddleware({ registry, executor }),
 		apiMiddleware({
 			githubAuth: config.githubAuth,
 			registry,
@@ -166,6 +178,7 @@ async function init() {
 	const sandboxService: Service = {
 		start: () => Promise.resolve(),
 		async stop() {
+			await Promise.allSettled(triggerSources.map((s) => s.stop()));
 			sandboxStore.dispose();
 			await sandboxFactory.dispose();
 		},

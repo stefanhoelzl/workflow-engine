@@ -2,7 +2,22 @@ import type { WorkflowManifest } from "@workflow-engine/core";
 import type { Sandbox, SandboxFactory } from "@workflow-engine/sandbox";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { Logger } from "./logger.js";
-import type { ValidationIssue, ValidatorResult } from "./triggers/http.js";
+
+// Ajv-backed validator inlined here — the action-input validation happens
+// at the host bridge and is independent of trigger-kind validation (which
+// lives in triggers/validator.ts). Keeping the action validator types local
+// avoids a cross-file import for a small internal contract.
+
+interface ValidationIssue {
+	readonly path: (string | number)[];
+	readonly message: string;
+}
+
+interface ValidatorResult<T> {
+	readonly ok: boolean;
+	readonly value?: T;
+	readonly issues?: ValidationIssue[];
+}
 
 // ---------------------------------------------------------------------------
 // SandboxStore: per-(tenant, sha) sandbox cache
