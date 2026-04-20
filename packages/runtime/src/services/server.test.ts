@@ -31,4 +31,20 @@ describe("createApp", () => {
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
 	});
+
+	it("rejects bodies larger than the limit with 413 JSON", async () => {
+		const passthrough: MiddlewareHandler = async (c) => c.body(null, 204);
+		const app = createApp({ match: "/upload", handler: passthrough });
+
+		const BYTES_PER_MIB = 1024 * 1024;
+		const oversized = new Uint8Array(10 * BYTES_PER_MIB + 1);
+		const res = await app.request("/upload", {
+			method: "POST",
+			body: oversized,
+			headers: { "content-length": String(oversized.length) },
+		});
+
+		expect(res.status).toBe(constants.HTTP_STATUS_PAYLOAD_TOO_LARGE);
+		expect(await res.json()).toEqual({ error: "payload_too_large" });
+	});
 });
