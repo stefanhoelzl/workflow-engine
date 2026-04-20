@@ -87,9 +87,17 @@ function createHttpLogger(
 	name: string,
 	options?: LoggerOptions,
 ): { match: string; handler: ReturnType<typeof pinoLogger> } {
+	// SECURITY.md §4: strip request/response headers from HTTP log records —
+	// hono-pino's default bindings would leak Authorization, Cookie, and
+	// X-Auth-Request-* headers.
+	const pinoOptions = {
+		name,
+		level: options?.level ?? "info",
+		redact: { paths: ["req.headers", "res.headers"], remove: true },
+	};
 	const instance = options?.destination
-		? pino({ name, level: options.level ?? "info" }, options.destination)
-		: pino({ name, level: options?.level ?? "info" });
+		? pino(pinoOptions, options.destination)
+		: pino(pinoOptions);
 	return { match: "*", handler: pinoLogger({ pino: instance }) };
 }
 
