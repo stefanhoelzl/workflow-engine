@@ -1,6 +1,7 @@
 import type { WorkflowManifest } from "@workflow-engine/core";
 import type { Sandbox, SandboxFactory } from "@workflow-engine/sandbox";
 import Ajv2020 from "ajv/dist/2020.js";
+import ACTION_DISPATCHER_SOURCE from "./action-dispatcher.js?raw";
 import type { Logger } from "./logger.js";
 
 // Ajv-backed validator inlined here — the action-input validation happens
@@ -132,54 +133,6 @@ function buildHostCallAction(deps: HostCallDeps) {
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox source assembly
-// ---------------------------------------------------------------------------
-//
-// The SDK (as of the bake-action-names-drop-trigger-shim change) bakes
-// action names into the bundle at build time and exports trigger callables
-// directly — no `__trigger_<name>` shim and no `__setActionName` binder are
-// needed anymore. The only source we append is the action-dispatcher IIFE
-// that captures `__hostCallAction` + `__emitEvent` into closure locals,
-// installs `__dispatchAction` as a locked global, and deletes the two
-// bridge names from globalThis. See SECURITY.md §2.
-const ACTION_DISPATCHER_SOURCE = `
-(function() {
-  var _hostCall = globalThis.__hostCallAction;
-  var _emit = globalThis.__emitEvent;
-  async function dispatch(name, input, handler, outputSchema) {
-    _emit({ kind: "action.request", name, input });
-    try {
-      await _hostCall(name, input);
-      const raw = await handler(input);
-      const output = outputSchema.parse(raw);
-      _emit({ kind: "action.response", name, output });
-      return output;
-    } catch (err) {
-      const error = {
-        message: err && err.message ? String(err.message) : String(err),
-        stack: err && err.stack ? String(err.stack) : "",
-      };
-      if (err && err.issues !== undefined) error.issues = err.issues;
-      _emit({ kind: "action.error", name, error });
-      throw err;
-    }
-  }
-  Object.defineProperty(globalThis, "__dispatchAction", {
-    value: dispatch,
-    writable: false,
-    configurable: false,
-    enumerable: false,
-  });
-  delete globalThis.__hostCallAction;
-  delete globalThis.__emitEvent;
-})();
-`;
-
-function buildSandboxSource(bundleSource: string): string {
-	return `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}`;
-}
-
-// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -211,7 +164,7 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		bundleSource: string,
 	): Promise<Sandbox> {
 		const __hostCallAction = buildHostCallAction({ workflow, logger });
-		const source = buildSandboxSource(bundleSource);
+		const source = `${bundleSource}\n${ACTION_DISPATCHER_SOURCE}`;
 		return sandboxFactory.create(source, {
 			filename: `${workflow.name}.js`,
 			methodEventNames: { __hostCallAction: "host.validateAction" },
