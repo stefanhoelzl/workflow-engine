@@ -2,6 +2,10 @@
 <!-- Local Stack (infrastructure/local/)                    -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
+## Purpose
+
+Reusable Terraform modules for the local (kind) and production (UpCloud) stacks.
+## Requirements
 ### Requirement: OpenTofu version constraint
 
 The dev root configuration SHALL require OpenTofu version `>= 1.11`.
@@ -354,12 +358,21 @@ The s3/upcloud module SHALL create an `upcloud_managed_object_storage_user_acces
 
 ### Requirement: App Deployment
 
-The module SHALL create a `kubernetes_deployment_v1` running the provided `image` with one replica. The container SHALL listen on port 8080.
+The module SHALL create a `kubernetes_deployment_v1` running the provided `image` with `spec.replicas = 1`. The container SHALL listen on port 8080.
 
-#### Scenario: App pod running
+The `replicas = 1` invariant is load-bearing for the `auth` capability: the session-cookie sealing password is generated in memory at app startup and is not shared across pods. Running more than one replica would cause deterministic cookie-decryption failures whenever a request lands on a pod other than the one that sealed the cookie. Raising `replicas` above 1 SHALL be blocked by the corresponding `auth` invariant recorded in `/SECURITY.md §5` until the sealing-password strategy is migrated to a shared mechanism (e.g., a K8s Secret or KMS-backed KEK).
+
+#### Scenario: App pod running with a single replica
 
 - **WHEN** `tofu apply` completes
-- **THEN** one app pod SHALL be running with the specified image
+- **THEN** exactly one app pod SHALL be running with the specified image
+- **AND** the Deployment's `spec.replicas` SHALL equal 1
+
+#### Scenario: Raising replicas beyond one is blocked by spec invariant
+
+- **GIVEN** a change proposal that sets `spec.replicas > 1` on the app Deployment
+- **WHEN** the proposal is reviewed
+- **THEN** the proposal SHALL include a migration of the session-cookie sealing password out of in-memory state (recorded in the `auth` capability) before being accepted
 
 ### Requirement: App S3 environment variables
 
@@ -405,97 +418,6 @@ The module SHALL create a `kubernetes_service_v1` exposing the app on port 8080.
 
 - **WHEN** a request is sent to the app service on port 8080
 - **THEN** it SHALL be routed to the app container on port 8080
-
-### Requirement: App module accepts github_users input
-
-The `modules/workflow-engine/modules/app` module SHALL declare a `github_users` input variable (type `string`). The module SHALL inject the value as the `GITHUB_USER` environment variable on the app container using a plain `env { name = "GITHUB_USER" value = var.github_users }` block (i.e., not from a secret), so the allow-list is visible in pod specs and Kubernetes events for auditability.
-
-#### Scenario: github_users threaded to pod env
-
-- **WHEN** the `app` module is instantiated with `github_users = "alice,bob"`
-- **THEN** the rendered `kubernetes_deployment_v1.app` SHALL contain a container `env` entry with `name = "GITHUB_USER"` and `value = "alice,bob"`
-
-#### Scenario: github_users empty string
-
-- **WHEN** the `app` module is instantiated with `github_users = ""`
-- **THEN** the rendered deployment SHALL still include the `GITHUB_USER` env var with an empty string value
-- **AND** the app SHALL resolve `githubAuth.mode` to `restricted` with a single empty-string user, which cannot match any GitHub login (effectively blocks all requests)
-
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- modules/workflow-engine/modules/oauth2-proxy/           -->
-<!-- ═══════════════════════════════════════════════════════ -->
-
-### Requirement: OAuth2-proxy Deployment
-
-The module SHALL create a `kubernetes_deployment_v1` running `quay.io/oauth2-proxy/oauth2-proxy:v7.15.1` with one replica.
-
-#### Scenario: OAuth2-proxy pod running
-
-- **WHEN** `tofu apply` completes
-- **THEN** one oauth2-proxy pod SHALL be running
-
-### Requirement: OAuth2-proxy environment variables
-
-The oauth2-proxy container SHALL receive sensitive environment variables from a Kubernetes Secret: `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, `OAUTH2_PROXY_COOKIE_SECRET`. The following SHALL be set directly: `OAUTH2_PROXY_PROVIDER=github`, `OAUTH2_PROXY_GITHUB_USER`, `OAUTH2_PROXY_REDIRECT_URL` (derived from `domain` and `https_port`), `OAUTH2_PROXY_WHITELIST_DOMAINS` (derived from `domain` and `https_port`, enables `{url}` redirect), `OAUTH2_PROXY_LOGOUT_REDIRECT_URL=/oauth2/sign_in` (prevents sign-out loop), `OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180`, `OAUTH2_PROXY_REVERSE_PROXY=true`, `OAUTH2_PROXY_EMAIL_DOMAINS=*`, `OAUTH2_PROXY_COOKIE_SECURE=true`, `OAUTH2_PROXY_SET_XAUTHREQUEST=true`, `OAUTH2_PROXY_UPSTREAMS=static://202`.
-
-#### Scenario: Sensitive env vars from secret
-
-- **WHEN** the oauth2-proxy container starts
-- **THEN** `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, and `OAUTH2_PROXY_COOKIE_SECRET` SHALL be sourced from a Kubernetes Secret
-
-#### Scenario: Static env vars
-
-- **WHEN** the oauth2-proxy container is inspected
-- **THEN** `OAUTH2_PROXY_PROVIDER` SHALL be `github`
-- **AND** `OAUTH2_PROXY_HTTP_ADDRESS` SHALL be `0.0.0.0:4180`
-- **AND** `OAUTH2_PROXY_REVERSE_PROXY` SHALL be `true`
-- **AND** `OAUTH2_PROXY_EMAIL_DOMAINS` SHALL be `*`
-- **AND** `OAUTH2_PROXY_COOKIE_SECURE` SHALL be `true`
-- **AND** `OAUTH2_PROXY_SET_XAUTHREQUEST` SHALL be `true`
-- **AND** `OAUTH2_PROXY_UPSTREAMS` SHALL be `static://202`
-- **AND** `OAUTH2_PROXY_WHITELIST_DOMAINS` SHALL be derived from `domain` and `https_port`
-- **AND** `OAUTH2_PROXY_LOGOUT_REDIRECT_URL` SHALL be `/oauth2/sign_in`
-
-### Requirement: Cookie secret generation
-
-The module SHALL internally generate a 32-byte random cookie secret using `random_password`. This secret SHALL NOT be an input to the module.
-
-#### Scenario: Cookie secret generated
-
-- **WHEN** `tofu apply` completes
-- **THEN** a 32-character random password SHALL be generated
-- **AND** it SHALL be stored in the Kubernetes Secret as `OAUTH2_PROXY_COOKIE_SECRET`
-
-### Requirement: OAuth2-proxy Secret
-
-The module SHALL create a `kubernetes_secret_v1` containing `client_id`, `client_secret`, and the generated `cookie_secret`.
-
-#### Scenario: Secret contains credentials
-
-- **WHEN** `tofu apply` completes
-- **THEN** a Kubernetes Secret SHALL exist with the OAuth2 credentials
-
-### Requirement: OAuth2-proxy health probe
-
-The oauth2-proxy deployment SHALL have a liveness probe configured as `GET /ping` on port 4180 with a 5-second period.
-
-#### Scenario: Liveness probe
-
-- **WHEN** the oauth2-proxy container is running
-- **THEN** Kubernetes SHALL probe `GET /ping` on port 4180 every 5 seconds
-
-### Requirement: OAuth2-proxy Service
-
-The module SHALL create a `kubernetes_service_v1` exposing oauth2-proxy on port 4180. The module SHALL output `service_name` and `service_port`.
-
-#### Scenario: Service routes to oauth2-proxy
-
-- **WHEN** a request is sent to the oauth2-proxy service on port 4180
-- **THEN** it SHALL be routed to the oauth2-proxy container on port 4180
-
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- modules/routing/                                       -->
-<!-- ═══════════════════════════════════════════════════════ -->
 
 ### Requirement: Traefik Helm release
 
@@ -586,38 +508,6 @@ The `app` submodule SHALL create a `NetworkPolicy` selecting the app Deployment'
 - **WHEN** the kubelet (from the node at an IP in `172.24.1.0/24`) issues a readiness or liveness probe to the app's `:8080`
 - **THEN** the ingress node-CIDR rule SHALL permit the probe
 
-### Requirement: oauth2-proxy workload network allow-rules
-
-The `oauth2-proxy` submodule SHALL create a `NetworkPolicy` selecting the oauth2-proxy Deployment's pods with `policyTypes: ["Ingress", "Egress"]`. The policy SHALL express:
-
-**Egress allow-rules**:
-- `to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"] } }]` — covers `github.com` (OAuth token exchange) and `api.github.com` (user info).
-- DNS rule identical to the app workload's (CoreDNS on UDP+TCP `:53`).
-
-**Ingress allow-rules**:
-- `from: [{ podSelector: { matchLabels: { "app.kubernetes.io/name": "traefik" } } }]` on `TCP :4180` — only Traefik's forward-auth calls reach oauth2-proxy.
-- Node CIDR `172.24.1.0/24` on `TCP :4180` for kubelet probes.
-
-#### Scenario: oauth2-proxy reaches github.com for OAuth
-
-- **WHEN** oauth2-proxy exchanges an authorization code for an access token
-- **THEN** the egress ipBlock rule SHALL permit the outbound HTTPS connection to `github.com`
-
-#### Scenario: oauth2-proxy reaches api.github.com for user lookup
-
-- **WHEN** oauth2-proxy calls `api.github.com/user` to resolve the signed-in login
-- **THEN** the egress ipBlock rule SHALL permit the connection
-
-#### Scenario: Only Traefik forward-auth reaches oauth2-proxy
-
-- **WHEN** a pod other than Traefik attempts to connect to oauth2-proxy on `:4180`
-- **THEN** the ingress rule SHALL cause the connection to be dropped
-
-#### Scenario: Kubelet probes reach oauth2-proxy
-
-- **WHEN** the kubelet issues a liveness probe to oauth2-proxy's `/ping` on `:4180`
-- **THEN** the ingress node-CIDR rule SHALL permit the probe
-
 ### Requirement: Traefik workload network allow-rules
 
 The routing module SHALL declare the Traefik NetworkPolicy as a first-class `kubernetes_network_policy_v1` Terraform resource (not via Helm `extraObjects`) and make `helm_release.traefik` explicitly depend on it. This ordering ensures the NP is created and enforced by the CNI before the Traefik pod boots; otherwise ACME resolver initialization can race with NP enforcement and fail to reach Let's Encrypt at startup, leaving the resolver permanently unavailable.
@@ -658,27 +548,6 @@ The policy SHALL select pods with label `app.kubernetes.io/name=traefik` and set
 - **WHEN** another pod attempts to connect to Traefik on any port other than `:80` or `:443`
 - **THEN** the default-deny SHALL cause the connection to be dropped
 
-### Requirement: ForwardAuth Middleware
-
-The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `forwardAuth`. The middleware SHALL forward auth requests to `http://<oauth2_service>:<oauth2_port>/oauth2/auth` with `trustForwardHeader: true` and `authResponseHeaders` including `X-Auth-Request-User`, `X-Auth-Request-Email`, and `X-Auth-Request-Redirect`.
-
-#### Scenario: ForwardAuth middleware created
-
-- **WHEN** `tofu apply` completes
-- **THEN** a Traefik Middleware of type `forwardAuth` SHALL exist
-- **AND** its address SHALL point to the oauth2-proxy service's `/oauth2/auth` endpoint
-
-### Requirement: Errors Middleware for OAuth2 redirect
-
-The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `errors`. The middleware SHALL intercept 401-403 responses and proxy them to `oauth2-proxy`'s `/oauth2/sign_in?rd={url}` endpoint, rendering the sign-in page for unauthenticated users.
-
-#### Scenario: Unauthenticated user sees sign-in page
-
-- **WHEN** an unauthenticated request hits a protected route
-- **THEN** the ForwardAuth middleware SHALL return 401
-- **AND** the Errors middleware SHALL intercept the 401
-- **AND** the user SHALL see the oauth2-proxy sign-in page
-
 ### Requirement: Root redirect
 
 The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `redirectRegex` that redirects requests matching the root path (`/`) to `/trigger`.
@@ -690,121 +559,67 @@ The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type
 
 ### Requirement: IngressRoute for routing
 
-The Helm release `extraObjects` SHALL include Traefik `IngressRoute` CRDs on the `websecure` entrypoint organized into four categories:
+The routes-chart Helm release's `extraObjects` SHALL include Traefik `IngressRoute` CRDs on the `websecure` entrypoint organized into three categories:
 
-**Auth whitelist** (oauth2-proxy protected):
-- `PathPrefix('/dashboard')` routes to app service (with oauth2-errors + oauth2-forward-auth + not-found + server-error middleware; `strip-auth-headers` NOT applied because oauth2-proxy is authoritative over `X-Auth-Request-*` here)
-- `PathPrefix('/trigger')` routes to app service (with oauth2-errors + oauth2-forward-auth + not-found + server-error middleware; `strip-auth-headers` NOT applied for the same reason)
+**UI routes** (session-authenticated by the app, no Traefik-level auth middleware):
+- `PathPrefix('/dashboard')` routes to app service (with `not-found` and `server-error` middlewares). No forward-auth, no strip-auth-headers.
+- `PathPrefix('/trigger')` routes to app service (with `not-found` and `server-error` middlewares). No forward-auth, no strip-auth-headers.
+- `PathPrefix('/auth')` routes to app service (with `not-found` and `server-error` middlewares). Covers `/auth/github/login`, `/auth/github/callback`, and `/auth/logout`.
 
 **No-auth whitelist** (public):
-- `Path('/')` redirects to `/trigger` (with strip-auth-headers + redirect-root middleware)
-- `PathPrefix('/oauth2')` routes to oauth2-proxy service (with strip-auth-headers middleware)
-- `PathPrefix('/static')` routes to app service (with strip-auth-headers middleware)
-- `PathPrefix('/webhooks')` routes to app service (with strip-auth-headers + server-error middleware)
-- `Path('/livez')` routes to app service (with strip-auth-headers middleware)
+- `Path('/')` redirects to `/trigger` (with `redirect-root` middleware).
+- `PathPrefix('/static')` routes to app service (no middleware).
+- `PathPrefix('/webhooks')` routes to app service (with `server-error` middleware).
+- `Path('/livez')` routes to app service (no middleware).
 
 **App-auth** (app validates tokens internally):
-- `PathPrefix('/api')` routes to app service (with strip-auth-headers + server-error middleware)
+- `PathPrefix('/api')` routes to app service (with `server-error` middleware).
 
 **Catch-all** (deny by default):
-- `PathPrefix('/')` with low priority routes to app service (with strip-auth-headers + not-found middleware)
+- `PathPrefix('/')` with low priority routes to app service (with `not-found` middleware).
 
-The `strip-auth-headers` middleware SHALL be ordered first in every chain that includes it, so that `X-Auth-Request-*` headers are cleared before any downstream middleware or backend sees them.
+The `/oauth2/*` IngressRoute SHALL NOT be present. The `oauth2-forward-auth`, `oauth2-errors`, and `strip-auth-headers` Middleware CRDs SHALL NOT be defined or attached to any route.
 
-#### Scenario: OAuth2 routes
-
-- **WHEN** a request matches `PathPrefix('/oauth2')`
-- **THEN** it SHALL be routed to `oauth2_service:oauth2_port` with the `strip-auth-headers` middleware applied (no authentication or error middleware)
-
-#### Scenario: Webhook routes
-
-- **WHEN** a request matches `PathPrefix('/webhooks')`
-- **THEN** it SHALL be routed to `app_service:app_port` without authentication middleware
-- **AND** with the `strip-auth-headers` and `server-error` middlewares
-
-#### Scenario: Static asset routes
-
-- **WHEN** a request matches `PathPrefix('/static')`
-- **THEN** it SHALL be routed to `app_service:app_port` with the `strip-auth-headers` middleware applied (no error or authentication middleware)
-
-#### Scenario: Livez route
-
-- **WHEN** a request matches `Path('/livez')`
-- **THEN** it SHALL be routed to `app_service:app_port` with the `strip-auth-headers` middleware applied
-
-#### Scenario: API routes
-
-- **WHEN** a request matches `PathPrefix('/api')`
-- **THEN** it SHALL be routed to `app_service:app_port` without oauth2 middleware
-- **AND** with the `strip-auth-headers` and `server-error` middlewares applied
-- **AND** forged `X-Auth-Request-*` headers from the client SHALL NOT reach the app
-
-#### Scenario: Dashboard routes with auth
+#### Scenario: Dashboard route has no forward-auth
 
 - **WHEN** a request matches `PathPrefix('/dashboard')`
-- **THEN** the ForwardAuth middleware SHALL verify the request via oauth2-proxy
-- **AND** unauthenticated requests SHALL see the oauth2-proxy sign-in page
-- **AND** authenticated requests SHALL be routed to `app_service:app_port`
-- **AND** `X-Auth-Request-*` headers set by oauth2-proxy SHALL be forwarded to the app (the `strip-auth-headers` middleware is NOT applied on this route)
-- **AND** 404 responses SHALL be replaced with the styled 404 page
-- **AND** 5xx responses SHALL be replaced with the styled 5xx page
+- **THEN** it SHALL be routed to `app_service:app_port` with only the `not-found` and `server-error` middlewares
+- **AND** no `forwardAuth` Middleware SHALL be applied
+- **AND** no `X-Auth-Request-*` headers SHALL be set by any middleware
 
-#### Scenario: Trigger routes with auth
+#### Scenario: /auth routes reach the app
 
-- **WHEN** a request matches `PathPrefix('/trigger')`
-- **THEN** the ForwardAuth middleware SHALL verify the request via oauth2-proxy
-- **AND** unauthenticated requests SHALL see the oauth2-proxy sign-in page
-- **AND** authenticated requests SHALL be routed to `app_service:app_port`
-- **AND** `X-Auth-Request-*` headers set by oauth2-proxy SHALL be forwarded to the app (the `strip-auth-headers` middleware is NOT applied on this route)
-- **AND** 404 responses SHALL be replaced with the styled 404 page
-- **AND** 5xx responses SHALL be replaced with the styled 5xx page
+- **WHEN** a request matches `PathPrefix('/auth')`
+- **THEN** it SHALL be routed to `app_service:app_port`
+- **AND** no auth middleware SHALL interpose
+
+#### Scenario: /oauth2 path is not routed
+
+- **WHEN** a request matches `PathPrefix('/oauth2')`
+- **THEN** no IngressRoute SHALL match it
+- **AND** the catch-all IngressRoute SHALL handle the request with a 404
+
+#### Scenario: API routes without auth middleware
+
+- **WHEN** a request matches `PathPrefix('/api')`
+- **THEN** it SHALL be routed to `app_service:app_port` without any auth middleware applied
+- **AND** the app's Bearer middleware SHALL perform authentication
+
+#### Scenario: Webhook routes remain public
+
+- **WHEN** a POST to `PathPrefix('/webhooks')` arrives
+- **THEN** it SHALL be routed to `app_service:app_port` with only the `server-error` middleware
+
+#### Scenario: Root redirect unchanged
+
+- **WHEN** a request matches `Path('/')`
+- **THEN** the user SHALL be redirected to `/trigger` with a 302 status
 
 #### Scenario: Unknown path returns 404
 
 - **WHEN** a request matches no specific route and falls through to the catch-all
-- **THEN** the `strip-auth-headers` middleware SHALL clear forged identity headers
-- **AND** the not-found middleware SHALL intercept the 404 from the app
+- **THEN** the `not-found` middleware SHALL intercept the 404 from the app
 - **AND** the response SHALL be the styled 404 page
-
-#### Scenario: Root path redirects to trigger
-
-- **WHEN** a request matches `Path('/')`
-- **THEN** the `strip-auth-headers` middleware SHALL clear forged identity headers
-- **AND** the user SHALL be redirected to `/trigger` with a 302 status
-
-### Requirement: Strip forward-auth headers on non-UI routes
-
-The routes-chart SHALL include a Traefik `Middleware` CRD of type `headers` named `strip-auth-headers`. The middleware SHALL clear every `X-Auth-Request-*` header emitted by oauth2-proxy from the incoming request before it reaches the backend, by setting each header to `""` under `customRequestHeaders` (per Traefik semantics, empty string deletes the header).
-
-The header list SHALL cover the oauth2-proxy v7 emitted set: `X-Auth-Request-User`, `X-Auth-Request-Email`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Groups`, `X-Auth-Request-Access-Token`, `X-Auth-Request-Redirect`.
-
-The middleware SHALL be attached to every route in the `workflow-engine` IngressRoute except `PathPrefix('/dashboard')` and `PathPrefix('/trigger')`, which are the only routes where oauth2-proxy is authoritative over these headers (via the `oauth2-forward-auth` middleware's `authResponseHeaders`).
-
-#### Scenario: Middleware resource exists
-
-- **WHEN** the routes-chart Helm release reconciles
-- **THEN** a `Middleware` resource named `strip-auth-headers` SHALL exist in the release namespace
-- **AND** its `customRequestHeaders` map SHALL include all six oauth2-proxy `X-Auth-Request-*` headers mapped to `""`
-
-#### Scenario: Forged headers dropped on API route
-
-- **GIVEN** a curl request to `https://<host>/api/workflows/<tenant>` with headers `X-Auth-Request-User: attacker` and `X-Auth-Request-Groups: victim-tenant`
-- **WHEN** Traefik routes the request
-- **THEN** the backend app SHALL receive the request with those headers absent
-- **AND** no `X-Auth-Request-*` header forged by the client SHALL be visible to the app
-
-#### Scenario: Forged headers dropped on webhook route
-
-- **GIVEN** a public webhook POST to `https://<host>/webhooks/<tenant>/<workflow>/<path>` with `X-Auth-Request-User: attacker`
-- **WHEN** Traefik routes the request
-- **THEN** the backend SHALL receive the request with `X-Auth-Request-User` absent
-
-#### Scenario: oauth2-proxy headers preserved on UI routes
-
-- **GIVEN** an authenticated browser request to `/dashboard/` with a valid oauth2-proxy session cookie
-- **WHEN** Traefik invokes `oauth2-forward-auth`, which populates `X-Auth-Request-User` et al. via `authResponseHeaders`
-- **THEN** the backend SHALL receive the headers populated by oauth2-proxy
-- **AND** the `strip-auth-headers` middleware SHALL NOT be applied to `/dashboard` or `/trigger`
 
 ### Requirement: Not-found errors middleware
 
@@ -1152,16 +967,6 @@ Every `kubernetes_deployment_v1` SHALL declare `depends_on` on its corresponding
 - **THEN** the app's NetworkPolicy SHALL be created before the app Deployment
 - **AND** the baseline default-deny NetworkPolicy SHALL be created before any workload Deployment
 
-### Requirement: oauth2-proxy env vars via dynamic maps
-
-The oauth2-proxy container's environment variables SHALL be defined using `dynamic "env"` blocks iterating over two local maps: one for plain values and one for secret key references. This replaces ~15 individual `env {}` blocks.
-
-#### Scenario: All env vars set from maps
-
-- **WHEN** the oauth2-proxy Deployment is inspected
-- **THEN** all `OAUTH2_PROXY_*` environment variables SHALL be present with correct values
-- **AND** `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, and `OAUTH2_PROXY_COOKIE_SECRET` SHALL be sourced from the Kubernetes Secret
-
 ### Requirement: Persistence project path
 
 The persistence project SHALL live at `infrastructure/envs/upcloud/persistence/` (moved from `infrastructure/upcloud/persistence/`). Its S3 backend key SHALL remain `persistence`. Its state and behavior SHALL be unchanged.
@@ -1206,3 +1011,40 @@ conflict with the rules listed in `/SECURITY.md §5` MUST update
 - **THEN** no update to `/SECURITY.md §5` is required
 - **AND** the proposal SHALL note that threat-model alignment was
   checked
+
+### Requirement: App module accepts auth_allow input
+
+The `modules/app-instance/` module SHALL declare an `auth_allow` input variable (type `string`). The module SHALL inject the value as the `AUTH_ALLOW` environment variable on the app container using a plain `env { name = "AUTH_ALLOW" value = var.auth_allow }` block (i.e., not from a secret), so the allow-list is visible in pod specs and Kubernetes events for auditability.
+
+#### Scenario: auth_allow threaded to pod env
+
+- **WHEN** the `app-instance` module is instantiated with `auth_allow = "github:user:alice;github:org:acme"`
+- **THEN** the rendered `kubernetes_deployment_v1.app` SHALL contain a container `env` entry with `name = "AUTH_ALLOW"` and `value = "github:user:alice;github:org:acme"`
+
+#### Scenario: auth_allow empty string
+
+- **WHEN** the `app-instance` module is instantiated with `auth_allow = ""`
+- **THEN** the rendered deployment SHALL still include the `AUTH_ALLOW` env var with an empty string value
+- **AND** the app SHALL resolve `auth.mode` to `disabled`, rejecting every request with `401 Unauthorized`
+
+### Requirement: App module accepts GitHub OAuth App credentials
+
+The `modules/app-instance/` module SHALL declare two input variables carrying the GitHub OAuth App credentials:
+
+- `github_oauth_client_id` (type `string`) — the OAuth App's client id, injected as the `GITHUB_OAUTH_CLIENT_ID` environment variable via a plain `env {}` block.
+- `github_oauth_client_secret` (type `string`, marked `sensitive`) — the OAuth App's client secret, stored in a Kubernetes Secret and injected as the `GITHUB_OAUTH_CLIENT_SECRET` environment variable via `value_from.secret_key_ref`.
+
+The Kubernetes Secret holding the client secret SHALL be created by this module (not oauth2-proxy's module, which no longer exists) and SHALL follow the same naming convention as other app Secrets in the module.
+
+#### Scenario: Client id injected as plain env var
+
+- **WHEN** the `app-instance` module is instantiated with `github_oauth_client_id = "cid123"`
+- **THEN** the rendered app Deployment SHALL contain a container `env` entry with `name = "GITHUB_OAUTH_CLIENT_ID"` and `value = "cid123"`
+
+#### Scenario: Client secret injected from Kubernetes Secret
+
+- **WHEN** the `app-instance` module is instantiated with a non-empty `github_oauth_client_secret`
+- **THEN** the module SHALL create a `kubernetes_secret_v1` containing the client secret
+- **AND** the app container SHALL receive `GITHUB_OAUTH_CLIENT_SECRET` via `value_from.secret_key_ref` referencing that Secret
+- **AND** the Terraform plan SHALL NOT print the secret value in plaintext (variable is marked `sensitive`)
+

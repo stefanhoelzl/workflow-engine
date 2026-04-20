@@ -1,3 +1,3 @@
-domain              = "workflow-engine.webredirect.org"
-oauth2_github_users = "stefanhoelzl"
-acme_email          = "stefanh+acme@posteo.de"
+domain     = "workflow-engine.webredirect.org"
+auth_allow = "github:user:stefanhoelzl"
+acme_email = "stefanh+acme@posteo.de"

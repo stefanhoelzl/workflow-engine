@@ -55,8 +55,8 @@ sections must append (§7 and onward), not renumber.
         │                       │                       │
         ▼                       ▼                       ▼
   /webhooks/*           /dashboard, /trigger        /api/*
-  PUBLIC                oauth2-proxy forward-auth   App middleware:
-  (intentional)         (GitHub OAuth)              Bearer + GITHUB_USER
+  PUBLIC                App sessionMiddleware       App middleware:
+  (intentional)         (in-app GitHub OAuth)       Bearer + AUTH_ALLOW
         │                       │                       │
         ▼                       ▼                       ▼
   ┌─────────────────────────────────────────────────────────────┐
@@ -102,7 +102,7 @@ sections must append (§7 and onward), not renumber.
 |---|---------|-------------|--------------|----------------|---------|
 | 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox(source, methods).run(handlerName, payload)` | Isolation, not auth | §2 |
 | 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/{name}` | None — payload-schema validation only | §3 |
-| 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/api/*` | oauth2-proxy (GitHub) for UI; Bearer (GitHub) for API | §4 |
+| 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/login`, `/auth/*`, `/api/*` | In-app OAuth (sealed session cookie) for UI; Bearer (GitHub) for API. Both gated by `AUTH_ALLOW`. `/login` is the provider-agnostic sign-in page; `/auth/github/*` is the GitHub-specific handshake. | §4 |
 | 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Traefik | K8s RBAC, pod network | §5 |
 
 **Trust-level semantics** (applies across the whole document):
@@ -960,39 +960,45 @@ valid signature on a schema-violating payload still returns 422.
 
 ### Trust level
 
-**AUTHENTICATED** — but with different mechanisms and different trust
-chains for different routes. This section is the most nuanced: a single
-mistake in wiring (a missing env var, a bypassed middleware, a trusted
-forwarded header) can collapse the whole auth boundary.
+**AUTHENTICATED** — one identity model, two transports, one enforcement
+surface (the app). All authentication and authorization runs in-process;
+the oauth2-proxy sidecar and Traefik forward-auth chain are no longer
+part of the trust chain.
 
-Two distinct auth surfaces:
+Two transports share the same allow-list predicate (`allow(user, auth)`)
+and the same `UserContext` shape:
 
-1. **UI routes** (`/dashboard`, `/trigger`, and any future authenticated
-   UI prefix) — authenticated by **oauth2-proxy** at the **Traefik
-   forward-auth** layer. The application receives
-   `X-Auth-Request-User` and `X-Auth-Request-Email` headers and trusts
-   them.
-2. **API** (`/api/*`) — authenticated **in the application** by
-   `githubAuthMiddleware`, which validates a Bearer token against
-   `https://api.github.com/user` and checks the login against a
-   comma-separated allow-list configured via the `GITHUB_USER` env
-   var. The middleware operates in one of three modes
-   (`restricted` / `disabled` / `open`) resolved from config at
-   startup — see §4 Mitigations and the `github-auth` spec.
+1. **UI routes** (`/dashboard`, `/trigger`) — authenticated by
+   `sessionMiddleware` (`packages/runtime/src/auth/session-mw.ts`),
+   which reads an AEAD-sealed `session` cookie (iron-webcrypto) and
+   re-evaluates `AUTH_ALLOW` on every soft-TTL refresh (10 min). The
+   OAuth handshake lives in-app at `/login` (provider-agnostic sign-in
+   page), `/auth/github/signin`,
+   `/auth/github/callback`, and `POST /auth/logout`
+   (`packages/runtime/src/auth/routes.ts`).
+2. **API** (`/api/*`) — authenticated by `bearerUserMiddleware` +
+   `authorizeMiddleware`
+   (`packages/runtime/src/auth/bearer-user.ts`,
+   `packages/runtime/src/api/auth.ts`). The Bearer token is validated
+   against `https://api.github.com/user` + `/user/orgs`; the same
+   `allow()` predicate gates access. Three modes
+   (`restricted` / `disabled` / `open`) resolved at startup from
+   `AUTH_ALLOW` — see "Mitigations" below.
 
-"UI" is used throughout this section as the category name (rather than
-"Dashboard") because the trust domain spans `/dashboard`, `/trigger`,
-and any future authenticated UI prefix.
+Both transports produce `UserContext = { name, mail, orgs }` (no
+`teams`; no consumer reads them). Tenant scope for writes runs through
+`isMember(user, tenant)`, unchanged from prior revisions.
 
 ### Entry points
 
 | Route family | Auth mechanism | Enforced by | Bypass check |
 |---|---|---|---|
-| UI routes (`/dashboard`, `/trigger`, future UIs) | GitHub OAuth2 via oauth2-proxy | Traefik `ForwardAuth` middleware | Any new UI prefix must be added to the forward-auth-protected list |
-| `/api/*` | GitHub Bearer token + allow-list; three modes (`restricted` / `disabled` / `open`) | App-level middleware, always registered | `disabled` (fail-closed 401) when allow-list is missing; `open` requires the explicit `__DISABLE_AUTH__` sentinel |
+| `/dashboard`, `/trigger` | Sealed session cookie + soft-TTL refresh | App `sessionMiddleware` (mounted inside each UI middleware factory) | Any new authenticated UI prefix must receive `sessionMw` in its factory deps |
+| `/login` | None (public page) | App `loginPageMiddleware` | Renders the sign-in page; never auto-redirects to an IdP. The "Sign in with GitHub" button links to `/auth/github/signin`. |
+| `/auth/*` (`/auth/github/signin`, `/auth/github/callback`, `POST /auth/logout`) | None; these ARE the OAuth handshake surface | App `authMiddleware` | Handlers must validate the `auth_state` cookie on callback and must sanitize `returnTo` to same-origin |
+| `/api/*` | GitHub Bearer token + `allow()` predicate; three modes | `bearerUserMiddleware` → `authorizeMiddleware`, always registered | `disabled` (fail-closed 401) when `AUTH_ALLOW` unset; `open` requires the explicit `__DISABLE_AUTH__` sentinel |
 | `/webhooks/*` | **None (PUBLIC)** | Intentional | See §3 |
 | `/static/*`, `/livez`, `/` | None | Intentional | Must stay non-sensitive |
-| `/oauth2/*` | N/A (OAuth2 callback itself) | oauth2-proxy | Never add application logic on these paths |
 
 ### Threats
 
@@ -1000,185 +1006,203 @@ and any future authenticated UI prefix.
 |----|--------|----------|
 | A1 | Attacker steals a session cookie (XSS, shared device) and accesses a UI route | Spoofing |
 | A2 | Attacker steals a Bearer token and accesses `/api/*` | Spoofing |
-| A3 | Request bypasses Traefik and reaches the app pod directly, sending forged `X-Auth-Request-User` | Spoofing / EoP |
-| A4 | A new authenticated route is added but not wired through the forward-auth middleware | EoP |
-| A5 | Deployment sets the `__DISABLE_AUTH__` sentinel in production (intended for local dev only), opting `/api/*` into `open` mode and reaching the handler unauthenticated | EoP |
-| A6 | oauth2-proxy cookie secret is leaked or reused across deployments, enabling cookie forgery | Spoofing |
-| A7 | GitHub API is unreachable; `/api/*` returns 401 for all callers (availability) | DoS |
-| A8 | GitHub API rate-limits the application's IP (no caching of token validation) | DoS |
-| A9 | Bearer token is logged via request / response logging or included in an event payload | Information disclosure |
-| A10 | User is removed from the `GITHUB_USER` / `OAUTH2_PROXY_GITHUB_USERS` allowlist but an existing session cookie stays valid until expiry | EoP (stale access) |
-| A11 | Open redirect via `/oauth2` callback parameters | Spoofing (phishing) |
+| A3 | Attacker forges the session cookie or state cookie without the in-memory sealing password | Spoofing |
+| A4 | A new authenticated route is added but not wired through `sessionMiddleware` | EoP |
+| A5 | Deployment sets the `__DISABLE_AUTH__` sentinel in production (intended for local dev only), opting the whole app into `open` mode | EoP |
+| A6 | Attacker with access to the browser cookie store exfiltrates the sealed session and replays it against the app | Spoofing |
+| A7 | GitHub API is unreachable; sessions past their soft TTL fail refresh and the dashboard returns 302 → login → fails | DoS |
+| A8 | GitHub API rate-limits the application's IP (no caching of `/api/*` token validation) | DoS |
+| A9 | Bearer token, session cookie, GitHub access token, or the in-memory sealing password is written to logs or to an event payload | Information disclosure |
+| A10 | User is removed from `AUTH_ALLOW` but an existing session cookie is still honoured until the next soft-TTL refresh | EoP (stale access) |
+| A11 | OAuth callback CSRF: attacker tricks a signed-in user into visiting a malicious `/auth/github/callback?code=…&state=…` URL | Spoofing (phishing) |
 | A12 | Allow-listed user uploads to a tenant they are not a member of (or enumerates tenants) to discover tenant names | EoP (cross-tenant) / Information disclosure |
-| A13 | Allow-listed Bearer caller on `/api/*` forges `X-Auth-Request-*` headers to impersonate membership in another tenant (breaks I-T2) | EoP (cross-tenant) |
+| A13 | *(Eliminated.)* Historical: allow-listed Bearer caller on `/api/*` forges `X-Auth-Request-*` headers to impersonate membership in another tenant. No code path reads those headers; kept here as a reminder. | n/a |
 | A14 | Authenticated caller reads workflow or invocation-event data by id or name on a surface whose handler omits the tenant scope (breaks I-T2) | EoP (cross-tenant) / Information disclosure |
+| A15 | App Deployment is scaled to `replicas > 1` while the sealing password is in-memory; cookies signed on pod A fail to decrypt on pod B | Availability / EoP (indirect: forces re-login, possibly thrashing) |
 
 ### Mitigations (current)
 
-- **HTTPS-only cookies** (`OAUTH2_PROXY_COOKIE_SECURE=true`) — cookies
-  are not sent over plain HTTP.
-  (`infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf` line 166)
-- **Per-deployment random cookie secret** (32 bytes, generated at apply
-  time, stored in a K8s Secret, marked sensitive).
-- **Single-source-of-truth allow-list.** The Terraform
-  `oauth2.github_users` variable feeds both `OAUTH2_PROXY_GITHUB_USERS`
-  (UI) and `GITHUB_USER` (API), so the UI and API authorize the same
-  set of GitHub logins by construction.
-  (`infrastructure/modules/workflow-engine/modules/app/app.tf`;
-  `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`)
-- **Multi-user API allow-list.** `GITHUB_USER` is parsed as a
-  comma-separated list (pflag `StringSlice` parity with oauth2-proxy);
-  any login in the list is accepted. Matching is case-sensitive.
-- **Fail-closed three-mode API middleware.** The API middleware is
-  **always registered** and resolves to one of three modes from config
-  at startup: `restricted` (token validated + login on allow-list),
-  `disabled` (every request → 401, no outbound call to GitHub),
-  `open` (middleware not installed). Unset `GITHUB_USER` →
-  `disabled`; the explicit sentinel `__DISABLE_AUTH__` → `open`.
-  A missing config **never** silently opens the API.
-  (`packages/runtime/src/api/auth.ts`; `packages/runtime/src/config.ts`;
-  `openspec/specs/github-auth/spec.md`,
-  `openspec/specs/runtime-config/spec.md`)
-- **Allow-list enumeration protection.** All negative outcomes in
-  `restricted` mode (missing header, invalid token, wrong login,
-  GitHub network error) return `401 Unauthorized` with an identical
-  body; the status code does not distinguish "wrong user" from "bad
-  token", preventing enumeration by holders of valid PATs.
-- **Tenant membership enforcement for `/api/workflows/<tenant>` (R-A12).**
-  The upload handler runs `githubAuthMiddleware` first (allow-list gate),
-  then `userMiddleware` (which populates `UserContext.orgs` and `.name`
-  by hitting `/user`, `/user/orgs`, `/user/teams` on GitHub for Bearer
-  tokens and by parsing `X-Auth-Request-Groups` for oauth2-proxy). The
-  handler then validates `<tenant>` against the identifier regex
+- **Sealed session cookie** (`iron-webcrypto` AEAD, Path=/, HttpOnly,
+  Secure, SameSite=Lax, Max-Age=7d). Tampered or expired cookies fail
+  `unseal` and are treated as absent.
+  (`packages/runtime/src/auth/session-cookie.ts`)
+- **Sealed state + flash cookies** for the OAuth handshake. The
+  `auth_state` cookie carries `{state, returnTo}` with a 5-minute TTL;
+  the callback handler verifies `state === query.state` (CSRF check)
+  and sanitises `returnTo` to a same-origin relative path before
+  redirecting. Failure → `400 Bad Request`. The `auth_flash` cookie
+  (60 s TTL) carries the rejected login so the login page can render a
+  red deny banner on the next hit.
+  (`packages/runtime/src/auth/state-cookie.ts`,
+  `packages/runtime/src/auth/flash-cookie.ts`,
+  `packages/runtime/src/auth/routes.ts`)
+- **In-memory sealing password, never persisted.** 32 random bytes
+  generated at process start, held in a module-level closure, never
+  written to disk, K8s Secret, log, or telemetry. Pod restart rolls
+  the password and invalidates every existing cookie (users re-login).
+  This is the load-bearing invariant behind `replicas = 1` (A15, see
+  §5 R-I*).
+  (`packages/runtime/src/auth/key.ts`)
+- **AUTH_ALLOW grammar, provider-prefixed and fail-fast.** Env value:
+  `github:user:<login>;github:org:<org>;…`. Unknown provider prefixes
+  cause `createConfig` to throw at startup with a diagnostic
+  identifying the offending token — the runtime fails to boot rather
+  than silently ignoring the entry.
+  (`packages/runtime/src/auth/allowlist.ts`,
+  `packages/runtime/src/config.ts`)
+- **Unified `allow(user, auth)` predicate.** A single function, called
+  from both `authorizeMiddleware` (on `/api/*` after
+  `bearerUserMiddleware`) and `sessionMiddleware` (on `/dashboard`,
+  `/trigger` at login and on every soft-TTL refresh). Login matching
+  is case-sensitive exact equality; org matching is "any
+  `user.orgs` ∩ `auth.orgs` ≠ ∅".
+  (`packages/runtime/src/auth/allowlist.ts`)
+- **AUTH_ALLOW re-evaluated on every successful soft-TTL refresh.** The
+  stale-session branch of `sessionMiddleware` re-fetches `/user` and
+  `/user/orgs`, rebuilds `UserContext`, and re-runs `allow()`. A user
+  removed from `AUTH_ALLOW` or from an allow-listed org loses access
+  within ≤10 min (A10), bounded by the soft TTL rather than the 7 d
+  hard TTL. On rejection the cookie is cleared and an `auth_flash`
+  cookie is set so the next `/login` renders the deny
+  banner.
+- **Fail-closed refresh.** Any non-OK response from GitHub on the
+  refresh path (401, 403, 5xx, timeout, DNS error) clears the session
+  cookie and 302s to `/login`. No grace period; during a
+  GitHub outage the dashboard is unreachable. The `/api/*` path has
+  equivalent fail-closed behaviour (no caching of token validation).
+- **GitHub OAuth scope `user:email read:org`.** `read:org` is required
+  so private-org `AUTH_ALLOW=github:org:<priv>` entries resolve
+  correctly. No broader scope is requested.
+  (`packages/runtime/src/auth/github-api.ts`)
+- **Fail-closed three-mode middleware.** Unset `AUTH_ALLOW` → every
+  request is rejected 401 on `/api/*` and every `/dashboard`/`/trigger`
+  request too. Sentinel `__DISABLE_AUTH__` → open mode (warn-logged at
+  startup; dev-only). A missing config **never** silently opens the
+  app.
+- **Allow-list enumeration protection.** All negative outcomes on
+  `/api/*` return `401 Unauthorized` with an identical body — missing
+  header, invalid token, GitHub error, and allow-list miss are
+  indistinguishable to the caller.
+  (`packages/runtime/src/api/auth.ts`)
+- **Tenant membership enforcement for `/api/workflows/:tenant` (R-A12).**
+  Unchanged from prior revisions. The handler validates `<tenant>`
+  against the identifier regex
   (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) and evaluates
   `isMember(user, tenant) := user.orgs.includes(tenant) || user.name === tenant`.
-  Both failures (invalid regex, non-member) return `404 Not Found` with
-  body `{ "error": "Not Found" }`, indistinguishable from "tenant does
-  not exist," which prevents allow-listed users from enumerating tenant
-  names. Teams (`UserContext.teams`, populated from colon-separated
-  groups) are **not** consulted for membership.
+  Both failures return `404 Not Found` with an identical body. Teams
+  are not consulted (and are no longer part of `UserContext`).
   (`packages/runtime/src/auth/tenant.ts`,
   `packages/runtime/src/api/upload.ts`)
-- **Startup-logged auth mode.** The runtime emits a log record at
-  startup identifying the effective `githubAuth.mode`, at `warn` level
-  for `disabled` or `open`. Misconfigured deployments are visible in
-  logs immediately.
-- **Per-request token validation against GitHub** for the API — no
-  long-lived stale sessions; a revoked GitHub token is rejected on the
-  next request.
-  (`packages/runtime/src/api/auth.ts`)
-- **TLS termination at Traefik** — session cookies and Bearer tokens are
-  not in cleartext on the wire.
-- **Forward-auth integration** — Traefik calls oauth2-proxy's
-  `/oauth2/auth` endpoint on every UI request; unauthenticated requests
-  are redirected to the sign-in flow.
-- **Separate trust domains for UI vs API** — the UI's cookie does not
-  authenticate the API; the API's Bearer token does not sign a UI
-  session.
-- **App-side trust-domain split for user-context population (A13).** The
-  middleware that builds `UserContext` is split into two modules that
-  share only the data type: `packages/runtime/src/auth/bearer-user.ts`
-  (used on `/api/*`, reads only the `Authorization: Bearer` header;
-  resolves orgs/teams/name from GitHub) and
-  `packages/runtime/src/auth/header-user.ts` (used on `/dashboard` and
-  `/trigger`, reads only `X-Auth-Request-*`; never calls GitHub). A
-  forged `X-Auth-Request-Groups` on `/api/*` cannot inject a tenant
-  into `UserContext.orgs` — the API path structurally does not read
-  the header. This is the correctness control against cross-tenant
-  escalation by allow-listed Bearer callers (closes A13 and R-A4a below).
-- **Edge-side strip of forward-auth headers (A13).** The Traefik
-  `Middleware` CR `strip-auth-headers`
-  (`infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`)
-  clears every oauth2-proxy-emitted `X-Auth-Request-*` header on every
-  IngressRoute path except `/dashboard` and `/trigger` (the only routes
-  where oauth2-proxy is authoritative over these headers via
-  `authResponseHeaders`). This is a containment control: forged
-  headers from external callers do not reach any handler or log on
-  `/api/*`, `/webhooks/*`, `/static/*`, `/oauth2/*`, `/livez`, or `/`.
-  Closes A13 and R-A4b below.
-- **Tenant-scoped query API (A14).** The `EventStore.query(tenant)`
-  method requires the tenant at the call site and pre-binds
-  `.where("tenant", "=", tenant)` on the returned Kysely
-  `SelectQueryBuilder`. No unscoped read path against the `events`
-  table exists; tenant-scope omission is structurally impossible at
-  the API shape. Workflow bundle reads are analogously keyed by tenant
-  at the storage layer (`workflows/<tenant>.tar.gz`). See
-  `openspec/specs/event-store/spec.md` and
-  `openspec/specs/workflow-registry/spec.md`. Closes A14 and R-A14.
+- **No code path reads `X-Auth-Request-*` (A13 eliminated).** The
+  `headerUserMiddleware` reader and all references to those headers
+  were deleted. `bearerUserMiddleware` reads only `Authorization`;
+  `sessionMiddleware` reads only the `session` cookie. Forged
+  `X-Auth-Request-*` headers have no handler to trust them. The
+  Traefik `strip-auth-headers` middleware is therefore removed — no
+  upstream produces those headers, and no downstream consumes them.
+- **Startup-logged auth mode.** The runtime emits a log record at init
+  identifying `auth.mode`, at `warn` level for `disabled` or `open`,
+  `info` for `restricted`. Restricted mode logs user + org counts only
+  (not the entries themselves).
+  (`packages/runtime/src/main.ts`)
+- **POST-only logout.** `POST /auth/logout` clears the session cookie
+  and 302s to `/`. Any other method returns 405 — prevents cross-site
+  logout CSRF via `<img src>` / `<a>` / navigation.
+- **TLS termination at Traefik.** Session cookies, Bearer tokens, and
+  the GitHub access token stored inside the sealed cookie are not in
+  cleartext on the wire.
+- **Tenant-scoped query API (A14).** Unchanged. `EventStore.query(tenant)`
+  pre-binds `.where("tenant", "=", tenant)`; no unscoped read path
+  against the `events` table exists. Workflow bundles are tenant-keyed
+  at the storage layer (`workflows/<tenant>.tar.gz`).
 
 ### Residual risks
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-A1 | The `__DISABLE_AUTH__` sentinel exists for local development; a production deployment that sets it puts `/api/*` into `open` mode. The `warn`-level startup log is the only guard against accidental production use. | A5 | Mitigated by operational discipline and startup logs; consider refusing `open` mode when a production marker is set |
-| R-A2 | No caching of GitHub token validation — every `/api/*` request makes a live GitHub API call. Exposes the application to GitHub availability and rate limits (A7, A8). | High | Design follow-up |
-| R-A3 | K8s `NetworkPolicy` restricts app-pod ingress on `:8080` to Traefik pods only (`app.kubernetes.io/name=traefik`) plus the UpCloud node CIDR for kubelet probes. Forged `X-Auth-Request-User` from a neighbouring pod is no longer possible. No longer load-bearing for the cross-tenant threat vector (R-A4a closes it at the app layer), but retained as defence-in-depth. | High | **Resolved** (see §5 R-I1) |
-| R-A4a | App-side forwarded-header trust: the `/api/*` middleware does not read `X-Auth-Request-*`. `bearerUserMiddleware` resolves `UserContext` exclusively from GitHub using the Bearer token, so a forged `X-Auth-Request-Groups` cannot inject a tenant into `UserContext.orgs`. | High | **Resolved** (`packages/runtime/src/auth/bearer-user.ts`) |
-| R-A4b | Edge-side forwarded-header trust: Traefik strips every `X-Auth-Request-*` header on every IngressRoute path except `/dashboard` and `/trigger`, so forged values never reach the app, its logs, or future handlers that might read them. | Medium | **Resolved** (Traefik `strip-auth-headers` middleware in `routes-chart`) |
-| R-A14 | Invocation-event reads are scoped by tenant at the API surface: `EventStore.query(tenant)` requires the tenant argument and pre-binds `.where("tenant", "=", tenant)`. No unscoped read path against the `events` table is exposed, so a handler cannot accidentally omit the tenant predicate on an id- or name-based lookup. | High | **Resolved** (`openspec/specs/event-store/spec.md`, `packages/runtime/src/event-bus/event-store.ts`) |
-| R-A5 | No logout-on-allowlist-removal — removing a user from `OAUTH2_PROXY_GITHUB_USERS` does not invalidate existing sessions until cookie expiry. | Low-Medium | Accept or add session store |
-| R-A6 | No explicit request / response logging policy for `Authorization` headers — nothing guarantees tokens are redacted from pino logs. | Medium | Verify logger config |
+| R-A1 | The `__DISABLE_AUTH__` sentinel exists for local development; a production deployment that sets it puts the whole app into `open` mode. The `warn`-level startup log is the only guard against accidental production use. | A5 | Mitigated by operational discipline and startup logs |
+| R-A2 | No caching of `/api/*` token validation — every `/api/*` request makes a live GitHub API call. UI soft-TTL refresh is 10 min; the API has no equivalent. Exposes the application to GitHub availability and rate limits (A7, A8). | Medium | Design follow-up |
+| R-A3 | Session refresh is fail-closed: during a GitHub outage, `/dashboard` and `/trigger` become unreachable for any session past its 10-minute soft TTL. Accepted tradeoff — matches `/api/*` behaviour and avoids serving stale allow-list decisions. | Medium | Accepted |
+| R-A5 | Stale-allowlist exposure is bounded by the soft TTL (≤10 min) rather than the hard TTL (7 d), because `allow()` is re-evaluated on every refresh. An attacker with a just-removed session cookie retains access for at most one soft-TTL window. | Low | Accepted |
+| R-A6 | No explicit request / response logging policy for `Authorization` headers, session cookies, or the `GITHUB_OAUTH_CLIENT_SECRET`. Nothing guarantees they are redacted from pino logs. | Medium | Verify logger config |
 | R-A7 | GitHub OAuth is the only identity provider — no local fallback, no MFA enforcement beyond what GitHub offers. | Accepted | By design |
-| R-A8 | No CSRF tokens on state-changing UI routes — session cookie is the only auth; if any cross-site POST is possible, forms could be submitted cross-origin. | TBD | Audit UI mutations |
+| R-A8 | The dashboard has state-changing forms (upload, logout). Logout is POST-only; uploads go to `/api/*` which is Bearer-only (no cookie accepted). CSRF surface on the cookie path is limited to logout; CSRF surface on `/api/*` does not exist because the cookie is never read there. | Low | Accepted |
+| R-A9 | Pod restart (deploy, eviction, OOM) invalidates every session because the sealing password is in-memory. Deploy-frequency–driven forced re-logins are the UX cost. Moving the password to a shared mechanism is required before `replicas > 1` (A15). | Low | Accepted |
+| R-A10 | The sealed session cookie carries the GitHub access token at rest in the browser. HttpOnly prevents JS access; the scope granted is `user:email read:org`, so the blast radius of a cookie exfiltration is read-only user metadata. A caller who extracts the browser cookie store can act as the user for up to 7 d (hard TTL) or until they refresh against GitHub. | Medium | Accepted |
+| R-A14 | Unchanged from prior revisions; `EventStore.query(tenant)` pre-binds the tenant predicate. | High | **Resolved** |
 
 ### Rules for AI agents
 
-1. **NEVER add a UI route (under `/dashboard`, `/trigger`, or any new
-   authenticated UI prefix) without confirming the Traefik
-   `oauth2-forward-auth` middleware applies to it.** Check
-   `infrastructure/modules/workflow-engine/modules/routing/routing.tf`.
-2. **NEVER add a route under `/api/` without the `githubAuthMiddleware`
-   in front of it.**
-3. **NEVER trust `X-Auth-Request-User`, `X-Auth-Request-Email`, or any
-   `X-Forwarded-*` header as authoritative outside the current
-   NetworkPolicy assumption.** The §5 `NetworkPolicy` restricts ingress
-   on app `:8080` and oauth2-proxy `:4180` to Traefik pods only (plus
-   the node CIDR for kubelet probes). Any change that weakens the
-   NetworkPolicy selectors — e.g. relaxing the Traefik pod-label
-   `app.kubernetes.io/name=traefik` — collapses this trust and MUST be
-   flagged in the same review.
-4. **NEVER log, emit, or store** the `Authorization` header, a session
-   cookie, or an OAuth client secret. When adding new logging,
-   explicitly allowlist which request fields go to logs.
-5. **NEVER add a silent short-circuit for auth in development.** The
+1. **NEVER add a new authenticated UI prefix (under `/dashboard`,
+   `/trigger`, or a new route) without wiring `sessionMiddleware`
+   into its middleware factory.** The `sessionMw` option on
+   `dashboardMiddleware` and `triggerMiddleware` is the enforcement
+   hook; a new factory that forgets to mount it leaves the prefix
+   unauthenticated.
+2. **NEVER add a route under `/api/` without the Bearer middleware
+   chain (`bearerUserMiddleware` + `authorizeMiddleware`) in front of
+   it.** The `apiMiddleware` factory in `packages/runtime/src/api/index.ts`
+   mounts both for every `/api/*` path; new `/api/*` routes MUST go
+   inside that factory.
+3. **NEVER accept the session cookie on `/api/*`.** The cookie is
+   UI-only by design; accepting it on the API would open a CSRF
+   surface on every mutating endpoint and is explicitly out of scope
+   for this design.
+4. **NEVER read `X-Auth-Request-*`, `X-Forwarded-User`, or any
+   forward-auth style header on any code path.** No upstream produces
+   them; reading them would reintroduce the A13 threat class.
+5. **NEVER log, emit, or store** the `Authorization` header, the
+   `session` cookie, the `auth_state` / `auth_flash` cookies, the
+   GitHub access token, the `GITHUB_OAUTH_CLIENT_SECRET`, or the
+   in-memory JWE sealing password. When adding new logging, explicitly
+   allowlist which request fields go to logs.
+6. **NEVER persist the JWE sealing password** (disk, K8s Secret, log,
+   telemetry, env var). It must be regenerated in-memory on every
+   process start.
+7. **NEVER skip the `allow()` re-evaluation on the soft-TTL refresh
+   path.** The bound on stale-allowlist exposure (R-A5) depends on
+   that re-evaluation happening on every successful refresh.
+8. **NEVER add an `AUTH_ALLOW` token whose `<provider>` is not one of
+   the registered providers.** Unknown prefixes MUST fail startup
+   config validation with a diagnostic identifying the token.
+9. **NEVER add a silent short-circuit for auth in development.** The
    only supported dev bypass is the explicit `__DISABLE_AUTH__`
    sentinel, which opts into `open` mode *visibly* (warn log at
-   startup, documented in the `github-auth` spec). Do not introduce
-   new implicit bypasses (env checks, `NODE_ENV`, debug flags).
-6. **When adding a new config gate for auth enforcement**, make it
-   fail-closed by default and visible at startup (warn-level log when
-   the weaker mode is active). Document the gate and its three modes
-   here so future agents can reason about it without reading code.
-7. **Bearer tokens and session cookies live at different trust levels**
-   — never design a feature that accepts either interchangeably. Pick
-   one per surface.
-8. **NEVER read `X-Auth-Request-*` headers on any code path reachable
-   from `/api/*`, `/webhooks/*`, `/static/*`, or any non-UI route.**
-   They are stripped by Traefik's `strip-auth-headers` middleware and
-   ignored by `bearerUserMiddleware`; reading them anywhere else would
-   break both guards simultaneously. The only legitimate reader of
-   these headers is `headerUserMiddleware` on the `/dashboard` and
-   `/trigger` mounts (A13, R-A4a/b, §1 I-T2).
-9. **NEVER read or list workflow or invocation-event data without a
-   tenant scope.** For invocation events, the only scoped read API is
-   `EventStore.query(tenant)` — do not construct raw SQL against the
-   `events` table. For workflows, route through `WorkflowRegistry`,
-   which is keyed by tenant. Format validation of a tenant identifier
-   (the regex) is NOT a permission check and does NOT substitute for a
-   tenant-scoped query (A14, R-A14, §1 I-T2).
+   startup). Do not introduce new implicit bypasses (env checks,
+   `NODE_ENV`, debug flags).
+10. **When adding a new config gate for auth enforcement**, make it
+    fail-closed by default and visible at startup (warn-level log when
+    the weaker mode is active). Document the gate and its modes in
+    this section.
+11. **Bearer tokens and session cookies live at different transports
+    of the same identity model.** Share `UserContext`, share
+    `allow()`, share `isMember()` — but never accept one where the
+    other is expected.
+12. **NEVER read or list workflow or invocation-event data without a
+    tenant scope.** `EventStore.query(tenant)` is the only scoped read
+    API. For workflows, route through `WorkflowRegistry`, which is
+    keyed by tenant. Format validation of a tenant identifier (the
+    regex) is NOT a permission check and does NOT substitute for a
+    tenant-scoped query (A14, R-A14, §1 I-T2).
 
 ### File references
 
-- API auth middleware: `packages/runtime/src/api/auth.ts`
-- Config / env: `packages/runtime/src/config.ts`
-- API wiring: `packages/runtime/src/api/index.ts`
-- UI header-trust middleware: `packages/runtime/src/ui/dashboard/middleware.ts`
-- oauth2-proxy deployment: `infrastructure/modules/workflow-engine/modules/oauth2-proxy/oauth2-proxy.tf`
-- Traefik routing / forward-auth: `infrastructure/modules/workflow-engine/modules/routing/routing.tf`
-- OpenSpec spec: `openspec/specs/dashboard-auth/spec.md`
-- OpenSpec spec: `openspec/specs/dashboard-middleware/spec.md`
-- OpenSpec spec: `openspec/specs/github-auth/spec.md`
-- OpenSpec spec: `openspec/specs/oauth2-proxy/spec.md`
+- Allowlist parser + predicate: `packages/runtime/src/auth/allowlist.ts`
+- In-memory sealing password: `packages/runtime/src/auth/key.ts`
+- Session cookie seal/unseal + TTLs: `packages/runtime/src/auth/session-cookie.ts`
+- State cookie seal/unseal + returnTo sanitiser: `packages/runtime/src/auth/state-cookie.ts`
+- Flash cookie seal/unseal: `packages/runtime/src/auth/flash-cookie.ts`
+- Session middleware (state machine): `packages/runtime/src/auth/session-mw.ts`
+- OAuth handshake routes: `packages/runtime/src/auth/routes.ts`
+- GitHub API client (typed): `packages/runtime/src/auth/github-api.ts`
+- Bearer middleware: `packages/runtime/src/auth/bearer-user.ts`
+- API authorize middleware: `packages/runtime/src/api/auth.ts`
+- Deny banner template: `packages/runtime/src/ui/auth/login-page.ts`
+- Config / env (AUTH_ALLOW, OAuth creds, BASE_URL): `packages/runtime/src/config.ts`
+- App wiring (route ordering): `packages/runtime/src/main.ts`
+- Tenant predicate: `packages/runtime/src/auth/tenant.ts`
+- Routes chart (no auth middlewares): `infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`
+- OpenSpec spec: `openspec/specs/auth/spec.md` (created by change `replace-oauth2-proxy`)
 - OpenSpec spec: `openspec/specs/runtime-config/spec.md`
 
 ## §5 Infrastructure and Deployment
@@ -1200,8 +1224,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 |---|---|---|---|---|
 | Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `traefik` | Internet |
 | Traefik Ingress (HTTP) | Public (LB → 80) | 80 | `traefik` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
-| oauth2-proxy | In-cluster Service | 4180 | per-instance (e.g. `prod`) | Traefik (cross-namespace forward-auth) |
-| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) |
+| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/healthz`, plus the OAuth handshake |
 | S2 (S3-compatible storage) | In-cluster Service | 9000 | `default` (local only) | App pod (NP-enforced) |
 | cert-manager controllers | In-cluster Service (webhook) | 9402 | `cert-manager` | kube-apiserver (admission webhooks) |
 | DuckDB | Process-local | — | — | App process only (in-memory) |
@@ -1213,7 +1236,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | ID | Threat | Category |
 |----|--------|----------|
 | I1 | K8s Secret is leaked via logs, etcd snapshots, or a pod with broad RBAC read | Information disclosure |
-| I2 | A compromised pod or sidecar reaches the app pod's `:8080` directly, bypassing Traefik and forging `X-Auth-Request-User` (A3 from §4) | EoP |
+| I2 | A compromised pod or sidecar reaches the app pod's `:8080` directly, bypassing Traefik | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — see §4 A13) |
 | I3 | A compromised pod or action (via SSRF, §2) reaches cloud metadata endpoints (e.g. `169.254.169.254`) or internal admin APIs | Information disclosure / EoP |
 | I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as a privileged user | EoP |
 | I5 | No resource limits → a runaway action or memory leak crashes the node, not just the pod | DoS |
@@ -1242,10 +1265,12 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   (`infrastructure/modules/app-instance/workloads.tf`;
   `infrastructure/modules/object-storage/s2/s2.tf`;
   `infrastructure/modules/traefik/traefik.tf` Helm values)
-- **Secrets in K8s Secret objects** — oauth2 client credentials, S3
-  credentials, and the cookie secret are all stored as Kubernetes
-  Secrets and injected via `envFrom.secretRef`. None are baked into
-  images or committed to source.
+- **Secrets in K8s Secret objects** — the GitHub OAuth App client
+  secret (`GITHUB_OAUTH_CLIENT_SECRET`) and S3 credentials are stored
+  as Kubernetes Secrets and injected via `envFrom.secretRef`. None are
+  baked into images or committed to source. The session-cookie sealing
+  password is intentionally NOT a K8s Secret — it is generated
+  in-memory at pod start (see §4 A15, R-I13).
   (`infrastructure/modules/app-instance/secrets.tf`;
   `infrastructure/modules/object-storage/s2/s2.tf`)
 - **Terraform `sensitive = true`** on all secret variables; values are
@@ -1254,8 +1279,8 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal
   userspace. Numeric UID for PodSecurity admission static validation.
   (`infrastructure/Dockerfile`)
-- **Internal-only services** — oauth2-proxy, S2, and the app's
-  business-logic port are not published via NodePort; only Traefik is.
+- **Internal-only services** — S2 and the app's business-logic port
+  are not published via NodePort; only Traefik is.
 - **TLS at Traefik** — public traffic is HTTPS-only via the `websecure`
   entrypoint. Port 80 serves only cert-manager ACME HTTP-01 challenges
   and a catch-all 301 redirect to HTTPS; no app traffic flows on
@@ -1269,8 +1294,8 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 - **Build-time image versioning** — S2 uses a pinned minor tag
   (`0.4.1`); the app image is built from source.
 - **`automountServiceAccountToken: false` on all app workloads** —
-  app, oauth2-proxy, and S2 pods suppress the projected SA token.
-  Mitigates **I11**.
+  the app pod and S2 pods suppress the projected SA token. Mitigates
+  **I11**.
   (`infrastructure/modules/app-instance/workloads.tf`;
   `infrastructure/modules/object-storage/s2/s2.tf`)
 - **`Secret` wrapper for K8s-Secret-sourced config fields** — the
@@ -1290,9 +1315,9 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules: app / oauth2-proxy ingress restricted to Traefik (+ node CIDR for probes); Traefik ingress restricted to `0.0.0.0/0:80,443` + node CIDR; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
+| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules: app ingress restricted to Traefik (+ node CIDR for probes); Traefik ingress restricted to `0.0.0.0/0:80,443` + node CIDR; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
 | R-I2 | ~~App pod has no `securityContext`~~ — **Resolved**: all workloads now set explicit securityContext (runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation=false, capabilities.drop=[ALL]), enforced by PodSecurity admission `restricted` at namespace level. | I4 | **Resolved** |
-| R-I3 | **No resource `requests` / `limits`** on the app, oauth2-proxy, or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
+| R-I3 | **No resource `requests` / `limits`** on the app or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
 | R-I4 | ~~S2 container has no user specified~~ — **Resolved**: S2 now runs as UID 65532 with full securityContext. Data writes use emptyDir at `/data`. | I4 | **Resolved** |
 | R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: cert-manager codified in `infrastructure/modules/cert-manager/`; prod uses Let's Encrypt (HTTP-01), local uses a cluster-internal self-signed CA chain. Chart version is pinned. | I7, I8 | Resolved |
 | R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
@@ -1301,6 +1326,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of `__hostFetch` (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4. | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
 | R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
 | R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
+| R-I13 | **App Deployment is locked to `replicas = 1`** because the auth subsystem's session-cookie sealing password lives in memory (`packages/runtime/src/auth/key.ts`) and is not shared across pods. A second replica would sign cookies with a different password, causing deterministic decryption failures whenever a request lands on the pod that did not seal the cookie. Raising replicas above 1 requires first migrating the password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted |
 
 ### Production deployment notes
 
@@ -1308,12 +1334,12 @@ When deploying to the production UpCloud K8s target, treat the
 following as **must-have** before exposing to real traffic:
 
 1. **NetworkPolicy** — DONE. Namespace-wide default-deny plus per-workload
-   allow-rules: Traefik → app:8080, Traefik → oauth2-proxy:4180,
-   app → Internet (RFC1918 + IMDS blocked) + CoreDNS,
-   oauth2-proxy → Internet + CoreDNS, Traefik → Internet + CoreDNS.
-   Resolves R-I1, R-A3, and the infrastructure half of R-I9 / §2 R-S4.
-   Note: app does NOT need to reach oauth2-proxy directly — forward-auth
-   is performed by Traefik, not the app.
+   allow-rules: Traefik → app:8080, app → Internet (RFC1918 + IMDS
+   blocked) + CoreDNS, Traefik → Internet + CoreDNS. Resolves R-I1 and
+   the infrastructure half of R-I9 / §2 R-S4. Note: auth runs in-process;
+   the app reaches `github.com` + `api.github.com` through the
+   `egress_internet` egress rule for the OAuth handshake and for
+   `/api/*` token validation.
 2. **Pod `securityContext`** — DONE. All workloads set
    `runAsNonRoot: true`, `runAsUser: 65532`,
    `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`,
@@ -1331,8 +1357,10 @@ following as **must-have** before exposing to real traffic:
 6. **Encrypted event storage** — if UpCloud Object Storage is used,
    enable server-side encryption. Document the key custody model.
 7. **Secret rotation procedure** — document how to rotate the
-   `OAUTH2_PROXY_CLIENT_SECRET`, `OAUTH2_PROXY_COOKIE_SECRET`, and S3
-   credentials without downtime.
+   `GITHUB_OAUTH_CLIENT_SECRET` and the S3 credentials without downtime.
+   The in-memory session-cookie sealing password rotates implicitly on
+   every pod restart; no explicit rotation procedure is needed as long
+   as `replicas = 1` (R-I13).
 
 ### Rules for AI agents
 
@@ -1367,10 +1395,17 @@ following as **must-have** before exposing to real traffic:
    `ServiceAccount` with the narrowest possible `Role` /
    `ClusterRole`, justify it in the PR, and add it to this section as
    a named exception (I11).
+10. **NEVER raise the `workflow-engine` app Deployment replicas above 1**
+    without first migrating the auth sealing password out of in-memory
+    state (see §4 A15, R-I13, and the `auth` capability's
+    "Single-replica invariant" requirement). A change that sets
+    `replicas > 1` without this migration silently breaks the auth
+    subsystem — cookies sealed on one pod fail decryption on another,
+    bouncing users through login on every alternating request.
 
 ### File references
 
-- App + oauth2-proxy deployment: `infrastructure/modules/app-instance/workloads.tf`
+- App deployment: `infrastructure/modules/app-instance/workloads.tf`
 - App-instance secrets: `infrastructure/modules/app-instance/secrets.tf`
 - App-instance NetworkPolicies: `infrastructure/modules/app-instance/netpol.tf`
 - Traefik: `infrastructure/modules/traefik/traefik.tf`
@@ -1397,11 +1432,11 @@ capabilities it does not need.
 
 - Every HTTP response served by `packages/runtime` passes through
   `secureHeadersMiddleware` (mounted first in `main.ts`).
-- Headers are uniform across route families: `/livez`, `/webhooks/*`,
-  `/api/*`, `/dashboard*`, `/trigger*`, `/static/*`.
-- `/oauth2/*` responses are served by the oauth2-proxy sidecar and do
-  not receive these headers. Accepted gap — same-origin, minimal
-  scripting surface.
+- Headers are uniform across all route families served by the app:
+  `/livez`, `/webhooks/*`, `/api/*`, `/dashboard*`, `/trigger*`,
+  `/auth/*`, `/static/*`. The OAuth handshake (`/auth/github/*`) and
+  logout (`POST /auth/logout`) all render through the same
+  `secureHeadersMiddleware`, so no gap exists on the auth surface.
 
 ### Threats
 

@@ -104,12 +104,12 @@ Per-workflow serialization guarantees one-at-a-time handler execution per workfl
 
 - **IaC**: OpenTofu (HCL) with modular architecture
 - **Local dev**: kind (Kubernetes IN Docker) cluster via `tehcyx/kind` provider
-- **Reverse proxy**: Traefik deployed via Helm with IngressRoute CRDs and ForwardAuth middleware
-- **Auth**: oauth2-proxy (GitHub OAuth) protecting dashboard and trigger routes
+- **Reverse proxy**: Traefik deployed via Helm with IngressRoute CRDs (TLS termination + routing only; no forward-auth)
+- **Auth**: in-app GitHub OAuth (`packages/runtime/src/auth/*`) — sealed session cookies on `/dashboard`/`/trigger`, Bearer tokens on `/api/*`, unified `AUTH_ALLOW` predicate
 - **Local S3**: S2 (mojatter/s2-server) with filesystem backend for dev persistence
 - **Image build**: Podman build via `terraform_data` local-exec, loaded into kind cluster
 
-Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a shared `workflow-engine` application module composing app, oauth2-proxy, and routing sub-modules.
+Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a per-instance `app-instance` module composing app Deployment, Secrets, NetworkPolicies, and IngressRoutes.
 
 Infrastructure lives in `infrastructure/` with `modules/` (shared) and `local/` + `upcloud/` (environment roots).
 

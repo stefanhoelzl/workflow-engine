@@ -48,3 +48,8 @@ output "image_hash" {
   value       = trimspace(data.local_file.image_id.content)
   description = "Content hash of the built image"
 }
+
+output "build_id" {
+  value       = terraform_data.build.id
+  description = "Unique ID of the most recent build; changes on every tofu apply (since `triggers_replace = timestamp()`). Use as an extra rollout signal when the content-addressable image hash happens to match across builds."
+}

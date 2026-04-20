@@ -1,10 +1,10 @@
 import { Hono } from "hono";
+import type { Auth } from "../auth/allowlist.js";
 import { bearerUserMiddleware } from "../auth/bearer-user.js";
-import type { GitHubAuth } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { Middleware } from "../triggers/http.js";
 import type { WorkflowRegistry } from "../workflow-registry.js";
-import { githubAuthMiddleware, rejectAllMiddleware } from "./auth.js";
+import { authorizeMiddleware, rejectAllMiddleware } from "./auth.js";
 import { createUploadHandler } from "./upload.js";
 
 // ---------------------------------------------------------------------------
@@ -15,38 +15,32 @@ import { createUploadHandler } from "./upload.js";
 // one route here:
 //   POST /api/workflows — upload a workflow bundle (see upload.ts).
 //
-// SECURITY (CLAUDE.md + /SECURITY.md §4): this middleware is the only
-// place `githubAuthMiddleware` attaches to `/api/*`. Any future `/api/*`
-// route added elsewhere MUST go through this middleware — do NOT add a
-// second mount point.
+// SECURITY (CLAUDE.md + /SECURITY.md §4): `/api/*` is Bearer-only. Session
+// cookies are never read on this surface; the `authorizeMiddleware` gate
+// consumes `UserContext` populated by `bearerUserMiddleware`, which reads
+// only the `Authorization` header.
 
 interface ApiOptions {
 	registry: WorkflowRegistry;
-	githubAuth: GitHubAuth;
+	auth: Auth;
 	logger: Logger;
-	// Test seam: overrides the `fetch` used by both `githubAuthMiddleware`
-	// (allow-list probe) and `bearerUserMiddleware` (user resolution).
+	// Test seam: overrides the `fetch` used by `bearerUserMiddleware` (user
+	// resolution).
 	fetchFn?: typeof globalThis.fetch;
 }
 
 function apiMiddleware(options: ApiOptions): Middleware {
 	const app = new Hono().basePath("/api");
 
-	switch (options.githubAuth.mode) {
+	switch (options.auth.mode) {
 		case "restricted":
-			app.use(
-				"/*",
-				githubAuthMiddleware({
-					githubUsers: options.githubAuth.users,
-					...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
-				}),
-			);
 			app.use(
 				"/*",
 				bearerUserMiddleware(
 					options.fetchFn ? { fetchFn: options.fetchFn } : {},
 				),
 			);
+			app.use("/*", authorizeMiddleware({ auth: options.auth }));
 			break;
 		case "disabled":
 			app.use("/*", rejectAllMiddleware());
@@ -62,7 +56,7 @@ function apiMiddleware(options: ApiOptions): Middleware {
 			});
 			break;
 		default: {
-			const exhaustive: never = options.githubAuth;
+			const exhaustive: never = options.auth;
 			throw new Error(`unreachable: ${JSON.stringify(exhaustive)}`);
 		}
 	}

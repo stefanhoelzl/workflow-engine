@@ -1,3 +1,3 @@
 workflow_engine:
-  TF_VAR_oauth2_client_id: github/localhost_app_client_id
-  TF_VAR_oauth2_client_secret: github/localhost_app_client_secret
+  TF_VAR_github_oauth_client_id: github/localhost_app_client_id
+  TF_VAR_github_oauth_client_secret: github/localhost_app_client_secret

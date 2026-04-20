@@ -20,11 +20,9 @@ function jsonResponse(body: unknown, status = 200) {
 function githubFetch(
 	user: { login: string; email: string | null } | null,
 	orgs: Array<{ login: string }> | null,
-	teams: Array<{ slug: string; organization: { login: string } }> | null,
 ) {
 	const routes = new Map<string, Response>([
 		["/user/orgs", orgs ? jsonResponse(orgs) : jsonResponse({}, 403)],
-		["/user/teams", teams ? jsonResponse(teams) : jsonResponse({}, 403)],
 		["/user", user ? jsonResponse(user) : jsonResponse({}, 401)],
 	]);
 	return vi.fn(async (input: RequestInfo | URL) => {
@@ -39,15 +37,11 @@ function githubFetch(
 }
 
 describe("bearerUserMiddleware (Bearer token)", () => {
-	it("fetches user, orgs, and teams from GitHub", async () => {
-		const fetchFn = githubFetch(
-			{ login: "alice", email: "alice@acme.test" },
-			[{ login: "acme" }, { login: "contoso" }],
-			[
-				{ slug: "engineering", organization: { login: "acme" } },
-				{ slug: "ops", organization: { login: "acme" } },
-			],
-		);
+	it("fetches user and orgs from GitHub", async () => {
+		const fetchFn = githubFetch({ login: "alice", email: "alice@acme.test" }, [
+			{ login: "acme" },
+			{ login: "contoso" },
+		]);
 		const app = createApp(fetchFn);
 
 		const res = await app.request("/probe", {
@@ -59,12 +53,11 @@ describe("bearerUserMiddleware (Bearer token)", () => {
 			name: "alice",
 			mail: "alice@acme.test",
 			orgs: ["acme", "contoso"],
-			teams: ["acme:engineering", "acme:ops"],
 		});
 	});
 
-	it("falls back to empty orgs/teams when GitHub scopes are missing", async () => {
-		const fetchFn = githubFetch({ login: "alice", email: null }, null, null);
+	it("falls back to empty orgs when GitHub scopes are missing", async () => {
+		const fetchFn = githubFetch({ login: "alice", email: null }, null);
 		const app = createApp(fetchFn);
 
 		const res = await app.request("/probe", {
@@ -75,12 +68,11 @@ describe("bearerUserMiddleware (Bearer token)", () => {
 			name: "alice",
 			mail: "",
 			orgs: [],
-			teams: [],
 		});
 	});
 
 	it("does not set a user when /user returns an error", async () => {
-		const fetchFn = githubFetch(null, null, null);
+		const fetchFn = githubFetch(null, null);
 		const app = createApp(fetchFn);
 
 		const res = await app.request("/probe", {
@@ -115,11 +107,9 @@ describe("bearerUserMiddleware (Bearer token)", () => {
 
 describe("bearerUserMiddleware (forward-auth headers ignored)", () => {
 	it("ignores forged X-Auth-Request-* headers; orgs come from GitHub", async () => {
-		const fetchFn = githubFetch(
-			{ login: "alice", email: "alice@acme.test" },
-			[{ login: "acme" }],
-			[],
-		);
+		const fetchFn = githubFetch({ login: "alice", email: "alice@acme.test" }, [
+			{ login: "acme" },
+		]);
 		const app = createApp(fetchFn);
 
 		const res = await app.request("/probe", {
@@ -136,7 +126,6 @@ describe("bearerUserMiddleware (forward-auth headers ignored)", () => {
 			name: "alice",
 			mail: "alice@acme.test",
 			orgs: ["acme"],
-			teams: [],
 		});
 	});
 

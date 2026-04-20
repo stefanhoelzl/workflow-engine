@@ -29,7 +29,6 @@ function req(
 }
 
 async function html(fragment: unknown): Promise<string> {
-	// biome-ignore lint/suspicious/noExplicitAny: test helper deliberately accepts any html template result
 	return (await (fragment as any)).toString();
 }
 

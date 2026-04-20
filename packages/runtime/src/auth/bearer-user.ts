@@ -1,69 +1,26 @@
 import type { MiddlewareHandler } from "hono";
+import { fetchOrgs, fetchUser } from "./github-api.js";
 import type { UserContext } from "./user-context.js";
 
 interface BearerUserMiddlewareOptions {
 	readonly fetchFn?: typeof globalThis.fetch;
 }
 
-interface GitHubUserPayload {
-	login: string;
-	email: string | null;
-}
-
-interface GitHubOrgPayload {
-	login: string;
-}
-
-interface GitHubTeamPayload {
-	slug: string;
-	organization: { login: string };
-}
-
-const GITHUB_HEADERS = { accept: "application/vnd.github+json" } as const;
-
-async function fetchJson<T>(
-	fetchFn: typeof globalThis.fetch,
-	url: string,
-	token: string,
-): Promise<T | undefined> {
-	try {
-		const res = await fetchFn(url, {
-			headers: { ...GITHUB_HEADERS, authorization: `Bearer ${token}` },
-		});
-		if (!res.ok) {
-			return;
-		}
-		return (await res.json()) as T;
-	} catch {
-		return;
-	}
-}
-
 async function fetchBearerUser(
 	token: string,
 	fetchFn: typeof globalThis.fetch,
 ): Promise<UserContext | undefined> {
-	const [user, orgs, teams] = await Promise.all([
-		fetchJson<GitHubUserPayload>(fetchFn, "https://api.github.com/user", token),
-		fetchJson<GitHubOrgPayload[]>(
-			fetchFn,
-			"https://api.github.com/user/orgs",
-			token,
-		),
-		fetchJson<GitHubTeamPayload[]>(
-			fetchFn,
-			"https://api.github.com/user/teams",
-			token,
-		),
+	const [user, orgs] = await Promise.all([
+		fetchUser({ accessToken: token, fetchFn }),
+		fetchOrgs({ accessToken: token, fetchFn }),
 	]);
-	if (!user) {
+	if (!user.ok) {
 		return;
 	}
 	return {
-		name: user.login,
-		mail: user.email ?? "",
-		orgs: (orgs ?? []).map((o) => o.login),
-		teams: (teams ?? []).map((t) => `${t.organization.login}:${t.slug}`),
+		name: user.data.login,
+		mail: user.data.email ?? "",
+		orgs: orgs.ok ? orgs.data.map((o) => o.login) : [],
 	};
 }
 

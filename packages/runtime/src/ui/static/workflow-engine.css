@@ -1066,3 +1066,125 @@ body {
 	letter-spacing: 0.04em;
 	margin: 0;
 }
+
+/* Auth pages — standalone layout (no topbar / sidebar) for callers
+   without an active session. Vertically-centered card on a neutral
+   background. */
+.auth-page {
+	margin: 0;
+	min-height: 100vh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font-sans, system-ui, sans-serif);
+	padding: 24px;
+}
+
+.auth-card {
+	width: 100%;
+	max-width: 440px;
+	padding: 32px;
+	background: var(--bg-surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+}
+
+.auth-card__brand {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.auth-card__brand-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: var(--radius-sm);
+	background: var(--accent-primary, #0969da);
+	color: #ffffff;
+	font-weight: 700;
+}
+
+.auth-card__banner {
+	padding: 14px 16px;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+	background: var(--bg);
+	line-height: 1.5;
+	font-size: 14px;
+}
+
+.auth-card__banner[role="alert"] {
+	border-left: 3px solid var(--accent-danger, #d1242f);
+}
+
+.auth-card__banner[role="status"] {
+	border-left: 3px solid var(--accent-primary, #0969da);
+}
+
+.auth-card__banner strong {
+	display: block;
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.auth-card__banner code {
+	background: rgba(0, 0, 0, 0.08);
+	padding: 1px 6px;
+	border-radius: var(--radius-sm);
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.9em;
+}
+
+.auth-card__actions {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 10px 16px;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+	background: var(--bg-surface);
+	color: var(--text, inherit);
+	font-size: 14px;
+	font-weight: 500;
+	text-decoration: none;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.btn:hover {
+	border-color: var(--text-secondary, #57606a);
+	background: var(--border);
+}
+
+.btn--primary {
+	background: #24292f;
+	border-color: #24292f;
+	color: #ffffff;
+}
+
+.btn--primary:hover {
+	background: #32383f;
+	border-color: #32383f;
+}
+
+.btn--secondary {
+	opacity: 0.85;
+}

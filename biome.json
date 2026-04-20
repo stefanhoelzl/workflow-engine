@@ -50,15 +50,20 @@
 					"complexity": {
 						"noExcessiveLinesPerFunction": "off"
 					},
+					"performance": {
+						"useTopLevelRegex": "off"
+					},
 					"security": {
 						"noSecrets": "off"
 					},
 					"style": {
 						"noMagicNumbers": "off",
+						"noNonNullAssertion": "off",
 						"useNamingConvention": "off"
 					},
 					"suspicious": {
 						"noEmptyBlockStatements": "off",
+						"noExplicitAny": "off",
 						"useAwait": "off"
 					}
 				}

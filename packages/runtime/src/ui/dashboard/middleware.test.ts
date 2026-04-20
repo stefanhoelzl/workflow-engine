@@ -2,6 +2,7 @@ import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it } from "vitest";
+import type { UserContext } from "../../auth/user-context.js";
 import {
 	createEventStore,
 	type EventStore,
@@ -38,9 +39,30 @@ function event(
 	});
 }
 
-async function mount(eventStore: EventStore): Promise<Hono> {
+// Events written via makeEvent() carry tenant "t0" by default; inject a user
+// whose orgs include "t0" so the active-tenant selector resolves and the
+// scoped query returns the seeded rows. User name is "user" so alphabetical
+// sort of (orgs ∪ {name}) = ["t0","user"] → active tenant defaults to "t0".
+const TEST_USER: UserContext = {
+	name: "user",
+	mail: "user@example.test",
+	orgs: ["t0"],
+};
+
+async function mount(
+	eventStore: EventStore,
+	user: UserContext = TEST_USER,
+): Promise<Hono> {
 	const app = new Hono();
-	const m = dashboardMiddleware({ eventStore, registry: emptyRegistry });
+	const injectUser = async (c: any, next: () => Promise<void>) => {
+		c.set("user", user);
+		await next();
+	};
+	const m = dashboardMiddleware({
+		eventStore,
+		registry: emptyRegistry,
+		sessionMw: injectUser,
+	});
 	const noopNext = async () => {
 		/* no-op */
 	};
@@ -51,16 +73,11 @@ async function mount(eventStore: EventStore): Promise<Hono> {
 	return app;
 }
 
-// Events written via makeEvent() carry tenant "t0" by default; auth the
-// request as a user whose groups include "t0" so the active-tenant selector
-// resolves and the scoped query returns the seeded rows.
-// User name is "user" so alphabetical sort of (orgs ∪ {name}) = ["t0","user"]
-// → active tenant defaults to "t0", matching the seeded events' default tenant.
-const AUTH_HEADERS = {
-	"X-Auth-Request-User": "user",
-	"X-Auth-Request-Email": "user@example.test",
-	"X-Auth-Request-Groups": "t0",
-};
+// Forward-auth headers are no longer read by any middleware; this object is
+// retained as a no-op `headers: AUTH_HEADERS` argument so diffs from the old
+// test structure stay small. All of the user identity resolution now runs
+// through the `sessionMw` injected into `dashboardMiddleware`.
+const AUTH_HEADERS = {};
 
 describe("dashboard middleware — shell", () => {
 	let store: EventStore;
