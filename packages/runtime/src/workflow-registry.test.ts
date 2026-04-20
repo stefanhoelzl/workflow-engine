@@ -9,6 +9,7 @@ import type { Logger } from "./logger.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
 	createWorkflowRegistry,
+	extractTenantTarGz,
 	type WorkflowRegistry,
 } from "./workflow-registry.js";
 
@@ -160,6 +161,24 @@ describe("workflow registry", () => {
 			new Map([["manifest.json", "{ not json"]]),
 		);
 		expect(result.ok).toBe(false);
+	});
+});
+
+describe("extractTenantTarGz: decompressed size cap", () => {
+	it("rejects tarballs whose decompressed content exceeds the cap", async () => {
+		// Highly compressible payload (~11 MiB of zero bytes) compresses to ~10 KiB
+		// but decompresses past the 10 MiB cap.
+		const BYTES_PER_MIB = 1024 * 1024;
+		const bigFile = Buffer.alloc(11 * BYTES_PER_MIB, 0);
+		const packed = await packTenantBundle(
+			new Map<string, string>([
+				["manifest.json", JSON.stringify(VALID_TENANT_MANIFEST)],
+				["demo.js", BUNDLE_SOURCE],
+				["big.bin", bigFile.toString("utf-8")],
+			]),
+		);
+
+		await expect(extractTenantTarGz(packed)).rejects.toThrow();
 	});
 });
 

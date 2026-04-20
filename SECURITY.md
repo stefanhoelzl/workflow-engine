@@ -831,13 +831,19 @@ timing.
 - **Separate trust domain** — webhook handlers cannot read the session
   cookies or bearer tokens used by the UI / API routes, because those
   headers are not forwarded to this route family.
+- **Global request body size cap of 10 MiB** via Hono's `bodyLimit`
+  middleware mounted at `*` in `createApp`. Oversize requests short-
+  circuit with **413** `{ "error": "payload_too_large" }` before any
+  route handler runs. Applies to webhooks and the `/api/workflows`
+  upload path alike.
+  (`packages/runtime/src/services/server.ts`)
 
 ### Residual risks
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
 | R-W1 | **No signature verification** on incoming payloads (HMAC, GitHub signature, Stripe signature, etc.) | W4 unmitigated | v1 limitation; add per-integration |
-| R-W2 | **No payload size limit** configured at the application or Traefik level | W2 unmitigated | v1 limitation |
+| R-W2 | ~~No payload size limit~~ — Mitigated by a global 10 MiB Hono `bodyLimit` in `createApp` (`packages/runtime/src/services/server.ts`). A tenant tarball is additionally bounded to 10 MiB decompressed inside `extractTenantTarGz` (`packages/runtime/src/workflow-registry.ts`). | W2 mitigated | Resolved |
 | R-W3 | **No rate limiting** at the application or Traefik level | W3, W7 unmitigated | v1 limitation |
 | R-W4 | **All request headers are forwarded verbatim** into the payload's `headers` field, including any `Authorization` / `Cookie` the caller sent | W5 unmitigated | **High priority** — move to per-trigger header allowlist |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |

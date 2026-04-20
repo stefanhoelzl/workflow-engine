@@ -37,19 +37,30 @@ import type { TriggerSource, TriggerViewEntry } from "./triggers/source.js";
 // Tenant tarball extraction
 // ---------------------------------------------------------------------------
 
+const MAX_DECOMPRESSED_BYTES = 10_485_760;
+
 async function extractTenantTarGz(
 	buffer: ArrayBuffer | Uint8Array,
 ): Promise<Map<string, string>> {
 	const files = new Map<string, string>();
 	const extractor = tarExtract();
+	let totalBytes = 0;
 	extractor.on("entry", (header, stream, next) => {
 		if (header.type === "file") {
 			const chunks: Buffer[] = [];
-			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+			stream.on("data", (chunk: Buffer) => {
+				totalBytes += chunk.length;
+				if (totalBytes > MAX_DECOMPRESSED_BYTES) {
+					stream.destroy(new Error("decompressed tarball exceeds limit"));
+					return;
+				}
+				chunks.push(chunk);
+			});
 			stream.on("end", () => {
 				files.set(header.name, Buffer.concat(chunks).toString("utf-8"));
 				next();
 			});
+			stream.on("error", (err) => next(err));
 		} else {
 			stream.on("end", () => next());
 			stream.resume();
