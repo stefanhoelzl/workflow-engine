@@ -49,6 +49,17 @@ type MainToWorker =
 			error: SerializedError;
 	  };
 
+// Run-labels piggy-backed onto the __hostFetchForward request envelope so
+// the main-thread handler can enrich the `sandbox.fetch.blocked` warn log
+// without introducing a new protocol message. See openspec/specs/sandbox/
+// spec.md §__hostFetch bridge.
+interface HostFetchForwardContext {
+	readonly invocationId: string;
+	readonly tenant: string;
+	readonly workflow: string;
+	readonly workflowSha: string;
+}
+
 type WorkerToMain =
 	| { type: "ready" }
 	| { type: "init-error"; error: SerializedError }
@@ -67,4 +78,10 @@ type WorkerToMain =
 			meta?: Record<string, unknown>;
 	  };
 
-export type { MainToWorker, RunResultPayload, SerializedError, WorkerToMain };
+export type {
+	HostFetchForwardContext,
+	MainToWorker,
+	RunResultPayload,
+	SerializedError,
+	WorkerToMain,
+};

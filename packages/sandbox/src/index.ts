@@ -2,9 +2,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { InvocationEvent } from "@workflow-engine/core";
+import { FetchBlockedError, hardenedFetch } from "./hardened-fetch.js";
 import type { MethodMap } from "./install-host-methods.js";
 import { dispatchLog } from "./log-dispatch.js";
 import type {
+	HostFetchForwardContext,
 	MainToWorker,
 	RunResultPayload,
 	SerializedError,
@@ -152,9 +154,72 @@ async function sandbox(
 	}
 
 	// Persistent listener: forwards events from worker to onEvent callback
-	// AND forwards __hostFetchForward requests when forwardFetch is set.
-	const forwardFetch = options?.fetch;
-	const onPersistentMessage = async (msg: WorkerToMain) => {
+	// AND forwards __hostFetchForward requests.
+	//
+	// Default fetch is `hardenedFetch` (secure-by-default per D2 in the
+	// codify-sandbox-guest-surface change): any caller omitting `options.fetch`
+	// gets the IANA private-range block + DNS validation + redirect re-check
+	// + 30s timeout. Test callers and the WPT harness pass a custom `fetch`
+	// to bypass the hardening.
+	const usingHardenedDefault = options?.fetch === undefined;
+	const forwardFetch: typeof globalThis.fetch = options?.fetch ?? hardenedFetch;
+
+	async function handleFetchForward(
+		msg: Extract<WorkerToMain, { type: "request" }>,
+	): Promise<void> {
+		const [method, url, headers, body, context] = msg.args as [
+			string,
+			string,
+			Record<string, string>,
+			string | null,
+			HostFetchForwardContext | undefined,
+		];
+		try {
+			const response = await forwardFetch(url, { method, headers, body });
+			const respHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => {
+				respHeaders[k] = v;
+			});
+			worker.postMessage({
+				type: "response",
+				requestId: msg.requestId,
+				ok: true,
+				result: {
+					status: response.status,
+					statusText: response.statusText,
+					headers: respHeaders,
+					body: await response.text(),
+				},
+			} satisfies MainToWorker);
+		} catch (err) {
+			const reason =
+				err instanceof FetchBlockedError ? err.reason : "network-error";
+			logger?.warn("sandbox.fetch.blocked", {
+				invocationId: context?.invocationId ?? "",
+				tenant: context?.tenant ?? "",
+				workflow: context?.workflow ?? "",
+				workflowSha: context?.workflowSha ?? "",
+				url,
+				reason,
+			});
+			// Sanitize when the hardened default path fails so the guest
+			// cannot distinguish a policy block from a real network error
+			// (preventing fetch-as-probe attacks). Custom `options.fetch`
+			// overrides pass the raw error through so tests can assert on
+			// specific error shapes.
+			const sanitized: SerializedError = usingHardenedDefault
+				? { name: "TypeError", message: "fetch failed", stack: "" }
+				: serializeError(err);
+			worker.postMessage({
+				type: "response",
+				requestId: msg.requestId,
+				ok: false,
+				error: sanitized,
+			} satisfies MainToWorker);
+		}
+	}
+
+	const onPersistentMessage = (msg: WorkerToMain) => {
 		if (msg.type === "event") {
 			dispatchEvent(msg.event);
 			return;
@@ -163,48 +228,13 @@ async function sandbox(
 			dispatchLog(logger, msg);
 			return;
 		}
-		if (
-			forwardFetch &&
-			msg.type === "request" &&
-			msg.method === "__hostFetchForward"
-		) {
-			try {
-				const [method, url, headers, body] = msg.args as [
-					string,
-					string,
-					Record<string, string>,
-					string | null,
-				];
-				const response = await forwardFetch(url, {
-					method,
-					headers,
-					body,
-				});
-				const respHeaders: Record<string, string> = {};
-				response.headers.forEach((v, k) => {
-					respHeaders[k] = v;
-				});
-				const reply: MainToWorker = {
-					type: "response",
-					requestId: msg.requestId,
-					ok: true,
-					result: {
-						status: response.status,
-						statusText: response.statusText,
-						headers: respHeaders,
-						body: await response.text(),
-					},
-				};
-				worker.postMessage(reply);
-			} catch (err) {
-				const reply: MainToWorker = {
-					type: "response",
-					requestId: msg.requestId,
-					ok: false,
-					error: serializeError(err),
-				};
-				worker.postMessage(reply);
-			}
+		if (msg.type === "request" && msg.method === "__hostFetchForward") {
+			handleFetchForward(msg).catch(() => {
+				// handleFetchForward catches its own errors and posts a
+				// sanitized reply; this .catch guards against unexpected
+				// programmer errors inside the helper (e.g. serialization
+				// bugs) so the worker message listener stays alive.
+			});
 		}
 	};
 	worker.on("message", onPersistentMessage);

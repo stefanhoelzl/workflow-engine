@@ -300,6 +300,61 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   implemented in C/WASM inside the WASM linear memory, not as host
   bridges.
 
+  **WHATWG Streams family (`ReadableStream`, `WritableStream`,
+  `TransformStream`, `ReadableByteStreamController`,
+  `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest`,
+  `ReadableStreamDefaultController`, `ReadableStreamDefaultReader`,
+  `TransformStreamDefaultController`, `WritableStreamDefaultController`,
+  `WritableStreamDefaultWriter`, `ByteLengthQueuingStrategy`,
+  `CountQueuingStrategy`, `TextEncoderStream`, `TextDecoderStream`)** —
+  pure-JS polyfills from `web-streams-polyfill@^4.2.0` (pinned in
+  `packages/sandbox/package.json`), bundled into the same
+  `virtual:sandbox-polyfills` IIFE. `TextEncoderStream` /
+  `TextDecoderStream` are hand-rolled `TransformStream` wrappers around
+  the WASM-native `TextEncoder` / `TextDecoder` in
+  `packages/sandbox/src/polyfills/streams.ts` (the ponyfill ships the
+  streams but not the Encoding-spec siblings). No host bridge; all
+  queue, backpressure, and tee state lives in QuickJS linear memory.
+  Version bumps require a §2 re-audit PR.
+
+  **IndexedDB family (`indexedDB`, `IDBFactory`, `IDBDatabase`,
+  `IDBTransaction`, `IDBObjectStore`, `IDBIndex`, `IDBCursor`,
+  `IDBCursorWithValue`, `IDBKeyRange`, `IDBRequest`, `IDBOpenDBRequest`,
+  `IDBVersionChangeEvent`)** — `fake-indexeddb@^6.2.5` (pinned), bundled
+  into the same IIFE. State lives in a module singleton that does not
+  outlive one sandbox run — each QuickJS VM gets a fresh module
+  evaluation, so databases are ephemeral per-invocation and never
+  persisted to disk. `FDB<Name>` class names are rewritten to the
+  WebIDL `IDB<Name>` prefix on `globalThis`. A `DOMException`-wrapping
+  shim in `packages/sandbox/src/polyfills/idb-domexception-fix.ts` runs
+  before the IDB import so subclass throws surface as plain
+  `DOMException` instances. No host bridge, no disk I/O, no host state
+  leak. `instanceof Event` / `instanceof EventTarget` checks on
+  `FDB`-sourced events are not guaranteed (documented in the polyfill
+  source); WPT subtests asserting those checks remain skipped.
+
+  **User Timing Level 3 (`performance.mark`, `performance.measure`,
+  `performance.clearMarks`, `performance.clearMeasures`,
+  `performance.getEntries`, `performance.getEntriesByType`,
+  `performance.getEntriesByName`, `PerformanceEntry`, `PerformanceMark`,
+  `PerformanceMeasure`)** — pure-JS polyfill in
+  `packages/sandbox/src/polyfills/user-timing.ts`, built on the native
+  `performance.now` provided by the quickjs-wasi monotonic-clock
+  extension. Timeline buffers are in-process arrays scoped to the VM
+  lifetime. `PerformanceObserver` is NOT in scope. `mark()` / `measure()`
+  `detail` options are deep-cloned via `structuredClone` at
+  entry-creation time. No host bridge.
+
+  **`structuredClone` override** — pure-JS wrapper in
+  `packages/sandbox/src/polyfills/structured-clone.ts` on top of
+  `@ungap/structured-clone@^1.3.0` (pinned), replacing the quickjs-wasi
+  native implementation which drops wrapper objects, sparse-array
+  length, and non-index array properties. Throws `DataCloneError`
+  `DOMException` for non-cloneable inputs; rejects non-empty `transfer`
+  option (QuickJS does not support `ArrayBuffer` detachment). Errors
+  thrown from user code during serialization (e.g. throwing getters)
+  propagate unchanged. No host bridge.
+
   **Fetch interfaces (`Blob`, `File`, `FormData`, `Request`, `Response`)** —
   pure-JS classes added inside the polyfill IIFE. No host bridge; no
   new attacker capability. Body data lives in JS-side typed arrays
@@ -360,12 +415,15 @@ sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
   `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
   the polyfill source files under `packages/sandbox/src/polyfills/`
   (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
-  `fetch.ts`, `compression.ts`, `scheduler.ts`, `observable.ts`,
-  `blob.ts`, `form-data.ts`, `body-mixin.ts`, `request.ts`,
-  `response.ts`) and the pinned dependencies `event-target-shim@^6`,
-  `fflate@^0.8.2`, `scheduler-polyfill@^1.3.0`,
-  `observable-polyfill@^0.0.29`, `fetch-blob@^4.0.0`, and
-  `formdata-polyfill@^4.0.10`.
+  `streams.ts`, `compression.ts`, `blob.ts`, `form-data.ts`,
+  `body-mixin.ts`, `request.ts`, `response.ts`, `fetch.ts`,
+  `structured-clone.ts`, `idb-domexception-fix.ts`, `indexed-db.ts`,
+  `user-timing.ts`, `subtle-crypto.ts`, `scheduler.ts`, `observable.ts`)
+  and the pinned dependencies `event-target-shim@^6`,
+  `web-streams-polyfill@^4.2.0`, `fflate@^0.8.2`, `fetch-blob@^4.0.0`,
+  `formdata-polyfill@^4.0.10`, `@ungap/structured-clone@^1.3.0`,
+  `fake-indexeddb@^6.2.5`, `scheduler-polyfill@^1.3.0`, and
+  `observable-polyfill@^0.0.29`.
 - **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
   `packages/sandbox/test/wpt/` installs `__wptReport` via the
   construction-time `methods` argument of its own `sandbox(source,
@@ -670,8 +728,9 @@ exists. Each item should be tracked as a follow-up security task.
 | R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that pass it get enforcement, callers that omit it fall back to the WASM module defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
 | R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. An interrupt handler that fires after N bytecode steps or a deadline would need a worker-side factory reconstituted from a serializable descriptor. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
 | R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap; cancel-on-run-end mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
-| R-S4 | `__hostFetch` has **no URL allowlist/denylist** at the app layer — the sandbox can reach any public URL the pod can reach. Infrastructure half (RFC1918 + cloud metadata) closed by K8s NetworkPolicy (§5). Public URL allowlist is a pending app-layer control. | S5 partial | **High priority** (app-layer half) |
-| R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress | S5 in-cluster / metadata half mitigated | **Resolved** (see §5 R-I1 / R-I9) |
+| R-S4 | `__hostFetch` routes through `hardenedFetch` (`packages/sandbox/src/hardened-fetch.ts`): scheme allowlist (http, https, data; `data:` URLs short-circuit the DNS/connect pipeline because they carry no network component per RFC 2397), `dns.lookup(host, {all: true})` with IPv4-mapped-IPv6 unwrap, IANA special-use blocklist (loopback, RFC1918, CGNAT, link-local, TEST-NET, benchmark, 6to4 relay, multicast, reserved, ULA — full CIDR list in the file), fail-closed if **any** resolved address is blocked, connect to the validated IP directly with SNI preserved, manual redirect follow with the full pipeline re-run on every hop, 5-hop cap, `Authorization` stripped on cross-origin redirects, 30s total-wall-clock timeout composed with any caller `AbortSignal`. On a block the main-thread handler emits a pino warn log `sandbox.fetch.blocked` with `{invocationId, tenant, workflow, workflowSha, url, reason}` and sanitizes the error returned to the guest to a generic `TypeError("fetch failed")` so the block reason is not distinguishable from a real network failure. `hardenedFetch` is the default value of `SandboxOptions.fetch` (secure-by-default); test callers that supply a mock bypass it. | S5 closed | **Resolved** (see openspec change `codify-sandbox-guest-surface`) |
+| R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. **Defence-in-depth** under R-S4 — the load-bearing control is now the app-layer `hardenedFetch`; this netpol remains as a second line (and is the only line in local kind dev where `kindnet` no-ops NetworkPolicy). | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
+| R-S12 | **No public-URL allowlist.** Guest workflow code can still issue `fetch()` / `POST` to any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration of workflow-visible data to an attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-tenant host allowlist declared in the tenant manifest, enforced at upload-time validation + runtime in `hardenedFetch`, plus a dashboard UX for authors to register allowed hosts. Deferred as a separate change pending UX design. | S8 deferred | **Deferred** (follow-up change scoped separately) |
 | R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret baked into `workflow.env` that a handler deliberately returns, echoes into an action input, or logs will appear in the archive record / pino logs | S7 partial | Behavioural; author responsibility |
 | R-S7 | **Resolved.** CryptoKey objects no longer live in a host-side opaque reference store — the WASM crypto extension manages them internally (PSA key handles in WASM linear memory) and they are freed with the VM. The previous unbounded-growth concern is eliminated by the engine swap. | — | **Resolved** (quickjs-wasi migration) |
 | R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). Workflows that require JWK export must export as raw and serialize to JWK themselves, or wait for the extension to add the format. | Feature gap | v1 limitation (engine-level) |
@@ -1163,7 +1222,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | I8 | Self-signed dev cert used in production by mistake | Spoofing |
 | I9 | S3 bucket policy permits unintended readers (production deployment) | Information disclosure |
 | I10 | Events stored to S3 / filesystem in plaintext, containing secrets that leaked via action env vars | Information disclosure |
-| I11 | Default ServiceAccount token auto-mounted into a pod becomes a latent `kube-apiserver` bearer credential. A sandbox escape, RCE, or future RoleBinding to `default` converts it into active cluster access. Amplified by R-I1 (no NetworkPolicy blocks pod → apiserver) and §2 R-S4 (no `__hostFetch` URL allowlist). | EoP / Information disclosure |
+| I11 | Default ServiceAccount token auto-mounted into a pod becomes a latent `kube-apiserver` bearer credential. A sandbox escape, RCE, or future RoleBinding to `default` converts it into active cluster access. Amplified by R-I1 (no NetworkPolicy blocks pod → apiserver); the app-layer `hardenedFetch` (§2 R-S4) blocks private-range egress from inside the sandbox but does not affect an out-of-sandbox compromise. | EoP / Information disclosure |
 
 ### Mitigations (current)
 
@@ -1239,7 +1298,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
-| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — URL-level scoping of `__hostFetch` (§2 R-S4 app-layer half) is still outstanding. | I3 (infrastructure half of §2 R-S4) | **Resolved** for metadata/RFC1918 (app-layer URL allowlist still pending under §2 R-S4) |
+| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of `__hostFetch` (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4. | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
 | R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
 | R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
 
@@ -1265,10 +1324,10 @@ following as **must-have** before exposing to real traffic:
 4. **Real TLS** — cert-manager with the `letsencrypt-prod` ClusterIssuer
    and HTTP-01 challenge is wired in (`infrastructure/envs/upcloud/cluster/upcloud.tf`,
    `infrastructure/modules/cert-manager/`). Resolves R-I5 and I8.
-5. **Egress policy** — NetworkPolicy half DONE (see item 1). URL
-   filtering inside `__hostFetch` (§2 R-S4 app-layer half) is still
-   outstanding; combined mitigation resolves R-I9 completely once that
-   app-layer control lands.
+5. **Egress policy** — NetworkPolicy half DONE (see item 1). Private-range
+   filtering inside `__hostFetch` (§2 R-S4) now closes the app-layer
+   half — internal SSRF (S5) is mitigated end-to-end. Public-URL allowlist
+   for exfiltration (S8 / §2 R-S12) remains deferred pending UX design.
 6. **Encrypted event storage** — if UpCloud Object Storage is used,
    enable server-side encryption. Document the key custody model.
 7. **Secret rotation procedure** — document how to rotate the

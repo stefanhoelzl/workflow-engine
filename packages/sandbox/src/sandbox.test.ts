@@ -325,6 +325,147 @@ describe("fetch shim", () => {
 		}
 	});
 
+	it("default hardenedFetch blocks loopback and surfaces sanitized TypeError", async () => {
+		// No options.fetch → secure-by-default hardenedFetch. 127.0.0.1 is
+		// on the IANA loopback blocklist, so the connector refuses before
+		// any socket is opened. The guest must see a generic TypeError —
+		// not the block reason — so fetch cannot be used as an internal
+		// network probe.
+		interface LoggedEntry {
+			level: "warn";
+			message: string;
+			meta: Record<string, unknown>;
+		}
+		const logs: LoggedEntry[] = [];
+		const logger = {
+			debug: () => {},
+			info: () => {},
+			warn: (message: string, meta?: Record<string, unknown>) => {
+				logs.push({ level: "warn", message, meta: meta ?? {} });
+			},
+			error: () => {},
+		};
+		const sb = await sandbox(
+			defaultHandler(`
+				const result = await fetch("http://127.0.0.1/").then(
+					(r) => ({ kind: "ok", status: r.status }),
+					(e) => ({
+						kind: "err",
+						name: e && e.name,
+						message: e && e.message,
+						hasReason: e && typeof e.reason !== "undefined",
+					}),
+				);
+				return result;
+			`),
+			{},
+			{ logger },
+		);
+		try {
+			const result = await sb.run("default", {}, RUN_OPTS);
+			if (!result.ok) {
+				throw new Error(`unexpected guest failure: ${result.error.message}`);
+			}
+			expect(result.result).toEqual({
+				kind: "err",
+				name: "TypeError",
+				message: "fetch failed",
+				hasReason: false,
+			});
+		} finally {
+			sb.dispose();
+		}
+		// The handler emits one warn log carrying the labels + reason. Other
+		// code paths may emit additional debug/info entries; we only assert
+		// on the `sandbox.fetch.blocked` warn entry.
+		const blocks = logs.filter(
+			(l) => l.level === "warn" && l.message === "sandbox.fetch.blocked",
+		);
+		expect(blocks).toHaveLength(1);
+		const firstBlock = blocks[0];
+		if (!firstBlock) {
+			throw new Error("expected a block log entry");
+		}
+		expect(firstBlock.meta).toMatchObject({
+			invocationId: RUN_OPTS.invocationId,
+			tenant: RUN_OPTS.tenant,
+			workflow: RUN_OPTS.workflow,
+			workflowSha: RUN_OPTS.workflowSha,
+			url: "http://127.0.0.1/",
+			reason: "private-ip",
+		});
+	});
+
+	it("options.fetch override bypasses hardenedFetch (test escape hatch)", async () => {
+		// Custom fetch receives the URL and its response reaches the guest —
+		// no policy block fires even for otherwise-blocked targets.
+		let called = "";
+		const mockFetch: typeof globalThis.fetch = (async (url) => {
+			called = typeof url === "string" ? url : String(url);
+			return new Response("escape-hatch-body", { status: 200 });
+		}) as typeof globalThis.fetch;
+		const { result } = await runSource(
+			defaultHandler(`
+				const r = await fetch("http://127.0.0.1/whatever");
+				return { status: r.status, body: await r.text() };
+			`),
+			{ fetch: mockFetch },
+		);
+		if (!result.ok) {
+			throw new Error(`guest error: ${result.error.message}`);
+		}
+		expect(called).toBe("http://127.0.0.1/whatever");
+		expect(result.result).toEqual({
+			status: 200,
+			body: "escape-hatch-body",
+		});
+	});
+
+	it("blocked fetch error has no policy-leaking properties visible to guest", async () => {
+		// Adversarial-style assertion: every string reachable from the
+		// caught Error object must NOT contain the block reason. The guest
+		// cannot distinguish "blocked" from "unreachable".
+		const sb = await sandbox(
+			defaultHandler(`
+				try {
+					await fetch("http://169.254.169.254/latest/meta-data");
+					return { leaked: false, reason: "no-throw" };
+				} catch (e) {
+					const keys = Object.getOwnPropertyNames(e);
+					const blob = JSON.stringify({
+						name: e.name,
+						message: e.message,
+						stack: e.stack || "",
+						keys,
+						reason: e.reason,
+					});
+					return {
+						leaked: /private-ip|169\\.254|bad-scheme|redirect-to-private|zone-id/.test(blob),
+						name: e.name,
+						message: e.message,
+						hasReason: typeof e.reason !== "undefined",
+					};
+				}
+			`),
+			{},
+			{},
+		);
+		try {
+			const r = await sb.run("default", {}, RUN_OPTS);
+			if (!r.ok) {
+				throw new Error(`guest error: ${r.error.message}`);
+			}
+			expect(r.result).toMatchObject({
+				leaked: false,
+				name: "TypeError",
+				message: "fetch failed",
+				hasReason: false,
+			});
+		} finally {
+			sb.dispose();
+		}
+	});
+
 	it("init.signal passed as a plain object is silently ignored", async () => {
 		// No WASM extension provides AbortController, so workflow code cannot
 		// construct a real AbortSignal. A caller could still pass a plain

@@ -103,6 +103,8 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 
 - **NEVER** add a global, host-bridge API, or Node.js surface to the QuickJS sandbox without extending the §2 allowlist in the same PR (§2).
 - **NEVER** add a `__*`-prefixed global to the sandbox without a capture-and-delete shim — guest code must not be able to read or overwrite raw host bridges (§2).
+- **NEVER** bypass `hardenedFetch` when exposing outbound HTTP to guest code. Any new code path that performs a host-side `fetch` or `request` on behalf of a sandbox MUST route through `packages/sandbox/src/hardened-fetch.ts` (IANA private-range block + DNS validation + manual redirect re-check + 30s timeout + fail-closed sanitized error). `SandboxOptions.fetch` defaults to `hardenedFetch`; the only permitted override is a test mock (§2 R-S4).
+- **NEVER** weaken the IANA special-use blocklist in `packages/sandbox/src/hardened-fetch.ts` (the `BLOCKED_CIDRS_IPV4` / `BLOCKED_CIDRS_IPV6` constants) without a written security rationale in the same PR that updates `SECURITY.md §2 R-S4` and the corresponding `Hardened outbound fetch` requirement in `openspec/specs/sandbox/spec.md` (§2 R-S4).
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add a UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without confirming oauth2-proxy forward-auth covers it at Traefik (§4).
 - **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
