@@ -252,11 +252,30 @@ async function handleInit(
 							)
 						: {};
 				const body = init?.body ?? null;
+				// Piggy-back the run labels so the main-thread handler can
+				// enrich the `sandbox.fetch.blocked` warn log. When fetch is
+				// invoked outside a run() (e.g. during init-time source eval),
+				// the context is absent and the handler logs with empty labels.
+				const ctx = bridge.getRunContext();
+				const context = ctx
+					? {
+							invocationId: ctx.invocationId,
+							tenant: ctx.tenant,
+							workflow: ctx.workflow,
+							workflowSha: ctx.workflowSha,
+						}
+					: {
+							invocationId: "",
+							tenant: "",
+							workflow: "",
+							workflowSha: "",
+						};
 				const response = (await sendRequest("__hostFetchForward", [
 					method,
 					url,
 					headers,
 					body,
+					context,
 				])) as {
 					status: number;
 					statusText: string;
