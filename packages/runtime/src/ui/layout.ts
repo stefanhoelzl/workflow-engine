@@ -84,7 +84,9 @@ function renderLayout(
         <span class="topbar-username">${displayName}</span>
         ${
 					user
-						? html`<a class="topbar-signout" href="/oauth2/sign_out?rd=%2Foauth2%2Fsign_in%3Finfo%3DSigned%2Bout">Sign out</a>`
+						? html`<form class="topbar-signout-form" method="post" action="/auth/logout">
+      <button class="topbar-signout" type="submit">Sign out</button>
+    </form>`
 						: ""
 				}
       </div>

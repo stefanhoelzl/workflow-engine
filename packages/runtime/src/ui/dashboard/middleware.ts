@@ -1,7 +1,6 @@
 import type { InvocationEvent } from "@workflow-engine/core";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { headerUserMiddleware } from "../../auth/header-user.js";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
@@ -18,6 +17,10 @@ interface DashboardMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
 	readonly limit?: number;
 	readonly logger?: Logger;
+	// Optional session middleware to mount before the dashboard handlers.
+	// In production this is the in-app auth `sessionMiddleware`; in tests
+	// the field is omitted and tests inject `UserContext` directly.
+	readonly sessionMw?: MiddlewareHandler;
 }
 
 interface RawRequestRow {
@@ -201,7 +204,9 @@ function parseJsonField(value: unknown): unknown {
 
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
-	app.use("*", headerUserMiddleware());
+	if (deps.sessionMw) {
+		app.use("*", deps.sessionMw);
+	}
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 

@@ -35,7 +35,6 @@ describe("typecheckWorkflows", () => {
 	});
 });
 
-// biome-ignore lint/suspicious/noExplicitAny: plugin hooks are function-typed; testing them directly requires loose typing
 type PluginHooks = Record<string, (...args: any[]) => unknown>;
 
 function asHooks(plugin: Plugin): PluginHooks {

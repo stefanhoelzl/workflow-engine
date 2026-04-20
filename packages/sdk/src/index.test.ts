@@ -159,7 +159,6 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 			name: "sendNotification",
 		});
 
-		// biome-ignore lint/suspicious/noExplicitAny: exercising the runtime rejection, input schema is permissive here
 		await expect(a({ x: "bad" } as any)).rejects.toThrow(
 			"payload_validation_failed",
 		);
@@ -367,9 +366,7 @@ describe("httpTrigger defaults", () => {
 			headers: {},
 			url: "/orders/1",
 			method: "POST",
-			// biome-ignore lint/suspicious/noExplicitAny: type widening for the generic payload
 			params: { orderId: "1" } as any,
-			// biome-ignore lint/suspicious/noExplicitAny: type widening for the generic payload
 			query: {} as any,
 		});
 		expect(result).toEqual({ status: 202 });

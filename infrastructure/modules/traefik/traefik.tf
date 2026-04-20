@@ -100,7 +100,6 @@ module "netpol" {
 
   egress_to = [
     { pod_selector = { "app.kubernetes.io/name" = "workflow-engine" }, namespace_selector = {}, port = 8080 },
-    { pod_selector = { "app.kubernetes.io/name" = "oauth2-proxy" }, namespace_selector = {}, port = 4180 },
     { pod_selector = { "acme.cert-manager.io/http01-solver" = "true" }, namespace_selector = {}, port = 8089 },
   ]
 

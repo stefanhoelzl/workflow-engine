@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { createConfig, createSecret } from "./config.js";
 
 const REQUIRED = {};
+const RESTRICTED_REQS = {
+	GITHUB_OAUTH_CLIENT_ID: "cid",
+	GITHUB_OAUTH_CLIENT_SECRET: "csecret",
+	BASE_URL: "https://example.test",
+};
 
 describe("createConfig", () => {
 	it("parses valid values", () => {
@@ -36,44 +41,165 @@ describe("createConfig", () => {
 		expect(() => createConfig({ ...REQUIRED, PORT: "abc" })).toThrow();
 	});
 
-	it("parses GITHUB_USER as a restricted allow-list with one user", () => {
-		const config = createConfig({ GITHUB_USER: "stefanhoelzl" });
-		expect(config.githubAuth).toEqual({
-			mode: "restricted",
-			users: ["stefanhoelzl"],
-		});
-	});
-
-	it("resolves to disabled mode when GITHUB_USER is not provided", () => {
+	it("resolves to disabled mode when AUTH_ALLOW is unset", () => {
 		const config = createConfig({});
-		expect(config.githubAuth).toEqual({ mode: "disabled" });
+		expect(config.auth).toEqual({ mode: "disabled" });
 	});
 
-	it("parses a comma-separated GITHUB_USER into multiple users", () => {
-		const config = createConfig({ GITHUB_USER: "alice,bob" });
-		expect(config.githubAuth).toEqual({
-			mode: "restricted",
-			users: ["alice", "bob"],
+	it("resolves to disabled mode when AUTH_ALLOW is empty", () => {
+		const config = createConfig({ AUTH_ALLOW: "" });
+		expect(config.auth).toEqual({ mode: "disabled" });
+	});
+
+	it("resolves to open mode when AUTH_ALLOW is the sentinel", () => {
+		const config = createConfig({ AUTH_ALLOW: "__DISABLE_AUTH__" });
+		expect(config.auth).toEqual({ mode: "open" });
+	});
+
+	it("parses a single user entry into the restricted allow-list", () => {
+		const config = createConfig({
+			...RESTRICTED_REQS,
+			AUTH_ALLOW: "github:user:stefanhoelzl",
 		});
+		expect(config.auth.mode).toBe("restricted");
+		if (config.auth.mode === "restricted") {
+			expect(config.auth.users).toEqual(new Set(["stefanhoelzl"]));
+			expect(config.auth.orgs).toEqual(new Set());
+		}
 	});
 
-	it("preserves whitespace and empty segments in GITHUB_USER", () => {
-		const config = createConfig({ GITHUB_USER: "alice, bob,," });
-		expect(config.githubAuth).toEqual({
-			mode: "restricted",
-			users: ["alice", " bob", "", ""],
+	it("parses mixed user and org entries", () => {
+		const config = createConfig({
+			...RESTRICTED_REQS,
+			AUTH_ALLOW: "github:user:alice;github:org:acme;github:user:bob",
 		});
+		expect(config.auth.mode).toBe("restricted");
+		if (config.auth.mode === "restricted") {
+			expect(config.auth.users).toEqual(new Set(["alice", "bob"]));
+			expect(config.auth.orgs).toEqual(new Set(["acme"]));
+		}
 	});
 
-	it("resolves to open mode when GITHUB_USER is the sentinel", () => {
-		const config = createConfig({ GITHUB_USER: "__DISABLE_AUTH__" });
-		expect(config.githubAuth).toEqual({ mode: "open" });
+	it("trims whitespace around entries and skips empty segments", () => {
+		const config = createConfig({
+			...RESTRICTED_REQS,
+			AUTH_ALLOW: " github:user:alice ;  ;github:org:acme ",
+		});
+		if (config.auth.mode === "restricted") {
+			expect(config.auth.users).toEqual(new Set(["alice"]));
+			expect(config.auth.orgs).toEqual(new Set(["acme"]));
+		}
 	});
 
-	it("rejects GITHUB_USER when sentinel is mixed with usernames", () => {
+	it("rejects unknown provider", () => {
 		expect(() =>
-			createConfig({ GITHUB_USER: "alice,__DISABLE_AUTH__" }),
-		).toThrow("must be the only value");
+			createConfig({
+				...RESTRICTED_REQS,
+				AUTH_ALLOW: "google:user:alice",
+			}),
+		).toThrow(/unknown provider/);
+	});
+
+	it("rejects unknown kind", () => {
+		expect(() =>
+			createConfig({
+				...RESTRICTED_REQS,
+				AUTH_ALLOW: "github:team:acme-eng",
+			}),
+		).toThrow(/unknown kind/);
+	});
+
+	it("rejects invalid identifier", () => {
+		expect(() =>
+			createConfig({
+				...RESTRICTED_REQS,
+				AUTH_ALLOW: "github:user:has space",
+			}),
+		).toThrow(/invalid identifier/);
+	});
+
+	it("rejects malformed entry (missing segment)", () => {
+		expect(() =>
+			createConfig({
+				...RESTRICTED_REQS,
+				AUTH_ALLOW: "github:user",
+			}),
+		).toThrow(/malformed entry/);
+	});
+
+	it("rejects AUTH_ALLOW when sentinel is mixed with entries", () => {
+		expect(() =>
+			createConfig({
+				...RESTRICTED_REQS,
+				AUTH_ALLOW: "github:user:alice;__DISABLE_AUTH__",
+			}),
+		).toThrow(/must be the only value/);
+	});
+
+	it("requires GITHUB_OAUTH_CLIENT_ID when AUTH_ALLOW is restricted", () => {
+		expect(() =>
+			createConfig({
+				AUTH_ALLOW: "github:user:alice",
+				GITHUB_OAUTH_CLIENT_SECRET: "csecret",
+				BASE_URL: "https://example.test",
+			}),
+		).toThrow(/GITHUB_OAUTH_CLIENT_ID/);
+	});
+
+	it("requires GITHUB_OAUTH_CLIENT_SECRET when AUTH_ALLOW is restricted", () => {
+		expect(() =>
+			createConfig({
+				AUTH_ALLOW: "github:user:alice",
+				GITHUB_OAUTH_CLIENT_ID: "cid",
+				BASE_URL: "https://example.test",
+			}),
+		).toThrow(/GITHUB_OAUTH_CLIENT_SECRET/);
+	});
+
+	it("requires BASE_URL when AUTH_ALLOW is restricted", () => {
+		expect(() =>
+			createConfig({
+				AUTH_ALLOW: "github:user:alice",
+				GITHUB_OAUTH_CLIENT_ID: "cid",
+				GITHUB_OAUTH_CLIENT_SECRET: "csecret",
+			}),
+		).toThrow(/BASE_URL/);
+	});
+
+	it("accepts restricted config with all required inputs", () => {
+		const config = createConfig({
+			AUTH_ALLOW: "github:user:alice",
+			GITHUB_OAUTH_CLIENT_ID: "cid",
+			GITHUB_OAUTH_CLIENT_SECRET: "csecret",
+			BASE_URL: "https://example.test",
+		});
+		expect(config.githubOauthClientId).toBe("cid");
+		expect(config.githubOauthClientSecret?.reveal()).toBe("csecret");
+		expect(config.baseUrl).toBe("https://example.test");
+	});
+
+	it("redacts GITHUB_OAUTH_CLIENT_SECRET on JSON serialization", () => {
+		const config = createConfig({
+			AUTH_ALLOW: "github:user:alice",
+			GITHUB_OAUTH_CLIENT_ID: "cid",
+			GITHUB_OAUTH_CLIENT_SECRET: "supersecret",
+			BASE_URL: "https://example.test",
+		});
+		const serialized = JSON.stringify(config);
+		expect(serialized).not.toContain("supersecret");
+		expect(serialized).toContain("[redacted]");
+	});
+
+	it("disabled mode does not require OAuth credentials", () => {
+		const config = createConfig({});
+		expect(config.auth).toEqual({ mode: "disabled" });
+		expect(config.githubOauthClientId).toBeUndefined();
+		expect(config.githubOauthClientSecret).toBeUndefined();
+	});
+
+	it("open mode does not require OAuth credentials", () => {
+		const config = createConfig({ AUTH_ALLOW: "__DISABLE_AUTH__" });
+		expect(config.auth).toEqual({ mode: "open" });
 	});
 
 	it("parses S3 config fields", () => {

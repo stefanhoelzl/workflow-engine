@@ -1,3 +1,7 @@
+## Purpose
+
+Runtime configuration parsing from environment variables into a typed config object.
+## Requirements
 ### Requirement: Config parsing from environment
 The runtime SHALL provide a `createConfig` function that accepts an environment record (`Record<string, string | undefined>`) and returns a typed, validated configuration object.
 
@@ -42,57 +46,6 @@ The runtime entry point (`main.ts`) SHALL use the config object returned by `cre
 - **WHEN** the runtime starts
 - **THEN** the logger level SHALL be set from `config.logLevel`
 - **AND** the HTTP server SHALL listen on `config.port`
-
-### Requirement: GITHUB_USER config variable
-
-The config schema SHALL accept an optional `GITHUB_USER` environment variable and expose its result as a discriminated union `githubAuth`:
-
-```
-githubAuth:
-  | { mode: 'disabled' }
-  | { mode: 'open' }
-  | { mode: 'restricted'; users: string[] }
-```
-
-Resolution rules:
-
-- `GITHUB_USER` is unset (undefined) → `githubAuth = { mode: 'disabled' }`.
-- `GITHUB_USER` equals the sentinel string `__DISABLE_AUTH__` → `githubAuth = { mode: 'open' }`.
-- Any other value → `githubAuth = { mode: 'restricted', users: <parsed list> }`.
-
-The list SHALL be parsed by splitting the raw value on `,`. No whitespace trimming SHALL be performed and empty segments SHALL be preserved, mirroring the behavior of oauth2-proxy's pflag `StringSlice` parsing of `OAUTH2_PROXY_GITHUB_USERS`.
-
-The sentinel `__DISABLE_AUTH__` SHALL be valid only when it is the entire value of `GITHUB_USER`. If it appears as a comma-separated segment alongside other values, config parsing SHALL fail with a validation error.
-
-#### Scenario: GITHUB_USER is not set
-
-- **WHEN** `createConfig` is called without `GITHUB_USER`
-- **THEN** the config SHALL contain `githubAuth: { mode: "disabled" }`
-
-#### Scenario: GITHUB_USER is a single username
-
-- **WHEN** `createConfig` is called with `{ GITHUB_USER: "stefanhoelzl" }`
-- **THEN** the config SHALL contain `githubAuth: { mode: "restricted", users: ["stefanhoelzl"] }`
-
-#### Scenario: GITHUB_USER is a comma-separated list
-
-- **WHEN** `createConfig` is called with `{ GITHUB_USER: "alice,bob" }`
-- **THEN** the config SHALL contain `githubAuth: { mode: "restricted", users: ["alice", "bob"] }`
-
-#### Scenario: GITHUB_USER preserves whitespace and empty segments
-
-- **WHEN** `createConfig` is called with `{ GITHUB_USER: "alice, bob,," }`
-- **THEN** the config SHALL contain `githubAuth: { mode: "restricted", users: ["alice", " bob", "", ""] }`
-
-#### Scenario: GITHUB_USER is the sentinel
-
-- **WHEN** `createConfig` is called with `{ GITHUB_USER: "__DISABLE_AUTH__" }`
-- **THEN** the config SHALL contain `githubAuth: { mode: "open" }`
-
-#### Scenario: GITHUB_USER mixes sentinel with usernames
-
-- **WHEN** `createConfig` is called with `{ GITHUB_USER: "alice,__DISABLE_AUTH__" }`
-- **THEN** `createConfig` SHALL throw a validation error indicating the sentinel must be the only value
 
 ### Requirement: S3 persistence configuration
 
@@ -243,3 +196,86 @@ change proposal.
 - **THEN** no update to `/SECURITY.md §4` is required
 - **AND** the proposal SHALL note that threat-model alignment was
   checked
+
+### Requirement: AUTH_ALLOW config variable
+
+The config schema SHALL accept an optional `AUTH_ALLOW` environment variable and expose its parsed result as a discriminated union `auth`:
+
+```
+auth:
+  | { mode: "disabled" }
+  | { mode: "open" }
+  | { mode: "restricted"; users: Set<string>; orgs: Set<string> }
+```
+
+Resolution rules:
+- `AUTH_ALLOW` is unset (undefined) or an empty string → `auth = { mode: "disabled" }`.
+- `AUTH_ALLOW` equals the sentinel string `__DISABLE_AUTH__` → `auth = { mode: "open" }`.
+- Any other parseable value → `auth = { mode: "restricted", users, orgs }`.
+
+The value SHALL be parsed per the grammar and validation rules defined in the `auth` capability's "AUTH_ALLOW grammar" requirement. Unparseable values (unknown provider, unknown kind, invalid identifier, malformed structure) SHALL cause `createConfig` to throw a validation error at startup; the runtime SHALL fail to start with a diagnostic that identifies the first offending token.
+
+The sentinel `__DISABLE_AUTH__` SHALL be valid only when it is the entire value of `AUTH_ALLOW`. If it appears as a semicolon-separated segment alongside other entries, `createConfig` SHALL throw a validation error indicating the sentinel must be the only value.
+
+`AUTH_ALLOW` SHALL be returned as a plain (non-secret) config field. Allowlist contents are visible in pod specs and Kubernetes events for auditability.
+
+#### Scenario: AUTH_ALLOW unset produces disabled mode
+
+- **WHEN** `createConfig` is called without `AUTH_ALLOW`
+- **THEN** the config SHALL contain `auth: { mode: "disabled" }`
+
+#### Scenario: Sentinel produces open mode
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "__DISABLE_AUTH__" }`
+- **THEN** the config SHALL contain `auth: { mode: "open" }`
+
+#### Scenario: Parseable list produces restricted mode
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "github:user:alice;github:org:acme" }`
+- **THEN** the config SHALL contain `auth: { mode: "restricted", users: Set(["alice"]), orgs: Set(["acme"]) }`
+
+#### Scenario: Unknown provider fails startup
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "google:user:alice" }`
+- **THEN** `createConfig` SHALL throw a validation error identifying `google` as an unknown provider
+
+#### Scenario: Sentinel mixed with entries fails startup
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "github:user:alice;__DISABLE_AUTH__" }`
+- **THEN** `createConfig` SHALL throw a validation error indicating the sentinel must be the only value
+
+### Requirement: GitHub OAuth App credentials
+
+The config schema SHALL accept two environment variables that provide the GitHub OAuth App's credentials used to drive the in-app OAuth handshake:
+
+- `GITHUB_OAUTH_CLIENT_ID` — the OAuth App's client id (plain string).
+- `GITHUB_OAUTH_CLIENT_SECRET` — the OAuth App's client secret (wrapped via `createSecret()`; callers that need the cleartext SHALL call `.reveal()` at the point of use, and no other code path SHALL reveal the value).
+
+Both variables SHALL be optional at the schema level. Validation of their presence SHALL occur at auth initialisation:
+
+- When `auth.mode === "restricted"`, both variables MUST be set; otherwise `createConfig` SHALL throw a validation error identifying the missing field.
+- When `auth.mode === "disabled"` or `auth.mode === "open"`, both variables MAY be unset.
+
+#### Scenario: Restricted mode without client id fails startup
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "github:user:alice" }` and no `GITHUB_OAUTH_CLIENT_ID`
+- **THEN** `createConfig` SHALL throw a validation error identifying `GITHUB_OAUTH_CLIENT_ID` as missing
+
+#### Scenario: Restricted mode with both credentials succeeds
+
+- **WHEN** `createConfig` is called with `{ AUTH_ALLOW: "github:user:alice", GITHUB_OAUTH_CLIENT_ID: "cid", GITHUB_OAUTH_CLIENT_SECRET: "csecret" }`
+- **THEN** the config SHALL contain `githubOauthClientId: "cid"`
+- **AND** `githubOauthClientSecret.reveal()` SHALL equal `"csecret"`
+
+#### Scenario: Disabled mode omits credentials
+
+- **WHEN** `createConfig` is called without `AUTH_ALLOW` and without either OAuth credential
+- **THEN** `createConfig` SHALL succeed with `auth: { mode: "disabled" }`
+
+#### Scenario: Client secret redacts on serialization
+
+- **WHEN** `createConfig` is called with valid auth config including `GITHUB_OAUTH_CLIENT_SECRET: "supersecret"`
+- **AND** the resulting config object is serialized via `JSON.stringify`
+- **THEN** the output SHALL NOT contain the substring `"supersecret"`
+- **AND** the output SHALL contain `"[redacted]"` in place of the secret value
+

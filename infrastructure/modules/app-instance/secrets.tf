@@ -19,32 +19,18 @@ resource "kubernetes_secret_v1" "s3" {
   }
 }
 
-resource "random_password" "cookie_secret" {
-  length = 32
-}
-
-resource "kubernetes_secret_v1" "oauth2_proxy" {
+# GitHub OAuth App client secret, consumed by the app's in-process OAuth
+# handshake (see packages/runtime/src/auth/routes.ts). Client id is injected
+# as a plain env var since it is not secret.
+resource "kubernetes_secret_v1" "github_oauth" {
   depends_on = [terraform_data.namespace_ready]
 
   metadata {
-    name      = "oauth2-proxy-credentials"
+    name      = "app-github-oauth"
     namespace = var.namespace
   }
 
   data = {
-    client-id     = var.oauth2.client_id
-    client-secret = var.oauth2.client_secret
-    cookie-secret = random_password.cookie_secret.result
+    GITHUB_OAUTH_CLIENT_SECRET = var.github_oauth.client_secret
   }
-}
-
-resource "kubernetes_config_map_v1" "oauth2_templates" {
-  depends_on = [terraform_data.namespace_ready]
-
-  metadata {
-    name      = "oauth2-proxy-templates"
-    namespace = var.namespace
-  }
-
-  data = var.oauth2_templates
 }

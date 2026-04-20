@@ -1,5 +1,7 @@
 import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { apiMiddleware } from "./api/index.js";
+import { authMiddleware, loginPageMiddleware } from "./auth/routes.js";
+import { sessionMiddleware } from "./auth/session-mw.js";
 import { createConfig } from "./config.js";
 import { createEventStore } from "./event-bus/event-store.js";
 import type { BusConsumer, EventBus } from "./event-bus/index.js";
@@ -20,6 +22,7 @@ import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
+import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
@@ -70,10 +73,15 @@ async function init() {
 
 	runtimeLogger.info("initialize", { config });
 
-	if (config.githubAuth.mode === "disabled") {
-		runtimeLogger.warn("api-auth.disabled");
-	} else if (config.githubAuth.mode === "open") {
-		runtimeLogger.warn("api-auth.open");
+	if (config.auth.mode === "disabled") {
+		runtimeLogger.warn("auth.disabled");
+	} else if (config.auth.mode === "open") {
+		runtimeLogger.warn("auth.open");
+	} else {
+		runtimeLogger.info("auth.restricted", {
+			users: config.auth.users.size,
+			orgs: config.auth.orgs.size,
+		});
 	}
 
 	// 1. Init storage backend.
@@ -153,9 +161,38 @@ async function init() {
 		);
 	}
 
+	// Auth wiring. sessionMw gates `/dashboard/*` and `/trigger/*`; `/auth/*`
+	// is only mounted in restricted mode (login/callback/logout). In open or
+	// disabled mode there is no login flow to host.
+	// biome-ignore lint/style/noProcessEnv: entry-point config read
+	const localDeployment = Boolean(process.env.LOCAL_DEPLOYMENT);
+	const secureCookies = !localDeployment;
+	const sessionMw = sessionMiddleware({
+		auth: config.auth,
+		secureCookies,
+	});
+	const authRoutes: Middleware[] =
+		config.auth.mode === "restricted" &&
+		config.githubOauthClientId !== undefined &&
+		config.githubOauthClientSecret !== undefined &&
+		config.baseUrl !== undefined
+			? (() => {
+					const opts = {
+						auth: config.auth,
+						clientId: config.githubOauthClientId,
+						clientSecret: config.githubOauthClientSecret.reveal(),
+						baseUrl: config.baseUrl,
+						secureCookies,
+					};
+					return [loginPageMiddleware(opts), authMiddleware(opts)];
+				})()
+			: [];
+
 	// 6. Wire the HTTP server. Order matters: secure-headers → logger →
-	//    health → static → webhooks (httpTrigger) → /dashboard (UI) →
-	//    /trigger (UI) → /api.
+	//    health → static → webhooks (httpTrigger) → /auth (OAuth routes,
+	//    unprotected) → /dashboard (UI, session-guarded) → /trigger (UI,
+	//    session-guarded) → /api. The session middleware is mounted
+	//    inside the dashboard/trigger middleware factories.
 	const server = createServer(
 		config.port,
 		secureHeadersMiddleware({
@@ -166,10 +203,11 @@ async function init() {
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
 		staticMiddleware(),
 		httpSource.middleware,
-		dashboardMiddleware({ eventStore, registry }),
-		triggerMiddleware({ registry, executor }),
+		...authRoutes,
+		dashboardMiddleware({ eventStore, registry, sessionMw }),
+		triggerMiddleware({ registry, executor, sessionMw }),
 		apiMiddleware({
-			githubAuth: config.githubAuth,
+			auth: config.auth,
 			registry,
 			logger: runtimeLogger,
 		}),

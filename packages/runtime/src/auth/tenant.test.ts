@@ -7,7 +7,6 @@ function user(overrides: Partial<UserContext> = {}): UserContext {
 		name: "alice",
 		mail: "alice@example.test",
 		orgs: [],
-		teams: [],
 		...overrides,
 	};
 }
@@ -74,12 +73,6 @@ describe("isMember", () => {
 
 	it("returns false when user is neither in orgs nor equals tenant", () => {
 		expect(isMember(user({ orgs: ["acme"] }), "contoso")).toBe(false);
-	});
-
-	it("does not grant membership via teams", () => {
-		expect(isMember(user({ orgs: [], teams: ["acme:platform"] }), "acme")).toBe(
-			false,
-		);
 	});
 
 	it("returns false for regex-invalid tenant even if it happens to be in orgs", () => {

@@ -68,10 +68,10 @@ locals {
 
   instances = {
     prod = {
-      domain       = var.domain
-      github_users = var.oauth2_github_users
+      domain     = var.domain
+      auth_allow = var.auth_allow
     }
-    # staging = { domain = "staging.${var.domain}", github_users = var.oauth2_github_users }
+    # staging = { domain = "staging.${var.domain}", auth_allow = var.auth_allow }
   }
 }
 
@@ -103,20 +103,20 @@ variable "acme_email" {
   description = "Email for Let's Encrypt certificate notifications"
 }
 
-variable "oauth2_client_id" {
+variable "github_oauth_client_id" {
   type        = string
-  description = "GitHub OAuth App client ID"
+  description = "GitHub OAuth App client ID (OAuth App callback URL: https://<domain>/auth/github/callback)"
 }
 
-variable "oauth2_client_secret" {
+variable "github_oauth_client_secret" {
   type        = string
   sensitive   = true
   description = "GitHub OAuth App client secret"
 }
 
-variable "oauth2_github_users" {
+variable "auth_allow" {
   type        = string
-  description = "Allowed GitHub usernames"
+  description = "AUTH_ALLOW env value; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl;github:org:acme\""
 }
 
 variable "dynu_api_key" {
@@ -215,20 +215,16 @@ module "app_instance" {
     region     = data.terraform_remote_state.persistence.outputs.region
   }
 
-  oauth2 = {
-    client_id     = var.oauth2_client_id
-    client_secret = var.oauth2_client_secret
-    github_users  = each.value.github_users
+  auth_allow = each.value.auth_allow
+
+  github_oauth = {
+    client_id     = var.github_oauth_client_id
+    client_secret = var.github_oauth_client_secret
   }
 
   network = {
     domain     = each.value.domain
     https_port = 443
-  }
-
-  oauth2_templates = {
-    "sign_in.html" = file("${path.module}/../../../templates/sign_in.html")
-    "error.html"   = file("${path.module}/../../../templates/error.html")
   }
 
   error_page_5xx_html = file("${path.module}/../../../templates/error-5xx.html")

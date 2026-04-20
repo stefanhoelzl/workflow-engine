@@ -1,6 +1,8 @@
 import { constants } from "node:http2";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { type Auth, allow } from "../auth/allowlist.js";
+import type { UserContext } from "../auth/user-context.js";
 
 const HTTP_UNAUTHORIZED =
 	constants.HTTP_STATUS_UNAUTHORIZED as ContentfulStatusCode;
@@ -13,46 +15,27 @@ function rejectAllMiddleware(): MiddlewareHandler {
 	return async (c) => unauthorized(c);
 }
 
-interface GitHubAuthOptions {
-	githubUsers: string[];
-	fetchFn?: typeof globalThis.fetch;
+interface AuthorizeOptions {
+	readonly auth: Extract<Auth, { mode: "restricted" }>;
 }
 
-function githubAuthMiddleware(options: GitHubAuthOptions): MiddlewareHandler {
-	const { githubUsers } = options;
-	const fetchFn = options.fetchFn ?? globalThis.fetch;
-
+// Gate for `/api/*`. Assumes `bearerUserMiddleware` ran first and populated
+// `UserContext` on success. Rejects with an identical 401 for every failure
+// path (missing token, invalid token, GitHub error, allow-list miss) to
+// prevent enumeration.
+function authorizeMiddleware(options: AuthorizeOptions): MiddlewareHandler {
+	const { auth } = options;
 	return async (c, next) => {
-		const authHeader = c.req.header("authorization");
-		if (!authHeader?.startsWith("Bearer ")) {
+		const user = c.get("user") as UserContext | undefined;
+		if (!user) {
 			return unauthorized(c);
 		}
-
-		const token = authHeader.slice("Bearer ".length);
-		let login: string;
-		try {
-			const response = await fetchFn("https://api.github.com/user", {
-				headers: {
-					authorization: `Bearer ${token}`,
-					accept: "application/vnd.github+json",
-				},
-			});
-			if (!response.ok) {
-				return unauthorized(c);
-			}
-			const body = (await response.json()) as { login: string };
-			login = body.login;
-		} catch {
+		if (!allow(user, auth)) {
 			return unauthorized(c);
 		}
-
-		if (!githubUsers.includes(login)) {
-			return unauthorized(c);
-		}
-
 		await next();
 	};
 }
 
-export type { GitHubAuthOptions };
-export { githubAuthMiddleware, rejectAllMiddleware };
+export type { AuthorizeOptions };
+export { authorizeMiddleware, rejectAllMiddleware };

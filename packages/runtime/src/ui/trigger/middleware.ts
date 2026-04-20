@@ -1,6 +1,5 @@
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { headerUserMiddleware } from "../../auth/header-user.js";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
 import type { Executor } from "../../executor/index.js";
 import type { TriggerDescriptor } from "../../executor/types.js";
@@ -32,6 +31,10 @@ import { renderTriggerPage } from "./page.js";
 interface TriggerMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
 	readonly executor: Executor;
+	// Optional session middleware to mount before the trigger handlers.
+	// In production this is the in-app auth `sessionMiddleware`; in tests
+	// the field is omitted and tests inject `UserContext` directly.
+	readonly sessionMw?: MiddlewareHandler;
 }
 
 const HTTP_UNPROCESSABLE_ENTITY = 422;
@@ -94,7 +97,9 @@ function resolveTrigger(
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires page-render GET and kind-agnostic POST dispatch; splitting fragments the handler flow
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
-	app.use("*", headerUserMiddleware());
+	if (deps.sessionMw) {
+		app.use("*", deps.sessionMw);
+	}
 
 	const render = (c: Context) => {
 		const user = c.get("user");

@@ -24,6 +24,12 @@ variable "image_hash" {
   description = "Content hash of the container image, used to trigger pod rollouts"
 }
 
+variable "image_build_id" {
+  type        = string
+  default     = ""
+  description = "Optional extra rollout signal. Intended for local dev, where the content-addressable image hash from `podman inspect` can remain stable across builds even when source bytes changed. Prod callers leave this empty; local callers pass `module.image.build_id`."
+}
+
 variable "s3" {
   type = object({
     endpoint   = string
@@ -36,14 +42,22 @@ variable "s3" {
   description = "S3 storage configuration"
 }
 
-variable "oauth2" {
+# AUTH_ALLOW grammar: provider:kind:id, semicolon-separated.
+# Example: "github:user:stefanhoelzl;github:org:acme"
+# Empty or unset => disabled mode (401 everywhere).
+# See packages/runtime/src/auth/allowlist.ts.
+variable "auth_allow" {
+  type        = string
+  description = "AUTH_ALLOW env value for the app; provider-prefixed grammar consumed by the in-app auth capability."
+}
+
+variable "github_oauth" {
   type = object({
     client_id     = string
     client_secret = string
-    github_users  = string
   })
   sensitive   = true
-  description = "GitHub OAuth2 configuration"
+  description = "GitHub OAuth App credentials. Required when auth_allow resolves to restricted mode."
 }
 
 variable "network" {
@@ -52,11 +66,6 @@ variable "network" {
     https_port = number
   })
   description = "Network configuration"
-}
-
-variable "oauth2_templates" {
-  type        = map(string)
-  description = "Custom oauth2-proxy HTML template contents keyed by filename"
 }
 
 variable "tls" {
@@ -104,6 +113,12 @@ variable "baseline" {
 variable "traefik_ready" {
   type        = string
   description = "Traefik helm_release_id — used as depends_on token"
+}
+
+variable "image_ready" {
+  type        = string
+  default     = ""
+  description = "Depends-on token for image availability. In local dev, pass `module.cluster.image_ready` so the app Deployment's rollout waits until the new image is imported into kind's containerd (prevents pods from silently running the previous image). In prod, leave empty — the image comes from a registry, not a local import."
 }
 
 variable "namespace_ready" {

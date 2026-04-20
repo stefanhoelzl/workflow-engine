@@ -93,3 +93,8 @@ output "client_key" {
   sensitive   = true
   description = "Client key for authentication"
 }
+
+output "image_ready" {
+  value       = terraform_data.load_image.id
+  description = "Depends-on token that resolves only after the container image has been imported into the kind cluster's containerd. Downstream app Deployments must take a dependency on this so their pod rollouts never race with load_image and re-pull the previous image by tag."
+}
