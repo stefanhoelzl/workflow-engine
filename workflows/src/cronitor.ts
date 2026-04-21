@@ -38,7 +38,6 @@ export const sendNotification = action({
 });
 
 export const cronitorWebhook = httpTrigger({
-	path: "cronitor",
 	body: z.object({
 		id: z.string().meta({ example: "id" }),
 		monitor: z.string().meta({ example: "monitor" }),

@@ -17,9 +17,7 @@ function makeDescriptor(
 		type: "http",
 		name: "t",
 		workflowName: "w",
-		path: "webhook",
 		method: "POST",
-		params: [],
 		body: { type: "object" },
 		inputSchema: { type: "object" },
 		outputSchema: { type: "object" },
@@ -110,8 +108,8 @@ describe("createHttpTriggerSource: contract", () => {
 	});
 
 	it("reconfigure replaces entries atomically for a tenant", async () => {
-		const d1 = makeDescriptor({ name: "a", path: "a" });
-		const d2 = makeDescriptor({ name: "b", path: "b" });
+		const d1 = makeDescriptor({ name: "a" });
+		const d2 = makeDescriptor({ name: "b" });
 		const source = createHttpTriggerSource();
 		await source.reconfigure("t0", [makeEntry(d1)]);
 		await source.reconfigure("t0", [makeEntry(d2)]);
@@ -135,101 +133,36 @@ describe("createHttpTriggerSource: contract", () => {
 		const source = createHttpTriggerSource();
 		await source.reconfigure("t0", [makeEntry(makeDescriptor({ name: "a" }))]);
 		await source.reconfigure("t1", [makeEntry(makeDescriptor({ name: "b" }))]);
-		// Clear t0.
 		await source.reconfigure("t0", []);
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
-		const t0Miss = await app.request("/webhooks/t0/w/webhook", {
+		const t0Miss = await app.request("/webhooks/t0/w/a", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
 		expect(t0Miss.status).toBe(404);
-		const t1Hit = await app.request("/webhooks/t1/w/webhook", {
+		const t1Hit = await app.request("/webhooks/t1/w/b", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
 		expect(t1Hit.status).toBe(200);
 	});
-
-	it("reconfigure returns {ok: false, errors} on duplicate HTTP route within a workflow", async () => {
-		const source = createHttpTriggerSource();
-		const d1 = makeDescriptor({ name: "a", path: "dup", method: "POST" });
-		const d2 = makeDescriptor({ name: "b", path: "dup", method: "POST" });
-		const result = await source.reconfigure("t0", [
-			makeEntry(d1),
-			makeEntry(d2),
-		]);
-		expect(result.ok).toBe(false);
-		if (result.ok) {
-			throw new Error("expected failure");
-		}
-		expect(result.errors.length).toBeGreaterThan(0);
-		expect(result.errors[0]?.backend).toBe("http");
-	});
 });
 
 // ---------------------------------------------------------------------------
-// Routing semantics
+// Routing semantics — exact three-segment match
 // ---------------------------------------------------------------------------
 
 describe("createHttpTriggerSource: routing", () => {
-	it("matches by exact static path + method", async () => {
+	it("matches exactly on (tenant, workflow, trigger-name) + method", async () => {
 		const { app } = await mount({
-			descriptor: makeDescriptor({ name: "a", path: "x" }),
+			descriptor: makeDescriptor({ name: "webhook" }),
 		});
 		expect(
 			(
-				await app.request("/webhooks/t0/w/x", {
-					method: "POST",
-					body: "{}",
-					headers: { "Content-Type": "application/json" },
-				})
-			).status,
-		).toBe(200);
-		expect(
-			(await app.request("/webhooks/t0/w/x", { method: "GET" })).status,
-		).toBe(404);
-		expect(
-			(
-				await app.request("/webhooks/t0/w/y", {
-					method: "POST",
-					body: "{}",
-					headers: { "Content-Type": "application/json" },
-				})
-			).status,
-		).toBe(404);
-		expect(
-			(
-				await app.request("/webhooks/other/w/x", {
-					method: "POST",
-					body: "{}",
-					headers: { "Content-Type": "application/json" },
-				})
-			).status,
-		).toBe(404);
-	});
-
-	it("prefers static paths over parameterized ones", async () => {
-		const { app } = await mount({
-			entries: [
-				makeEntry(makeDescriptor({ name: "param", path: "users/:userId" })),
-				makeEntry(makeDescriptor({ name: "static", path: "users/admin" })),
-			],
-		});
-		expect(
-			(
-				await app.request("/webhooks/t0/w/users/admin", {
-					method: "POST",
-					body: "{}",
-					headers: { "Content-Type": "application/json" },
-				})
-			).status,
-		).toBe(200);
-		expect(
-			(
-				await app.request("/webhooks/t0/w/users/other", {
+				await app.request("/webhooks/t0/w/webhook", {
 					method: "POST",
 					body: "{}",
 					headers: { "Content-Type": "application/json" },
@@ -238,23 +171,78 @@ describe("createHttpTriggerSource: routing", () => {
 		).toBe(200);
 	});
 
-	it("matches wildcard catch-all and passes params to fire", async () => {
-		const received: unknown[] = [];
-		const { app } = await mount({
-			descriptor: makeDescriptor({ name: "files", path: "files/*rest" }),
-			fire: async (input) => {
-				received.push(input);
-				return { ok: true, output: { status: 200 } };
-			},
-		});
-		const res = await app.request("/webhooks/t0/w/files/docs/2024/report.pdf", {
+	it("URL with four segments returns 404", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({ fire });
+		const res = await app.request("/webhooks/t0/w/t/extra", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
-		expect(res.status).toBe(200);
-		const input = received[0] as { params: Record<string, string> };
-		expect(input.params.rest).toBe("docs/2024/report.pdf");
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("URL with only two segments returns 404", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({ fire });
+		const res = await app.request("/webhooks/t0/w", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("URL segment failing trigger-name regex returns 404", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({ fire });
+		const res = await app.request("/webhooks/t0/w/bad$name", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("URL with hyphen in trigger-name segment returns 404 (regex rejects -)", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({ fire });
+		const res = await app.request("/webhooks/t0/w/has-hyphen", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("method mismatch returns 404", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({
+			fire,
+			descriptor: makeDescriptor({ name: "webhook", method: "POST" }),
+		});
+		const res = await app.request("/webhooks/t0/w/webhook", { method: "GET" });
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("cross-tenant request with matching workflow/trigger returns 404", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({
+			fire,
+			descriptor: makeDescriptor({ name: "webhook" }),
+		});
+		const res = await app.request("/webhooks/other/w/webhook", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
 	});
 });
 
@@ -273,7 +261,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			},
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: JSON.stringify({ x: 1 }),
 			headers: { "Content-Type": "application/json" },
@@ -290,7 +278,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			output: { status: 201 },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -298,46 +286,64 @@ describe("createHttpTriggerSource: dispatch", () => {
 		expect(res.status).toBe(201);
 	});
 
-	it("passes the normalized composite input to fire", async () => {
+	it("passes the normalized composite input (body/headers/url/method) to fire", async () => {
 		const received: unknown[] = [];
-		const descriptor = makeDescriptor({
-			name: "paramTrig",
-			path: "users/:userId",
-			params: ["userId"],
-		});
 		const { app } = await mount({
-			descriptor,
+			fire: async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			},
+		});
+		const res = await app.request("/webhooks/t0/w/t", {
+			method: "POST",
+			body: JSON.stringify({ active: true }),
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		const payload = received[0] as {
+			body: unknown;
+			method: string;
+			url: string;
+			headers: Record<string, string>;
+		};
+		expect(payload.body).toEqual({ active: true });
+		expect(payload.method).toBe("POST");
+		expect(payload.url).toContain("/webhooks/t0/w/t");
+		expect(Object.keys(payload).sort()).toEqual(
+			["body", "headers", "method", "url"].sort(),
+		);
+	});
+
+	it("query strings pass through unparsed in payload.url; no structured query field", async () => {
+		const received: unknown[] = [];
+		const { app } = await mount({
 			fire: async (input) => {
 				received.push(input);
 				return { ok: true, output: { status: 200 } };
 			},
 		});
 		const res = await app.request(
-			"/webhooks/t0/w/users/abc?tag=one&tag=two&q=hello",
+			"/webhooks/t0/w/t?delivery=abc&tag=one&tag=two",
 			{
 				method: "POST",
-				body: JSON.stringify({ active: true }),
+				body: "{}",
 				headers: { "Content-Type": "application/json" },
 			},
 		);
 		expect(res.status).toBe(200);
-		const payload = received[0] as {
-			body: unknown;
-			params: Record<string, string>;
-			query: Record<string, string[]>;
-			method: string;
-		};
-		expect(payload.body).toEqual({ active: true });
-		expect(payload.params.userId).toBe("abc");
-		expect(payload.query.tag).toEqual(["one", "two"]);
-		expect(payload.query.q).toEqual(["hello"]);
-		expect(payload.method).toBe("POST");
+		const payload = received[0] as Record<string, unknown>;
+		expect(payload.url).toContain("?delivery=abc&tag=one&tag=two");
+		expect(payload.query).toBeUndefined();
+		expect(payload.params).toBeUndefined();
+		expect(Object.keys(payload).sort()).toEqual(
+			["body", "headers", "method", "url"].sort(),
+		);
 	});
 
 	it("returns 422 on non-JSON body", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: "{not json",
 			headers: { "Content-Type": "application/json" },
@@ -365,7 +371,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			descriptor,
 			fire: validatingFire(descriptor, onValid),
 		});
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: JSON.stringify({ x: "not-a-number" }),
 			headers: { "Content-Type": "application/json" },
@@ -380,7 +386,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			error: { message: "boom" },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -453,7 +459,7 @@ describe("createHttpTriggerSource: security", () => {
 			output: { status: 200 },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/w/t", {
 			method: "POST",
 			body: JSON.stringify({}),
 			headers: { "Content-Type": "application/json" },
@@ -465,12 +471,52 @@ describe("createHttpTriggerSource: security", () => {
 	it("rejects malformed tenant names at the ingress", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/..%2Fevil/w/webhook", {
+		const res = await app.request("/webhooks/..%2Fevil/w/t", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
 		expect(res.status).toBe(404);
 		expect(fire).not.toHaveBeenCalled();
+	});
+
+	it("method-mismatch and unknown-trigger return the same 404 shape (no enumeration signal)", async () => {
+		const fire = vi.fn<Fire>();
+		const { app } = await mount({
+			fire,
+			descriptor: makeDescriptor({ name: "webhook", method: "POST" }),
+		});
+		const methodMismatch = await app.request("/webhooks/t0/w/webhook", {
+			method: "GET",
+		});
+		const unknown = await app.request("/webhooks/t0/w/unknownName", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(methodMismatch.status).toBe(404);
+		expect(unknown.status).toBe(404);
+	});
+
+	it("a ?params=injected query string does not populate any structured field", async () => {
+		const received: unknown[] = [];
+		const { app } = await mount({
+			fire: async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			},
+		});
+		const res = await app.request(
+			"/webhooks/t0/w/t?params=injected&userId=evil",
+			{
+				method: "POST",
+				body: "{}",
+				headers: { "Content-Type": "application/json" },
+			},
+		);
+		expect(res.status).toBe(200);
+		const payload = received[0] as Record<string, unknown>;
+		expect(payload.params).toBeUndefined();
+		expect(payload.query).toBeUndefined();
 	});
 });

@@ -64,7 +64,6 @@ function makeHttpStub(
 	workflowName: string,
 	spec: {
 		name: string;
-		path: string;
 		method: string;
 		body?: Record<string, unknown>;
 		inputSchema?: Record<string, unknown>;
@@ -76,9 +75,7 @@ function makeHttpStub(
 		type: "http",
 		name: spec.name,
 		workflowName,
-		path: spec.path,
 		method: spec.method,
-		params: [],
 		body: spec.body ?? { type: "object" },
 		inputSchema: spec.inputSchema ?? { type: "object" },
 		outputSchema: { type: "object" },
@@ -191,7 +188,7 @@ describe("triggerMiddleware: page rendering", () => {
 		const registry = makeStubRegistry([
 			makeHttpStub("t0", "cronitor", {
 				name: "onCronitorEvent",
-				path: "cronitor",
+
 				method: "POST",
 				body: {
 					type: "object",
@@ -206,7 +203,9 @@ describe("triggerMiddleware: page rendering", () => {
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("cronitor / onCronitorEvent");
-		expect(body).toContain('data-trigger-url="/webhooks/t0/cronitor/cronitor"');
+		expect(body).toContain(
+			'data-trigger-url="/webhooks/t0/cronitor/onCronitorEvent"',
+		);
 		expect(body).toContain('data-trigger-method="POST"');
 		expect(body).toContain('{"type":"object"');
 		expect(body).toContain('title="http"');
@@ -223,8 +222,8 @@ describe("triggerMiddleware: page rendering", () => {
 
 	it("sorts cards by workflow/trigger name (stable output)", async () => {
 		const registry = makeStubRegistry([
-			makeHttpStub("t0", "zeta", { name: "z", path: "z", method: "POST" }),
-			makeHttpStub("t0", "alpha", { name: "a", path: "a", method: "GET" }),
+			makeHttpStub("t0", "zeta", { name: "z", method: "POST" }),
+			makeHttpStub("t0", "alpha", { name: "a", method: "GET" }),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
@@ -248,7 +247,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 				"demo",
 				{
 					name: "onPing",
-					path: "ping",
+
 					method: "POST",
 					inputSchema: {
 						type: "object",
@@ -280,7 +279,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 		const registry = makeStubRegistry([
 			makeHttpStub("t0", "demo", {
 				name: "onPing",
-				path: "ping",
+
 				method: "POST",
 				inputSchema: {
 					type: "object",
@@ -305,7 +304,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 		const registry = makeStubRegistry([
 			makeHttpStub("t0", "demo", {
 				name: "onPing",
-				path: "ping",
+
 				method: "POST",
 			}),
 		]);
@@ -327,12 +326,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 			error: { message: "boom" },
 		}));
 		const registry = makeStubRegistry([
-			makeHttpStub(
-				"t0",
-				"demo",
-				{ name: "onPing", path: "ping", method: "POST" },
-				fire,
-			),
+			makeHttpStub("t0", "demo", { name: "onPing", method: "POST" }, fire),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/t0/demo/onPing", {

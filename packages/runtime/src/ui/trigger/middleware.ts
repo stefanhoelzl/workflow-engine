@@ -11,8 +11,8 @@ import { renderTriggerPage } from "./page.js";
 //
 // Renders a GET page listing every registered trigger (any kind) scoped to
 // the user's active tenant. HTTP triggers submit directly to their public
-// webhook URL (`/webhooks/<tenant>/<workflow>/<trigger-path>`) — the HTTP
-// source fills in headers/url/method/params/query from the real HTTP
+// webhook URL (`/webhooks/<tenant>/<workflow>/<trigger-name>`) — the HTTP
+// source fills in headers/url/method from the real HTTP
 // request. Non-HTTP kinds (future cron/mail) submit to the kind-agnostic
 // POST `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint served here;
 // this endpoint validates the body against `descriptor.inputSchema` via the

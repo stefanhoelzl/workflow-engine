@@ -29,10 +29,8 @@ const WORKFLOW: WorkflowManifest = {
 		{
 			name: "onPing",
 			type: "http",
-			path: "ping",
 			method: "POST",
 			body: { type: "object" },
-			params: [],
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		},

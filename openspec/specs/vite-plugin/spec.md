@@ -139,6 +139,8 @@ The plugin SHALL detect aliased action exports (the same callable exported under
 
 The plugin SHALL NOT call `__setActionName` on action callables (the slot no longer exists in the SDK). The runtime SHALL NOT append a name-binder shim to the bundle (see `workflow-loading` capability).
 
+For HTTP trigger exports, the plugin's `buildTriggerEntry` function SHALL emit a manifest entry containing `name`, `type: "http"`, `method`, `body` (JSON Schema), `inputSchema` (JSON Schema for the composite payload), and `outputSchema` (JSON Schema for `HttpTriggerResult`). The plugin SHALL NOT emit `path`, `params`, or `query` fields on HTTP trigger entries — these are removed from both the SDK surface and the manifest schema.
+
 #### Scenario: Plugin injects name into action call expression
 
 - **GIVEN** `export const sendNotification = action({ input: z.object({}), output: z.string(), handler: async () => "ok" })` in workflow file `cronitor.ts`
@@ -172,6 +174,13 @@ The plugin SHALL NOT call `__setActionName` on action callables (the slot no lon
 - **WHEN** the plugin's `buildTriggerEntry` validates the export
 - **THEN** the precondition check SHALL be `typeof trigger === "function"` (not `typeof trigger.handler === "function"`)
 - **AND** validation SHALL succeed when the trigger value is callable
+
+#### Scenario: HTTP trigger manifest entry omits path and params
+
+- **GIVEN** `export const cronitorWebhook = httpTrigger({ body: z.object({ id: z.string() }), handler })`
+- **WHEN** the plugin's `buildTriggerEntry` emits the manifest entry
+- **THEN** the entry SHALL contain `name: "cronitorWebhook"`, `type: "http"`, `method: "POST"`, `body`, `inputSchema`, `outputSchema`
+- **AND** the entry SHALL NOT contain `path`, `params`, or `query` keys
 
 ### Requirement: Build failure on validation errors
 
@@ -213,3 +222,34 @@ The evaluated cron-trigger export SHALL always carry a non-empty `.tz` property 
 - **WHEN** the plugin processes a workflow source containing `cronTrigger({...})` calls
 - **THEN** the plugin SHALL NOT modify the object-literal argument via MagicString or any AST rewrite
 - **AND** the emitted bundle SHALL retain the original call shape as authored
+
+### Requirement: HTTP trigger export name is URL-safe
+
+The vite plugin SHALL validate each `HttpTrigger`-branded export's identifier against the regex `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/` during manifest emission. If the identifier does not match, the plugin SHALL fail the build with a clear error message naming the workflow, the export, and the regex. This validation SHALL run in `buildTriggerEntry` (or an equivalent location colocated with other per-trigger checks) and SHALL use the plugin's existing `ctx.error` surface so the failure halts the Vite build.
+
+The validation exists because the export name IS the webhook URL's trailing segment (see the `http-trigger` capability requirement "Trigger URL is derived from export name"). Characters permitted in JS identifiers but not safe as opaque URL segments (notably `$`, unicode letters) are rejected at build time to prevent surprising URL behavior at request time. The identifier regex is intentionally stricter than the tenant regex: tenant/workflow segments permit leading digits and `-`; trigger names — constrained by JS identifier syntax anyway — do not.
+
+#### Scenario: Valid identifier passes build
+
+- **GIVEN** `export const cronitorWebhook = httpTrigger({...})` in a workflow file
+- **WHEN** the plugin builds
+- **THEN** the build SHALL succeed
+- **AND** the manifest SHALL contain a trigger entry with `name: "cronitorWebhook"`
+
+#### Scenario: Identifier with dollar sign fails build
+
+- **GIVEN** `export const $weird = httpTrigger({...})` in workflow file `hub.ts`
+- **WHEN** the plugin builds
+- **THEN** the build SHALL fail with an error identifying the workflow, the export name `$weird`, and the regex `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`
+
+#### Scenario: Identifier longer than 63 characters fails build
+
+- **GIVEN** `export const aaaa<...64 a's...> = httpTrigger({...})` (a 64-character identifier) in a workflow file
+- **WHEN** the plugin builds
+- **THEN** the build SHALL fail with an error identifying the export name as exceeding the length bound
+
+#### Scenario: Valid identifier using underscore prefix
+
+- **GIVEN** `export const _privateHook = httpTrigger({...})` in a workflow file
+- **WHEN** the plugin builds
+- **THEN** the build SHALL succeed (underscore prefix is permitted by the regex)

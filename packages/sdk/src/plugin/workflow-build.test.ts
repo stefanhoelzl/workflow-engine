@@ -161,7 +161,6 @@ export const sendNotification = action({
 });
 
 export const onEvent = httpTrigger({
-	path: "cronitor",
 	body: z.object({ id: z.string() }),
 	handler: async ({ body }) => {
 		const result = await sendNotification({ message: body.id });
@@ -259,26 +258,22 @@ function makeAction() {
 export const wrapped = makeAction();
 `;
 
-const TRIGGER_WITH_QUERY = `
-import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
-
-export const workflow = defineWorkflow();
-
-export const search = httpTrigger({
-	path: "search/:id",
-	method: "GET",
-	query: z.object({ q: z.string() }),
-	handler: async () => ({ status: 200 }),
-});
-`;
-
-const WILDCARD_TRIGGER = `
+const TRIGGER_NON_URL_SAFE_NAME = `
 import { defineWorkflow, httpTrigger } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow();
 
-export const file = httpTrigger({
-	path: "files/*rest",
+export const $weird = httpTrigger({
+	handler: async () => ({}),
+});
+`;
+
+const TRIGGER_UNDERSCORE_PREFIX_NAME = `
+import { defineWorkflow, httpTrigger } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const _privateHook = httpTrigger({
 	handler: async () => ({}),
 });
 `;
@@ -312,7 +307,6 @@ import { cronTrigger, defineWorkflow, httpTrigger, z } from "@workflow-engine/sd
 export const workflow = defineWorkflow();
 
 export const ping = httpTrigger({
-	path: "ping",
 	body: z.object({}),
 	handler: async () => ({}),
 });
@@ -343,11 +337,8 @@ describe("workflowPlugin: brand-based discovery", () => {
 			triggers: Array<{
 				name: string;
 				type: string;
-				path: string;
 				method: string;
 				body: unknown;
-				params: string[];
-				query?: unknown;
 			}>;
 		};
 		expect(manifest.name).toBe("basic");
@@ -361,9 +352,16 @@ describe("workflowPlugin: brand-based discovery", () => {
 		expect(manifest.triggers[0]?.name).toBe("onEvent");
 		expect(manifest.triggers[0]?.type).toBe("http");
 		expect(manifest.triggers[0]?.method).toBe("POST");
-		expect(manifest.triggers[0]?.path).toBe("cronitor");
-		// No query supplied → field omitted from manifest entry.
-		expect(manifest.triggers[0]?.query).toBeUndefined();
+		// No path, params, or query fields on HTTP trigger manifest entries.
+		expect(
+			(manifest.triggers[0] as Record<string, unknown>).path,
+		).toBeUndefined();
+		expect(
+			(manifest.triggers[0] as Record<string, unknown>).params,
+		).toBeUndefined();
+		expect(
+			(manifest.triggers[0] as Record<string, unknown>).query,
+		).toBeUndefined();
 
 		const bundleSrc = await readWorkflowBundleSource(outDir, "basic");
 		// Bundle is an ES module with the original named exports preserved.
@@ -448,36 +446,24 @@ describe("workflowPlugin: name derivation", () => {
 });
 
 describe("workflowPlugin: HTTP trigger entry", () => {
-	it("emits query schema + params when supplied", async () => {
-		const { outDir } = await buildFixture({
-			files: { "q.ts": TRIGGER_WITH_QUERY },
-			workflows: ["./q.ts"],
-		});
-		const manifest = (await readWorkflowManifest(outDir, "q")) as {
-			triggers: Array<{
-				name: string;
-				method: string;
-				path: string;
-				params: string[];
-				query?: Record<string, unknown>;
-			}>;
-		};
-		const t = manifest.triggers[0];
-		expect(t?.method).toBe("GET");
-		expect(t?.path).toBe("search/:id");
-		expect(t?.params).toEqual(["id"]);
-		expect(t?.query).toBeDefined();
+	it("fails the build when an HTTP trigger export name contains non-URL-safe characters", async () => {
+		await expect(
+			buildFixture({
+				files: { "bad.ts": TRIGGER_NON_URL_SAFE_NAME },
+				workflows: ["./bad.ts"],
+			}),
+		).rejects.toThrow(/trigger export name ".+" must match/);
 	});
 
-	it("extracts wildcard params from the trigger path", async () => {
+	it("accepts an HTTP trigger export name with a leading underscore", async () => {
 		const { outDir } = await buildFixture({
-			files: { "w.ts": WILDCARD_TRIGGER },
-			workflows: ["./w.ts"],
+			files: { "u.ts": TRIGGER_UNDERSCORE_PREFIX_NAME },
+			workflows: ["./u.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "w")) as {
-			triggers: Array<{ params: string[] }>;
+		const manifest = (await readWorkflowManifest(outDir, "u")) as {
+			triggers: Array<{ name: string }>;
 		};
-		expect(manifest.triggers[0]?.params).toEqual(["rest"]);
+		expect(manifest.triggers[0]?.name).toBe("_privateHook");
 	});
 });
 

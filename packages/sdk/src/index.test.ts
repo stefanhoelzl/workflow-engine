@@ -51,7 +51,6 @@ describe("brands and type guards", () => {
 
 	it("httpTrigger() returns a callable branded with HTTP_TRIGGER_BRAND", () => {
 		const t = httpTrigger({
-			path: "x",
 			body: z.object({}),
 			handler: async () => ({}),
 		});
@@ -158,7 +157,6 @@ describe("brands and type guards", () => {
 
 	it("isCronTrigger distinguishes from httpTrigger", () => {
 		const http = httpTrigger({
-			path: "x",
 			handler: async () => ({}),
 		});
 		expect(isCronTrigger(http)).toBe(false);
@@ -404,7 +402,6 @@ describe("env() resolution", () => {
 describe("httpTrigger defaults", () => {
 	it("defaults method to POST when omitted", () => {
 		const t = httpTrigger({
-			path: "x",
 			handler: async () => ({}),
 		});
 		expect(t.method).toBe("POST");
@@ -412,7 +409,6 @@ describe("httpTrigger defaults", () => {
 
 	it("respects an explicit method override", () => {
 		const t = httpTrigger({
-			path: "x",
 			method: "GET",
 			handler: async () => ({}),
 		});
@@ -421,7 +417,6 @@ describe("httpTrigger defaults", () => {
 
 	it("defaults body to z.unknown() when omitted", () => {
 		const t = httpTrigger({
-			path: "x",
 			handler: async () => ({}),
 		});
 		// z.unknown() accepts anything, including undefined.
@@ -432,30 +427,34 @@ describe("httpTrigger defaults", () => {
 	it("uses the provided body schema", () => {
 		const body = z.object({ orderId: z.string() });
 		const t = httpTrigger({
-			path: "x",
 			body,
 			handler: async () => ({}),
 		});
 		expect(t.body).toBe(body);
 	});
 
-	it("exposes path as a readonly property and invokes the handler when called", async () => {
+	it("invokes the handler when called with the composite payload", async () => {
 		const handler = vi.fn(async () => ({ status: 202 }));
 		const t = httpTrigger({
-			path: "orders/:orderId",
 			handler,
 		});
-		expect(t.path).toBe("orders/:orderId");
 		const result = await t({
 			body: undefined,
 			headers: {},
-			url: "/orders/1",
+			url: "/webhooks/t/w/x",
 			method: "POST",
-			params: { orderId: "1" } as any,
-			query: {} as any,
 		});
 		expect(result).toEqual({ status: 202 });
 		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not expose path, params, or query as properties", () => {
+		const t = httpTrigger({
+			handler: async () => ({}),
+		});
+		expect((t as unknown as Record<string, unknown>).path).toBeUndefined();
+		expect((t as unknown as Record<string, unknown>).params).toBeUndefined();
+		expect((t as unknown as Record<string, unknown>).query).toBeUndefined();
 	});
 });
 
@@ -480,10 +479,8 @@ describe("ManifestSchema", () => {
 			{
 				name: "onCronitorEvent",
 				type: "http",
-				path: "cronitor",
 				method: "POST",
 				body: { type: "object" },
-				params: [],
 				inputSchema: { type: "object" },
 				outputSchema: { type: "object" },
 			},
@@ -502,20 +499,18 @@ describe("ManifestSchema", () => {
 		expect(wf?.triggers).toHaveLength(1);
 	});
 
-	it("accepts an HTTP trigger with an optional query JSON Schema", () => {
+	it("strips a legacy path field from an HTTP trigger entry (z.object default)", () => {
 		const parsed = ManifestSchema.parse({
 			workflows: [
 				{
 					...validWorkflow,
 					triggers: [
 						{
-							name: "search",
+							name: "legacy",
 							type: "http",
-							path: "search",
-							method: "GET",
+							path: "legacy",
+							method: "POST",
 							body: { type: "object" },
-							params: [],
-							query: { type: "object" },
 							inputSchema: { type: "object" },
 							outputSchema: { type: "object" },
 						},
@@ -524,10 +519,31 @@ describe("ManifestSchema", () => {
 			],
 		});
 		const trigger = parsed.workflows[0]?.triggers[0];
-		if (trigger?.type !== "http") {
-			throw new Error("expected http trigger");
-		}
-		expect(trigger.query).toEqual({ type: "object" });
+		expect(trigger).toBeDefined();
+		expect((trigger as Record<string, unknown>).path).toBeUndefined();
+		expect((trigger as Record<string, unknown>).params).toBeUndefined();
+	});
+
+	it("rejects an HTTP trigger whose name fails the identifier regex", () => {
+		expect(() =>
+			ManifestSchema.parse({
+				workflows: [
+					{
+						...validWorkflow,
+						triggers: [
+							{
+								name: "$weird",
+								type: "http",
+								method: "POST",
+								body: { type: "object" },
+								inputSchema: { type: "object" },
+								outputSchema: { type: "object" },
+							},
+						],
+					},
+				],
+			}),
+		).toThrow();
 	});
 
 	it("rejects a tenant manifest missing the workflows array", () => {
