@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Manifest JSON format (v1)
 
 The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`. The manifest SHALL NOT contain executable code or function references.
@@ -100,35 +102,16 @@ The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid 
 - **WHEN** a manifest contains an `events` array
 - **THEN** the field SHALL be ignored (extra fields stripped) and SHALL NOT appear on the parsed manifest type
 
-### Requirement: Manifest type exported from SDK
+## REMOVED Requirements
 
-The SDK SHALL export a `Manifest` TypeScript type derived from `ManifestSchema` for consumers that need to work with manifest data.
+### Requirement: HTTP trigger entry with parameterized path
 
-#### Scenario: Manifest type matches schema
+**Reason**: The HTTP trigger URL is now mechanically derived from the export name. Parameterized path syntax (`:userId`) is no longer part of the author-facing SDK surface, and the manifest no longer carries a `path` field to encode it in.
 
-- **WHEN** a consumer imports `Manifest` from the SDK
-- **THEN** the type SHALL match the shape validated by `ManifestSchema`
-- **AND** SHALL expose `Manifest["actions"][number]["input"]` and `["output"]` as JSON Schema objects
+**Migration**: Authors that previously declared `httpTrigger({ path: "users/:userId/status", ... })` SHALL move the dynamic identifier into the request body (or parse it from the query string via `new URL(payload.url).searchParams`) and update the external caller accordingly. If the external URL must remain literal, split the workflow or rename the exported trigger (subject to the identifier regex `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`).
 
-### Requirement: IANA timezone validation on upload
+### Requirement: HTTP trigger entry with wildcard path
 
-The `ManifestSchema` Zod schema in `@workflow-engine/core` SHALL validate every cron trigger's `tz` field against the runtime host's IANA timezone set, probed once per zone via `new Intl.DateTimeFormat('en-US', { timeZone })` in a try/catch (memoized in a process-local cache), via a Zod `.refine()` predicate. The workflow upload endpoint (`POST /api/workflows/<tenant>`) already runs `ManifestSchema.parse()` on incoming manifests (see `workflow-registry.ts`); uploads with an unknown `tz` SHALL therefore be rejected with `422 Unprocessable Entity` and the Zod-reported issues.
+**Reason**: Same as parameterized paths. The `*rest` catch-all syntax is no longer part of the author-facing SDK surface and the manifest no longer carries a `path` field.
 
-#### Scenario: Known IANA timezone passes
-
-- **GIVEN** a manifest with a cron trigger whose `tz` is `"Europe/Berlin"`
-- **WHEN** `ManifestSchema.parse()` runs
-- **THEN** parsing SHALL succeed
-
-#### Scenario: Unknown IANA timezone fails
-
-- **GIVEN** a manifest with a cron trigger whose `tz` is `"Not/AZone"`
-- **WHEN** the manifest is uploaded
-- **THEN** `ManifestSchema.parse()` SHALL throw with a Zod issue identifying `tz` as invalid
-- **AND** the upload endpoint SHALL return `422` with the issues payload
-
-#### Scenario: Empty tz fails
-
-- **GIVEN** a manifest with a cron trigger whose `tz` is the empty string `""`
-- **WHEN** the manifest is uploaded
-- **THEN** the upload endpoint SHALL return `422`
+**Migration**: Authors that previously declared `httpTrigger({ path: "files/*rest", ... })` SHALL pass the dynamic tail in the request body or via a query-string parameter. The concept of a URL-prefix-match trigger is not supported.

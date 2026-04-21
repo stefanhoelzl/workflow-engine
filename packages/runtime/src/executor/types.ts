@@ -26,14 +26,11 @@ interface BaseTriggerDescriptor<K extends string> {
 
 interface HttpTriggerDescriptor extends BaseTriggerDescriptor<"http"> {
 	readonly type: "http";
-	readonly path: string;
 	readonly method: string;
-	readonly params: readonly string[];
 	// JSON Schema for the body only — the UI uses this to render a body-form
 	// on the HTTP trigger card (the HTTP request itself fills in the other
-	// composite fields: headers/url/method/params/query).
+	// composite fields: headers/url/method).
 	readonly body: Record<string, unknown>;
-	readonly query?: Record<string, unknown>;
 }
 
 interface CronTriggerDescriptor extends BaseTriggerDescriptor<"cron"> {

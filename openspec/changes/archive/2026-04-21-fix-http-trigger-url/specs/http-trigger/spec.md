@@ -1,9 +1,5 @@
-# HTTP Trigger Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Define the HTTP trigger factory, handler return value contract, payload shape, HTTP middleware delegation to the executor, trigger registry routing rules, and public ingress security context.
-## Requirements
 ### Requirement: httpTrigger factory creates branded HttpTrigger
 
 The SDK SHALL export an `httpTrigger(config)` factory that returns an `HttpTrigger` value that is BOTH branded with `Symbol.for("@workflow-engine/http-trigger")` AND callable as `(payload) => Promise<HttpTriggerResult>`. Invoking the callable SHALL run the user-supplied `handler(payload)` and return its result. The config SHALL accept: `method` (optional string, default `"POST"`), `body` (optional Zod schema, default `z.unknown()`), `handler` (required `(payload) => Promise<HttpTriggerResult>`). The config SHALL NOT accept `path`, `params`, or `query` fields; passing any of them is a TypeScript error.
@@ -41,28 +37,6 @@ The runtime SHALL invoke the trigger by calling `Sandbox.run(triggerExportName, 
 - **WHEN** `httpTrigger({ handler: ... })` is called without `body`
 - **THEN** the returned value's `.body` property SHALL be a Zod schema that accepts any value
 
-### Requirement: Trigger handler return value is the HTTP response
-
-The HTTP trigger handler SHALL return a `Promise<HttpTriggerResult>` where `HttpTriggerResult = { status?, body?, headers? }`. The runtime SHALL use the returned object as the literal HTTP response, applying defaults: `status` = `200`, `body` = `""`, `headers` = `{}`.
-
-#### Scenario: Handler controls status
-
-- **GIVEN** a handler returning `{ status: 202 }`
-- **WHEN** the trigger fires
-- **THEN** the HTTP response SHALL be `202` with empty body and no extra headers
-
-#### Scenario: Handler controls body
-
-- **GIVEN** a handler returning `{ body: { ok: true } }`
-- **WHEN** the trigger fires
-- **THEN** the HTTP response SHALL be `200` with body `{"ok":true}` (JSON-serialized)
-
-#### Scenario: Handler controls headers
-
-- **GIVEN** a handler returning `{ headers: { "X-Trace": "abc" } }`
-- **WHEN** the trigger fires
-- **THEN** the HTTP response SHALL include header `X-Trace: abc`
-
 ### Requirement: Handler payload shape
 
 The HTTP trigger handler SHALL receive a single `payload` argument with exactly these fields: `body` (validated against the trigger's body schema), `headers` (`Record<string, string>`), `url` (string, the raw request URL including any query string), `method` (string). The payload SHALL NOT contain `params` or `query` fields — the URL carries no structured data to the handler. A handler that needs a value from the query string SHALL parse it explicitly via `new URL(payload.url).searchParams`.
@@ -87,32 +61,51 @@ The HTTP trigger handler SHALL receive a single `payload` argument with exactly 
 - **WHEN** the handler runs
 - **THEN** the call SHALL return `"bar"`
 
+### Requirement: Trigger handler return value is the HTTP response
+
+The HTTP trigger handler SHALL return a `Promise<HttpTriggerResult>` where `HttpTriggerResult = { status?, body?, headers? }`. The runtime SHALL use the returned object as the literal HTTP response, applying defaults: `status` = `200`, `body` = `""`, `headers` = `{}`.
+
+#### Scenario: Handler controls status
+
+- **GIVEN** a handler returning `{ status: 202 }`
+- **WHEN** the trigger fires
+- **THEN** the HTTP response SHALL be `202` with empty body and no extra headers
+
+#### Scenario: Handler controls body
+
+- **GIVEN** a handler returning `{ body: { ok: true } }`
+- **WHEN** the trigger fires
+- **THEN** the HTTP response SHALL be `200` with body `{"ok":true}` (JSON-serialized)
+
+#### Scenario: Handler controls headers
+
+- **GIVEN** a handler returning `{ headers: { "X-Trace": "abc" } }`
+- **WHEN** the trigger fires
+- **THEN** the HTTP response SHALL include header `X-Trace: abc`
+
 ### Requirement: HTTP middleware delegates to executor
 
-The HTTP `TriggerSource` SHALL expose a Hono middleware mounted at `/webhooks/*`. The middleware SHALL parse the URL as exactly three segments after the `/webhooks/` prefix: `<tenant>`, `<workflow-name>`, `<trigger-name>`. URLs with more or fewer segments SHALL return `404`. `<tenant>` and `<workflow-name>` SHALL match the tenant regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`; `<trigger-name>` SHALL match the trigger-name regex `^[A-Za-z_][A-Za-z0-9_]{0,62}$`. Query strings on the URL SHALL be tolerated (they pass through unchanged in `payload.url`) but SHALL NOT be parsed into a structured payload field.
+The HTTP `TriggerSource` SHALL expose a Hono middleware mounted at `/webhooks/*`. The middleware SHALL parse the URL as exactly three segments after the `/webhooks/` prefix: `<tenant>`, `<workflow-name>`, `<trigger-name>`. URLs with more or fewer segments SHALL return `404`. Each segment SHALL be validated against the tenant/trigger identifier regex; non-matching segments SHALL return `404`. Query strings on the URL SHALL be tolerated (they pass through unchanged in `payload.url`) but SHALL NOT be parsed into a structured payload field.
 
-The middleware SHALL look up the matching entry via a per-tenant constant-time `Map` keyed by `(workflow-name, trigger-name)`. If no entry is found, or the entry's `descriptor.method` does not equal the request's method, the middleware SHALL return `404` (identical to "no matching trigger" to prevent enumeration per `/SECURITY.md §3 R-W5`).
+The middleware SHALL look up the matching descriptor via a constant-time `Map<string, SourceEntry>` keyed by `${tenant}/${workflow}/${trigger-name}`. If no entry is found, or the entry's `method` does not equal the request's method, the middleware SHALL return `404` (identical to "no matching trigger" to prevent enumeration per `/SECURITY.md §3 R-W5`).
 
-On match, the middleware SHALL parse the JSON body (422 on invalid JSON), assemble the raw input `{ body, headers, url, method }`, and call `entry.fire(input)` on the matched `TriggerEntry`. The HTTP source SHALL NOT call `executor.invoke` directly; all executor interaction happens inside the `fire` closure captured on the `TriggerEntry`, which is constructed by the `WorkflowRegistry` via `buildFire` and performs input-schema validation + executor dispatch. The middleware SHALL serialize the returned `InvokeResult<unknown>` into the HTTP response: `{ok: true, output}` → serialize `output`; `{ok: false, error: {issues, ...}}` → `422` with the validation issues; `{ok: false, error: {...}}` without `issues` → `500` with `{ error: "internal_error" }`.
+On match, the middleware SHALL parse the JSON body (422 on invalid JSON), assemble the raw input `{ body, headers, url, method }`, invoke the shared validator `validate(descriptor, rawInput)` (422 on invalid), and call `executor.invoke(tenant, workflow, descriptor, input, bundleSource)`. The middleware SHALL serialize the executor's `output` (on success) as the HTTP response; on executor error it SHALL return `500` with `{ error: "internal_error" }`.
 
 The HTTP source SHALL be the only component that parses `/webhooks/*` URLs and the only component that converts handler output to an HTTP response.
 
 #### Scenario: Successful trigger invocation
 
-- **GIVEN** a registered HTTP trigger and a matching `POST /webhooks/<tenant>/<workflow>/<trigger-name>` request with valid body
+- **GIVEN** a registered HTTP trigger and a matching `POST /webhooks/<tenant>/<workflow>/<trigger-name>` request with valid payload
 - **WHEN** the middleware processes the request
-- **THEN** the middleware SHALL resolve the matching `TriggerEntry` via its per-tenant routing index
-- **AND** the middleware SHALL call `entry.fire(input)` exactly once with `{body, headers, url, method}`
-- **AND** on `{ok: true, output}` the middleware SHALL serialize `output` as the HTTP response
+- **THEN** the middleware SHALL call `executor.invoke(tenant, workflow, descriptor, input, bundleSource)` exactly once with the validated composite input
+- **AND** the middleware SHALL serialize the executor's `output` as the HTTP response
 
 #### Scenario: Payload validation failure returns 422
 
-- **GIVEN** a registered HTTP trigger with a body schema requiring `{name: string}`
-- **WHEN** a request arrives with body `{}` (missing `name`)
-- **THEN** the middleware SHALL call `entry.fire(input)`
-- **AND** the `fire` closure SHALL resolve to `{ok: false, error: {issues: [...]}}`
-- **AND** the middleware SHALL return a `422` response with `{ error: "payload_validation_failed", issues: [...] }`
-- **AND** `executor.invoke` SHALL NOT be called
+- **GIVEN** a registered HTTP trigger with a body schema
+- **WHEN** the request body fails schema validation via the shared validator
+- **THEN** the middleware SHALL return a `422` response with `{ error: "payload_validation_failed", issues: [...] }`
+- **AND** the middleware SHALL NOT call the executor
 
 #### Scenario: No matching trigger returns 404
 
@@ -125,7 +118,7 @@ The HTTP source SHALL be the only component that parses `/webhooks/*` URLs and t
 - **GIVEN** a request to `/webhooks/<tenant>/<workflow>/<trigger-name>/extra`
 - **WHEN** the middleware processes the request
 - **THEN** the middleware SHALL return `404`
-- **AND** `entry.fire` SHALL NOT be called
+- **AND** the middleware SHALL NOT call the executor
 
 #### Scenario: URL with missing segments returns 404
 
@@ -144,7 +137,7 @@ The HTTP source SHALL be the only component that parses `/webhooks/*` URLs and t
 - **GIVEN** a registered HTTP trigger with `method: "POST"`
 - **WHEN** a `GET` request to the trigger's URL is processed
 - **THEN** the middleware SHALL return `404`
-- **AND** `entry.fire` SHALL NOT be called
+- **AND** the middleware SHALL NOT call the executor
 
 #### Scenario: Query string passes through to payload.url unparsed
 
@@ -156,22 +149,15 @@ The HTTP source SHALL be the only component that parses `/webhooks/*` URLs and t
 
 #### Scenario: Non-JSON body returns 422
 
-- **GIVEN** a registered HTTP trigger
-- **WHEN** the request body is not valid JSON
-- **THEN** the middleware SHALL return `422` without calling `entry.fire`
-
-#### Scenario: HTTP source implements the TriggerSource contract
-
-- **GIVEN** the HTTP trigger source factory
-- **WHEN** the returned value is inspected
-- **THEN** it SHALL expose `kind: "http"`, `start()`, `stop()`, and `reconfigure(tenant, entries): Promise<ReconfigureResult>`
-- **AND** its `reconfigure` SHALL store entries keyed by tenant (internally) so that `reconfigure("acme", [])` clears only `acme`'s entries and not any other tenant's
+- **GIVEN** a request with a non-JSON body to a registered HTTP trigger
+- **WHEN** the middleware tries to parse the body
+- **THEN** the middleware SHALL return `422`
 
 #### Scenario: Executor error returns 500
 
 - **GIVEN** a registered HTTP trigger whose handler throws
 - **WHEN** the middleware processes the request
-- **THEN** `entry.fire` SHALL return `{ok: false, error: {message, stack}}` without `issues`
+- **THEN** `executor.invoke` SHALL return an error sentinel (not throw)
 - **AND** the middleware SHALL serialize a `500` response with `{ error: "internal_error" }`
 
 ### Requirement: Public ingress security context
@@ -195,6 +181,16 @@ Changes that introduce new threats, weaken or remove a documented mitigation, ad
 - **GIVEN** this change modifies trigger-to-route mapping semantics (URLPattern → Map lookup) and narrows the payload (drops `params`, drops `query`)
 - **WHEN** the change lands
 - **THEN** `/SECURITY.md §3` SHALL be updated in the same PR to delete the W8 threat row, delete the R-W6 residual-risk row, replace the URLPattern-based "Deterministic path matching" mitigation with a "Closed URL vocabulary" mitigation, and narrow the documented payload snippet to `{ body, headers, url, method }`
+
+## REMOVED Requirements
+
+### Requirement: Trigger registry routing rules
+
+**Reason**: The HTTP trigger URL is now mechanically derived from the trigger's export name (`/webhooks/<tenant>/<workflow>/<trigger-name>`). There is no author-chosen path component, no parameterized-segment syntax (`:name`), and no wildcard-segment syntax (`*rest`). Static-vs-parameterized precedence has no meaning when all URLs are static by construction. The lookup data structure becomes a constant-time `Map<string, SourceEntry>.get()` with no ordering concerns.
+
+**Migration**: Workflow authors who previously used `:param` or `*wildcard` syntax to extract dynamic values from the URL SHALL move the dynamic data into the request body or query string. Handlers that read the old `payload.params` field SHALL read from `payload.body` or parse `new URL(payload.url).searchParams` instead. Authors who relied on a specific literal URL suffix SHALL rename the exported trigger to match (e.g., `export const callback = httpTrigger({...})` produces `/webhooks/<tenant>/<workflow>/callback`), subject to the identifier regex `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`. The trailing-slash-plus-suffix patterns (`"/v1/callback"`) are not representable as a single trigger; fan out across multiple exports or a dedicated workflow if the literal URL is required.
+
+## ADDED Requirements
 
 ### Requirement: Trigger URL is derived from export name
 

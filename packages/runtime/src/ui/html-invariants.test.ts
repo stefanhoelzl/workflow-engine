@@ -52,8 +52,6 @@ function makeWorkflowEntry(): WorkflowEntry {
 				name: "t",
 				workflowName: "w",
 				method: "POST",
-				path: "w/t",
-				params: [],
 				body: { type: "object", properties: { id: { type: "string" } } },
 				inputSchema: {
 					type: "object",

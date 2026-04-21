@@ -13,7 +13,6 @@ import { build, type Plugin, type ResolvedConfig } from "vite";
 import {
 	type Action,
 	type CronTrigger,
-	extractParamNames,
 	type HttpTrigger,
 	isAction,
 	isCronTrigger,
@@ -21,6 +20,12 @@ import {
 	isWorkflow,
 	type Workflow,
 } from "../index.js";
+
+// URL-safe trigger-export-name regex. Matches a JS identifier (no `$`),
+// length-capped at 63 to mirror the tenant regex. Enforced at manifest
+// emission so the export name can be used directly as the webhook URL's
+// trailing segment — see the `http-trigger` capability spec.
+const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 interface WorkflowPluginOptions {
 	workflows: string[];
@@ -264,11 +269,8 @@ interface ManifestActionEntry {
 interface ManifestHttpTriggerEntry {
 	name: string;
 	type: "http";
-	path: string;
 	method: string;
 	body: Record<string, unknown>;
-	params: string[];
-	query?: Record<string, unknown>;
 	inputSchema: Record<string, unknown>;
 	outputSchema: Record<string, unknown>;
 }
@@ -396,19 +398,22 @@ function buildTriggerEntry(
 			`Workflow "${workflowName}": trigger "${exportName}" is missing a handler function`,
 		);
 	}
+	if (!TRIGGER_NAME_RE.test(exportName)) {
+		ctx.error(
+			`Workflow "${workflowName}": trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
+		);
+	}
 	const bodyLabel = `trigger "${exportName}".body`;
 	assertZodSchema(trigger.body, bodyLabel, workflowName, ctx);
 	const inputSchemaLabel = `trigger "${exportName}".inputSchema`;
 	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
 	const outputSchemaLabel = `trigger "${exportName}".outputSchema`;
 	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
-	const entry: ManifestHttpTriggerEntry = {
+	return {
 		name: exportName,
 		type: "http",
-		path: trigger.path,
 		method: trigger.method,
 		body: toJsonSchema(trigger.body, bodyLabel, workflowName, ctx),
-		params: extractParamNames(trigger.path),
 		inputSchema: toJsonSchema(
 			trigger.inputSchema,
 			inputSchemaLabel,
@@ -422,17 +427,6 @@ function buildTriggerEntry(
 			ctx,
 		),
 	};
-	// The SDK defaults trigger.query to z.object({}) (an empty object schema)
-	// when the author did not supply one; treat that default as "no query"
-	// and omit the field from the manifest entry. If the author supplied an
-	// explicit empty z.object({}) it becomes indistinguishable — treat both
-	// the same way since the runtime doesn't need to validate nothing.
-	if (trigger.query !== undefined && !isEmptyObjectSchema(trigger.query)) {
-		const queryLabel = `trigger "${exportName}".query`;
-		assertZodSchema(trigger.query, queryLabel, workflowName, ctx);
-		entry.query = toJsonSchema(trigger.query, queryLabel, workflowName, ctx);
-	}
-	return entry;
 }
 
 function buildCronTriggerEntry(
@@ -570,18 +564,6 @@ function toJsonSchema(
 		);
 	}
 	return result as Record<string, unknown>;
-}
-
-function isEmptyObjectSchema(schema: unknown): boolean {
-	const asRecord = schema as
-		| { _zod?: { def?: { type?: string; shape?: Record<string, unknown> } } }
-		| undefined;
-	const def = asRecord?._zod?.def;
-	if (def?.type !== "object") {
-		return false;
-	}
-	const shape = def.shape;
-	return shape !== undefined && Object.keys(shape).length === 0;
 }
 
 // ---------------------------------------------------------------------------

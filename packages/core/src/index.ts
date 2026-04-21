@@ -12,17 +12,11 @@ interface HttpTriggerResult {
 	headers?: Record<string, string>;
 }
 
-interface HttpTriggerPayload<
-	Body = unknown,
-	Params extends Record<string, string> = Record<string, string>,
-	Query extends Record<string, unknown> = Record<string, never>,
-> {
+interface HttpTriggerPayload<Body = unknown> {
 	body: Body;
 	headers: Record<string, string>;
 	url: string;
 	method: string;
-	params: Params;
-	query: Query;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,14 +114,13 @@ const actionManifestSchema = z.object({
 	output: jsonSchemaValidator,
 });
 
+const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
 const httpTriggerManifestSchema = z.object({
-	name: z.string(),
+	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("http"),
-	path: z.string(),
 	method: z.string(),
 	body: jsonSchemaValidator,
-	params: z.array(z.string()),
-	query: z.exactOptional(jsonSchemaValidator),
 	inputSchema: jsonSchemaValidator,
 	outputSchema: jsonSchemaValidator,
 });

@@ -94,22 +94,16 @@ function buildHttpDescriptor(
 	workflowName: string,
 	entry: HttpTriggerManifest,
 ): HttpTriggerDescriptor {
-	const descriptor: HttpTriggerDescriptor = {
+	return {
 		kind: "http",
 		type: "http",
 		name: entry.name,
 		workflowName,
-		path: entry.path,
 		method: entry.method,
-		params: [...entry.params],
 		body: entry.body as Record<string, unknown>,
 		inputSchema: entry.inputSchema as Record<string, unknown>,
 		outputSchema: entry.outputSchema as Record<string, unknown>,
 	};
-	if (entry.query) {
-		return { ...descriptor, query: entry.query as Record<string, unknown> };
-	}
-	return descriptor;
 }
 
 function buildCronDescriptor(

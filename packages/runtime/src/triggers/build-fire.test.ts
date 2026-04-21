@@ -25,9 +25,7 @@ function makeDescriptor(): HttpTriggerDescriptor {
 		type: "http",
 		name: "handler",
 		workflowName: "w",
-		path: "ignored",
 		method: "POST",
-		params: [],
 		body: { type: "object" },
 		inputSchema: {
 			type: "object",

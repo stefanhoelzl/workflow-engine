@@ -14,7 +14,7 @@ import { renderLayout } from "../layout.js";
 // One collapsible card per registered trigger. For HTTP kind the form is
 // built from `descriptor.body` (the body JSON Schema) and the Submit button
 // POSTs to the public webhook URL — the HTTP source fills in
-// headers/url/method/params/query from the real HTTP request. For non-HTTP
+// headers/url/method from the real HTTP request. For non-HTTP
 // kinds (future cron/mail) the form is built from the full
 // `descriptor.inputSchema` and POSTs to the kind-agnostic
 // `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint.
@@ -116,7 +116,7 @@ function descriptorToCardData(
 ): TriggerCardData {
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
-		const webhookUrl = `/webhooks/${tenant}/${workflow}/${http.path}`;
+		const webhookUrl = `/webhooks/${tenant}/${workflow}/${http.name}`;
 		return {
 			tenant,
 			workflow,

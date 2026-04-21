@@ -837,24 +837,33 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 
 ### Entry points
 
-- `POST /webhooks/{tenant}/{workflow}/{trigger_path}` (or whatever `method` the
+- `POST /webhooks/{tenant}/{workflow}/{trigger_name}` (or whatever `method` the
   trigger declares; default POST) with JSON body.
 - `{tenant}` and `{workflow}` are validated against the tenant identifier regex
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); non-matching values receive 404.
-- Path matching via URLPattern (for `{trigger_path}`); supports `:param` path
-  segments and `*wildcard` tail segments. Static segments are prioritized over
-  parameterized (`packages/runtime/src/triggers/http.ts`).
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); `{trigger_name}` is validated against
+  the trigger-name regex (`^[A-Za-z_][A-Za-z0-9_]{0,62}$`); non-matching values
+  receive 404.
+- Trigger segment matching is **exact**: the URL MUST be exactly three
+  regex-constrained segments after `/webhooks/`. No URLPattern, no `:param`
+  named segments, no `*wildcard` tail segments. Lookup is a constant-time
+  `Map.get()` keyed by `(tenant, workflow, trigger-name)`
+  (`packages/runtime/src/triggers/http.ts`). Query strings on the URL are
+  tolerated for compatibility with providers that append tracking params
+  (AWS signatures, delivery IDs) but are **not parsed** into any structured
+  field on the handler's payload.
 - Request data delivered to the trigger handler as the `payload`
   argument:
 
   ```typescript
-  { body, headers, url, method, params, query }
+  { body, headers, url, method }
   ```
 
   `body` is a JSON-parsed object validated against the trigger's JSON
-  Schema (Ajv) before the sandbox is entered. `headers`, `url`, `method`,
-  `params`, and `query` are attacker-controlled metadata — the sandbox
-  sees them as data, not as authentication.
+  Schema (Ajv) before the sandbox is entered. `headers`, `url`, and `method`
+  are attacker-controlled metadata — the sandbox sees them as data, not as
+  authentication. A handler that needs a query-string value SHALL parse it
+  explicitly via `new URL(payload.url).searchParams` and treat the result
+  as untrusted.
 
 ### Threats
 
@@ -867,7 +876,6 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 | W5 | Attacker injects headers (`Authorization`, `Cookie`, `X-Forwarded-*`) that handler code treats as trusted | Spoofing / information disclosure |
 | W6 | Attacker probes path variants to discover registered trigger names | Information disclosure |
 | W7 | Attacker sends a payload that matches schema but forces an expensive handler path (e.g. unbounded Promise.all over action calls) | DoS |
-| W8 | Query-string or URL-parameter injection, passed unsanitized into handler code | Tampering |
 
 ### Mitigations (current)
 
@@ -895,8 +903,21 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   payload runs in the sandbox with no host APIs (see §2).
 - **TLS termination at Traefik** (HTTPS only on the websecure
   entrypoint).
-- **Deterministic path matching** via URLPattern; static segments beat
-  parameterized, reducing ambiguity.
+- **Closed URL vocabulary.** The three URL segments
+  (`<tenant>/<workflow>/<trigger-name>`) are all regex-constrained identifiers
+  set at workflow build time (the trigger name IS the export identifier,
+  enforced by the vite plugin) and validated at upload (the manifest Zod
+  schema's `.regex()` constraints). There is no author-controlled URL
+  fragment; there are no param placeholders; there is no URL-derived data
+  structured onto the handler's payload. A request URL either matches
+  exactly one registered `(tenant, workflow, trigger-name)` triple or
+  returns **404**. This is strictly stricter than URLPattern-based matching
+  and eliminates any `payload.params` / `payload.query` injection surface
+  entirely — the handler receives `{ body, headers, url, method }` and
+  nothing else. Collisions within a workflow are impossible by
+  construction (JS rejects duplicate export names at parse time; the
+  manifest schema requires unique trigger names per workflow; the
+  workflow manifest schema requires unique workflow names per tenant).
 - **Separate trust domain** — webhook handlers cannot read the session
   cookies or bearer tokens used by the UI / API routes, because those
   headers are not forwarded to this route family.
@@ -916,7 +937,6 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 | R-W3 | **No rate limiting** at the application or Traefik level | W3, W7 unmitigated | v1 limitation |
 | R-W4 | **All request headers are forwarded verbatim** into the payload's `headers` field, including any `Authorization` / `Cookie` the caller sent | W5 unmitigated | **High priority** — move to per-trigger header allowlist |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |
-| R-W6 | Query-string and path parameters are placed unsanitized into `payload.query` / `payload.params` | W8 partial | Mitigated by sandbox (§2), but handlers must still treat as untrusted |
 
 ### Implementation guidance for signed webhooks
 

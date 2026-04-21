@@ -208,59 +208,19 @@ function isAction(value: unknown): value is Action {
 // HTTP trigger
 // ---------------------------------------------------------------------------
 
-type ExtractParams<T extends string> =
-	T extends `${string}:${infer Param}/${infer Rest}`
-		? Param | ExtractParams<Rest>
-		: T extends `${string}:${infer Param}`
-			? Param
-			: T extends `${string}*${infer Param}`
-				? Param
-				: never;
-
-type ParamsSchemaFor<P extends string> = string extends P
-	? z.ZodRecord<z.ZodString, z.ZodString>
-	: [ExtractParams<P>] extends [never]
-		? z.ZodObject<Record<never, never>>
-		: z.ZodObject<{ [K in ExtractParams<P>]: z.ZodString }>;
-
-function extractParamNames(path: string): string[] {
-	const names: string[] = [];
-	for (const segment of path.split("/")) {
-		if (segment.startsWith(":")) {
-			names.push(segment.slice(1));
-		} else if (segment.startsWith("*")) {
-			names.push(segment.slice(1));
-		}
-	}
-	return names;
-}
-
 // HttpTrigger is a callable: invoking it runs the user's handler. Brand,
-// path, method, body, params, query, inputSchema, outputSchema are attached
-// as readonly properties on the callable. There is no public `.handler` slot;
-// the callable IS the handler invocation path.
-interface HttpTrigger<
-	Path extends string = string,
-	Body extends z.ZodType = z.ZodType,
-	Params extends z.ZodType = z.ZodType,
-	Query extends z.ZodType = z.ZodType,
-> {
-	(
-		payload: HttpTriggerPayload<
-			z.infer<Body>,
-			z.infer<Params> & Record<string, string>,
-			z.infer<Query> & Record<string, unknown>
-		>,
-	): Promise<HttpTriggerResult>;
+// method, body, inputSchema, outputSchema are attached as readonly properties
+// on the callable. There is no public `.handler` slot; the callable IS the
+// handler invocation path. The webhook URL is mechanical — derived from the
+// trigger's exported identifier as `/webhooks/<tenant>/<workflow>/<export-name>`
+// — so no URL-shape config exists on this type.
+interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
+	(payload: HttpTriggerPayload<z.infer<Body>>): Promise<HttpTriggerResult>;
 	readonly [HTTP_TRIGGER_BRAND]: true;
-	readonly path: Path;
 	readonly method: string;
 	readonly body: Body;
-	readonly params: Params;
-	readonly query: Query | undefined;
-	// Composite input schema (body + headers + url + method + params + query).
-	// Serialized to JSON Schema in the manifest for the UI + host-side shared
-	// validator.
+	// Composite input schema (body + headers + url + method). Serialized to
+	// JSON Schema in the manifest for the UI + host-side shared validator.
 	readonly inputSchema: z.ZodType;
 	// Output schema (HttpTriggerResult shape). Serialized to JSON Schema in
 	// the manifest for uniform output rendering.
@@ -273,45 +233,19 @@ const httpTriggerOutputSchema = z.object({
 	headers: z.record(z.string(), z.string()).optional(),
 });
 
-function httpTrigger<
-	const P extends string,
-	B extends z.ZodType = z.ZodUnknown,
-	Q extends z.ZodObject<z.ZodRawShape> | undefined = undefined,
->(config: {
-	path: P;
+function httpTrigger<B extends z.ZodType = z.ZodUnknown>(config: {
 	method?: string;
 	body?: B;
-	query?: Q;
-	params?: z.ZodObject<{ [K in ExtractParams<P>]: z.ZodType }>;
 	handler: (
-		payload: HttpTriggerPayload<
-			B extends z.ZodType ? z.infer<B> : unknown,
-			z.infer<ParamsSchemaFor<P>> & Record<string, string>,
-			Q extends z.ZodObject<z.ZodRawShape>
-				? z.infer<Q> & Record<string, unknown>
-				: Record<string, never>
-		>,
+		payload: HttpTriggerPayload<B extends z.ZodType ? z.infer<B> : unknown>,
 	) => Promise<HttpTriggerResult>;
-}): HttpTrigger<
-	P,
-	B extends z.ZodType ? B : z.ZodUnknown,
-	ParamsSchemaFor<P>,
-	Q extends z.ZodObject<z.ZodRawShape> ? Q : z.ZodObject<Record<never, never>>
-> {
+}): HttpTrigger<B extends z.ZodType ? B : z.ZodUnknown> {
 	if (typeof config.handler !== "function") {
-		throw new Error(
-			`httpTrigger({ path: ${JSON.stringify(config.path)} }) is missing a handler function`,
-		);
+		throw new Error("httpTrigger(...) is missing a handler function");
 	}
 	const bodySchema = (config.body ?? z.unknown()) as B extends z.ZodType
 		? B
 		: z.ZodUnknown;
-	const paramNames = extractParamNames(config.path);
-	const paramsSchema = (config.params ??
-		z.object(
-			Object.fromEntries(paramNames.map((n) => [n, z.string()])),
-		)) as ParamsSchemaFor<P>;
-	const querySchema = config.query;
 	const method = config.method ?? "POST";
 
 	const compositeSchema = z.object({
@@ -319,8 +253,6 @@ function httpTrigger<
 		headers: z.record(z.string(), z.string()),
 		url: z.string(),
 		method: z.string().default(method),
-		params: paramsSchema,
-		query: querySchema ?? z.object({}),
 	});
 
 	const handler = config.handler;
@@ -330,28 +262,19 @@ function httpTrigger<
 		return handler(payload);
 	};
 	attachTriggerMetadata(callable, {
-		path: config.path,
 		method,
 		body: bodySchema,
-		params: paramsSchema,
-		query: querySchema,
 		inputSchema: compositeSchema,
 		outputSchema: httpTriggerOutputSchema,
 	});
 	return callable as unknown as HttpTrigger<
-		P,
-		B extends z.ZodType ? B : z.ZodUnknown,
-		ParamsSchemaFor<P>,
-		Q extends z.ZodObject<z.ZodRawShape> ? Q : z.ZodObject<Record<never, never>>
+		B extends z.ZodType ? B : z.ZodUnknown
 	>;
 }
 
 interface TriggerMetadata {
-	path: string;
 	method: string;
 	body: z.ZodType;
-	params: z.ZodType;
-	query: z.ZodType | undefined;
 	inputSchema: z.ZodType;
 	outputSchema: z.ZodType;
 }
@@ -365,7 +288,7 @@ function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {
 	});
 	for (const [key, value] of Object.entries(meta)) {
 		Object.defineProperty(callable, key, {
-			value: key === "query" ? (value ?? z.object({})) : value,
+			value,
 			enumerable: true,
 			writable: false,
 			configurable: false,
@@ -489,15 +412,7 @@ export type {
 	HttpTriggerResult,
 	Manifest,
 } from "@workflow-engine/core";
-export type {
-	Action,
-	CronTrigger,
-	EnvRef,
-	ExtractParams,
-	HttpTrigger,
-	Trigger,
-	Workflow,
-};
+export type { Action, CronTrigger, EnvRef, HttpTrigger, Trigger, Workflow };
 export {
 	ACTION_BRAND,
 	action,
@@ -505,7 +420,6 @@ export {
 	cronTrigger,
 	defineWorkflow,
 	env,
-	extractParamNames,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
 	isAction,
