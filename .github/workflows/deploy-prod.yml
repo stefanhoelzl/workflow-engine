@@ -105,7 +105,7 @@ jobs:
           UPCLOUD_TOKEN: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
         run: |
           mkdir -p ~/.kube
-          upctl kubernetes config "${{ steps.apply.outputs.cluster_id }}" --write ~/.kube/config --write-mode overwrite
+          upctl kubernetes config "${{ steps.apply.outputs.cluster_id }}" --write ~/.kube/config
 
       - uses: azure/setup-kubectl@v4
 
