@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { Auth } from "../auth/allowlist.js";
+import type { Executor } from "../executor/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -13,8 +14,12 @@ const logger = {
 	child: vi.fn(() => logger),
 };
 
+const stubExecutor: Executor = {
+	invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
+};
+
 function mountApi(auth: Auth, fetchFn?: typeof globalThis.fetch) {
-	const registry = createWorkflowRegistry({ logger });
+	const registry = createWorkflowRegistry({ logger, executor: stubExecutor });
 	const middleware = apiMiddleware({
 		auth,
 		registry,

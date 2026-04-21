@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Executor } from "./executor/index.js";
 import type { Logger } from "./logger.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
@@ -20,6 +21,12 @@ function makeLogger(): Logger {
 		error: vi.fn(),
 		debug: vi.fn(),
 	} as unknown as Logger;
+}
+
+function makeExecutor(): Executor {
+	return {
+		invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
+	};
 }
 
 const VALID_WORKFLOW = {
@@ -84,7 +91,7 @@ describe("workflow registry", () => {
 
 	it("registers a tenant and exposes its metadata via list()", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const result = await registry.registerTenant("acme", tenantFiles());
 		expect(result.ok).toBe(true);
 		expect(registry.tenants()).toEqual(["acme"]);
@@ -102,7 +109,7 @@ describe("workflow registry", () => {
 
 	it("same workflow name in two tenants is isolated by tenant", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		await registry.registerTenant("acme", tenantFiles());
 		await registry.registerTenant("contoso", tenantFiles());
 		expect(registry.tenants().sort()).toEqual(["acme", "contoso"]);
@@ -113,7 +120,7 @@ describe("workflow registry", () => {
 
 	it("re-registering a tenant atomically replaces its workflow set", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		await registry.registerTenant("acme", tenantFiles());
 		expect(registry.list("acme")).toHaveLength(1);
 		// Re-upload with an empty workflow set clears the tenant's workflows.
@@ -126,7 +133,7 @@ describe("workflow registry", () => {
 
 	it("rejects upload when a referenced workflow module is missing (all-or-nothing)", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		// First upload succeeds
 		await registry.registerTenant("acme", tenantFiles());
 
@@ -148,14 +155,14 @@ describe("workflow registry", () => {
 
 	it("rejects upload with missing manifest.json", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const result = await registry.registerTenant("acme", new Map());
 		expect(result.ok).toBe(false);
 	});
 
 	it("rejects upload with invalid manifest", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const result = await registry.registerTenant(
 			"acme",
 			new Map([["manifest.json", "{ not json"]]),
@@ -165,7 +172,7 @@ describe("workflow registry", () => {
 
 	it("rejects upload with cron trigger having a malformed schedule", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const badManifest = {
 			workflows: [
 				{
@@ -195,7 +202,7 @@ describe("workflow registry", () => {
 
 	it("rejects upload with cron trigger having an unknown timezone", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const badManifest = {
 			workflows: [
 				{
@@ -225,7 +232,7 @@ describe("workflow registry", () => {
 
 	it("accepts upload with a valid cron trigger", async () => {
 		const logger = makeLogger();
-		registry = createWorkflowRegistry({ logger });
+		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		const goodManifest = {
 			workflows: [
 				{
@@ -290,7 +297,11 @@ describe("workflow registry: persistence and recovery", () => {
 		const logger = makeLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
-		registry = createWorkflowRegistry({ logger, storageBackend: backend });
+		registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			storageBackend: backend,
+		});
 
 		const files = tenantFiles();
 		const tarballBytes = await packTenantBundle(files);
@@ -315,7 +326,11 @@ describe("workflow registry: persistence and recovery", () => {
 		const tarballBytes = await packTenantBundle(files);
 		await backend.writeBytes("workflows/acme.tar.gz", tarballBytes);
 
-		registry = createWorkflowRegistry({ logger, storageBackend: backend });
+		registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			storageBackend: backend,
+		});
 		await registry.recover();
 
 		expect(registry.tenants()).toEqual(["acme"]);
@@ -337,9 +352,195 @@ describe("workflow registry: persistence and recovery", () => {
 		// Stray non-tarball key — must be ignored.
 		await backend.write("workflows/readme.txt", "noop");
 
-		registry = createWorkflowRegistry({ logger, storageBackend: backend });
+		registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			storageBackend: backend,
+		});
 		await registry.recover();
 
 		expect(registry.tenants()).toEqual(["acme"]);
+	});
+});
+
+describe("workflow registry: backend reconfigure aggregation", () => {
+	// Stub TriggerSource that can be scripted to return ok, userConfig, or throw.
+	// Builds against the public interface without reaching into any concrete
+	// backend (http/cron) so the tests focus on the aggregation contract.
+	interface StubBackend {
+		readonly source: import("./triggers/source.js").TriggerSource;
+		readonly calls: Array<{
+			tenant: string;
+			entries: readonly import("./triggers/source.js").TriggerEntry[];
+		}>;
+	}
+
+	function stubBackend(
+		kind: string,
+		mode: "ok" | "userConfig" | "infra",
+	): StubBackend {
+		const calls: StubBackend["calls"] = [];
+		const source: import("./triggers/source.js").TriggerSource = {
+			kind,
+			async start() {},
+			async stop() {},
+			async reconfigure(tenant, entries) {
+				calls.push({ tenant, entries });
+				if (mode === "infra") {
+					throw new Error("backend unreachable");
+				}
+				if (mode === "userConfig") {
+					return {
+						ok: false,
+						errors: [
+							{
+								backend: kind,
+								trigger: "*",
+								message: `bad config for ${kind}`,
+							},
+						],
+					};
+				}
+				return { ok: true };
+			},
+		};
+		return { source, calls };
+	}
+
+	it("reconfigures every registered backend on a successful upload (even if a kind has no triggers)", async () => {
+		const logger = makeLogger();
+		const http = stubBackend("http", "ok");
+		const cron = stubBackend("cron", "ok");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			backends: [http.source, cron.source],
+		});
+		await registry.registerTenant("acme", tenantFiles());
+		expect(http.calls).toHaveLength(1);
+		expect(cron.calls).toHaveLength(1);
+		// Cron gets an empty slice since the fixture has only http triggers.
+		expect(cron.calls[0]?.entries).toHaveLength(0);
+		expect(http.calls[0]?.entries).toHaveLength(1);
+	});
+
+	it("returns 400-shaped failure when one backend returns {ok: false}", async () => {
+		const logger = makeLogger();
+		const http = stubBackend("http", "userConfig");
+		const cron = stubBackend("cron", "ok");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			backends: [http.source, cron.source],
+		});
+		const result = await registry.registerTenant("acme", tenantFiles());
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			throw new Error("expected failure");
+		}
+		expect(result.error).toBe("trigger_config_failed");
+		expect(result.userErrors?.length).toBe(1);
+		expect(result.infraErrors).toBeUndefined();
+	});
+
+	it("returns 500-shaped failure when one backend throws", async () => {
+		const logger = makeLogger();
+		const http = stubBackend("http", "infra");
+		const cron = stubBackend("cron", "ok");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			backends: [http.source, cron.source],
+		});
+		const result = await registry.registerTenant("acme", tenantFiles());
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			throw new Error("expected failure");
+		}
+		expect(result.error).toBe("trigger_backend_failed");
+		expect(result.infraErrors?.length).toBe(1);
+		expect(result.userErrors).toBeUndefined();
+	});
+
+	it("returns both classes when a user-config error and an infra error occur together", async () => {
+		const logger = makeLogger();
+		const http = stubBackend("http", "userConfig");
+		const cron = stubBackend("cron", "infra");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			backends: [http.source, cron.source],
+		});
+		const result = await registry.registerTenant("acme", tenantFiles());
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			throw new Error("expected failure");
+		}
+		expect(result.error).toBe("trigger_config_failed");
+		expect(result.userErrors?.length).toBe(1);
+		expect(result.infraErrors?.length).toBe(1);
+	});
+
+	it("rejects a manifest that references an unknown trigger kind before calling any backend", async () => {
+		const logger = makeLogger();
+		const http = stubBackend("http", "ok");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			backends: [http.source],
+		});
+		const badManifest = {
+			workflows: [
+				{
+					...VALID_WORKFLOW,
+					triggers: [
+						{
+							name: "unknownKind",
+							type: "mail",
+							inputSchema: { type: "object" },
+							outputSchema: {},
+						},
+					],
+				},
+			],
+		};
+		const result = await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(badManifest)],
+				["demo.js", BUNDLE_SOURCE],
+			]),
+		);
+		expect(result.ok).toBe(false);
+		expect(http.calls).toHaveLength(0);
+	});
+
+	it("does not persist the tarball when a backend reports failure", async () => {
+		const storageDir = await mkdtemp(join(tmpdir(), "wf-no-persist-on-fail-"));
+		try {
+			const logger = makeLogger();
+			const storage = createFsStorage(storageDir);
+			await storage.init();
+			const http = stubBackend("http", "userConfig");
+			const registry = createWorkflowRegistry({
+				logger,
+				executor: makeExecutor(),
+				backends: [http.source],
+				storageBackend: storage,
+			});
+			const files = tenantFiles();
+			const tarballBytes = await packTenantBundle(files);
+			const result = await registry.registerTenant("acme", files, {
+				tarballBytes,
+			});
+			expect(result.ok).toBe(false);
+			const keys: string[] = [];
+			for await (const k of storage.list("workflows/")) {
+				keys.push(k);
+			}
+			expect(keys).toHaveLength(0);
+		} finally {
+			await rm(storageDir, { recursive: true, force: true });
+		}
 	});
 });

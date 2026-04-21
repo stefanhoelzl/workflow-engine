@@ -1,29 +1,57 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
-import type { BaseTriggerDescriptor } from "../executor/types.js";
+import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 
 // ---------------------------------------------------------------------------
 // TriggerSource — the per-kind protocol adapter contract.
 // ---------------------------------------------------------------------------
 //
-// Every trigger kind (http, future: cron, mail, ...) ships a TriggerSource
-// implementation. The runtime (main.ts) constructs one source per kind with
-// shared deps, passes the list into the WorkflowRegistry (the plugin host),
-// and manages start()/stop() lifecycle. On every workflow state change, the
-// registry synchronously calls source.reconfigure(kindView) with the
-// pre-filtered list of descriptors for that kind.
+// Every trigger kind (http, cron, future imap, ...) ships a TriggerSource
+// implementation. The runtime (main.ts) constructs one backend per kind with
+// shared deps, passes the list into the WorkflowRegistry, and manages
+// start()/stop() lifecycle.
+//
+// On every tenant-upload the registry calls `reconfigure(tenant, entries)`
+// on every backend in parallel. Each backend replaces its per-tenant state
+// atomically; empty entries removes the tenant. Backends never touch the
+// Executor — they invoke `entry.fire(input)` with a normalized protocol
+// input; the closure (constructed by the registry via `buildFire`) validates
+// input and dispatches through the executor.
 
-interface TriggerViewEntry<K extends string = string> {
-	readonly tenant: string;
-	readonly workflow: WorkflowManifest;
-	readonly bundleSource: string;
-	readonly descriptor: BaseTriggerDescriptor<K>;
+interface TriggerEntry<
+	D extends BaseTriggerDescriptor<string> = BaseTriggerDescriptor<string>,
+> {
+	readonly descriptor: D;
+	readonly fire: (input: unknown) => Promise<InvokeResult<unknown>>;
 }
 
-interface TriggerSource<K extends string = string> {
+// User-facing configuration error. Maps to 4xx on the upload API. Never
+// carries stack traces or credentials — only safe, actionable fields that
+// can be surfaced to the tenant who uploaded the bundle.
+interface TriggerConfigError {
+	readonly backend: string;
+	readonly trigger: string;
+	readonly message: string;
+}
+
+type ReconfigureResult =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly errors: readonly TriggerConfigError[] };
+
+interface TriggerSource<
+	K extends string = string,
+	D extends BaseTriggerDescriptor<K> = BaseTriggerDescriptor<K>,
+> {
 	readonly kind: K;
 	start(): Promise<void>;
 	stop(): Promise<void>;
-	reconfigure(view: readonly TriggerViewEntry<K>[]): void;
+	reconfigure(
+		tenant: string,
+		entries: readonly TriggerEntry<D>[],
+	): Promise<ReconfigureResult>;
 }
 
-export type { TriggerSource, TriggerViewEntry };
+export type {
+	ReconfigureResult,
+	TriggerConfigError,
+	TriggerEntry,
+	TriggerSource,
+};

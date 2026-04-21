@@ -133,24 +133,26 @@ async function init() {
 	//    the bus).
 	const executor = createExecutor({ bus: eventBus, sandboxStore });
 
-	// 5a. Construct trigger sources. Each source is a protocol adapter for
-	//     one trigger kind; sources plug into WorkflowRegistry as plugin-host
-	//     and receive `reconfigure(kindView)` on every workflow state change.
+	// 5a. Construct trigger backends. Each backend is a protocol adapter for
+	//     one trigger kind; backends plug into WorkflowRegistry which pushes
+	//     `reconfigure(tenant, entries)` per upload. Backends never touch
+	//     the executor directly — the registry builds `fire` closures via
+	//     `buildFire` and attaches them to each `TriggerEntry`.
 	//     main.ts owns start/stop lifecycle.
-	const httpSource = createHttpTriggerSource({ executor });
+	const httpSource = createHttpTriggerSource();
 	const cronSource = createCronTriggerSource({
-		executor,
 		logger: runtimeLogger,
 	});
-	const triggerSources = [httpSource, cronSource];
-	await Promise.all(triggerSources.map((s) => s.start()));
+	const triggerBackends = [httpSource, cronSource];
+	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 6. Workflow registry. Boots from the storage backend by LISTing
-	//    `workflows/*.tar.gz` tenant bundles. Pushes `reconfigure(view)` to
-	//    every registered source on every state change.
+	//    `workflows/*.tar.gz` tenant bundles. Calls `reconfigure(tenant,
+	//    entries)` on every registered backend for every successful upload.
 	const registry = createWorkflowRegistry({
 		logger: runtimeLogger,
-		sources: triggerSources,
+		executor,
+		backends: triggerBackends,
 		...(storageBackend ? { storageBackend } : {}),
 	});
 	if (storageBackend) {
@@ -210,7 +212,7 @@ async function init() {
 		httpSource.middleware,
 		...authRoutes,
 		dashboardMiddleware({ eventStore, registry, sessionMw }),
-		triggerMiddleware({ registry, executor, sessionMw }),
+		triggerMiddleware({ registry, sessionMw }),
 		apiMiddleware({
 			auth: config.auth,
 			registry,
@@ -221,7 +223,7 @@ async function init() {
 	const sandboxService: Service = {
 		start: () => Promise.resolve(),
 		async stop() {
-			await Promise.allSettled(triggerSources.map((s) => s.stop()));
+			await Promise.allSettled(triggerBackends.map((s) => s.stop()));
 			sandboxStore.dispose();
 			await sandboxFactory.dispose();
 		},

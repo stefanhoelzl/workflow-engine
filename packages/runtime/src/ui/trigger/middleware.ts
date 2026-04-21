@@ -1,14 +1,8 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
-import type { Executor } from "../../executor/index.js";
-import type { TriggerDescriptor } from "../../executor/types.js";
 import type { Middleware } from "../../triggers/http.js";
-import { validate } from "../../triggers/validator.js";
-import type {
-	WorkflowEntry,
-	WorkflowRegistry,
-} from "../../workflow-registry.js";
+import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderTriggerPage } from "./page.js";
 
 // ---------------------------------------------------------------------------
@@ -30,7 +24,6 @@ import { renderTriggerPage } from "./page.js";
 
 interface TriggerMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
-	readonly executor: Executor;
 	// Optional session middleware to mount before the trigger handlers.
 	// In production this is the in-app auth `sessionMiddleware`; in tests
 	// the field is omitted and tests inject `UserContext` directly.
@@ -69,29 +62,6 @@ function resolveActiveTenant(
 		return requested;
 	}
 	return tenants[0];
-}
-
-interface ResolvedTrigger {
-	readonly entry: WorkflowEntry;
-	readonly descriptor: TriggerDescriptor;
-}
-
-function resolveTrigger(
-	registry: WorkflowRegistry,
-	tenant: string,
-	workflowName: string,
-	triggerName: string,
-): ResolvedTrigger | undefined {
-	for (const entry of registry.list(tenant)) {
-		if (entry.workflow.name !== workflowName) {
-			continue;
-		}
-		const descriptor = entry.triggers.find((t) => t.name === triggerName);
-		if (!descriptor) {
-			return;
-		}
-		return { entry, descriptor };
-	}
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires page-render GET and kind-agnostic POST dispatch; splitting fragments the handler flow
@@ -136,13 +106,8 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 			return c.notFound();
 		}
 
-		const match = resolveTrigger(
-			deps.registry,
-			tenant,
-			workflowName,
-			triggerName,
-		);
-		if (!match) {
+		const entry = deps.registry.getEntry(tenant, workflowName, triggerName);
+		if (!entry) {
 			return c.notFound();
 		}
 
@@ -159,22 +124,17 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 			);
 		}
 
-		const validated = validate(match.descriptor, body);
-		if (!validated.ok) {
-			return c.json(
-				{ error: "payload_validation_failed", issues: validated.issues },
-				HTTP_UNPROCESSABLE_ENTITY,
-			);
-		}
-
-		const result = await deps.executor.invoke(
-			match.entry.tenant,
-			match.entry.workflow,
-			match.descriptor,
-			validated.input,
-			match.entry.bundleSource,
-		);
+		const result = await entry.fire(body);
 		if (!result.ok) {
+			if (result.error.issues) {
+				return c.json(
+					{
+						error: "payload_validation_failed",
+						issues: result.error.issues,
+					},
+					HTTP_UNPROCESSABLE_ENTITY,
+				);
+			}
 			return c.json(
 				{ error: "internal_error", details: result.error },
 				HTTP_INTERNAL_ERROR,

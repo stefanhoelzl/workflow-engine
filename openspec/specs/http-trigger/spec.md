@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the HTTP trigger factory, handler return value contract, payload shape, HTTP middleware delegation to the executor, trigger registry routing rules, and public ingress security context.
-
 ## Requirements
-
 ### Requirement: httpTrigger factory creates branded HttpTrigger
 
 The SDK SHALL export an `httpTrigger(config)` factory that returns an `HttpTrigger` value that is BOTH branded with `Symbol.for("@workflow-engine/http-trigger")` AND callable as `(payload) => Promise<HttpTriggerResult>`. Invoking the callable SHALL run the user-supplied `handler(payload)` and return its result. The config SHALL accept: `path` (required string), `method` (optional string, default `"POST"`), `body` (optional Zod schema, default `z.unknown()`), `query` (optional Zod object schema), `params` (optional Zod object schema), `handler` (required `(payload) => Promise<HttpTriggerResult>`).
@@ -74,33 +72,49 @@ The handler SHALL receive a single `payload` argument with fields: `body` (valid
 
 ### Requirement: HTTP middleware delegates to executor
 
-The HTTP trigger middleware SHALL match `/webhooks/*` requests against the trigger registry, validate the payload via Zod, and delegate to `executor.invoke(workflow, trigger, payload)`. The middleware SHALL serialize the executor's `HttpTriggerResult` as the HTTP response.
+The HTTP trigger middleware SHALL match `/webhooks/*` requests against the HTTP `TriggerSource`'s internal routing index, normalize the request into an `input` object, and call `entry.fire(input)` on the matched entry. The middleware SHALL serialize the returned `InvokeResult<unknown>` into the HTTP response.
+
+The HTTP `TriggerSource` SHALL NOT call `executor.invoke` directly. All executor interaction happens via the `fire` closure captured on the `TriggerEntry`, which is constructed by the `WorkflowRegistry`.
+
+Normalization of the request into `input` SHALL produce `{body, headers, url, method, params, query}` (unchanged from today). The middleware SHALL NOT perform Zod/Ajv validation against the descriptor's `inputSchema` — that validation is performed inside the `fire` closure by the registry's `buildFire` helper.
 
 #### Scenario: Successful trigger invocation
 
-- **GIVEN** a registered HTTP trigger and a matching `POST /webhooks/<path>` request with valid payload
+- **GIVEN** a registered HTTP trigger and a matching `POST /webhooks/<tenant>/<workflow>/<path>` request
 - **WHEN** the middleware processes the request
-- **THEN** the middleware SHALL call `executor.invoke(workflow, trigger, payload)` exactly once
-- **AND** the middleware SHALL serialize the result as the HTTP response
-
-#### Scenario: Payload validation failure returns 422
-
-- **GIVEN** a registered HTTP trigger with a body schema
-- **WHEN** the request body fails Zod validation
-- **THEN** the middleware SHALL return a `422` response with `{ error: "payload_validation_failed", issues: [...] }`
-- **AND** the middleware SHALL NOT call the executor
+- **THEN** the middleware SHALL resolve the matching `TriggerEntry` via its internal routing index
+- **AND** the middleware SHALL call `entry.fire(input)` exactly once with the normalized input
+- **AND** on `{ok: true, output}` the middleware SHALL serialize `output` as the HTTP response
+- **AND** on `{ok: false, error}` the middleware SHALL return `500` with body `{error: "internal_error"}` (unchanged from today)
 
 #### Scenario: No matching trigger returns 404
 
-- **GIVEN** a request to `/webhooks/<path>` with no matching trigger
+- **GIVEN** a request to `/webhooks/<tenant>/<workflow>/<path>` with no matching trigger in the HTTP source's index
 - **WHEN** the middleware processes the request
 - **THEN** the middleware SHALL return `404`
 
-#### Scenario: Non-JSON body returns 422
+#### Scenario: Input validation failure does not reach the executor
 
-- **GIVEN** a request with a non-JSON body to a registered HTTP trigger
-- **WHEN** the middleware tries to parse the body
-- **THEN** the middleware SHALL return `422`
+- **GIVEN** a registered HTTP trigger with a body schema requiring `{name: string}`
+- **WHEN** a request arrives with body `{}` (missing `name`)
+- **THEN** the middleware SHALL call `entry.fire(input)` with the unnormalized input
+- **AND** the `fire` closure SHALL resolve to `{ok: false, error: {message: <validation details>}}`
+- **AND** the middleware SHALL return a `422` response with the validation details in the body
+- **AND** `executor.invoke` SHALL NOT be called
+
+#### Scenario: HTTP source implements the TriggerSource contract
+
+- **GIVEN** the HTTP trigger source factory
+- **WHEN** the returned value is inspected
+- **THEN** it SHALL expose `kind: "http"`, `start()`, `stop()`, and `reconfigure(tenant, entries): Promise<ReconfigureResult>`
+- **AND** its `reconfigure` SHALL store entries keyed by tenant (internally) so that `reconfigure("acme", [])` clears only `acme`'s entries and not any other tenant's
+
+#### Scenario: HTTP source maps user-visible errors into {ok: false}
+
+- **GIVEN** an HTTP source that detects an invalid configuration during reconfigure (e.g., two triggers for the same tenant/workflow share a routing key under today's configurable-path model)
+- **WHEN** `reconfigure(tenant, entries)` is called with the offending entries
+- **THEN** the source SHALL return `{ok: false, errors: [TriggerConfigError, …]}`
+- **AND** entries that did not conflict SHALL NOT be partially applied (the whole tenant's replacement is atomic or not at all)
 
 ### Requirement: Trigger registry routing rules
 
@@ -137,3 +151,4 @@ Changes that introduce new threats, weaken or remove a documented mitigation, ad
 - **GIVEN** a change to this capability that affects an item enumerated in `/SECURITY.md S3` or the tenant-isolation invariant in `/SECURITY.md §1`
 - **WHEN** the change is proposed
 - **THEN** the proposal SHALL include corresponding updates to `/SECURITY.md S3` and/or `/SECURITY.md §1`
+

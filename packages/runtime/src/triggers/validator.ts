@@ -1,10 +1,5 @@
 import Ajv2020 from "ajv/dist/2020.js";
-import type { TriggerDescriptor } from "../executor/types.js";
-
-interface ValidationIssue {
-	readonly path: (string | number)[];
-	readonly message: string;
-}
+import type { TriggerDescriptor, ValidationIssue } from "../executor/types.js";
 
 type ValidateResult<T = unknown> =
 	| { readonly ok: true; readonly input: T }
@@ -81,5 +76,5 @@ function validate(
 	return { ok: false, issues };
 }
 
-export type { ValidateResult, ValidationIssue };
+export type { ValidateResult };
 export { validate };

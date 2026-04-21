@@ -1,20 +1,24 @@
 import { CronExpressionParser } from "cron-parser";
-import type { Executor } from "../executor/index.js";
 import type { CronTriggerDescriptor } from "../executor/types.js";
 import type { Logger } from "../logger.js";
-import type { TriggerSource, TriggerViewEntry } from "./source.js";
+import type {
+	ReconfigureResult,
+	TriggerEntry,
+	TriggerSource,
+} from "./source.js";
 
 // ---------------------------------------------------------------------------
 // Cron TriggerSource
 // ---------------------------------------------------------------------------
 //
 // `createCronTriggerSource` is the cron-kind protocol adapter. The source:
-//   - Holds one `setTimeout` handle per (tenant, workflow, trigger name).
-//   - Receives a kind-filtered view of cron descriptors via `reconfigure()`
-//     on every workflow state change (the WorkflowRegistry pushes these).
-//   - On each fire, invokes `executor.invoke(tenant, workflow, descriptor,
-//     {}, bundleSource)` with an empty payload and arms the next tick
-//     regardless of the invocation outcome.
+//   - Holds one `setTimeout` handle per (tenant, workflowName, triggerName),
+//     grouped per-tenant so `reconfigure(tenant, entries)` only touches the
+//     specified tenant's timers.
+//   - Receives `reconfigure(tenant, entries)` from the WorkflowRegistry on
+//     every tenant upload. Entries for other tenants are untouched.
+//   - On each fire, invokes `entry.fire({})` with an empty payload and
+//     arms the next tick regardless of outcome.
 //   - Clamps `setTimeout` delays to 24h max so yearly schedules don't hit
 //     Node's signed-int-ms overflow, and so DST/clock-drift corrections
 //     are picked up on the next wake.
@@ -32,24 +36,26 @@ const MAX_TIMEOUT_MS =
 	HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MS_PER_SECOND;
 
 interface CronTriggerSourceDeps {
-	readonly executor: Executor;
 	readonly logger: Logger;
 }
 
 interface SourceEntry {
 	readonly tenant: string;
-	readonly workflow: TriggerViewEntry<"cron">["workflow"];
-	readonly bundleSource: string;
-	readonly descriptor: CronTriggerDescriptor;
+	readonly entry: TriggerEntry<CronTriggerDescriptor>;
 	timer: ReturnType<typeof setTimeout> | undefined;
 }
 
-function entryKey(
-	tenant: string,
-	workflowName: string,
-	triggerName: string,
-): string {
-	return `${tenant}\u0000${workflowName}\u0000${triggerName}`;
+interface CronTriggerSource
+	extends TriggerSource<"cron", CronTriggerDescriptor> {
+	getEntry(
+		tenant: string,
+		workflowName: string,
+		triggerName: string,
+	): TriggerEntry<CronTriggerDescriptor> | undefined;
+}
+
+function entryKey(workflowName: string, triggerName: string): string {
+	return `${workflowName}/${triggerName}`;
 }
 
 function computeNextDelay(
@@ -72,10 +78,16 @@ function computeNextDelay(
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, arm/cancel helpers, and TriggerSource lifecycle methods
 function createCronTriggerSource(
 	deps: CronTriggerSourceDeps,
-): TriggerSource<"cron"> {
-	const entries = new Map<string, SourceEntry>();
+): CronTriggerSource {
+	// Per-tenant map of entry-key -> SourceEntry. Outer key is tenant so
+	// `reconfigure(tenant, [])` can cancel only that tenant's timers.
+	const tenants = new Map<string, Map<string, SourceEntry>>();
 
-	function cancelAll(): void {
+	function cancelTenant(tenant: string): void {
+		const entries = tenants.get(tenant);
+		if (!entries) {
+			return;
+		}
 		for (const entry of entries.values()) {
 			if (entry.timer !== undefined) {
 				clearTimeout(entry.timer);
@@ -84,28 +96,34 @@ function createCronTriggerSource(
 		}
 	}
 
-	function arm(entry: SourceEntry): void {
+	function cancelAll(): void {
+		for (const tenant of tenants.keys()) {
+			cancelTenant(tenant);
+		}
+	}
+
+	function arm(srcEntry: SourceEntry): void {
 		const now = new Date();
 		let delay: number;
 		try {
-			delay = computeNextDelay(entry.descriptor, now);
+			delay = computeNextDelay(srcEntry.entry.descriptor, now);
 		} catch (err) {
 			// Schedule or tz invalid — shouldn't reach here because the manifest
 			// Zod schema gates both at upload, but fail loudly if it does.
 			deps.logger.error("cron.schedule-invalid", {
-				tenant: entry.tenant,
-				workflow: entry.workflow.name,
-				trigger: entry.descriptor.name,
-				schedule: entry.descriptor.schedule,
-				tz: entry.descriptor.tz,
+				tenant: srcEntry.tenant,
+				workflow: srcEntry.entry.descriptor.workflowName,
+				trigger: srcEntry.entry.descriptor.name,
+				schedule: srcEntry.entry.descriptor.schedule,
+				tz: srcEntry.entry.descriptor.tz,
 				error: err instanceof Error ? err.message : String(err),
 			});
 			return;
 		}
 		const clamped = Math.min(delay, MAX_TIMEOUT_MS);
 		const wasClamped = clamped < delay;
-		entry.timer = setTimeout(() => {
-			onFire(entry, wasClamped).catch(() => {
+		srcEntry.timer = setTimeout(() => {
+			onFire(srcEntry, wasClamped).catch(() => {
 				// onFire already logs any thrown error; swallow the rejection
 				// here so an unhandledPromiseRejection doesn't tear down the
 				// process on a transient schedule/dispatch failure.
@@ -114,45 +132,41 @@ function createCronTriggerSource(
 	}
 
 	async function onFire(
-		entry: SourceEntry,
+		srcEntry: SourceEntry,
 		wasClamped: boolean,
 	): Promise<void> {
-		entry.timer = undefined;
+		srcEntry.timer = undefined;
 		if (wasClamped) {
 			// Under the 24h clamp the timer woke up early on purpose. Don't
-			// invoke; recompute and re-arm so we eventually land on the real
+			// fire; recompute and re-arm so we eventually land on the real
 			// scheduled instant.
-			arm(entry);
+			arm(srcEntry);
 			return;
 		}
 		try {
-			await deps.executor.invoke(
-				entry.tenant,
-				entry.workflow,
-				entry.descriptor,
-				{},
-				entry.bundleSource,
-			);
+			await srcEntry.entry.fire({});
 		} catch (err) {
-			// `executor.invoke` translates handler errors into `{ok:false}`
-			// envelopes; a thrown error here means the executor itself failed
-			// (sandbox construction, queue dispatch). Log and keep scheduling.
-			deps.logger.error("cron.invoke-threw", {
-				tenant: entry.tenant,
-				workflow: entry.workflow.name,
-				trigger: entry.descriptor.name,
+			// `fire` is built by the registry and returns `{ok, ...}` rather
+			// than throwing; a thrown error here means the registry-built
+			// closure itself failed (should not happen). Log and keep
+			// scheduling.
+			deps.logger.error("cron.fire-threw", {
+				tenant: srcEntry.tenant,
+				workflow: srcEntry.entry.descriptor.workflowName,
+				trigger: srcEntry.entry.descriptor.name,
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
 		// Re-arm from the current clock regardless of invocation outcome.
-		// This prevents a long-running invocation from causing the next tick
-		// to fire immediately (we always compute nextDate(now)).
-		if (
-			entries.get(
-				entryKey(entry.tenant, entry.workflow.name, entry.descriptor.name),
-			) === entry
-		) {
-			arm(entry);
+		// Guard against races with reconfigure: only re-arm if this entry
+		// is still the current one for its key.
+		const tenantMap = tenants.get(srcEntry.tenant);
+		const key = entryKey(
+			srcEntry.entry.descriptor.workflowName,
+			srcEntry.entry.descriptor.name,
+		);
+		if (tenantMap?.get(key) === srcEntry) {
+			arm(srcEntry);
 		}
 	}
 
@@ -163,29 +177,41 @@ function createCronTriggerSource(
 		},
 		stop() {
 			cancelAll();
-			entries.clear();
+			tenants.clear();
 			return Promise.resolve();
 		},
-		reconfigure(view: readonly TriggerViewEntry<"cron">[]) {
-			cancelAll();
-			entries.clear();
-			for (const v of view) {
-				const descriptor = v.descriptor as CronTriggerDescriptor;
-				const entry: SourceEntry = {
-					tenant: v.tenant,
-					workflow: v.workflow,
-					bundleSource: v.bundleSource,
-					descriptor,
+		reconfigure(
+			tenant: string,
+			entries: readonly TriggerEntry<CronTriggerDescriptor>[],
+		): Promise<ReconfigureResult> {
+			// Cancel any existing timers for this tenant and clear its map.
+			cancelTenant(tenant);
+			tenants.delete(tenant);
+			if (entries.length === 0) {
+				return Promise.resolve({ ok: true });
+			}
+			const tenantMap = new Map<string, SourceEntry>();
+			tenants.set(tenant, tenantMap);
+			for (const entry of entries) {
+				const srcEntry: SourceEntry = {
+					tenant,
+					entry,
 					timer: undefined,
 				};
-				entries.set(
-					entryKey(v.tenant, v.workflow.name, descriptor.name),
-					entry,
+				tenantMap.set(
+					entryKey(entry.descriptor.workflowName, entry.descriptor.name),
+					srcEntry,
 				);
-				arm(entry);
+				arm(srcEntry);
 			}
+			return Promise.resolve({ ok: true });
+		},
+		getEntry(tenant, workflowName, triggerName) {
+			return tenants.get(tenant)?.get(entryKey(workflowName, triggerName))
+				?.entry;
 		},
 	};
 }
 
+export type { CronTriggerSource };
 export { createCronTriggerSource };

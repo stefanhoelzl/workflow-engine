@@ -1,48 +1,41 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
 import { describe, expect, it, vi } from "vitest";
-import type { Executor } from "../executor/index.js";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	InvokeResult,
 } from "../executor/types.js";
 import { createLogger } from "../logger.js";
 import { createCronTriggerSource } from "./cron.js";
 import { createHttpTriggerSource } from "./http.js";
-import type { TriggerSource, TriggerViewEntry } from "./source.js";
+import type { TriggerEntry, TriggerSource } from "./source.js";
 
 // ---------------------------------------------------------------------------
 // TriggerSource contract tests — parameterised by kind
 // ---------------------------------------------------------------------------
 //
 // Every trigger kind's source must satisfy shared lifecycle invariants:
-// `start`/`stop` are idempotent, `reconfigure` replaces state atomically.
-// Today only the HTTP kind exists; when cron/mail land, add a row to
-// `KIND_FACTORIES` and the same invariants run against them.
+// start/stop are idempotent, reconfigure(tenant, entries) replaces per-
+// tenant state atomically, empty entries clears a tenant.
+
+type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;
 
 interface KindFactory<K extends string> {
 	readonly kind: K;
-	readonly makeView: (name: string) => TriggerViewEntry<K>;
-	readonly createSource: (executor: Executor) => TriggerSource<K>;
+	readonly makeEntry: (name: string) => TriggerEntry;
+	readonly createSource: () => TriggerSource;
 }
 
-function makeWorkflow(): WorkflowManifest {
-	return {
-		name: "w",
-		module: "w.js",
-		sha: "0".repeat(64),
-		env: {},
-		actions: [],
-		triggers: [],
-	};
-}
+const stubFire: Fire = () =>
+	Promise.resolve({ ok: true, output: { status: 200 } });
 
 const httpKind: KindFactory<"http"> = {
 	kind: "http",
-	makeView(name) {
+	makeEntry(name) {
 		const descriptor: HttpTriggerDescriptor = {
 			kind: "http",
 			type: "http",
 			name,
+			workflowName: "w",
 			path: name,
 			method: "POST",
 			params: [],
@@ -50,25 +43,21 @@ const httpKind: KindFactory<"http"> = {
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		};
-		return {
-			tenant: "t0",
-			workflow: makeWorkflow(),
-			bundleSource: "source",
-			descriptor,
-		};
+		return { descriptor, fire: vi.fn<Fire>(stubFire) };
 	},
-	createSource(executor) {
-		return createHttpTriggerSource({ executor });
+	createSource() {
+		return createHttpTriggerSource() as unknown as TriggerSource;
 	},
 };
 
 const cronKind: KindFactory<"cron"> = {
 	kind: "cron",
-	makeView(name) {
+	makeEntry(name) {
 		const descriptor: CronTriggerDescriptor = {
 			kind: "cron",
 			type: "cron",
 			name,
+			workflowName: "w",
 			schedule: "0 0 1 1 *",
 			tz: "UTC",
 			inputSchema: {
@@ -78,18 +67,12 @@ const cronKind: KindFactory<"cron"> = {
 			},
 			outputSchema: {},
 		};
-		return {
-			tenant: "t0",
-			workflow: makeWorkflow(),
-			bundleSource: "source",
-			descriptor,
-		};
+		return { descriptor, fire: vi.fn<Fire>(stubFire) };
 	},
-	createSource(executor) {
+	createSource() {
 		return createCronTriggerSource({
-			executor,
 			logger: createLogger("test-cron", { level: "silent" }),
-		});
+		}) as unknown as TriggerSource;
 	},
 };
 
@@ -97,43 +80,38 @@ const KIND_FACTORIES: readonly KindFactory<string>[] = [httpKind, cronKind];
 
 for (const factory of KIND_FACTORIES) {
 	describe(`TriggerSource contract: ${factory.kind}`, () => {
-		function stubExecutor(): Executor {
-			return {
-				invoke: vi.fn(async () => ({
-					ok: true as const,
-					output: { status: 200 },
-				})),
-			};
-		}
-
 		it("exposes kind matching the factory's kind discriminator", () => {
-			const source = factory.createSource(stubExecutor());
+			const source = factory.createSource();
 			expect(source.kind).toBe(factory.kind);
 		});
 
 		it("start() is idempotent", async () => {
-			const source = factory.createSource(stubExecutor());
+			const source = factory.createSource();
 			await source.start();
 			await source.start();
 		});
 
 		it("stop() is idempotent", async () => {
-			const source = factory.createSource(stubExecutor());
+			const source = factory.createSource();
 			await source.start();
 			await source.stop();
 			await source.stop();
 		});
 
-		it("reconfigure replaces internal state atomically", () => {
-			const source = factory.createSource(stubExecutor());
-			source.reconfigure([factory.makeView("a")] as TriggerViewEntry<string>[]);
-			source.reconfigure([factory.makeView("b")] as TriggerViewEntry<string>[]);
-			source.reconfigure([]);
+		it("reconfigure replaces per-tenant state atomically", async () => {
+			const source = factory.createSource();
+			const resA = await source.reconfigure("t0", [factory.makeEntry("a")]);
+			expect(resA.ok).toBe(true);
+			const resB = await source.reconfigure("t0", [factory.makeEntry("b")]);
+			expect(resB.ok).toBe(true);
+			const resEmpty = await source.reconfigure("t0", []);
+			expect(resEmpty.ok).toBe(true);
 		});
 
-		it("reconfigure with an empty view is a no-op", () => {
-			const source = factory.createSource(stubExecutor());
-			source.reconfigure([]);
+		it("reconfigure with an empty entries array is a no-op on unknown tenant", async () => {
+			const source = factory.createSource();
+			const res = await source.reconfigure("never-seen", []);
+			expect(res.ok).toBe(true);
 		});
 	});
 }
