@@ -89,9 +89,9 @@ variable "auth_allow" {
   description = "AUTH_ALLOW env value; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl;github:org:acme\""
 }
 
-variable "image_tag" {
+variable "image_digest" {
   type        = string
-  description = "Container image tag from ghcr.io (e.g. 2026.04.20)"
+  description = "Container image digest (sha256:...) supplied at apply time by CI from docker/build-push-action output"
 }
 
 provider "upcloud" {
@@ -158,8 +158,8 @@ module "app" {
 
   instance_name = "prod"
   namespace     = "prod"
-  image         = "ghcr.io/stefanhoelzl/workflow-engine:${var.image_tag}"
-  image_hash    = var.image_tag
+  image         = "ghcr.io/stefanhoelzl/workflow-engine@${var.image_digest}"
+  image_hash    = var.image_digest
 
   s3 = {
     endpoint   = data.terraform_remote_state.persistence.outputs.endpoint
@@ -211,4 +211,9 @@ module "dns" {
 output "url" {
   value       = "https://${var.domain}"
   description = "URL where the production environment is accessible"
+}
+
+output "cluster_id" {
+  value       = data.terraform_remote_state.cluster.outputs.cluster_id
+  description = "UpCloud K8s cluster ID. Used by CI to fetch kubeconfig via upctl for the post-apply cert-readiness wait."
 }
