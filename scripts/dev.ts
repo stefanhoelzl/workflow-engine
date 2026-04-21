@@ -145,7 +145,7 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		PORT: String(port),
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
 		BASE_URL: `http://localhost:${String(port)}`,
-		GITHUB_USER: "__DISABLE_AUTH__",
+		AUTH_ALLOW: "__DISABLE_AUTH__",
 	};
 }
 

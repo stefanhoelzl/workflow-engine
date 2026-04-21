@@ -168,7 +168,7 @@ The implementation SHALL conform to the threat model documented at
 `/SECURITY.md §4 Authentication`, which enumerates the trust level,
 entry points, threats, current mitigations, residual risks, and rules
 governing this capability. This capability owns runtime configuration
-values that gate security-relevant behavior — notably `GITHUB_USER`,
+values that gate security-relevant behavior — notably `AUTH_ALLOW`,
 which controls whether the API authentication middleware is
 registered at all.
 
