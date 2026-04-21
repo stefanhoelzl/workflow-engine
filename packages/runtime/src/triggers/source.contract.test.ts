@@ -1,7 +1,12 @@
 import type { WorkflowManifest } from "@workflow-engine/core";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../executor/index.js";
-import type { HttpTriggerDescriptor } from "../executor/types.js";
+import type {
+	CronTriggerDescriptor,
+	HttpTriggerDescriptor,
+} from "../executor/types.js";
+import { createLogger } from "../logger.js";
+import { createCronTriggerSource } from "./cron.js";
 import { createHttpTriggerSource } from "./http.js";
 import type { TriggerSource, TriggerViewEntry } from "./source.js";
 
@@ -57,7 +62,38 @@ const httpKind: KindFactory<"http"> = {
 	},
 };
 
-const KIND_FACTORIES: readonly KindFactory<string>[] = [httpKind];
+const cronKind: KindFactory<"cron"> = {
+	kind: "cron",
+	makeView(name) {
+		const descriptor: CronTriggerDescriptor = {
+			kind: "cron",
+			type: "cron",
+			name,
+			schedule: "0 0 1 1 *",
+			tz: "UTC",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		};
+		return {
+			tenant: "t0",
+			workflow: makeWorkflow(),
+			bundleSource: "source",
+			descriptor,
+		};
+	},
+	createSource(executor) {
+		return createCronTriggerSource({
+			executor,
+			logger: createLogger("test-cron", { level: "silent" }),
+		});
+	},
+};
+
+const KIND_FACTORIES: readonly KindFactory<string>[] = [httpKind, cronKind];
 
 for (const factory of KIND_FACTORIES) {
 	describe(`TriggerSource contract: ${factory.kind}`, () => {

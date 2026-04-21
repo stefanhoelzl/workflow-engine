@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EventKind, InvocationEvent } from "./index.js";
-import { IIFE_NAMESPACE } from "./index.js";
+import { IIFE_NAMESPACE, ManifestSchema } from "./index.js";
 import { makeEvent } from "./test-utils.js";
 
 describe("IIFE_NAMESPACE", () => {
@@ -77,5 +77,77 @@ describe("EventKind", () => {
 		expect(responseEvent.output).toBe("ok");
 		expect(errorEvent.error?.message).toBe("boom");
 		expect(clearEvent.name).toBe("clearTimeout");
+	});
+});
+
+describe("ManifestSchema cron trigger", () => {
+	const base = (triggers: unknown[]) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: {},
+				actions: [],
+				triggers,
+			},
+		],
+	});
+	const validCron = {
+		name: "daily",
+		type: "cron" as const,
+		schedule: "0 9 * * *",
+		tz: "UTC",
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
+
+	it("accepts a valid cron descriptor", () => {
+		const parsed = ManifestSchema.parse(base([validCron]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "cron") {
+			throw new Error("expected cron");
+		}
+		expect(trigger.schedule).toBe("0 9 * * *");
+		expect(trigger.tz).toBe("UTC");
+	});
+
+	it("rejects a malformed schedule", () => {
+		const bad = { ...validCron, schedule: "not-a-cron" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects a 6-field schedule (non-standard)", () => {
+		const bad = { ...validCron, schedule: "0 0 9 * * *" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects an unknown timezone", () => {
+		const bad = { ...validCron, tz: "Not/AZone" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects an empty timezone", () => {
+		const bad = { ...validCron, tz: "" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects a missing schedule", () => {
+		const { schedule: _schedule, ...rest } = validCron;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects a missing tz", () => {
+		const { tz: _tz, ...rest } = validCron;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects an unknown type discriminant", () => {
+		const bad = { ...validCron, type: "mystery" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
 	});
 });

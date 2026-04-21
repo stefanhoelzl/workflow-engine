@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../../executor/index.js";
-import type { HttpTriggerDescriptor } from "../../executor/types.js";
+import type {
+	CronTriggerDescriptor,
+	HttpTriggerDescriptor,
+} from "../../executor/types.js";
 import type {
 	WorkflowEntry,
 	WorkflowRegistry,
@@ -46,6 +49,39 @@ function makeEntry(
 		body: triggerSpec.body ?? { type: "object" },
 		inputSchema: triggerSpec.inputSchema ?? { type: "object" },
 		outputSchema: { type: "object" },
+	};
+	return {
+		tenant,
+		workflow: {
+			name: workflowName,
+			module: `${workflowName}.js`,
+			sha: "0".repeat(64),
+			env: {},
+			actions: [],
+			triggers: [],
+		},
+		bundleSource: "",
+		triggers: [descriptor],
+	};
+}
+
+function makeCronEntry(
+	tenant: string,
+	workflowName: string,
+	spec: { name: string; schedule: string; tz: string },
+): WorkflowEntry {
+	const descriptor: CronTriggerDescriptor = {
+		kind: "cron",
+		type: "cron",
+		name: spec.name,
+		schedule: spec.schedule,
+		tz: spec.tz,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
 	};
 	return {
 		tenant,
@@ -238,6 +274,55 @@ describe("triggerMiddleware: POST dispatch", () => {
 			},
 		});
 		expect(res.status).toBe(500);
+	});
+});
+
+describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
+	it("renders a cron trigger card with schedule+tz meta and /trigger/ POST URL", async () => {
+		const registry = makeRegistry([
+			makeCronEntry("t0", "billing", {
+				name: "daily",
+				schedule: "0 9 * * *",
+				tz: "UTC",
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		expect(body).toContain("billing / daily");
+		expect(body).toContain('title="cron"');
+		expect(body).toContain('data-trigger-url="/trigger/t0/billing/daily"');
+		expect(body).toContain('data-trigger-method="POST"');
+		// Schedule and tz appear in the meta label.
+		expect(body).toContain("0 9 * * *");
+		expect(body).toContain("UTC");
+	});
+
+	it("dispatches a manual cron fire via executor.invoke with empty payload", async () => {
+		const registry = makeRegistry([
+			makeCronEntry("t0", "billing", {
+				name: "daily",
+				schedule: "0 9 * * *",
+				tz: "UTC",
+			}),
+		]);
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const app = mount(registry, invoke);
+		const res = await app.request("/trigger/t0/billing/daily", {
+			method: "POST",
+			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(res.status).toBe(200);
+		expect(invoke).toHaveBeenCalledTimes(1);
+		const call = invoke.mock.calls[0];
+		expect(call?.[0]).toBe("t0");
+		expect((call?.[2] as CronTriggerDescriptor).name).toBe("daily");
+		expect(call?.[3]).toEqual({});
 	});
 });
 

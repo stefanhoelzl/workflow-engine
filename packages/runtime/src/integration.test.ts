@@ -8,11 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
 import { createPersistence } from "./event-bus/persistence.js";
-import { createExecutor } from "./executor/index.js";
-import type { Logger } from "./logger.js";
+import { createExecutor, type Executor } from "./executor/index.js";
+import { createLogger, type Logger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import { createFsStorage } from "./storage/fs.js";
+import { createCronTriggerSource } from "./triggers/cron.js";
 import {
 	createWorkflowRegistry,
 	type WorkflowRegistry,
@@ -341,5 +342,148 @@ describe("end-to-end event flow", () => {
 					(r.error as { kind?: string }).kind === "engine_crashed",
 			),
 		).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Cron-specific integration: registry -> cron source -> executor -> archive
+// ---------------------------------------------------------------------------
+
+const CRON_WORKFLOW = {
+	name: "cron-demo",
+	module: "cron-demo.js",
+	sha: "c".repeat(64),
+	env: {},
+	actions: [
+		{ name: "echo", input: { type: "object" }, output: { type: "object" } },
+	],
+	triggers: [
+		{
+			name: "every-minute",
+			type: "cron",
+			schedule: "* * * * *",
+			tz: "UTC",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		},
+	],
+};
+const CRON_TENANT_MANIFEST = { workflows: [CRON_WORKFLOW] };
+
+// Hand-crafted IIFE bundle: a cron-style trigger is an empty-payload
+// callable. The runtime dispatches by the trigger's export name, so
+// `every-minute` must exist on the exports namespace.
+const CRON_BUNDLE = `
+var __wfe_exports__ = (function(exports) {
+  exports.echo = async (input) => globalThis.__dispatchAction(
+    "echo",
+    input,
+    async (i) => i,
+    { parse: (x) => x },
+  );
+  exports["every-minute"] = Object.assign(
+    async () => {
+      await exports.echo({ beat: true });
+      return undefined;
+    },
+    { schedule: "* * * * *", tz: "UTC" },
+  );
+  return exports;
+})({});
+`;
+
+// These integration tests mock the executor rather than going through the
+// real sandbox. The executor + sandbox path is exercised by executor tests
+// and by the top end-to-end test in this file; here we focus on the new
+// wiring — registry → cron source reconfigure → fire → executor dispatch.
+
+describe("cron trigger integration", () => {
+	let registry: WorkflowRegistry;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		registry?.dispose();
+		vi.useRealTimers();
+	});
+
+	it("scheduled tick fires executor with the cron descriptor and empty payload", async () => {
+		vi.setSystemTime(new Date("2026-04-21T00:00:30.000Z"));
+
+		const logger = makeLogger();
+		const quietLogger = createLogger("cron-integration", { level: "silent" });
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const cronSource = createCronTriggerSource({
+			executor: { invoke },
+			logger: quietLogger,
+		});
+		await cronSource.start();
+
+		registry = createWorkflowRegistry({ logger, sources: [cronSource] });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(CRON_TENANT_MANIFEST)],
+				["cron-demo.js", CRON_BUNDLE],
+			]),
+		);
+
+		// Advance to the next minute boundary.
+		await vi.advanceTimersByTimeAsync(31_000);
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		const call = invoke.mock.calls[0];
+		expect(call?.[0]).toBe("acme"); // tenant
+		expect(call?.[1].name).toBe("cron-demo"); // workflow manifest
+		expect(call?.[2].name).toBe("every-minute"); // descriptor
+		expect(call?.[2].kind).toBe("cron");
+		expect(call?.[3]).toEqual({}); // payload
+
+		await cronSource.stop();
+	});
+
+	it("re-uploading the tenant cancels in-flight cron timers and rearms from the new view", async () => {
+		vi.setSystemTime(new Date("2026-04-21T00:00:30.000Z"));
+
+		const logger = makeLogger();
+		const quietLogger = createLogger("cron-reconfigure", { level: "silent" });
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const cronSource = createCronTriggerSource({
+			executor: { invoke },
+			logger: quietLogger,
+		});
+		await cronSource.start();
+
+		registry = createWorkflowRegistry({ logger, sources: [cronSource] });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(CRON_TENANT_MANIFEST)],
+				["cron-demo.js", CRON_BUNDLE],
+			]),
+		);
+
+		// Before the scheduled fire, replace with an empty tenant (removes the cron).
+		await registry.registerTenant(
+			"acme",
+			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
+		);
+
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(invoke).not.toHaveBeenCalled();
+
+		await cronSource.stop();
 	});
 });

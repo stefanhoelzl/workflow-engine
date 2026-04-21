@@ -132,11 +132,55 @@ const httpTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
+// Standard 5-field cron grammar: each field is one or more of the allowed
+// chars (digit, `*`, `,`, `-`, `/`). Non-standard extensions (L, W, #, ?,
+// named months/days, 6-field) are rejected here.
+const STANDARD_CRON_RE = /^[0-9*,\-/]+(\s+[0-9*,\-/]+){4}$/;
+
+// `Intl.supportedValuesOf('timeZone')` returns only the "preferred" IANA zones
+// and omits aliases like `UTC`, `Etc/UTC`, `GMT`. The authoritative validator
+// is `new Intl.DateTimeFormat({timeZone: v})`, which accepts anything the ICU
+// database knows (preferred + aliases) and throws on unknown zones.
+const tzValidationCache = new Map<string, boolean>();
+function isValidTimezone(tz: string): boolean {
+	if (tz === "") {
+		return false;
+	}
+	const cached = tzValidationCache.get(tz);
+	if (cached !== undefined) {
+		return cached;
+	}
+	let ok: boolean;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: tz });
+		ok = true;
+	} catch {
+		ok = false;
+	}
+	tzValidationCache.set(tz, ok);
+	return ok;
+}
+
+const cronTriggerManifestSchema = z.object({
+	name: z.string(),
+	type: z.literal("cron"),
+	schedule: z.string().regex(STANDARD_CRON_RE, {
+		error: "must be a standard 5-field cron expression",
+	}),
+	tz: z.string().refine(isValidTimezone, {
+		error: "must be a supported IANA timezone",
+	}),
+	inputSchema: jsonSchemaValidator,
+	outputSchema: jsonSchemaValidator,
+});
+
 const triggerManifestSchema = z.discriminatedUnion("type", [
 	httpTriggerManifestSchema,
+	cronTriggerManifestSchema,
 ]);
 
 type HttpTriggerManifest = z.infer<typeof httpTriggerManifestSchema>;
+type CronTriggerManifest = z.infer<typeof cronTriggerManifestSchema>;
 type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 
 const workflowManifestSchema = z.object({
@@ -186,6 +230,7 @@ const IIFE_NAMESPACE = "__wfe_exports__";
 
 export type {
 	ActionDispatcher,
+	CronTriggerManifest,
 	EventKind,
 	HttpTriggerManifest,
 	HttpTriggerPayload,

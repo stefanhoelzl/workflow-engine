@@ -22,6 +22,7 @@ import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 import { createS3Storage } from "./storage/s3.js";
+import { createCronTriggerSource } from "./triggers/cron.js";
 import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
@@ -137,7 +138,11 @@ async function init() {
 	//     and receive `reconfigure(kindView)` on every workflow state change.
 	//     main.ts owns start/stop lifecycle.
 	const httpSource = createHttpTriggerSource({ executor });
-	const triggerSources = [httpSource];
+	const cronSource = createCronTriggerSource({
+		executor,
+		logger: runtimeLogger,
+	});
+	const triggerSources = [httpSource, cronSource];
 	await Promise.all(triggerSources.map((s) => s.start()));
 
 	// 6. Workflow registry. Boots from the storage backend by LISTing

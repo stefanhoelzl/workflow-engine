@@ -283,6 +283,47 @@ export const file = httpTrigger({
 });
 `;
 
+const CRON_WORKFLOW_EXPLICIT_TZ = `
+import { cronTrigger, defineWorkflow } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const daily = cronTrigger({
+	schedule: "0 9 * * *",
+	tz: "Europe/Berlin",
+	handler: async () => {},
+});
+`;
+
+const CRON_WORKFLOW_DEFAULT_TZ = `
+import { cronTrigger, defineWorkflow } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const heartbeat = cronTrigger({
+	schedule: "*/5 * * * *",
+	handler: async () => {},
+});
+`;
+
+const CRON_AND_HTTP_WORKFLOW = `
+import { cronTrigger, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const ping = httpTrigger({
+	path: "ping",
+	body: z.object({}),
+	handler: async () => ({}),
+});
+
+export const nightly = cronTrigger({
+	schedule: "0 2 * * *",
+	tz: "UTC",
+	handler: async () => {},
+});
+`;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -437,6 +478,63 @@ describe("workflowPlugin: HTTP trigger entry", () => {
 			triggers: Array<{ params: string[] }>;
 		};
 		expect(manifest.triggers[0]?.params).toEqual(["rest"]);
+	});
+});
+
+describe("workflowPlugin: cron trigger entry", () => {
+	it("emits cron descriptor with author-supplied tz", async () => {
+		const { outDir } = await buildFixture({
+			files: { "cr.ts": CRON_WORKFLOW_EXPLICIT_TZ },
+			workflows: ["./cr.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "cr")) as {
+			triggers: Array<{
+				name: string;
+				type: string;
+				schedule?: string;
+				tz?: string;
+				inputSchema?: Record<string, unknown>;
+				outputSchema?: Record<string, unknown>;
+				path?: string;
+			}>;
+		};
+		expect(manifest.triggers).toHaveLength(1);
+		const t = manifest.triggers[0];
+		expect(t?.name).toBe("daily");
+		expect(t?.type).toBe("cron");
+		expect(t?.schedule).toBe("0 9 * * *");
+		expect(t?.tz).toBe("Europe/Berlin");
+		expect(t?.inputSchema).toBeDefined();
+		expect(t?.outputSchema).toBeDefined();
+		// No HTTP-specific fields leak into a cron descriptor.
+		expect(t?.path).toBeUndefined();
+	});
+
+	it("defaults cron tz to the build host IANA zone when omitted", async () => {
+		const hostTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		const { outDir } = await buildFixture({
+			files: { "cr2.ts": CRON_WORKFLOW_DEFAULT_TZ },
+			workflows: ["./cr2.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "cr2")) as {
+			triggers: Array<{ name: string; tz?: string }>;
+		};
+		expect(manifest.triggers[0]?.name).toBe("heartbeat");
+		expect(manifest.triggers[0]?.tz).toBe(hostTz);
+	});
+
+	it("emits both HTTP and cron triggers in the same workflow", async () => {
+		const { outDir } = await buildFixture({
+			files: { "mixed.ts": CRON_AND_HTTP_WORKFLOW },
+			workflows: ["./mixed.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "mixed")) as {
+			triggers: Array<{ name: string; type: string }>;
+		};
+		expect(manifest.triggers).toHaveLength(2);
+		const types = new Set(manifest.triggers.map((t) => t.type));
+		expect(types.has("http")).toBe(true);
+		expect(types.has("cron")).toBe(true);
 	});
 });
 

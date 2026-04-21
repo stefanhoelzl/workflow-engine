@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Manifest JSON format (v1)
 
 The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`. The manifest SHALL NOT contain executable code or function references.
@@ -95,15 +97,7 @@ The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid 
 - **WHEN** a manifest contains an `events` array
 - **THEN** the field SHALL be ignored (extra fields stripped) and SHALL NOT appear on the parsed manifest type
 
-### Requirement: Manifest type exported from SDK
-
-The SDK SHALL export a `Manifest` TypeScript type derived from `ManifestSchema` for consumers that need to work with manifest data.
-
-#### Scenario: Manifest type matches schema
-
-- **WHEN** a consumer imports `Manifest` from the SDK
-- **THEN** the type SHALL match the shape validated by `ManifestSchema`
-- **AND** SHALL expose `Manifest["actions"][number]["input"]` and `["output"]` as JSON Schema objects
+## ADDED Requirements
 
 ### Requirement: IANA timezone validation on upload
 

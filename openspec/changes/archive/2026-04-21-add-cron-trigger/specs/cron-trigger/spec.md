@@ -1,0 +1,146 @@
+## ADDED Requirements
+
+### Requirement: cronTrigger factory creates branded CronTrigger
+
+The SDK SHALL export a `cronTrigger(config)` factory that returns a `CronTrigger` value that is BOTH branded with `Symbol.for("@workflow-engine/cron-trigger")` AND callable as `() => Promise<unknown>`. Invoking the callable SHALL run the user-supplied `handler()` and return its result (the return value is discarded by the cron source but preserved for callable-style usage in tests).
+
+The config SHALL require:
+- `schedule`: string — a standard 5-field cron expression. The SDK SHALL constrain this field at the TypeScript type level using `ts-cron-validator`'s `validStandardCronExpression` template-literal type so invalid expressions fail at compile time.
+- `handler`: `() => Promise<unknown>` — async handler invoked on every tick.
+
+The config SHALL accept optional:
+- `tz`: string — an IANA timezone identifier. If omitted, the SDK factory SHALL resolve the default at construction time via `Intl.DateTimeFormat().resolvedOptions().timeZone`. Because the vite-plugin evaluates workflow bundles in Node (`node:vm`) to discover branded exports, this resolution happens on the build host and the resulting `tz` reflects the build host's IANA zone (not the QuickJS `"UTC"` default). No AST transform is required.
+
+The returned value SHALL expose `schedule`, `tz`, `inputSchema`, `outputSchema` as readonly own properties. `inputSchema` SHALL be `z.object({})` (cron handlers receive no payload). `outputSchema` SHALL be `z.unknown()`. The captured `handler` SHALL NOT be exposed as a public property.
+
+#### Scenario: cronTrigger returns branded callable
+
+- **GIVEN** `const t = cronTrigger({ schedule: "0 9 * * *", handler: async () => {} })`
+- **WHEN** the value is inspected
+- **THEN** `t` SHALL be a function (callable)
+- **AND** `t[CRON_TRIGGER_BRAND]` SHALL be `true`
+- **AND** `t.schedule`, `t.tz`, `t.inputSchema`, `t.outputSchema` SHALL be exposed as readonly properties
+- **AND** `t.handler` SHALL NOT be defined as an own property
+
+#### Scenario: cronTrigger callable invokes the handler
+
+- **GIVEN** `const t = cronTrigger({ schedule: "* * * * *", handler: async () => "ok" })`
+- **WHEN** `await t({})` is called
+- **THEN** the handler SHALL be invoked and the return value SHALL be `"ok"`
+
+#### Scenario: Handler receives empty payload
+
+- **WHEN** a cron tick fires and the handler is invoked
+- **THEN** the handler SHALL be called with no arguments (or an empty `{}` payload)
+- **AND** the handler signature `() => Promise<unknown>` SHALL satisfy the author contract
+
+#### Scenario: Invalid schedule fails at TypeScript compile time
+
+- **GIVEN** `cronTrigger({ schedule: "not a cron", handler: async () => {} })`
+- **WHEN** the workflow file is type-checked
+- **THEN** TypeScript SHALL reject the call with a type error on the `schedule` argument
+
+### Requirement: Cron TriggerSource native implementation
+
+The runtime SHALL implement a `TriggerSource<"cron">` at `packages/runtime/src/triggers/cron.ts`. The source SHALL maintain per-entry `setTimeout` handles keyed on `(tenant, workflow, triggerName)`. On `reconfigure(view)`, the source SHALL cancel every pending timer and re-arm from scratch using the descriptor list carried in `view`.
+
+For each entry, the source SHALL compute the next fire time using `cron-parser`'s `nextDate(now, tz)`. If the computed delay `Δ` exceeds 24 hours, the source SHALL clamp the `setTimeout` to 24 hours and, on wake, recompute `Δ` from the current clock before re-arming. On fire, the source SHALL invoke `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` and, regardless of the invocation outcome, SHALL compute and arm the next tick from the current clock.
+
+`start()` and `stop()` SHALL be no-op scaffolding; all scheduling state is managed via `reconfigure()`. `stop()` SHALL cancel every pending timer.
+
+#### Scenario: reconfigure cancels and rearms
+
+- **GIVEN** a cron source with armed timers for triggers A and B
+- **WHEN** `reconfigure(view)` is called with a view containing only trigger A
+- **THEN** both A's and B's existing timers SHALL be cancelled
+- **AND** a fresh timer SHALL be armed for A
+- **AND** no timer SHALL be armed for B
+
+#### Scenario: Long delay clamped to 24 hours
+
+- **GIVEN** a cron trigger whose `nextDate(now, tz)` computes a delay of 60 days
+- **WHEN** the source arms the timer
+- **THEN** `setTimeout` SHALL be called with `24 * 60 * 60 * 1000` (24 hours) or less
+- **AND** on wake, the source SHALL recompute the next fire and re-arm
+
+#### Scenario: Tick fires executor.invoke with empty payload
+
+- **GIVEN** an armed cron trigger whose next fire is now
+- **WHEN** the timer fires
+- **THEN** the source SHALL call `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` exactly once
+- **AND** the source SHALL arm the next tick regardless of the invocation outcome (success or failure)
+
+#### Scenario: stop cancels all timers
+
+- **GIVEN** a cron source with N armed timers
+- **WHEN** `stop()` is called
+- **THEN** all N timers SHALL be cancelled
+- **AND** no further ticks SHALL fire
+
+### Requirement: Missed ticks on restart are silent
+
+On process restart (or fresh `reconfigure(view)` without prior state), the cron source SHALL compute `nextDate(now, tz)` for each entry and arm `setTimeout` for that instant. Ticks that would have fired before `now` SHALL NOT be fired. The source SHALL NOT emit a "missed tick" lifecycle event, SHALL NOT log per-missed-tick warnings, and SHALL NOT persist `lastFiredAt` state.
+
+#### Scenario: Tick scheduled for 09:00 is lost across a 09:00-spanning restart
+
+- **GIVEN** a cron trigger with `schedule: "0 9 * * *"` in `tz: "UTC"`
+- **AND** the engine was down from 08:59 to 09:02 UTC
+- **WHEN** the engine restarts and the cron source runs `reconfigure(view)`
+- **THEN** the source SHALL compute `nextDate(09:02 UTC, "UTC")` which resolves to tomorrow 09:00
+- **AND** the source SHALL arm a timer for tomorrow 09:00
+- **AND** no invocation SHALL fire for today's 09:00 tick
+- **AND** no missed-tick event SHALL be emitted to the event bus
+
+### Requirement: runQueue sharing with other triggers
+
+Cron ticks SHALL share the per-`(tenant, workflow.sha)` runQueue with all other trigger kinds (HTTP, future kinds). When the runQueue is busy, each cron tick SHALL enqueue `executor.invoke` without coalescing and without dropping. The archive SHALL record one entry per enqueued tick, reflecting every fire.
+
+#### Scenario: Cron tick enqueues behind a long HTTP invocation
+
+- **GIVEN** a workflow with both a cron trigger (`schedule: "* * * * *"`) and an HTTP trigger
+- **AND** an HTTP invocation is in-flight holding the runQueue for 90 seconds
+- **WHEN** two cron ticks fire during those 90 seconds
+- **THEN** both ticks SHALL produce `executor.invoke` calls that enqueue on the runQueue
+- **AND** both SHALL execute sequentially after the HTTP invocation completes
+- **AND** the archive SHALL contain two separate cron invocation entries
+
+### Requirement: DST semantics inherited from cron-parser
+
+Cron tick computation SHALL delegate to `cron-parser`'s `nextDate(now, tz)`, which handles DST transitions as follows: local times that do not exist (spring-forward skipped hour) SHALL resolve to the next existing instant; local times that occur twice (fall-back repeated hour) SHALL fire exactly once. The runtime SHALL NOT wrap or alter this behavior.
+
+#### Scenario: Spring-forward skipped local time
+
+- **GIVEN** a trigger with `schedule: "0 2 * * *"` in `tz: "Europe/Berlin"`
+- **AND** the current day is the DST spring-forward day where 02:00 does not exist
+- **WHEN** the source computes the next fire
+- **THEN** the next fire SHALL resolve to the same day's 03:00 local (the next existing instant matching the schedule)
+
+#### Scenario: Fall-back repeated local time fires once
+
+- **GIVEN** a trigger with `schedule: "0 2 * * *"` in `tz: "Europe/Berlin"`
+- **AND** the current day is the DST fall-back day where 02:00 occurs twice
+- **WHEN** the source computes fires across the transition
+- **THEN** 02:00 SHALL fire exactly once (not twice)
+
+### Requirement: Single-instance scheduling assumption
+
+Cron triggers SHALL assume exactly one runtime instance. Running ≥2 instances with overlapping tenant views will fire every tick ≥2 times. The spec intentionally does not require leader-election or distributed coordination; horizontal scaling of the runtime is out of scope for v1.
+
+#### Scenario: Two runtime instances double-fire
+
+- **GIVEN** two runtime instances A and B, both loaded with the same tenant bundle containing a cron trigger
+- **WHEN** a scheduled tick time arrives
+- **THEN** both A and B SHALL fire `executor.invoke` independently
+- **AND** the spec SHALL NOT require deduplication
+
+### Requirement: Manual fire via /trigger UI bypasses the source
+
+The `/trigger` UI's "Run now" action for a cron trigger SHALL call `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` directly. The cron source SHALL NOT be involved in the manual fire path. Scheduled timers SHALL continue to run in parallel with manual fires; a manual fire during a pending scheduled tick SHALL produce a separate invocation via the runQueue.
+
+#### Scenario: Run now produces an invocation without disturbing the schedule
+
+- **GIVEN** a cron trigger with a scheduled timer armed for 60 seconds in the future
+- **WHEN** the user clicks "Run now" in the trigger UI
+- **THEN** `executor.invoke` SHALL be called once with an empty payload
+- **AND** the armed timer SHALL NOT be cancelled or rescheduled
+- **AND** when the armed timer fires, a second `executor.invoke` SHALL occur

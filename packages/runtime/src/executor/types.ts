@@ -30,7 +30,13 @@ interface HttpTriggerDescriptor extends BaseTriggerDescriptor<"http"> {
 	readonly query?: Record<string, unknown>;
 }
 
-type TriggerDescriptor = HttpTriggerDescriptor;
+interface CronTriggerDescriptor extends BaseTriggerDescriptor<"cron"> {
+	readonly type: "cron";
+	readonly schedule: string;
+	readonly tz: string;
+}
+
+type TriggerDescriptor = HttpTriggerDescriptor | CronTriggerDescriptor;
 
 // Envelope for executor.invoke return value — kind-agnostic. Sources decide
 // the protocol-level response from this envelope.
@@ -44,6 +50,7 @@ type InvokeResult<T = unknown> =
 export type {
 	ActionDescriptor,
 	BaseTriggerDescriptor,
+	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	InvokeResult,
 	TriggerDescriptor,

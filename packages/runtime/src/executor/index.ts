@@ -136,6 +136,7 @@ export { createRunQueue } from "./run-queue.js";
 export type {
 	ActionDescriptor,
 	BaseTriggerDescriptor,
+	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	InvokeResult,
 	TriggerDescriptor,

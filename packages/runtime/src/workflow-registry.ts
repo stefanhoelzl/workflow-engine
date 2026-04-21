@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
+	type CronTriggerManifest,
 	type HttpTriggerManifest,
 	type Manifest,
 	ManifestSchema,
@@ -9,6 +10,7 @@ import {
 } from "@workflow-engine/core";
 import { extract as tarExtract } from "tar-stream";
 import type {
+	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	TriggerDescriptor,
 } from "./executor/types.js";
@@ -96,10 +98,27 @@ function buildHttpDescriptor(
 	return descriptor;
 }
 
+function buildCronDescriptor(
+	entry: CronTriggerManifest,
+): CronTriggerDescriptor {
+	return {
+		kind: "cron",
+		type: "cron",
+		name: entry.name,
+		schedule: entry.schedule,
+		tz: entry.tz,
+		inputSchema: entry.inputSchema as Record<string, unknown>,
+		outputSchema: entry.outputSchema as Record<string, unknown>,
+	};
+}
+
 function buildDescriptors(workflow: WorkflowManifest): TriggerDescriptor[] {
 	return workflow.triggers.map((entry) => {
 		if (entry.type === "http") {
 			return buildHttpDescriptor(entry);
+		}
+		if (entry.type === "cron") {
+			return buildCronDescriptor(entry);
 		}
 		// Future kinds plug in here. The discriminator keeps TS honest.
 		throw new Error(
