@@ -1,6 +1,10 @@
+## RENAMED Requirements
+
+- **FROM:** `Prod image identity via tag` **TO:** `Prod image identity via digest`
+
 ## MODIFIED Requirements
 
-### Requirement: Prod image identity via digest
+### Requirement: Prod image identity via tag
 
 The prod project SHALL declare `variable image_digest { type = string }` (no default — supplied at apply time by the prod deploy workflow). The image reference SHALL be constructed as `"ghcr.io/stefanhoelzl/workflow-engine@${var.image_digest}"`. It SHALL pass `image_hash = var.image_digest` to the `app-instance` module. The prod project SHALL NOT declare or use an `image_tag` variable; `prod/terraform.tfvars` SHALL NOT contain an `image_tag` entry.
 
