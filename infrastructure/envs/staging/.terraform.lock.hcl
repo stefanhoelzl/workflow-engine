@@ -5,7 +5,10 @@ provider "registry.opentofu.org/hashicorp/helm" {
   version     = "3.1.1"
   constraints = "~> 3.1"
   hashes = [
+    "h1:0EBPFRAzAnwXiyr7LVBoCtSwaoMDHEe4dbQvS4rNFuk=",
     "h1:8SOQHxpTUK0rYBsCoxqrvDRc75KZl9hBt1m7QLrs+QM=",
+    "h1:I0TSwVK/TX2Ib2sVKa6d4P0YVl3lnmAqgAHuJBaKpqw=",
+    "h1:brfn5YltnzexsfqpWKw+5gS9U/m77e0An3hZQamlEZk=",
     "zh:09b38905e234c2e0b185332819614224660050b7e4b25e9e858b593ab01adafe",
     "zh:09fed1b19b8bcded169fb76304e06c5b1216d5ceba92948c23384f34ddbf1fac",
     "zh:2e0af220f3fe79048d82f6de91752ba9929c215819d3de4f82ccb473bcd9e5df",
@@ -23,6 +26,9 @@ provider "registry.opentofu.org/hashicorp/kubernetes" {
   constraints = "~> 3.0"
   hashes = [
     "h1:/D/wtR7M2/M8XyFisCgunY6xuO08qZyY5l9JJUrE9G4=",
+    "h1:0M9Nu8YersHl84pfFTRiW5UfmoxQC3xKJ+Zkt5WjEv8=",
+    "h1:N0CDf4vyABZZVeqm0ugeOn8QleQDuOiFjsPjrhxbZvA=",
+    "h1:jvaX3zytN4Yjj4bj87mEyNDSlwP6kyZOFW9Yx3w3fk4=",
     "zh:06f1310b47ff31593766b4b664a508276e57f911c9e0237c6cb197a590e2d799",
     "zh:54aad7284e03c49996477f777c20b75ad12acbd68e80e86ecd1bd1ae6cfa5bea",
     "zh:5ad86522ff9343ac8a2b8b595ba7280de82966dd6feb6aa87b6b9103b694bf82",
@@ -44,7 +50,10 @@ provider "registry.opentofu.org/hashicorp/kubernetes" {
 provider "registry.opentofu.org/mastercard/restapi" {
   version = "3.0.0"
   hashes = [
+    "h1:/R05GM27Lq73Xii6hWsPMIUqfJBV/TB8Bg3ZaI50F8A=",
     "h1:Fqxoc6bsydl6iWGx6ZvyqUDdGt7Cb4sW/BSHhBeHGgw=",
+    "h1:T4ds64vD15cOVjtW5CB7mJDo1dE6hb37Aj+udSFLPNQ=",
+    "h1:y1I3azDHOqRySTyDHsb3Xh1waP/99KfykZRagbRx1qI=",
     "zh:0b63bd3c25a31f090a41933f90b7dd6e984add1c4261d8f5caa73f4d5aa065a4",
     "zh:1c3e89cf19118fc07d7b04257251fc9897e722c16e0a0df7b07fcd261f8c12e7",
     "zh:2d31f322454d271eb328c2d3b3d41f426df98503982788be347799ddf68bf9bf",
@@ -67,7 +76,10 @@ provider "registry.opentofu.org/upcloudltd/upcloud" {
   version     = "5.36.2"
   constraints = "~> 5.0"
   hashes = [
+    "h1:8xn/Wl6RHhBmaubSdJxlkKy48edhEiQyPXtwh71BU4E=",
+    "h1:dFk/ob5kmEjUb6Ml2RvQ/6xQgciGd1CwC+EcHfozb/E=",
     "h1:jpG4RuEyk+c5V4OZjLrawqz2ZrVOSUqJHW3SYJVGsRQ=",
+    "h1:r+6Tikdq7oAGkhrcAYtC//vAziAoYJx6rrjRgj4XOr0=",
     "zh:088987e59e8468b0276e34cf3d309754471438305034db88c6f005cd9bb785b8",
     "zh:3118da0f18398ecf4bf24cf0320b53bab9f5fc4f7c6513aacfbf4d81d535d8ec",
     "zh:485499ba98a5c7bb3debb73321abe351b901e6182bea606f3cbd989302e6eefd",
