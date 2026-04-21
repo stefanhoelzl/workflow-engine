@@ -156,3 +156,235 @@ The first `tofu apply` for `envs/staging/` SHALL be run by an operator (not via 
 - **WHEN** the staging project has state after the bootstrap
 - **THEN** every push to `main` SHALL trigger a successful end-to-end deploy without operator intervention
 
+### Requirement: Prod deploy workflow
+
+The system SHALL provide a GitHub Actions workflow at `.github/workflows/deploy-prod.yml` that runs on every push to the `release` branch. The workflow SHALL be composed of two jobs: (1) a `plan` job (unattended) that builds the runtime image, pushes it to `ghcr.io/stefanhoelzl/workflow-engine:release`, captures the resulting image digest, and renders a `tofu plan` into the GitHub Actions job summary; (2) an `apply` job that declares `environment: production`, depends on `plan` via `needs`, and — after a required-reviewer approval inside that environment — runs `tofu apply` on `infrastructure/envs/prod/` with `-var image_digest=<captured-digest>`. After apply, the workflow SHALL fetch a kubeconfig for the prod cluster and block on `kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m`.
+
+#### Scenario: Push to release triggers deploy
+
+- **WHEN** a commit is pushed to `release`
+- **THEN** the prod deploy workflow SHALL start
+
+#### Scenario: Push to main does not trigger prod deploy
+
+- **WHEN** a commit is pushed to `main` (or any branch other than `release`)
+- **THEN** the prod deploy workflow SHALL NOT start
+
+#### Scenario: Approval pauses apply
+
+- **WHEN** the `plan` job finishes and the `apply` job (which declares `environment: production`) becomes eligible to start
+- **THEN** execution SHALL pause until a required reviewer approves the run in the GitHub UI
+- **AND** `tofu apply` SHALL NOT run before approval
+
+#### Scenario: Plan renders before approval
+
+- **WHEN** the `plan` job completes successfully before the reviewer decides
+- **THEN** the `tofu plan` text SHALL be visible in the run's Summary tab
+- **AND** the reviewer MAY read it before clicking approve
+
+### Requirement: Prod build and push step
+
+The prod deploy workflow SHALL reuse the existing composite action `.github/actions/docker-build` with `push: "true"` and `tags: ghcr.io/stefanhoelzl/workflow-engine:release`. The resulting image digest SHALL be captured as a step output from `docker/build-push-action@v7`.
+
+#### Scenario: Image pushed with release tag
+
+- **WHEN** the build step completes successfully
+- **THEN** the image SHALL exist at `ghcr.io/stefanhoelzl/workflow-engine:release` on ghcr.io
+- **AND** the step SHALL expose the image digest as an output
+
+#### Scenario: Build failure stops workflow
+
+- **WHEN** the build or push step fails
+- **THEN** the plan, approval, and apply steps SHALL NOT run
+
+### Requirement: Prod tofu plan rendered to job summary
+
+The prod deploy workflow SHALL run `tofu init && tofu plan -no-color -var image_digest=<captured-digest>` in `infrastructure/envs/prod/` and append the plan output to the job summary (`$GITHUB_STEP_SUMMARY`).
+
+#### Scenario: Plan succeeds
+
+- **WHEN** `tofu plan` exits 0
+- **THEN** the plan text SHALL appear in the run's Summary tab
+- **AND** the workflow SHALL proceed to the approval-gated apply step
+
+#### Scenario: Plan fails
+
+- **WHEN** `tofu plan` exits non-zero
+- **THEN** the step SHALL fail
+- **AND** the apply step SHALL NOT run
+
+### Requirement: Prod tofu apply step
+
+The prod deploy workflow SHALL run `tofu apply -auto-approve -var image_digest=<captured-digest>` in `infrastructure/envs/prod/` inside the `apply` job, which declares `environment: production`. The step SHALL have access to these secrets via environment variables: `TF_VAR_state_passphrase`, `TF_VAR_upcloud_token`, `TF_VAR_dynu_api_key`, `TF_VAR_github_oauth_client_id` (from `GH_APP_CLIENT_ID_PROD`), `TF_VAR_github_oauth_client_secret` (from `GH_APP_CLIENT_SECRET_PROD`), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+
+#### Scenario: Successful apply rolls out digest-pinned image
+
+- **WHEN** the `tofu apply` step runs with a captured digest after reviewer approval
+- **THEN** the prod Deployment's container image SHALL be `ghcr.io/stefanhoelzl/workflow-engine@<captured-digest>`
+- **AND** Kubernetes SHALL perform a rolling update if the digest differs from the previous apply
+
+#### Scenario: Apply with unchanged digest is a no-op
+
+- **WHEN** `tofu apply` runs with a digest identical to the currently-deployed one
+- **THEN** no Deployment rollout SHALL be triggered
+
+### Requirement: Prod post-apply certificate readiness check
+
+After `tofu apply` succeeds, the prod deploy workflow SHALL install `upctl` via `UpCloudLtd/upcloud-cli-action` at a pinned version, fetch a kubeconfig for the prod cluster using the existing `TF_VAR_UPCLOUD_TOKEN` credential, and run `kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m`. A timeout or failure SHALL fail the workflow.
+
+#### Scenario: Certificate already ready
+
+- **WHEN** the Certificate resource is already `Ready=True` (normal case for most deploys)
+- **THEN** `kubectl wait` SHALL return immediately
+- **AND** the workflow SHALL succeed
+
+#### Scenario: Certificate pending issuance
+
+- **WHEN** the Certificate is issuing (e.g. a fresh apply rotating the cert)
+- **THEN** `kubectl wait` SHALL block up to 5 minutes
+- **AND** the workflow SHALL succeed once issuance completes
+
+#### Scenario: Certificate fails to issue
+
+- **WHEN** issuance does not complete within 5 minutes (DNS, CAA, port-80 misconfig)
+- **THEN** `kubectl wait` SHALL exit non-zero
+- **AND** the workflow SHALL fail
+
+### Requirement: Prod deploy serialization
+
+The prod deploy workflow SHALL declare `concurrency: { group: tofu-prod, cancel-in-progress: false }`. The group SHALL be distinct from the staging workflow's `tofu-staging` so prod and staging deploys run in parallel. Successive pushes to `release` SHALL queue and run in order; no run SHALL be cancelled.
+
+#### Scenario: Prod and staging deploy concurrently
+
+- **WHEN** a commit lands on `main` and a commit lands on `release` at the same time
+- **THEN** both workflows SHALL run in parallel without blocking each other
+
+#### Scenario: Two prod pushes in rapid succession
+
+- **WHEN** two commits land on `release` 10 seconds apart
+- **THEN** two workflow runs SHALL be scheduled
+- **AND** the second run SHALL wait for the first to finish its apply before starting its own apply
+- **AND** neither run SHALL be cancelled
+
+### Requirement: Prod deploy secrets
+
+The GitHub repository SHALL define, as repo-level Actions secrets, every credential the prod deploy workflow consumes: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `GH_APP_CLIENT_ID_PROD`, `GH_APP_CLIENT_SECRET_PROD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. Secrets SHALL be consumed via `env` blocks and SHALL NOT be printed to logs. The `production` GitHub Environment SHALL require at least one reviewer before the apply step runs.
+
+#### Scenario: Missing prod OAuth secret blocks apply
+
+- **WHEN** the workflow runs without `GH_APP_CLIENT_ID_PROD` or `GH_APP_CLIENT_SECRET_PROD` configured
+- **THEN** `tofu apply` SHALL fail at the OAuth secret variable with a missing-value error
+
+#### Scenario: Secrets do not appear in logs
+
+- **WHEN** the workflow run is inspected
+- **THEN** no secret value SHALL be visible in any step's stdout, stderr, or job summary
+
+#### Scenario: Approval required for apply
+
+- **WHEN** a reviewer has not approved the `production` environment gate
+- **THEN** the apply step SHALL remain pending indefinitely (subject to GitHub's default 30-day timeout)
+
+### Requirement: Release branch protection
+
+The `release` branch SHALL have branch protection configured to disallow force-pushes and deletion. Direct pushes (including cherry-picks) SHALL remain allowed.
+
+#### Scenario: Force-push rejected
+
+- **WHEN** any contributor attempts `git push --force origin release`
+- **THEN** GitHub SHALL reject the push
+
+#### Scenario: Deletion rejected
+
+- **WHEN** any contributor attempts to delete the `release` branch
+- **THEN** GitHub SHALL reject the deletion
+
+#### Scenario: Cherry-pick push accepted
+
+- **WHEN** a contributor runs `git cherry-pick <sha> && git push origin release` with a fast-forward or new-commit push
+- **THEN** GitHub SHALL accept the push
+- **AND** the prod deploy workflow SHALL trigger
+
+### Requirement: First prod deploy migration bootstrap
+
+The first `tofu apply` on `envs/prod/` after this change lands SHALL be performed by the prod deploy workflow itself. No operator-side local `tofu apply` is required for the migration. The first apply SHALL change the container image reference from `ghcr.io/stefanhoelzl/workflow-engine:<tag>` (current state) to `ghcr.io/stefanhoelzl/workflow-engine@<digest>` (new state), triggering a single pod rollout.
+
+#### Scenario: Migration apply runs via workflow
+
+- **WHEN** the `release` branch is fast-forwarded to the merged `main` containing the deleted `image_tag` variable and added `image_digest` variable
+- **THEN** the prod deploy workflow SHALL plan a Deployment update changing the image string to digest form
+- **AND** after reviewer approval, the apply SHALL succeed
+- **AND** the prod pod SHALL roll once
+
+### Requirement: Infra plan gate workflow trigger
+
+The repository SHALL provide a GitHub Actions workflow at `.github/workflows/plan-infra.yml` that runs on every `pull_request` event targeting the `main` branch. The workflow SHALL NOT trigger on any other event (no `push`, no `schedule`, no `workflow_dispatch`). The workflow SHALL run a matrix over `project: [cluster, persistence]`, producing two independent jobs that share no state.
+
+#### Scenario: PR opened against main
+- **WHEN** a contributor opens a pull request whose base branch is `main`
+- **THEN** the workflow triggers and produces two status checks named `plan (cluster)` and `plan (persistence)`
+
+#### Scenario: PR opened against release branch
+- **WHEN** a contributor opens a pull request whose base branch is `release`
+- **THEN** the workflow does NOT trigger
+
+#### Scenario: Push to main
+- **WHEN** a commit is pushed directly to `main`
+- **THEN** the workflow does NOT trigger (the gate's purpose is to block the merge itself; post-merge runs are out of scope)
+
+### Requirement: Infra plan gate uses detailed exit codes
+
+Each matrix leg SHALL invoke `tofu plan -detailed-exitcode -lock=false -no-color` in the corresponding `infrastructure/envs/<project>/` working directory after `tofu init`. The job SHALL pass when `tofu plan` returns exit code 0 (no diff), and fail when it returns exit code 1 (error) or 2 (diff present). The `-lock=false` flag is REQUIRED so that concurrent PR plan runs do not serialize on the state-backend lockfile and do not contend with an operator running `tofu apply` locally.
+
+#### Scenario: Plan shows no diff
+- **WHEN** `tofu plan -detailed-exitcode` returns exit code 0 against the project
+- **THEN** the matrix leg succeeds and its status check reports success
+
+#### Scenario: Plan shows a diff
+- **WHEN** `tofu plan -detailed-exitcode` returns exit code 2 against the project
+- **THEN** the matrix leg fails and its status check reports failure, blocking merge (when the ruleset is active)
+
+#### Scenario: Plan errors out
+- **WHEN** `tofu plan` returns exit code 1 (e.g., provider misconfiguration, expired token, backend unreachable)
+- **THEN** the matrix leg fails; the job log surfaces the provider/backend error
+
+### Requirement: Infra plan output rendered into step summary
+
+Each matrix leg SHALL pipe the full `tofu plan` output into `$GITHUB_STEP_SUMMARY` wrapped in an `hcl` fenced code block, regardless of exit code. The workflow SHALL NOT post PR comments, upload plan artifacts, or send notifications to external channels.
+
+#### Scenario: Reviewer inspects a failed plan check
+- **WHEN** a reviewer opens the failed GitHub Actions run for the `plan (cluster)` or `plan (persistence)` check
+- **THEN** the run's Summary tab displays the full plan diff as rendered markdown without requiring the reviewer to re-run `tofu plan` locally
+
+#### Scenario: Passing plan still renders summary
+- **WHEN** the plan is empty and the check passes
+- **THEN** the Summary still contains the (empty) plan output so reviewers can confirm by inspection
+
+### Requirement: Infra plan gate secret wiring
+
+The workflow SHALL consume the following existing repository secrets only: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`. No new secret SHALL be introduced. The matrix leg for `persistence` SHALL additionally export `UPCLOUD_TOKEN` (same value as `TF_VAR_UPCLOUD_TOKEN`), because `infrastructure/envs/persistence/persistence.tf` declares no UpCloud provider token variable and its module's provider resolves its credential from the `UPCLOUD_TOKEN` environment variable.
+
+#### Scenario: Cluster matrix leg env
+- **WHEN** the `cluster` matrix leg runs
+- **THEN** it has `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `TF_VAR_state_passphrase`, and `TF_VAR_upcloud_token` set in its environment
+
+#### Scenario: Persistence matrix leg env
+- **WHEN** the `persistence` matrix leg runs
+- **THEN** it additionally has `UPCLOUD_TOKEN` set to the same value as `TF_VAR_UPCLOUD_TOKEN`, so the UpCloud provider inside the object-storage module can authenticate
+
+### Requirement: Main branch ruleset requires both plan checks
+
+The repository's `main` branch ruleset SHALL list `plan (cluster)` and `plan (persistence)` in its `required_status_checks` rule, with `strict_required_status_checks_policy: true`. The ruleset SHALL declare `bypass_actors: []` — no per-PR bypass path exists for any user or role. The escape hatch for a broken gate is to temporarily flip the ruleset's `enforcement` field to `disabled` via `gh api PUT`, merge the fix, and flip it back to `active`; this is an out-of-band operation, not a per-PR merge option.
+
+#### Scenario: PR with failing plan check cannot merge
+- **WHEN** a PR targets `main` and either `plan (cluster)` or `plan (persistence)` reports failure
+- **THEN** GitHub prevents the merge, regardless of the actor (including repository administrators)
+
+#### Scenario: No per-PR bypass
+- **WHEN** any actor attempts to merge a PR whose required checks have not all passed
+- **THEN** the merge is blocked; the ruleset's `current_user_can_bypass` is `"never"` for every role
+
+#### Scenario: Emergency ruleset disable
+- **WHEN** the plan workflow itself is broken (regression in workflow file) and a fix PR needs to merge
+- **THEN** a repository administrator MAY `gh api --method PUT repos/:owner/:repo/rulesets/<id>` with `enforcement: "disabled"`, merge the fix, and `PUT` again with `enforcement: "active"`; no per-PR merge-button bypass is used
+
