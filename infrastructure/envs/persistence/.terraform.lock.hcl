@@ -5,7 +5,10 @@ provider "registry.opentofu.org/upcloudltd/upcloud" {
   version     = "5.36.2"
   constraints = "~> 5.0"
   hashes = [
+    "h1:8xn/Wl6RHhBmaubSdJxlkKy48edhEiQyPXtwh71BU4E=",
+    "h1:dFk/ob5kmEjUb6Ml2RvQ/6xQgciGd1CwC+EcHfozb/E=",
     "h1:jpG4RuEyk+c5V4OZjLrawqz2ZrVOSUqJHW3SYJVGsRQ=",
+    "h1:r+6Tikdq7oAGkhrcAYtC//vAziAoYJx6rrjRgj4XOr0=",
     "zh:088987e59e8468b0276e34cf3d309754471438305034db88c6f005cd9bb785b8",
     "zh:3118da0f18398ecf4bf24cf0320b53bab9f5fc4f7c6513aacfbf4d81d535d8ec",
     "zh:485499ba98a5c7bb3debb73321abe351b901e6182bea606f3cbd989302e6eefd",
