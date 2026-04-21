@@ -129,7 +129,6 @@ module "cert_manager" {
 
   enable_acme          = false
   enable_selfsigned_ca = true
-  certificate_requests = [for inst in module.app_instance : inst.cert_request if inst.cert_request != null]
 }
 
 module "app_instance" {
@@ -170,10 +169,12 @@ module "app_instance" {
     secretName = "${each.key}-workflow-engine-tls"
   }
 
-  local_deployment = true
-  baseline         = module.baseline
-  traefik_ready    = module.traefik.helm_release_id
-  namespace_ready  = module.baseline.namespaces
+  active_issuer_name = module.cert_manager.active_issuer_name
+  cert_manager_ready = module.cert_manager.extras_ready
+  local_deployment   = true
+  baseline           = module.baseline
+  traefik_ready      = module.traefik.helm_release_id
+  namespace_ready    = module.baseline.namespaces
 }
 
 output "url" {

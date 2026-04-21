@@ -1,5 +1,0 @@
-workflow_engine:
-  UPCLOUD_TOKEN: upcloud/token
-  TF_VAR_state_passphrase: tofu/passphrase
-  AWS_SECRET_ACCESS_KEY: tofu/secret_access_key
-  AWS_ACCESS_KEY_ID: tofu/access_key_id

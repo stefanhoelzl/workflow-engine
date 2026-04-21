@@ -1,0 +1,3 @@
+workflow_engine:
+  TF_VAR_github_oauth_client_secret: github/staging_workflow_engine_app_client_secret
+  TF_VAR_github_oauth_client_id: github/staging_workflow_engine_app_client_id

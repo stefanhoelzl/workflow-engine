@@ -28,6 +28,7 @@ locals {
   zone               = "de-fra1"
   kubernetes_version = "1.34"
   node_plan          = "DEV-1xCPU-2GB"
+  node_cidr          = "172.24.1.0/24"
 }
 
 resource "upcloud_router" "this" {
@@ -40,7 +41,7 @@ resource "upcloud_network" "this" {
   router = upcloud_router.this.id
 
   ip_network {
-    address            = "172.24.1.0/24"
+    address            = local.node_cidr
     dhcp               = true
     dhcp_default_route = false
     family             = "IPv4"
@@ -130,4 +131,9 @@ output "client_key" {
 output "cluster_id" {
   value       = upcloud_kubernetes_cluster.this.id
   description = "Kubernetes cluster UUID"
+}
+
+output "node_cidr" {
+  value       = local.node_cidr
+  description = "CIDR of the private network the cluster's worker nodes attach to"
 }

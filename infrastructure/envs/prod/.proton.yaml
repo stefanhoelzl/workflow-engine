@@ -1,5 +1,3 @@
 workflow_engine:
   TF_VAR_github_oauth_client_secret: github/workflow_engine_app_client_secret
   TF_VAR_github_oauth_client_id: github/workflow_engine_app_client_id
-  TF_VAR_upcloud_token: upcloud/token
-  TF_VAR_dynu_api_key: dynu/api_key
