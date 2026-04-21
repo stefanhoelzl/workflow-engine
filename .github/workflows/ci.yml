@@ -12,7 +12,7 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - run: pnpm validate
-      - run: git diff --exit-code infrastructure/envs/local/.terraform.lock.hcl infrastructure/envs/upcloud/cluster/.terraform.lock.hcl infrastructure/envs/upcloud/persistence/.terraform.lock.hcl
+      - run: git diff --exit-code infrastructure/envs/local/.terraform.lock.hcl infrastructure/envs/persistence/.terraform.lock.hcl infrastructure/envs/cluster/.terraform.lock.hcl infrastructure/envs/prod/.terraform.lock.hcl infrastructure/envs/staging/.terraform.lock.hcl
       - run: pnpm build
 
   wpt:

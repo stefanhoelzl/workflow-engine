@@ -2,6 +2,10 @@ resource "terraform_data" "traefik_ready" {
   input = var.traefik_ready
 }
 
+resource "terraform_data" "cert_manager_ready" {
+  input = var.cert_manager_ready
+}
+
 resource "helm_release" "routes" {
   name      = "${var.instance_name}-routes"
   chart     = "${path.module}/routes-chart"
@@ -13,8 +17,10 @@ resource "helm_release" "routes" {
     appServiceName = kubernetes_service_v1.app.metadata[0].name
     appServicePort = 8080
     tlsSecretName  = var.tls != null ? var.tls.secretName : ""
+    certIssuerName = var.active_issuer_name != null ? var.active_issuer_name : ""
+    certName       = "${var.instance_name}-workflow-engine"
     errorPageHtml  = var.error_page_5xx_html
   })]
 
-  depends_on = [terraform_data.traefik_ready]
+  depends_on = [terraform_data.traefik_ready, terraform_data.cert_manager_ready]
 }

@@ -1,3 +1,3 @@
 domain     = "workflow-engine.webredirect.org"
 auth_allow = "github:user:stefanhoelzl"
-acme_email = "stefanh+acme@posteo.de"
+image_tag  = "2026.04.19"

@@ -56,7 +56,7 @@ variable "bucket_name" {
 }
 
 module "s3" {
-  source = "../../../modules/object-storage/upcloud"
+  source = "../../modules/object-storage/upcloud"
 
   service_uuid = var.service_uuid
   endpoint     = var.service_endpoint
