@@ -882,11 +882,14 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   `__proto__` and `constructor` keys from the attacker-supplied object,
   so prototype-pollution payloads cannot poison the validator or the
   downstream handler object.
-- **Sole invocation path is `executor.invoke(workflow, trigger, payload)`.**
-  The middleware's only job after validation is to delegate to the
-  executor and serialize the returned `HttpTriggerResult`. The executor
-  owns runQueue serialization + lifecycle emission; the middleware does
-  not call into the sandbox directly.
+- **Sole invocation path is `entry.fire(input)`.** The HTTP middleware's
+  only job after URL routing is to normalize the request into an
+  `input` object and call `entry.fire(input)` on the matched
+  `TriggerEntry`. The `fire` closure is built by the `WorkflowRegistry`
+  (see `packages/runtime/src/triggers/build-fire.ts`) and
+  encapsulates Ajv input-schema validation + `executor.invoke`; the
+  HTTP source does NOT import or call the executor directly. The
+  executor still owns runQueue serialization + lifecycle emission.
 - **Payload scope reaches the sandbox only as the handler's `payload`
   argument** — a JSON snapshot. Any downstream code that consumes the
   payload runs in the sandbox with no host APIs (see §2).
@@ -920,19 +923,23 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 When adding signature verification for a specific integration (e.g.
 GitHub webhooks, Stripe webhooks), implement the verifier as a
 **pre-validation step in the HTTP trigger middleware** — before the
-Ajv body-schema check and before `executor.invoke` — and reject
-unsigned or incorrectly signed requests with 401 before any sandbox
-entry. Store the signing secret as a K8s Secret per §5, never in the
-trigger definition. The verifier must not skip the schema check; a
-valid signature on a schema-violating payload still returns 422.
+registry-built `fire` closure runs Ajv input-schema validation and
+dispatches to the executor — and reject unsigned or incorrectly
+signed requests with 401 before any sandbox entry. Store the signing
+secret as a K8s Secret per §5, never in the trigger definition. The
+verifier must not skip the schema check; a valid signature on a
+schema-violating payload still returns 422.
 
 ### Rules for AI agents
 
 1. **NEVER add authentication to `/webhooks/*` without an explicit
    OpenSpec proposal.** Public ingress is deliberate.
-2. **NEVER strip the Ajv body-schema validation step** between the
-   incoming request and `executor.invoke`. It is the only pre-sandbox
-   filter.
+2. **NEVER strip the Ajv input-schema validation step** between the
+   incoming request and `executor.invoke`. In the current design the
+   check lives inside the registry-built `fire` closure (see
+   `packages/runtime/src/triggers/build-fire.ts`); removing it would
+   let schema-violating payloads reach the sandbox directly. It is the
+   only pre-sandbox filter on the webhook surface.
 3. **NEVER treat webhook payload metadata (headers, IP, query string)
    as authenticated.** Even if a caller sets `Authorization: Bearer
    …`, that header is just user input on this surface.

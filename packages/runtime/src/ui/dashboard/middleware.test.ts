@@ -18,6 +18,7 @@ const emptyRegistry: WorkflowRegistry = {
 	list: () => [],
 	registerTenant: async () => ({ ok: false, error: "unused" }),
 	recover: async () => undefined,
+	getEntry: () => undefined,
 	dispose: () => undefined,
 };
 

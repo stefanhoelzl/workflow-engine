@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the `cronTrigger` SDK factory and its runtime `TriggerSource` implementation. Cron triggers fire workflow invocations on a fixed schedule expressed as a standard 5-field cron expression in an IANA timezone. The cron source shares the per-`(tenant, workflow.sha)` runQueue with other trigger kinds; missed ticks across restarts are silent by design; horizontal scaling is out of scope for v1.
-
 ## Requirements
-
 ### Requirement: cronTrigger factory creates branded CronTrigger
 
 The SDK SHALL export a `cronTrigger(config)` factory that returns a `CronTrigger` value that is BOTH branded with `Symbol.for("@workflow-engine/cron-trigger")` AND callable as `() => Promise<unknown>`. Invoking the callable SHALL run the user-supplied `handler()` and return its result (the return value is discarded by the cron source but preserved for callable-style usage in tests).
@@ -48,40 +46,46 @@ The returned value SHALL expose `schedule`, `tz`, `inputSchema`, `outputSchema` 
 
 ### Requirement: Cron TriggerSource native implementation
 
-The runtime SHALL implement a `TriggerSource<"cron">` at `packages/runtime/src/triggers/cron.ts`. The source SHALL maintain per-entry `setTimeout` handles keyed on `(tenant, workflow, triggerName)`. On `reconfigure(view)`, the source SHALL cancel every pending timer and re-arm from scratch using the descriptor list carried in `view`.
+The runtime SHALL implement a `TriggerSource<"cron">` at `packages/runtime/src/triggers/cron.ts`. The source SHALL maintain per-entry `setTimeout` handles keyed on `(tenant, descriptor.name)`, stored internally so that `reconfigure(tenant, entries)` can clear only the specified tenant's timers without touching other tenants'.
 
-For each entry, the source SHALL compute the next fire time using `cron-parser`'s `nextDate(now, tz)`. If the computed delay `Δ` exceeds 24 hours, the source SHALL clamp the `setTimeout` to 24 hours and, on wake, recompute `Δ` from the current clock before re-arming. On fire, the source SHALL invoke `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` and, regardless of the invocation outcome, SHALL compute and arm the next tick from the current clock.
+On `reconfigure(tenant, entries)`, the source SHALL cancel every pending timer for that tenant and re-arm from scratch using the provided entries. An empty `entries` array SHALL leave the tenant with no timers.
 
-`start()` and `stop()` SHALL be no-op scaffolding; all scheduling state is managed via `reconfigure()`. `stop()` SHALL cancel every pending timer.
+For each entry, the source SHALL compute the next fire time using `cron-parser`'s `nextDate(now, tz)`. If the computed delay `Δ` exceeds 24 hours, the source SHALL clamp the `setTimeout` to 24 hours and, on wake, recompute `Δ` from the current clock before re-arming. On fire, the source SHALL call `entry.fire({})` and, regardless of the invocation outcome (`{ok: true}` or `{ok: false}`), SHALL compute and arm the next tick from the current clock.
 
-#### Scenario: reconfigure cancels and rearms
+The source SHALL NOT call `executor.invoke` directly. The empty `{}` input is validated against `descriptor.inputSchema` (which is `{}` for cron by construction) inside the `fire` closure by the registry's `buildFire` helper.
 
-- **GIVEN** a cron source with armed timers for triggers A and B
-- **WHEN** `reconfigure(view)` is called with a view containing only trigger A
-- **THEN** both A's and B's existing timers SHALL be cancelled
+`start()` and `stop()` SHALL be no-op scaffolding; all scheduling state is managed via `reconfigure()`. `stop()` SHALL cancel every pending timer across all tenants.
+
+The source's `reconfigure` SHALL return `Promise<ReconfigureResult>`. For in-memory timer scheduling there are no user-config error cases — invalid cron syntax is caught at manifest-parse time by the `@core` Zod schema, not during reconfigure. The cron source SHALL therefore always return `{ok: true}` unless an unexpected exception occurs (which throws to signal backend-infra failure).
+
+#### Scenario: reconfigure cancels and rearms for one tenant
+
+- **GIVEN** a cron source with armed timers for tenants `acme` (triggers A, B) and `globex` (trigger C)
+- **WHEN** `reconfigure("acme", [entryA])` is called
+- **THEN** `acme`'s timers for A and B SHALL be cancelled
 - **AND** a fresh timer SHALL be armed for A
-- **AND** no timer SHALL be armed for B
+- **AND** `globex`'s timer for C SHALL NOT be affected
 
-#### Scenario: Long delay clamped to 24 hours
-
-- **GIVEN** a cron trigger whose `nextDate(now, tz)` computes a delay of 60 days
-- **WHEN** the source arms the timer
-- **THEN** `setTimeout` SHALL be called with `24 * 60 * 60 * 1000` (24 hours) or less
-- **AND** on wake, the source SHALL recompute the next fire and re-arm
-
-#### Scenario: Tick fires executor.invoke with empty payload
+#### Scenario: Tick fires entry.fire with empty input
 
 - **GIVEN** an armed cron trigger whose next fire is now
 - **WHEN** the timer fires
-- **THEN** the source SHALL call `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` exactly once
-- **AND** the source SHALL arm the next tick regardless of the invocation outcome (success or failure)
+- **THEN** the source SHALL call `entry.fire({})` exactly once
+- **AND** the source SHALL arm the next tick regardless of the returned `InvokeResult` outcome
 
-#### Scenario: stop cancels all timers
+#### Scenario: stop cancels all timers across tenants
 
-- **GIVEN** a cron source with N armed timers
+- **GIVEN** a cron source with N armed timers spread across multiple tenants
 - **WHEN** `stop()` is called
 - **THEN** all N timers SHALL be cancelled
 - **AND** no further ticks SHALL fire
+
+#### Scenario: reconfigure returns ok for in-memory scheduling
+
+- **GIVEN** a cron source receiving a valid `reconfigure(tenant, entries)` call
+- **WHEN** the timers are armed successfully
+- **THEN** the source SHALL resolve to `{ok: true}`
+- **AND** the source SHALL NOT return `{ok: false}` for cases caught earlier in the pipeline (invalid cron syntax, invalid tz — those are Zod-validation failures at manifest parse)
 
 ### Requirement: Missed ticks on restart are silent
 
@@ -141,12 +145,13 @@ Cron triggers SHALL assume exactly one runtime instance. Running ≥2 instances 
 
 ### Requirement: Manual fire via /trigger UI bypasses the source
 
-The `/trigger` UI's "Run now" action for a cron trigger SHALL call `executor.invoke(tenant, workflow, descriptor, {}, bundleSource)` directly. The cron source SHALL NOT be involved in the manual fire path. Scheduled timers SHALL continue to run in parallel with manual fires; a manual fire during a pending scheduled tick SHALL produce a separate invocation via the runQueue.
+The `/trigger` UI's "Run now" action for a cron trigger SHALL resolve the corresponding `TriggerEntry` from the cron source's internal index (via a small read-only accessor) and call `entry.fire({})`. The cron source SHALL NOT be involved in the manual fire path beyond exposing the entry. Scheduled timers SHALL continue to run in parallel with manual fires; a manual fire during a pending scheduled tick SHALL produce a separate invocation via the runQueue.
 
 #### Scenario: Run now produces an invocation without disturbing the schedule
 
 - **GIVEN** a cron trigger with a scheduled timer armed for 60 seconds in the future
 - **WHEN** the user clicks "Run now" in the trigger UI
-- **THEN** `executor.invoke` SHALL be called once with an empty payload
+- **THEN** `entry.fire({})` SHALL be called exactly once
 - **AND** the armed timer SHALL NOT be cancelled or rescheduled
-- **AND** when the armed timer fires, a second `executor.invoke` SHALL occur
+- **AND** when the armed timer fires, a second `entry.fire({})` call SHALL occur
+

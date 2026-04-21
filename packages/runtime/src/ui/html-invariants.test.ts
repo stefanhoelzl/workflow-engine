@@ -50,6 +50,7 @@ function makeWorkflowEntry(): WorkflowEntry {
 				kind: "http",
 				type: "http",
 				name: "t",
+				workflowName: "w",
 				method: "POST",
 				path: "w/t",
 				params: [],

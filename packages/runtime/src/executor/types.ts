@@ -11,6 +11,12 @@ interface ActionDescriptor {
 interface BaseTriggerDescriptor<K extends string> {
 	readonly kind: K;
 	readonly name: string;
+	// Workflow identity. The manifest nests triggers under workflows, so
+	// `(workflowName, name)` uniqueness is enforced at build time. Backends
+	// key their per-tenant bookkeeping by `(tenant, workflowName, name)` to
+	// avoid collisions when two workflows in the same tenant expose same-
+	// named triggers. The registry fills this in during descriptor build.
+	readonly workflowName: string;
 	// JSON Schema (from manifest) describing the full input the shared
 	// `validate(descriptor, rawInput)` helper parses against.
 	readonly inputSchema: Record<string, unknown>;
@@ -38,13 +44,26 @@ interface CronTriggerDescriptor extends BaseTriggerDescriptor<"cron"> {
 
 type TriggerDescriptor = HttpTriggerDescriptor | CronTriggerDescriptor;
 
-// Envelope for executor.invoke return value — kind-agnostic. Sources decide
-// the protocol-level response from this envelope.
+interface ValidationIssue {
+	readonly path: readonly (string | number)[];
+	readonly message: string;
+}
+
+// Envelope for executor.invoke / entry.fire return value — kind-agnostic.
+// Sources decide the protocol-level response from this envelope.
+//
+// `error.issues` is populated when the failure came from input-schema
+// validation inside the registry-built `fire` closure; backends that
+// speak JSON (HTTP) surface these as 422 validation responses.
 type InvokeResult<T = unknown> =
 	| { readonly ok: true; readonly output: T }
 	| {
 			readonly ok: false;
-			readonly error: { readonly message: string; readonly stack?: string };
+			readonly error: {
+				readonly message: string;
+				readonly stack?: string;
+				readonly issues?: readonly ValidationIssue[];
+			};
 	  };
 
 export type {
@@ -54,4 +73,5 @@ export type {
 	HttpTriggerDescriptor,
 	InvokeResult,
 	TriggerDescriptor,
+	ValidationIssue,
 };

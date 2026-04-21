@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { Executor } from "../../executor/index.js";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	InvokeResult,
 } from "../../executor/types.js";
+import type { TriggerEntry } from "../../triggers/source.js";
+import { validate } from "../../triggers/validator.js";
 import type {
 	WorkflowEntry,
 	WorkflowRegistry,
@@ -12,68 +14,124 @@ import type {
 import { triggerMiddleware } from "./middleware.js";
 import { prepareSchema } from "./page.js";
 
-function makeRegistry(entries: WorkflowEntry[]): WorkflowRegistry {
+type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;
+
+interface StubEntry {
+	readonly tenant: string;
+	readonly workflowName: string;
+	readonly triggerName: string;
+	readonly triggerEntry: TriggerEntry;
+	readonly workflowEntry: WorkflowEntry;
+}
+
+function makeStubRegistry(entries: StubEntry[]): WorkflowRegistry {
+	const byKey = new Map<string, TriggerEntry>();
+	for (const e of entries) {
+		byKey.set(`${e.tenant}/${e.workflowName}/${e.triggerName}`, e.triggerEntry);
+	}
+	const flatWorkflowEntries = entries.map((e) => e.workflowEntry);
+	// De-duplicate by (tenant, workflow.name) so list() returns one entry
+	// per workflow even if the workflow has multiple stub triggers.
+	const deduped: WorkflowEntry[] = [];
+	const seen = new Set<string>();
+	for (const we of flatWorkflowEntries) {
+		const key = `${we.tenant}/${we.workflow.name}`;
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		deduped.push(we);
+	}
 	return {
 		get size() {
-			return entries.reduce((sum, e) => sum + e.triggers.length, 0);
+			return entries.length;
 		},
 		tenants: () => Array.from(new Set(entries.map((e) => e.tenant))),
 		list: (tenant?: string) =>
 			tenant === undefined
-				? entries
-				: entries.filter((e) => e.tenant === tenant),
+				? deduped
+				: deduped.filter((we) => we.tenant === tenant),
 		registerTenant: async () => ({ ok: false, error: "unused" }),
 		recover: async () => undefined,
+		getEntry: (tenant, workflowName, triggerName) =>
+			byKey.get(`${tenant}/${workflowName}/${triggerName}`),
 		dispose: () => undefined,
 	};
 }
 
-function makeEntry(
+function makeHttpStub(
 	tenant: string,
 	workflowName: string,
-	triggerSpec: {
+	spec: {
 		name: string;
 		path: string;
 		method: string;
 		body?: Record<string, unknown>;
 		inputSchema?: Record<string, unknown>;
 	},
-): WorkflowEntry {
+	fire?: Fire,
+): StubEntry {
 	const descriptor: HttpTriggerDescriptor = {
 		kind: "http",
 		type: "http",
-		name: triggerSpec.name,
-		path: triggerSpec.path,
-		method: triggerSpec.method,
+		name: spec.name,
+		workflowName,
+		path: spec.path,
+		method: spec.method,
 		params: [],
-		body: triggerSpec.body ?? { type: "object" },
-		inputSchema: triggerSpec.inputSchema ?? { type: "object" },
+		body: spec.body ?? { type: "object" },
+		inputSchema: spec.inputSchema ?? { type: "object" },
 		outputSchema: { type: "object" },
+	};
+	const defaultFire: Fire = async (input) => {
+		const v = validate(descriptor, input);
+		if (!v.ok) {
+			return {
+				ok: false,
+				error: {
+					message: "payload_validation_failed",
+					issues: v.issues,
+				},
+			};
+		}
+		return { ok: true, output: { status: 200 } };
+	};
+	const triggerEntry: TriggerEntry = {
+		descriptor,
+		fire: fire ?? defaultFire,
 	};
 	return {
 		tenant,
-		workflow: {
-			name: workflowName,
-			module: `${workflowName}.js`,
-			sha: "0".repeat(64),
-			env: {},
-			actions: [],
-			triggers: [],
+		workflowName,
+		triggerName: spec.name,
+		triggerEntry,
+		workflowEntry: {
+			tenant,
+			workflow: {
+				name: workflowName,
+				module: `${workflowName}.js`,
+				sha: "0".repeat(64),
+				env: {},
+				actions: [],
+				triggers: [],
+			},
+			bundleSource: "",
+			triggers: [descriptor],
 		},
-		bundleSource: "",
-		triggers: [descriptor],
 	};
 }
 
-function makeCronEntry(
+function makeCronStub(
 	tenant: string,
 	workflowName: string,
 	spec: { name: string; schedule: string; tz: string },
-): WorkflowEntry {
+	fire?: Fire,
+): StubEntry {
 	const descriptor: CronTriggerDescriptor = {
 		kind: "cron",
 		type: "cron",
 		name: spec.name,
+		workflowName,
 		schedule: spec.schedule,
 		tz: spec.tz,
 		inputSchema: {
@@ -83,33 +141,37 @@ function makeCronEntry(
 		},
 		outputSchema: {},
 	};
+	const defaultFire: Fire = async () => ({
+		ok: true,
+		output: undefined,
+	});
+	const triggerEntry: TriggerEntry = {
+		descriptor,
+		fire: fire ?? defaultFire,
+	};
 	return {
 		tenant,
-		workflow: {
-			name: workflowName,
-			module: `${workflowName}.js`,
-			sha: "0".repeat(64),
-			env: {},
-			actions: [],
-			triggers: [],
+		workflowName,
+		triggerName: spec.name,
+		triggerEntry,
+		workflowEntry: {
+			tenant,
+			workflow: {
+				name: workflowName,
+				module: `${workflowName}.js`,
+				sha: "0".repeat(64),
+				env: {},
+				actions: [],
+				triggers: [],
+			},
+			bundleSource: "",
+			triggers: [descriptor],
 		},
-		bundleSource: "",
-		triggers: [descriptor],
 	};
 }
 
-function defaultInvoke(): Executor["invoke"] {
-	return async () => ({ ok: true as const, output: { status: 200 } });
-}
-
-function mount(
-	registry: WorkflowRegistry,
-	invoke: Executor["invoke"] = defaultInvoke(),
-) {
-	const m = triggerMiddleware({
-		registry,
-		executor: { invoke } as Executor,
-	});
+function mount(registry: WorkflowRegistry) {
+	const m = triggerMiddleware({ registry });
 	const app = new Hono();
 	app.all(m.match, m.handler);
 	if (m.match.endsWith("/*")) {
@@ -118,8 +180,6 @@ function mount(
 	return app;
 }
 
-// User name is "user" so alphabetical sort of (orgs ∪ {name}) = ["t0","user"]
-// → active tenant defaults to "t0", the default tenant assigned by makeEntry.
 const AUTH_HEADERS = {
 	"X-Auth-Request-User": "user",
 	"X-Auth-Request-Email": "user@example.test",
@@ -128,8 +188,8 @@ const AUTH_HEADERS = {
 
 describe("triggerMiddleware: page rendering", () => {
 	it("renders a card per registered trigger with kind icon, webhook URL and method", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "cronitor", {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "cronitor", {
 				name: "onCronitorEvent",
 				path: "cronitor",
 				method: "POST",
@@ -146,17 +206,14 @@ describe("triggerMiddleware: page rendering", () => {
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("cronitor / onCronitorEvent");
-		// HTTP-kind submit URL is the public webhook URL.
 		expect(body).toContain('data-trigger-url="/webhooks/t0/cronitor/cronitor"');
 		expect(body).toContain('data-trigger-method="POST"');
-		// JSON body schema is embedded as an inert JSON script tag.
 		expect(body).toContain('{"type":"object"');
-		// Kind icon.
 		expect(body).toContain('title="http"');
 	});
 
 	it("renders an empty-state when no triggers are registered", async () => {
-		const registry = makeRegistry([]);
+		const registry = makeStubRegistry([]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
@@ -165,9 +222,9 @@ describe("triggerMiddleware: page rendering", () => {
 	});
 
 	it("sorts cards by workflow/trigger name (stable output)", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "zeta", { name: "z", path: "z", method: "POST" }),
-			makeEntry("t0", "alpha", { name: "a", path: "a", method: "GET" }),
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "zeta", { name: "z", path: "z", method: "POST" }),
+			makeHttpStub("t0", "alpha", { name: "a", path: "a", method: "GET" }),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
@@ -180,24 +237,29 @@ describe("triggerMiddleware: page rendering", () => {
 });
 
 describe("triggerMiddleware: POST dispatch", () => {
-	it("validates + dispatches a matching POST via the executor", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "demo", {
-				name: "onPing",
-				path: "ping",
-				method: "POST",
-				inputSchema: {
-					type: "object",
-					properties: { x: { type: "number" } },
-					required: ["x"],
-				},
-			}),
-		]);
-		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+	it("invokes entry.fire for a matching POST", async () => {
+		const fire = vi.fn<Fire>(async () => ({
 			ok: true,
 			output: { status: 202, body: { echoed: true } },
 		}));
-		const app = mount(registry, invoke);
+		const registry = makeStubRegistry([
+			makeHttpStub(
+				"t0",
+				"demo",
+				{
+					name: "onPing",
+					path: "ping",
+					method: "POST",
+					inputSchema: {
+						type: "object",
+						properties: { x: { type: "number" } },
+						required: ["x"],
+					},
+				},
+				fire,
+			),
+		]);
+		const app = mount(registry);
 		const res = await app.request("/trigger/t0/demo/onPing", {
 			method: "POST",
 			body: JSON.stringify({ x: 42 }),
@@ -210,12 +272,13 @@ describe("triggerMiddleware: POST dispatch", () => {
 		const json = (await res.json()) as { ok: boolean; output: unknown };
 		expect(json.ok).toBe(true);
 		expect(json.output).toEqual({ status: 202, body: { echoed: true } });
-		expect(invoke).toHaveBeenCalledTimes(1);
+		expect(fire).toHaveBeenCalledTimes(1);
+		expect(fire.mock.calls[0]?.[0]).toEqual({ x: 42 });
 	});
 
-	it("returns 422 when the body fails inputSchema validation", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "demo", {
+	it("returns 422 when fire reports a validation failure", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "demo", {
 				name: "onPing",
 				path: "ping",
 				method: "POST",
@@ -226,8 +289,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 				},
 			}),
 		]);
-		const invoke = vi.fn<Executor["invoke"]>();
-		const app = mount(registry, invoke);
+		const app = mount(registry);
 		const res = await app.request("/trigger/t0/demo/onPing", {
 			method: "POST",
 			body: JSON.stringify({ x: "not-a-number" }),
@@ -237,12 +299,15 @@ describe("triggerMiddleware: POST dispatch", () => {
 			},
 		});
 		expect(res.status).toBe(422);
-		expect(invoke).not.toHaveBeenCalled();
 	});
 
 	it("returns 404 for an unknown trigger name", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "demo", { name: "onPing", path: "ping", method: "POST" }),
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "demo", {
+				name: "onPing",
+				path: "ping",
+				method: "POST",
+			}),
 		]);
 		const app = mount(registry);
 		const res = await app.request("/trigger/t0/demo/nonexistent", {
@@ -256,15 +321,20 @@ describe("triggerMiddleware: POST dispatch", () => {
 		expect(res.status).toBe(404);
 	});
 
-	it("returns 500 when the executor returns an error sentinel", async () => {
-		const registry = makeRegistry([
-			makeEntry("t0", "demo", { name: "onPing", path: "ping", method: "POST" }),
-		]);
-		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+	it("returns 500 when fire reports a non-validation failure", async () => {
+		const fire = vi.fn<Fire>(async () => ({
 			ok: false,
 			error: { message: "boom" },
 		}));
-		const app = mount(registry, invoke);
+		const registry = makeStubRegistry([
+			makeHttpStub(
+				"t0",
+				"demo",
+				{ name: "onPing", path: "ping", method: "POST" },
+				fire,
+			),
+		]);
+		const app = mount(registry);
 		const res = await app.request("/trigger/t0/demo/onPing", {
 			method: "POST",
 			body: "{}",
@@ -279,8 +349,8 @@ describe("triggerMiddleware: POST dispatch", () => {
 
 describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 	it("renders a cron trigger card with schedule+tz meta and /trigger/ POST URL", async () => {
-		const registry = makeRegistry([
-			makeCronEntry("t0", "billing", {
+		const registry = makeStubRegistry([
+			makeCronStub("t0", "billing", {
 				name: "daily",
 				schedule: "0 9 * * *",
 				tz: "UTC",
@@ -294,35 +364,32 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 		expect(body).toContain('title="cron"');
 		expect(body).toContain('data-trigger-url="/trigger/t0/billing/daily"');
 		expect(body).toContain('data-trigger-method="POST"');
-		// Schedule and tz appear in the meta label.
 		expect(body).toContain("0 9 * * *");
 		expect(body).toContain("UTC");
 	});
 
-	it("dispatches a manual cron fire via executor.invoke with empty payload", async () => {
-		const registry = makeRegistry([
-			makeCronEntry("t0", "billing", {
-				name: "daily",
-				schedule: "0 9 * * *",
-				tz: "UTC",
-			}),
-		]);
-		const invoke = vi.fn<Executor["invoke"]>(async () => ({
-			ok: true as const,
+	it("dispatches a manual cron fire via entry.fire with empty payload", async () => {
+		const fire = vi.fn<Fire>(async () => ({
+			ok: true,
 			output: undefined,
 		}));
-		const app = mount(registry, invoke);
+		const registry = makeStubRegistry([
+			makeCronStub(
+				"t0",
+				"billing",
+				{ name: "daily", schedule: "0 9 * * *", tz: "UTC" },
+				fire,
+			),
+		]);
+		const app = mount(registry);
 		const res = await app.request("/trigger/t0/billing/daily", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
 			body: "{}",
 		});
 		expect(res.status).toBe(200);
-		expect(invoke).toHaveBeenCalledTimes(1);
-		const call = invoke.mock.calls[0];
-		expect(call?.[0]).toBe("t0");
-		expect((call?.[2] as CronTriggerDescriptor).name).toBe("daily");
-		expect(call?.[3]).toEqual({});
+		expect(fire).toHaveBeenCalledTimes(1);
+		expect(fire.mock.calls[0]?.[0]).toEqual({});
 	});
 });
 

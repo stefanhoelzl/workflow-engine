@@ -1,38 +1,37 @@
 import { constants } from "node:http2";
-import type {
-	HttpTriggerResult,
-	WorkflowManifest,
-} from "@workflow-engine/core";
+import type { HttpTriggerResult } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { Executor } from "../executor/index.js";
-import type { HttpTriggerDescriptor } from "../executor/types.js";
-import type { TriggerSource, TriggerViewEntry } from "./source.js";
-import { validate } from "./validator.js";
+import type {
+	HttpTriggerDescriptor,
+	ValidationIssue,
+} from "../executor/types.js";
+import type {
+	ReconfigureResult,
+	TriggerConfigError,
+	TriggerEntry,
+	TriggerSource,
+} from "./source.js";
 
 // ---------------------------------------------------------------------------
 // HTTP TriggerSource
 // ---------------------------------------------------------------------------
 //
 // `createHttpTriggerSource` is the HTTP-kind protocol adapter. The source:
-//   - Owns its internal URL-pattern map keyed by (tenant, workflow, path, method).
-//   - Receives a kind-filtered view of HTTP descriptors via `reconfigure()`
-//     on every workflow state change (the WorkflowRegistry pushes these).
+//   - Owns a per-tenant URL-pattern index keyed by (workflow, method, path).
+//   - Receives `reconfigure(tenant, entries)` from the WorkflowRegistry on
+//     every tenant upload. Entries for other tenants are untouched.
 //   - Exposes a Hono middleware mounted at `/webhooks/*` by `main.ts`.
-//   - Validates incoming requests against `descriptor.inputSchema` via the
-//     shared `validate()` function.
-//   - Dispatches via `executor.invoke(tenant, workflow, descriptor, input,
-//     bundleSource)` and serializes the executor's `{ ok, output }`
-//     envelope as the HTTP response (200 default; 500 on error sentinel).
+//   - Normalizes HTTP requests into `{body, headers, url, method, params,
+//     query}` and calls `entry.fire(input)`. Input-schema validation and
+//     executor dispatch happen inside the `fire` closure (see buildFire).
+//   - Maps `InvokeResult` back into the HTTP response: 200+output on
+//     success; 422+issues when `error.issues` is set (validation failure);
+//     500 otherwise.
 
 interface Middleware {
 	match: string;
 	handler: MiddlewareHandler;
-}
-
-interface ValidationIssue {
-	readonly path: (string | number)[];
-	readonly message: string;
 }
 
 const PARAM_SEGMENT_RE = /[:*]/;
@@ -84,7 +83,7 @@ function headersToRecord(headers: Headers): Record<string, string> {
 
 function validationFailure(
 	c: Context,
-	issues: ValidationIssue[] | undefined,
+	issues: readonly ValidationIssue[] | undefined,
 ): Response {
 	return c.json(
 		{ error: "payload_validation_failed", issues: issues ?? [] },
@@ -129,61 +128,58 @@ async function parseBody(
 	}
 }
 
-interface HttpTriggerSourceDeps {
-	readonly executor: Executor;
-}
-
-interface HttpTriggerSource extends TriggerSource<"http"> {
+interface HttpTriggerSource
+	extends TriggerSource<"http", HttpTriggerDescriptor> {
 	readonly middleware: Middleware;
+	getEntry(
+		tenant: string,
+		workflowName: string,
+		triggerName: string,
+	): TriggerEntry<HttpTriggerDescriptor> | undefined;
 }
 
-interface SourceEntry {
-	readonly tenant: string;
-	readonly workflow: WorkflowManifest;
-	readonly bundleSource: string;
-	readonly descriptor: HttpTriggerDescriptor;
+interface TenantEntry {
+	readonly entry: TriggerEntry<HttpTriggerDescriptor>;
 	readonly pattern: URLPattern;
 	readonly isStatic: boolean;
 }
 
-interface SourceMatch {
-	readonly tenant: string;
-	readonly workflow: WorkflowManifest;
-	readonly bundleSource: string;
-	readonly descriptor: HttpTriggerDescriptor;
-	readonly params: Record<string, string>;
+interface TenantState {
+	readonly byTrigger: Map<string, TenantEntry>;
+	readonly list: readonly TenantEntry[];
 }
 
 interface LookupArgs {
-	readonly entries: readonly SourceEntry[];
-	readonly tenant: string;
+	readonly state: TenantState;
 	readonly workflowName: string;
 	readonly path: string;
 	readonly method: string;
 }
 
-function sourceLookup(args: LookupArgs): SourceMatch | undefined {
+interface LookupMatch {
+	readonly tenantEntry: TenantEntry;
+	readonly params: Record<string, string>;
+}
+
+function sourceLookup(args: LookupArgs): LookupMatch | undefined {
 	const pathname = `/${args.path}`;
-	const scoped = args.entries.filter(
-		(e) => e.tenant === args.tenant && e.workflow.name === args.workflowName,
+	const scoped = args.state.list.filter(
+		(e) => e.entry.descriptor.workflowName === args.workflowName,
 	);
-	const inScope = (isStatic: boolean): SourceMatch | undefined => {
-		for (const entry of scoped) {
-			if (entry.isStatic !== isStatic) {
+	const inScope = (isStatic: boolean): LookupMatch | undefined => {
+		for (const tenantEntry of scoped) {
+			if (tenantEntry.isStatic !== isStatic) {
 				continue;
 			}
-			if (entry.descriptor.method !== args.method) {
+			if (tenantEntry.entry.descriptor.method !== args.method) {
 				continue;
 			}
-			const result = entry.pattern.exec({ pathname });
+			const result = tenantEntry.pattern.exec({ pathname });
 			if (!result) {
 				continue;
 			}
 			return {
-				tenant: entry.tenant,
-				workflow: entry.workflow,
-				bundleSource: entry.bundleSource,
-				descriptor: entry.descriptor,
+				tenantEntry,
 				params: extractParams(
 					result.pathname.groups as Record<string, string | undefined>,
 				),
@@ -193,26 +189,43 @@ function sourceLookup(args: LookupArgs): SourceMatch | undefined {
 	return inScope(true) ?? inScope(false);
 }
 
+function buildTenantEntry(
+	entry: TriggerEntry<HttpTriggerDescriptor>,
+): TenantEntry {
+	const descriptor = entry.descriptor;
+	return {
+		entry,
+		pattern: new URLPattern({
+			pathname: `/${toUrlPatternPath(descriptor.path)}`,
+		}),
+		isStatic: !PARAM_SEGMENT_RE.test(descriptor.path),
+	};
+}
+
+function makeRouteKey(d: HttpTriggerDescriptor): string {
+	return `${d.workflowName}|${d.method}|${d.path}`;
+}
+
+function makeTriggerKey(workflowName: string, triggerName: string): string {
+	return `${workflowName}/${triggerName}`;
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, middleware handler, and TriggerSource lifecycle methods
-function createHttpTriggerSource(
-	deps: HttpTriggerSourceDeps,
-): HttpTriggerSource {
-	let entries: readonly SourceEntry[] = [];
+function createHttpTriggerSource(): HttpTriggerSource {
+	const tenants = new Map<string, TenantState>();
 
 	const middleware: Middleware = {
 		match: `${WEBHOOKS_PREFIX}*`,
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the middleware handler fuses URL parsing, lookup, validation, and dispatch in sequence — splitting hurts readability
-		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: the middleware handler is inherently a sequential pipeline
+		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the middleware handler fuses URL parsing, lookup, body parse, and dispatch in sequence — splitting fragments the request flow
 		handler: async (c: Context) => {
 			const afterPrefix = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (afterPrefix === "" && c.req.method === "GET") {
-				const status =
-					entries.length > 0 ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
+				const hasAny = [...tenants.values()].some((s) => s.list.length > 0);
+				const status = hasAny ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
 				return c.body(null, status);
 			}
 
-			// Parse /webhooks/<tenant>/<workflow-name>/<trigger-path>
 			const slashOne = afterPrefix.indexOf("/");
 			if (slashOne <= 0) {
 				return c.notFound();
@@ -229,9 +242,13 @@ function createHttpTriggerSource(
 				return c.notFound();
 			}
 
+			const state = tenants.get(tenant);
+			if (!state) {
+				return c.notFound();
+			}
+
 			const match = sourceLookup({
-				entries,
-				tenant,
+				state,
 				workflowName,
 				path: triggerPath,
 				method: c.req.method,
@@ -253,23 +270,46 @@ function createHttpTriggerSource(
 				params: match.params,
 				query: rawQuery,
 			};
-			const validated = validate(match.descriptor, rawInput);
-			if (!validated.ok) {
-				return validationFailure(c, validated.issues);
-			}
-			const result = await deps.executor.invoke(
-				match.tenant,
-				match.workflow,
-				match.descriptor,
-				validated.input,
-				match.bundleSource,
-			);
+			const result = await match.tenantEntry.entry.fire(rawInput);
 			if (!result.ok) {
+				if (result.error.issues) {
+					return validationFailure(c, result.error.issues);
+				}
 				return internalErrorResponse(c);
 			}
 			return serializeHttpResult(c, result.output);
 		},
 	};
+
+	function detectConflicts(
+		tenant: string,
+		list: readonly TenantEntry[],
+	): readonly TriggerConfigError[] {
+		const seen = new Set<string>();
+		const errors: TriggerConfigError[] = [];
+		for (const te of list) {
+			const d = te.entry.descriptor;
+			const key = makeRouteKey(d);
+			if (seen.has(key)) {
+				errors.push({
+					backend: "http",
+					trigger: d.name,
+					message:
+						'duplicate HTTP route for tenant "' +
+						tenant +
+						'" workflow "' +
+						d.workflowName +
+						'": ' +
+						d.method +
+						" " +
+						d.path,
+				});
+			} else {
+				seen.add(key);
+			}
+		}
+		return errors;
+	}
 
 	return {
 		kind: "http",
@@ -277,29 +317,42 @@ function createHttpTriggerSource(
 			return Promise.resolve();
 		},
 		stop() {
-			entries = [];
+			tenants.clear();
 			return Promise.resolve();
 		},
-		reconfigure(view: readonly TriggerViewEntry<"http">[]) {
-			const next: SourceEntry[] = [];
-			for (const entry of view) {
-				const descriptor = entry.descriptor as HttpTriggerDescriptor;
-				next.push({
-					tenant: entry.tenant,
-					workflow: entry.workflow,
-					bundleSource: entry.bundleSource,
-					descriptor,
-					pattern: new URLPattern({
-						pathname: `/${toUrlPatternPath(descriptor.path)}`,
-					}),
-					isStatic: !PARAM_SEGMENT_RE.test(descriptor.path),
-				});
+		reconfigure(
+			tenant: string,
+			entries: readonly TriggerEntry<HttpTriggerDescriptor>[],
+		): Promise<ReconfigureResult> {
+			if (entries.length === 0) {
+				tenants.delete(tenant);
+				return Promise.resolve({ ok: true });
 			}
-			entries = next;
+			const list: TenantEntry[] = [];
+			const byTrigger = new Map<string, TenantEntry>();
+			for (const e of entries) {
+				const te = buildTenantEntry(e);
+				list.push(te);
+				byTrigger.set(
+					makeTriggerKey(e.descriptor.workflowName, e.descriptor.name),
+					te,
+				);
+			}
+			const errors = detectConflicts(tenant, list);
+			if (errors.length > 0) {
+				return Promise.resolve({ ok: false, errors });
+			}
+			tenants.set(tenant, { byTrigger, list });
+			return Promise.resolve({ ok: true });
+		},
+		getEntry(tenant, workflowName, triggerName) {
+			const state = tenants.get(tenant);
+			return state?.byTrigger.get(makeTriggerKey(workflowName, triggerName))
+				?.entry;
 		},
 		middleware,
 	};
 }
 
-export type { HttpTriggerSource, Middleware, ValidationIssue };
+export type { HttpTriggerSource, Middleware };
 export { createHttpTriggerSource };

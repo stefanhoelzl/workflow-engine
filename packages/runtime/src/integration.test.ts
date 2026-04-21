@@ -102,7 +102,10 @@ describe("end-to-end event flow", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store]);
 
-		registry = createWorkflowRegistry({ logger });
+		const sandboxFactory = createSandboxFactory({ logger });
+		sandboxStore = createSandboxStore({ sandboxFactory, logger });
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({ logger, executor });
 		await registry.registerTenant(
 			"acme",
 			new Map([
@@ -116,10 +119,6 @@ describe("end-to-end event flow", () => {
 		if (!(entry && descriptor)) {
 			throw new Error("expected a ping trigger descriptor");
 		}
-
-		const sandboxFactory = createSandboxFactory({ logger });
-		sandboxStore = createSandboxStore({ sandboxFactory, logger });
-		const executor = createExecutor({ bus, sandboxStore });
 		const result = await executor.invoke(
 			"acme",
 			entry.workflow,
@@ -423,12 +422,15 @@ describe("cron trigger integration", () => {
 			output: undefined,
 		}));
 		const cronSource = createCronTriggerSource({
-			executor: { invoke },
 			logger: quietLogger,
 		});
 		await cronSource.start();
 
-		registry = createWorkflowRegistry({ logger, sources: [cronSource] });
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [cronSource],
+		});
 		await registry.registerTenant(
 			"acme",
 			new Map([
@@ -461,12 +463,15 @@ describe("cron trigger integration", () => {
 			output: undefined,
 		}));
 		const cronSource = createCronTriggerSource({
-			executor: { invoke },
 			logger: quietLogger,
 		});
 		await cronSource.start();
 
-		registry = createWorkflowRegistry({ logger, sources: [cronSource] });
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [cronSource],
+		});
 		await registry.registerTenant(
 			"acme",
 			new Map([

@@ -20,11 +20,15 @@ function makeManifest(name: string, sha = "0".repeat(64)): WorkflowManifest {
 	};
 }
 
-function makeDescriptor(name: string): HttpTriggerDescriptor {
+function makeDescriptor(
+	name: string,
+	workflowName = "w",
+): HttpTriggerDescriptor {
 	return {
 		kind: "http",
 		type: "http",
 		name,
+		workflowName,
 		path: name,
 		method: "POST",
 		params: [],

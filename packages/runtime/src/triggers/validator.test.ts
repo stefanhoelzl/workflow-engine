@@ -9,6 +9,7 @@ function makeDescriptor(
 		kind: "http",
 		type: "http",
 		name: "t",
+		workflowName: "w",
 		path: "x",
 		method: "POST",
 		params: [],

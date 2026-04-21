@@ -9,6 +9,7 @@ import {
 	type WorkflowManifest,
 } from "@workflow-engine/core";
 import { extract as tarExtract } from "tar-stream";
+import type { Executor } from "./executor/index.js";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
@@ -16,24 +17,35 @@ import type {
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
 import type { StorageBackend } from "./storage/index.js";
-import type { TriggerSource, TriggerViewEntry } from "./triggers/source.js";
+import { buildFire } from "./triggers/build-fire.js";
+import type {
+	ReconfigureResult,
+	TriggerConfigError,
+	TriggerEntry,
+	TriggerSource,
+} from "./triggers/source.js";
 
 // ---------------------------------------------------------------------------
 // Workflow registry (multi-tenant, metadata-only)
 // ---------------------------------------------------------------------------
 //
-// The registry owns tenant manifests, their bundle sources, and the
-// derived list of trigger descriptors. It does NOT own sandboxes
-// (see `sandbox-store.ts`) or perform HTTP URL routing (the HTTP
-// TriggerSource does, via `reconfigure(view)` pushes from this registry).
+// The registry owns tenant manifests, their bundle sources, the derived list
+// of trigger descriptors, and the `TriggerEntry` list (descriptor + pre-
+// wired `fire` closure) per tenant.
+//
+// It does NOT own sandboxes (see `sandbox-store.ts`) or perform HTTP URL
+// routing (the HTTP TriggerSource does, via `reconfigure(tenant, entries)`
+// pushes from this registry).
 //
 // Consumers:
-//   - TriggerSource plugins: receive `reconfigure(kindFilteredView)` on
-//     every state change. Sources build their own kind-specific indexes
-//     (URL-pattern map for HTTP, schedule set for cron, etc.).
-//   - Executor: receives `(tenant, workflow, descriptor, input, bundleSource)`
-//     from a source and runs the invocation.
-//   - UI (dashboard / trigger): `list(tenant?)` / `tenants()` for presentation.
+//   - TriggerSource backends: receive `reconfigure(tenant, entries)` on
+//     every tenant upload. Backends build their own per-tenant indexes
+//     (URL patterns for HTTP, timers for cron, etc.).
+//   - Executor: invoked exclusively from inside `fire` closures built by
+//     this registry — backends never call the executor directly.
+//   - UI (dashboard / trigger): `list(tenant?)`, `tenants()`, and
+//     `getEntry(tenant, workflow, trigger)` for presentation and manual
+//     fire.
 
 // ---------------------------------------------------------------------------
 // Tenant tarball extraction
@@ -79,12 +91,14 @@ async function extractTenantTarGz(
 // ---------------------------------------------------------------------------
 
 function buildHttpDescriptor(
+	workflowName: string,
 	entry: HttpTriggerManifest,
 ): HttpTriggerDescriptor {
 	const descriptor: HttpTriggerDescriptor = {
 		kind: "http",
 		type: "http",
 		name: entry.name,
+		workflowName,
 		path: entry.path,
 		method: entry.method,
 		params: [...entry.params],
@@ -99,12 +113,14 @@ function buildHttpDescriptor(
 }
 
 function buildCronDescriptor(
+	workflowName: string,
 	entry: CronTriggerManifest,
 ): CronTriggerDescriptor {
 	return {
 		kind: "cron",
 		type: "cron",
 		name: entry.name,
+		workflowName,
 		schedule: entry.schedule,
 		tz: entry.tz,
 		inputSchema: entry.inputSchema as Record<string, unknown>,
@@ -112,19 +128,44 @@ function buildCronDescriptor(
 	};
 }
 
-function buildDescriptors(workflow: WorkflowManifest): TriggerDescriptor[] {
-	return workflow.triggers.map((entry) => {
+function buildDescriptors(
+	workflow: WorkflowManifest,
+	allowedKinds: ReadonlySet<string> | undefined,
+):
+	| { ok: true; descriptors: TriggerDescriptor[] }
+	| { ok: false; error: string } {
+	const descriptors: TriggerDescriptor[] = [];
+	for (const entry of workflow.triggers) {
+		if (allowedKinds && !allowedKinds.has(entry.type)) {
+			return {
+				ok: false,
+				error:
+					'invalid manifest: unsupported trigger kind "' +
+					entry.type +
+					'" (workflow "' +
+					workflow.name +
+					'" trigger "' +
+					entry.name +
+					'")',
+			};
+		}
 		if (entry.type === "http") {
-			return buildHttpDescriptor(entry);
+			descriptors.push(buildHttpDescriptor(workflow.name, entry));
+		} else if (entry.type === "cron") {
+			descriptors.push(buildCronDescriptor(workflow.name, entry));
+		} else {
+			// Shouldn't happen — allowedKinds is derived from registered backends
+			// and the parser's union covers every registered kind. Guard anyway.
+			return {
+				ok: false,
+				error:
+					'invalid manifest: unsupported trigger kind "' +
+					(entry as { type: string }).type +
+					'"',
+			};
 		}
-		if (entry.type === "cron") {
-			return buildCronDescriptor(entry);
-		}
-		// Future kinds plug in here. The discriminator keeps TS honest.
-		throw new Error(
-			`unsupported trigger type: ${(entry as { type: string }).type}`,
-		);
-	});
+	}
+	return { ok: true, descriptors };
 }
 
 // ---------------------------------------------------------------------------
@@ -135,25 +176,49 @@ interface TenantState {
 	readonly workflows: Map<string, WorkflowManifest>;
 	readonly bundleSources: Map<string, string>;
 	readonly descriptors: Map<string, TriggerDescriptor[]>;
+	// Flat map of `${workflowName}/${triggerName}` -> TriggerEntry, used by
+	// the `/trigger` UI manual-fire path and by the list() accessor.
+	readonly entries: Map<string, TriggerEntry>;
 }
 
+// biome-ignore lint/complexity/useMaxParams: 5 orthogonal inputs (tenant, manifest, files, executor, allowedKinds); packaging would just shuffle the same fields
 function buildTenantState(
+	tenant: string,
 	manifest: Manifest,
 	files: Map<string, string>,
-): TenantState {
+	executor: Executor,
+	allowedKinds: ReadonlySet<string> | undefined,
+): { ok: true; state: TenantState } | { ok: false; error: string } {
 	const workflows = new Map<string, WorkflowManifest>();
 	const bundleSources = new Map<string, string>();
-	const descriptors = new Map<string, TriggerDescriptor[]>();
+	const descriptorsByWf = new Map<string, TriggerDescriptor[]>();
+	const entries = new Map<string, TriggerEntry>();
 	for (const wf of manifest.workflows) {
 		const bundleSource = files.get(wf.module);
 		if (bundleSource === undefined) {
 			continue;
 		}
+		const built = buildDescriptors(wf, allowedKinds);
+		if (!built.ok) {
+			return { ok: false, error: built.error };
+		}
 		workflows.set(wf.name, wf);
 		bundleSources.set(wf.name, bundleSource);
-		descriptors.set(wf.name, buildDescriptors(wf));
+		descriptorsByWf.set(wf.name, built.descriptors);
+		for (const descriptor of built.descriptors) {
+			const fire = buildFire(executor, tenant, wf, descriptor, bundleSource);
+			entries.set(`${wf.name}/${descriptor.name}`, { descriptor, fire });
+		}
 	}
-	return { workflows, bundleSources, descriptors };
+	return {
+		ok: true,
+		state: {
+			workflows,
+			bundleSources,
+			descriptors: descriptorsByWf,
+			entries,
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -162,12 +227,13 @@ function buildTenantState(
 
 interface WorkflowRegistryOptions {
 	readonly logger: Logger;
+	readonly executor: Executor;
 	readonly storageBackend?: StorageBackend;
-	// TriggerSource plugins. On every workflow-state mutation the registry
-	// calls `source.reconfigure(kindFilteredView)` synchronously. The registry
-	// does NOT manage source lifecycle (start/stop); the caller (main.ts) owns
-	// that.
-	readonly sources?: readonly TriggerSource[];
+	// TriggerSource backends. On every successful tenant upload the registry
+	// calls `backend.reconfigure(tenant, entries)` on every backend in
+	// parallel with `Promise.allSettled`. The registry does NOT manage
+	// backend lifecycle (start/stop); the caller (main.ts) owns that.
+	readonly backends?: readonly TriggerSource[];
 }
 
 interface RegisterTenantOptions {
@@ -191,57 +257,143 @@ interface WorkflowRegistry {
 		opts?: RegisterTenantOptions,
 	): Promise<RegisterResult>;
 	recover(): Promise<void>;
+	// Resolves a pre-built TriggerEntry for manual-fire via the /trigger UI.
+	// Returns undefined if no such trigger exists for this (tenant, workflow,
+	// triggerName). Input validation happens inside the returned `fire`
+	// closure.
+	getEntry(
+		tenant: string,
+		workflowName: string,
+		triggerName: string,
+	): TriggerEntry | undefined;
 	dispose(): void;
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state, manifest parsing, tenant swap, and reconfigure-push to sources — grouping is intentional
+// ---------------------------------------------------------------------------
+// Aggregated reconfigure results across all backends
+// ---------------------------------------------------------------------------
+
+interface BackendInfraError {
+	readonly backend: string;
+	readonly message: string;
+}
+
+type ReconfigureAggregate =
+	| { readonly kind: "ok" }
+	| { readonly kind: "user"; readonly errors: readonly TriggerConfigError[] }
+	| {
+			readonly kind: "infra";
+			readonly errors: readonly BackendInfraError[];
+	  }
+	| {
+			readonly kind: "both";
+			readonly userErrors: readonly TriggerConfigError[];
+			readonly infraErrors: readonly BackendInfraError[];
+	  };
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state, manifest parsing, tenant swap, and reconfigure-push to backends — grouping is intentional
 function createWorkflowRegistry(
 	options: WorkflowRegistryOptions,
 ): WorkflowRegistry {
 	const tenantStates = new Map<string, TenantState>();
 	const backend = options.storageBackend;
-	const sources: readonly TriggerSource[] = options.sources ?? [];
+	const backends: readonly TriggerSource[] = options.backends ?? [];
+	// Only enforce the kind-allowlist when at least one backend is
+	// registered. No backends → no constraint (used in unit tests that
+	// exercise registry semantics without the dispatch surface).
+	const allowedKinds: ReadonlySet<string> | undefined =
+		backends.length > 0 ? new Set(backends.map((b) => b.kind)) : undefined;
 
 	options.logger.info("workflow-registry.created");
 
-	function collectEntries(): WorkflowEntry[] {
-		const entries: WorkflowEntry[] = [];
-		for (const [tenant, state] of tenantStates) {
+	function collectEntries(tenant?: string): WorkflowEntry[] {
+		const out: WorkflowEntry[] = [];
+		const iter = tenant
+			? (() => {
+					const s = tenantStates.get(tenant);
+					return s ? [[tenant, s] as const] : [];
+				})()
+			: [...tenantStates.entries()];
+		for (const [t, state] of iter) {
 			for (const [name, workflow] of state.workflows) {
 				const bundleSource = state.bundleSources.get(name);
 				const descriptors = state.descriptors.get(name);
 				if (bundleSource === undefined || descriptors === undefined) {
 					continue;
 				}
-				entries.push({ tenant, workflow, bundleSource, triggers: descriptors });
+				out.push({
+					tenant: t,
+					workflow,
+					bundleSource,
+					triggers: descriptors,
+				});
 			}
 		}
-		return entries;
+		return out;
 	}
 
-	function notifySources(): void {
-		// Partition all active triggers by kind, then hand each source its
-		// kind-filtered slice. Sources are responsible for replacing their
-		// internal index atomically on reconfigure.
-		const entries = collectEntries();
-		const byKind = new Map<string, TriggerViewEntry[]>();
-		for (const entry of entries) {
-			for (const descriptor of entry.triggers) {
-				const slice = byKind.get(descriptor.kind) ?? [];
-				slice.push({
-					tenant: entry.tenant,
-					workflow: entry.workflow,
-					bundleSource: entry.bundleSource,
-					descriptor,
-				});
-				byKind.set(descriptor.kind, slice);
+	async function reconfigureBackends(
+		tenant: string,
+		state: TenantState,
+	): Promise<ReconfigureAggregate> {
+		// Partition this tenant's entries per backend kind. Backends whose
+		// kind doesn't appear in the manifest still receive an empty array
+		// so stale entries from a previous upload get cleared.
+		const entriesByKind = new Map<string, TriggerEntry[]>();
+		for (const b of backends) {
+			entriesByKind.set(b.kind, []);
+		}
+		for (const entry of state.entries.values()) {
+			const slot = entriesByKind.get(entry.descriptor.kind);
+			if (slot) {
+				slot.push(entry);
 			}
 		}
-		for (const source of sources) {
-			source.reconfigure(
-				(byKind.get(source.kind) ?? []) as TriggerViewEntry<string>[],
-			);
+
+		const settled = await Promise.allSettled(
+			backends.map((b) => {
+				const entries = entriesByKind.get(b.kind) ?? [];
+				// Each backend narrows D to its concrete descriptor type; the
+				// registry holds a heterogeneous list so we widen through
+				// `unknown`. Backends enforce the per-kind shape via their
+				// own typed factories (HttpTriggerSource, CronTriggerSource).
+				return b.reconfigure(
+					tenant,
+					entries as unknown as readonly TriggerEntry[],
+				);
+			}),
+		);
+
+		const userErrors: TriggerConfigError[] = [];
+		const infraErrors: BackendInfraError[] = [];
+		settled.forEach((res, idx) => {
+			const kindName = backends[idx]?.kind ?? "unknown";
+			if (res.status === "rejected") {
+				const reason = res.reason;
+				infraErrors.push({
+					backend: kindName,
+					message: reason instanceof Error ? reason.message : String(reason),
+				});
+				return;
+			}
+			const value = res.value as ReconfigureResult;
+			if (!value.ok) {
+				for (const err of value.errors) {
+					userErrors.push(err);
+				}
+			}
+		});
+
+		if (userErrors.length > 0 && infraErrors.length > 0) {
+			return { kind: "both", userErrors, infraErrors };
 		}
+		if (userErrors.length > 0) {
+			return { kind: "user", errors: userErrors };
+		}
+		if (infraErrors.length > 0) {
+			return { kind: "infra", errors: infraErrors };
+		}
+		return { kind: "ok" };
 	}
 
 	function parseManifest(
@@ -306,28 +458,76 @@ function createWorkflowRegistry(
 		}
 	}
 
-	async function registerTenant(
+	function prepareTenantState(
 		tenant: string,
 		files: Map<string, string>,
-		opts?: RegisterTenantOptions,
-	): Promise<RegisterResult> {
+	):
+		| { ok: true; state: TenantState; workflowCount: number }
+		| { ok: false; result: RegisterResult } {
 		const manifestRaw = files.get("manifest.json");
 		if (manifestRaw === undefined) {
 			options.logger.warn("workflow-registry.register-failed", {
 				tenant,
 				error: "missing manifest.json",
 			});
-			return { ok: false, error: "missing manifest.json" };
+			return {
+				ok: false,
+				result: { ok: false, error: "missing manifest.json" },
+			};
 		}
 		const parseResult = parseManifest(tenant, manifestRaw);
 		if (!parseResult.ok) {
-			return parseResult.result;
+			return { ok: false, result: parseResult.result };
 		}
 		const { manifest } = parseResult;
 		const modulesCheck = validateModulesPresent(tenant, manifest, files);
 		if (modulesCheck) {
-			return modulesCheck;
+			return { ok: false, result: modulesCheck };
 		}
+		const built = buildTenantState(
+			tenant,
+			manifest,
+			files,
+			options.executor,
+			allowedKinds,
+		);
+		if (!built.ok) {
+			options.logger.warn("workflow-registry.register-failed", {
+				tenant,
+				error: built.error,
+			});
+			return {
+				ok: false,
+				result: { ok: false, error: built.error },
+			};
+		}
+		return {
+			ok: true,
+			state: built.state,
+			workflowCount: manifest.workflows.length,
+		};
+	}
+
+	async function registerTenant(
+		tenant: string,
+		files: Map<string, string>,
+		opts?: RegisterTenantOptions,
+	): Promise<RegisterResult> {
+		const prepared = prepareTenantState(tenant, files);
+		if (!prepared.ok) {
+			return prepared.result;
+		}
+		const { state, workflowCount } = prepared;
+
+		const aggregate = await reconfigureBackends(tenant, state);
+		if (aggregate.kind !== "ok") {
+			options.logger.warn("workflow-registry.reconfigure-failed", {
+				tenant,
+				kind: aggregate.kind,
+			});
+			return mapAggregateToResult(aggregate);
+		}
+
 		if (opts?.tarballBytes && backend) {
 			const persisted = await persistTarball(tenant, opts.tarballBytes);
 			if (!persisted.ok) {
@@ -339,16 +539,15 @@ function createWorkflowRegistry(
 				return { ok: false, error };
 			}
 		}
-		tenantStates.set(tenant, buildTenantState(manifest, files));
-		notifySources();
+		tenantStates.set(tenant, state);
 		options.logger.info("workflow-registry.registered", {
 			tenant,
-			workflows: manifest.workflows.length,
+			workflows: workflowCount,
 		});
 		return {
 			ok: true,
 			tenant,
-			workflows: manifest.workflows.map((w) => w.name),
+			workflows: Array.from(state.workflows.keys()),
 		};
 	}
 
@@ -391,11 +590,17 @@ function createWorkflowRegistry(
 	}
 
 	function list(tenant?: string): WorkflowEntry[] {
-		const entries = collectEntries();
-		if (tenant === undefined) {
-			return entries;
-		}
-		return entries.filter((e) => e.tenant === tenant);
+		return collectEntries(tenant);
+	}
+
+	function getEntry(
+		tenant: string,
+		workflowName: string,
+		triggerName: string,
+	): TriggerEntry | undefined {
+		return tenantStates
+			.get(tenant)
+			?.entries.get(`${workflowName}/${triggerName}`);
 	}
 
 	return {
@@ -414,6 +619,7 @@ function createWorkflowRegistry(
 		list,
 		registerTenant,
 		recover,
+		getEntry,
 		dispose() {
 			tenantStates.clear();
 		},
@@ -431,7 +637,40 @@ interface ManifestIssue {
 
 type RegisterResult =
 	| { ok: true; tenant: string; workflows: string[] }
-	| { ok: false; error: string; issues?: ManifestIssue[] };
+	| {
+			ok: false;
+			error: string;
+			issues?: ManifestIssue[];
+			userErrors?: readonly TriggerConfigError[];
+			infraErrors?: readonly BackendInfraError[];
+	  };
+
+function mapAggregateToResult(aggregate: ReconfigureAggregate): RegisterResult {
+	if (aggregate.kind === "user") {
+		return {
+			ok: false,
+			error: "trigger_config_failed",
+			userErrors: aggregate.errors,
+		};
+	}
+	if (aggregate.kind === "infra") {
+		return {
+			ok: false,
+			error: "trigger_backend_failed",
+			infraErrors: aggregate.errors,
+		};
+	}
+	if (aggregate.kind === "both") {
+		return {
+			ok: false,
+			error: "trigger_config_failed",
+			userErrors: aggregate.userErrors,
+			infraErrors: aggregate.infraErrors,
+		};
+	}
+	// "ok" already handled by caller; defensive fallback.
+	return { ok: true, tenant: "", workflows: [] };
+}
 
 function normalizeIssue(raw: unknown): ManifestIssue | undefined {
 	if (typeof raw !== "object" || raw === null) {
@@ -467,12 +706,14 @@ function toRegisterIssue(err: unknown): {
 			issues,
 		};
 	}
+	const message = err instanceof Error ? err.message : String(err);
 	return {
-		error: `invalid manifest: ${err instanceof Error ? err.message : String(err)}`,
+		error: `invalid manifest: ${message}`,
 	};
 }
 
 export type {
+	BackendInfraError,
 	RegisterResult,
 	RegisterTenantOptions,
 	WorkflowEntry,
