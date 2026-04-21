@@ -14,13 +14,13 @@
 ## 1a. Local env follow-through
 
 - [x] 1a.1 `infrastructure/envs/local/local.tf`: remove the `certificate_requests = [...]` argument from the `module "cert_manager"` call; add `active_issuer_name = module.cert_manager.active_issuer_name` to each `module "app_instance"` call.
-- [ ] 1a.2 `pnpm local:up` (smoke): verify the local env reaches the usual readiness state so the refactored modules are exercised end-to-end before live prod work.
+- [x] 1a.2 `pnpm local:up` (smoke): verify the local env reaches the usual readiness state so the refactored modules are exercised end-to-end before live prod work.
 
 ## 2. Env: persistence relocation
 
 - [x] 2.1 `git mv infrastructure/envs/upcloud/persistence/ infrastructure/envs/persistence/`.
 - [x] 2.2 Update module `source` paths inside `envs/persistence/persistence.tf` from `../../../modules/...` to `../../modules/...`.
-- [ ] 2.3 `cd infrastructure/envs/persistence && tofu init && tofu plan` — MUST show no drift. (Requires operator creds — run prior to migration window.)
+- [x] 2.3 `cd infrastructure/envs/persistence && tofu init && tofu plan` — MUST show no drift. (Requires operator creds — run prior to migration window.)
 
 ## 3. Env: new cluster project
 
@@ -44,7 +44,7 @@
 ## 6. CI workflow: staging deploy
 
 - [x] 6.1 Create `.github/workflows/deploy-staging.yml`: trigger on `push` to `main` and on `workflow_dispatch`; single job; `permissions: contents: read, packages: write`; checkout → `docker/login-action` → `docker/setup-buildx-action` → `docker/build-push-action@v7` (id: build) with `push=true`, `tags=ghcr.io/stefanhoelzl/workflow-engine:main`; `hashicorp/setup-terraform@v3` (or opentofu setup action); `tofu init && tofu apply -auto-approve -var image_digest=${{ steps.build.outputs.digest }}` in `infrastructure/envs/staging/`; `env:` block pulls from repo secrets. Add `concurrency: { group: tofu-staging, cancel-in-progress: false }`.
-- [ ] 6.2 Configure repo secrets via `gh secret set` or web UI: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `TF_VAR_OAUTH2_CLIENT_ID`, `TF_VAR_OAUTH2_CLIENT_SECRET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. (Out-of-repo step — document in CLAUDE.md upgrade note.)
+- [x] 6.2 Configure repo secrets via `gh secret set` or web UI: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `GH_APP_CLIENT_ID_STAGING`, `GH_APP_CLIENT_SECRET_STAGING`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. (Out-of-repo step — documented in CLAUDE.md upgrade note.)
 - [x] 6.3 Update `.github/workflows/ci.yml` and `package.json` `validate` script to cover the five env projects; drop references to `envs/upcloud/...`.
 
 ## 7. CLAUDE.md updates
@@ -61,20 +61,20 @@
 
 ## 9. One-time migration (destructive, downtime ~20-25 min)
 
-- [ ] 9.1 Confirm persistence project path move from step 2 is committed and `tofu plan` shows no drift.
-- [ ] 9.2 `cd infrastructure/envs/upcloud/cluster && tofu destroy` — destroys K8s cluster, Traefik, cert-manager, prod app, Dynu record. Downtime begins.
-- [ ] 9.3 `rm -rf infrastructure/envs/upcloud/` (only `persistence/` was there before step 2; now the dir is empty of project code).
-- [ ] 9.4 Delete S3 object `tofu-state/upcloud` via UpCloud Object Storage UI or `aws s3 rm s3://tofu-state/upcloud --endpoint-url=<endpoint>`.
-- [ ] 9.5 `cd infrastructure/envs/cluster && tofu apply` — creates new cluster, Traefik, cert-manager, ClusterIssuer. Duration ~12-17 min.
-- [ ] 9.6 `cd infrastructure/envs/prod && tofu apply` — creates prod namespace, certificate, app, DNS. Wait for cert (`kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m`). Verify `https://workflow-engine.webredirect.org` serves traffic. Downtime ends.
-- [ ] 9.7 Trigger the staging deploy workflow via `workflow_dispatch` to produce a bootstrap digest. Capture the digest from the action logs. Run `tofu apply envs/staging/ -var image_digest=sha256:...` locally to create initial staging state.
-- [ ] 9.8 Wait for staging cert (`kubectl wait --for=condition=Ready certificate/staging-workflow-engine -n staging --timeout=5m`). Verify `https://staging.workflow-engine.webredirect.org` serves traffic.
-- [ ] 9.9 Push a trivial commit to `main` and confirm the staging deploy workflow runs end-to-end without operator action, including a successful digest-driven pod rollout.
+- [x] 9.1 Confirm persistence project path move from step 2 is committed and `tofu plan` shows no drift.
+- [x] 9.2 `cd infrastructure/envs/upcloud/cluster && tofu destroy` — destroys K8s cluster, Traefik, cert-manager, prod app, Dynu record. Downtime begins.
+- [x] 9.3 `rm -rf infrastructure/envs/upcloud/` (only `persistence/` was there before step 2; now the dir is empty of project code).
+- [x] 9.4 Delete S3 object `tofu-state/upcloud` via UpCloud Object Storage UI or `aws s3 rm s3://tofu-state/upcloud --endpoint-url=<endpoint>`.
+- [x] 9.5 `cd infrastructure/envs/cluster && tofu apply` — creates new cluster, Traefik, cert-manager, ClusterIssuer. Duration ~12-17 min.
+- [x] 9.6 `cd infrastructure/envs/prod && tofu apply` — creates prod namespace, certificate, app, DNS. Wait for cert. Verify `https://workflow-engine.webredirect.org` serves traffic. Downtime ends.
+- [x] 9.7 Trigger the staging deploy workflow via `workflow_dispatch` to produce a bootstrap digest. (Flow simplified — after the docker-build composite action fix, the workflow now self-bootstraps on first push to main: init creates empty state, apply creates everything from zero with the captured digest.)
+- [x] 9.8 Wait for staging cert (`kubectl wait --for=condition=Ready certificate/staging-workflow-engine -n staging --timeout=5m`). Verify `https://staging.workflow-engine.webredirect.org` serves traffic.
+- [x] 9.9 Push a trivial commit to `main` and confirm the staging deploy workflow runs end-to-end without operator action, including a successful digest-driven pod rollout. (Validated off the `deployment` branch via the temporary branch-filter entry — three successful workflow runs culminating in a healthy staging deploy with the new in-app auth. Merging this PR re-exercises the same flow from `main`.)
 
 ## 10. Verification and cleanup
 
-- [ ] 10.1 Revert Dynu TTL from 60s back to 300s for the prod CNAME after ~24h of stable operation.
-- [ ] 10.2 Delete the rollback branch (if created during pre-migration) once staging + prod have been stable for ~1 week.
-- [ ] 10.3 Run `pnpm validate` locally; fix any format/lint regressions introduced by the module refactors.
-- [ ] 10.4 Verify `tofu plan` is clean in all four projects (no pending drift).
-- [ ] 10.5 Confirm CLAUDE.md Upgrade Notes entry is accurate vs. what was actually done during migration; fix any discrepancies.
+- [x] 10.1 Revert Dynu TTL from 60s back to 300s for the prod CNAME after ~24h of stable operation.
+- [x] 10.2 Delete the rollback branch (if created during pre-migration) once staging + prod have been stable for ~1 week. (N/A — no rollback branch was created; migration used git worktree on the pre-refactor commit instead.)
+- [x] 10.3 Run `pnpm validate` locally; fix any format/lint regressions introduced by the module refactors.
+- [x] 10.4 Verify `tofu plan` is clean in all four projects (no pending drift).
+- [x] 10.5 Confirm CLAUDE.md Upgrade Notes entry is accurate vs. what was actually done during migration; fix any discrepancies.

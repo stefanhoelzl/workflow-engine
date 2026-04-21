@@ -292,7 +292,7 @@ The persistence project SHALL live at `infrastructure/envs/persistence/` (moved 
 - **THEN** it SHALL pull the same state from the S3 backend (key `persistence`)
 - **AND** `tofu plan` SHALL show no changes
 
-### Requirement: S3 configuration from remote state (prod only)
+### Requirement: S3 configuration from remote state
 
 The prod project SHALL read persistence project outputs via `terraform_remote_state` data source (S3 backend, key `persistence`). The outputs SHALL be passed to the `app-instance` module's `s3` variable. The staging project SHALL NOT read persistence remote state; it SHALL compose its S3 configuration from the bucket it creates itself via `modules/object-storage/upcloud/`.
 
