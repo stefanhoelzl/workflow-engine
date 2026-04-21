@@ -9,11 +9,16 @@ inputs:
     description: Newline- or comma-separated tags. Required when push=true.
     required: false
     default: ""
+outputs:
+  digest:
+    description: sha256 digest of the pushed image (empty if push=false).
+    value: ${{ steps.build.outputs.digest }}
 runs:
   using: composite
   steps:
     - uses: docker/setup-buildx-action@v4
-    - uses: docker/build-push-action@v7
+    - id: build
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: infrastructure/Dockerfile
