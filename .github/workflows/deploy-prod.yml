@@ -1,0 +1,113 @@
+name: Deploy prod
+
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: tofu-prod
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: ./.github/actions/docker-build
+        with:
+          push: "true"
+          tags: ghcr.io/${{ github.repository }}:release
+
+      - uses: opentofu/setup-opentofu@v2
+
+      - name: Tofu init
+        working-directory: infrastructure/envs/prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+        run: tofu init
+
+      - name: Tofu plan
+        working-directory: infrastructure/envs/prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+          TF_VAR_upcloud_token: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
+          TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
+          TF_VAR_github_oauth_client_id: ${{ secrets.GH_APP_CLIENT_ID_PROD }}
+          TF_VAR_github_oauth_client_secret: ${{ secrets.GH_APP_CLIENT_SECRET_PROD }}
+        run: |
+          {
+            echo '### Tofu plan'
+            echo ''
+            echo '```hcl'
+            tofu plan -no-color -var "image_digest=${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    runs-on: ubuntu-latest
+    needs: plan
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: opentofu/setup-opentofu@v2
+
+      - name: Tofu init
+        working-directory: infrastructure/envs/prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+        run: tofu init
+
+      - id: apply
+        name: Tofu apply
+        working-directory: infrastructure/envs/prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+          TF_VAR_upcloud_token: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
+          TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
+          TF_VAR_github_oauth_client_id: ${{ secrets.GH_APP_CLIENT_ID_PROD }}
+          TF_VAR_github_oauth_client_secret: ${{ secrets.GH_APP_CLIENT_SECRET_PROD }}
+        run: |
+          tofu apply -auto-approve -var "image_digest=${{ needs.plan.outputs.digest }}"
+          echo "cluster_id=$(tofu output -raw cluster_id)" >> "$GITHUB_OUTPUT"
+
+      - uses: UpCloudLtd/upcloud-cli-action@v1.0.1
+        with:
+          version: "3.19.0"
+          token: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
+
+      - name: Fetch kubeconfig
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
+        run: |
+          mkdir -p ~/.kube
+          upctl kubernetes config "${{ steps.apply.outputs.cluster_id }}" --write ~/.kube/config --write-mode overwrite
+
+      - uses: azure/setup-kubectl@v4
+
+      - name: Wait for Certificate Ready
+        run: kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m
