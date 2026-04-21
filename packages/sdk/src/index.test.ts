@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ACTION_BRAND,
 	action,
+	CRON_TRIGGER_BRAND,
+	cronTrigger,
 	defineWorkflow,
 	env,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
 	isAction,
+	isCronTrigger,
 	isHttpTrigger,
 	isWorkflow,
 	ManifestSchema,
@@ -83,6 +86,88 @@ describe("brands and type guards", () => {
 
 	it("isWorkflow rejects a plain object", () => {
 		expect(isWorkflow({ name: "x" })).toBe(false);
+	});
+
+	it("cronTrigger() returns a callable branded with CRON_TRIGGER_BRAND", () => {
+		const t = cronTrigger({
+			schedule: "0 9 * * *",
+			tz: "UTC",
+			handler: async () => {},
+		});
+		expect(typeof t).toBe("function");
+		expect((t as unknown as Record<symbol, unknown>)[CRON_TRIGGER_BRAND]).toBe(
+			true,
+		);
+		expect(isCronTrigger(t)).toBe(true);
+		expect((t as unknown as Record<string, unknown>).handler).toBeUndefined();
+	});
+
+	it("cronTrigger exposes schedule, tz, inputSchema, outputSchema as readonly properties", () => {
+		const t = cronTrigger({
+			schedule: "*/5 * * * *",
+			tz: "Europe/Berlin",
+			handler: async () => {},
+		});
+		expect(t.schedule).toBe("*/5 * * * *");
+		expect(t.tz).toBe("Europe/Berlin");
+		expect(t.inputSchema).toBeDefined();
+		expect(t.outputSchema).toBeDefined();
+		expect(() => {
+			(t as unknown as { schedule: string }).schedule = "hacked";
+		}).toThrow();
+	});
+
+	it("cronTrigger defaults tz to the host IANA zone when omitted", () => {
+		const hostTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		const t = cronTrigger({
+			schedule: "0 0 * * *",
+			handler: async () => {},
+		});
+		expect(t.tz).toBe(hostTz);
+	});
+
+	it("cronTrigger callable invokes the handler", async () => {
+		const handler = vi.fn(async () => "ok" as unknown);
+		const t = cronTrigger({
+			schedule: "0 0 * * *",
+			tz: "UTC",
+			handler,
+		});
+		const result = await t();
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(result).toBe("ok");
+	});
+
+	it("isCronTrigger rejects a plain function", () => {
+		expect(isCronTrigger(() => 1)).toBe(false);
+	});
+
+	it("cronTrigger rejects invalid schedule strings at the type level", () => {
+		// These assignments pass through the ts-cron-validator template-literal
+		// type. `tsc --build` (run as part of `pnpm check` / `pnpm validate`)
+		// would fail if any of the `@ts-expect-error` lines compiled cleanly.
+		// @ts-expect-error "not-a-cron" is not a valid StandardCRON literal
+		cronTrigger({ schedule: "not-a-cron", handler: async () => {} });
+		// @ts-expect-error 6-field cron is non-standard
+		cronTrigger({ schedule: "0 0 9 * * *", handler: async () => {} });
+		// @ts-expect-error minute out of range
+		cronTrigger({ schedule: "60 9 * * *", handler: async () => {} });
+		// @ts-expect-error too few fields
+		cronTrigger({ schedule: "0 9 * *", handler: async () => {} });
+	});
+
+	it("isCronTrigger distinguishes from httpTrigger", () => {
+		const http = httpTrigger({
+			path: "x",
+			handler: async () => ({}),
+		});
+		expect(isCronTrigger(http)).toBe(false);
+		const cron = cronTrigger({
+			schedule: "0 0 * * *",
+			tz: "UTC",
+			handler: async () => {},
+		});
+		expect(isHttpTrigger(cron)).toBe(false);
 	});
 });
 

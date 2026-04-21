@@ -162,6 +162,97 @@ describe("workflow registry", () => {
 		);
 		expect(result.ok).toBe(false);
 	});
+
+	it("rejects upload with cron trigger having a malformed schedule", async () => {
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({ logger });
+		const badManifest = {
+			workflows: [
+				{
+					...VALID_WORKFLOW,
+					triggers: [
+						{
+							name: "bad",
+							type: "cron",
+							schedule: "not-a-cron",
+							tz: "UTC",
+							inputSchema: { type: "object" },
+							outputSchema: {},
+						},
+					],
+				},
+			],
+		};
+		const result = await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(badManifest)],
+				["demo.js", BUNDLE_SOURCE],
+			]),
+		);
+		expect(result.ok).toBe(false);
+	});
+
+	it("rejects upload with cron trigger having an unknown timezone", async () => {
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({ logger });
+		const badManifest = {
+			workflows: [
+				{
+					...VALID_WORKFLOW,
+					triggers: [
+						{
+							name: "bad",
+							type: "cron",
+							schedule: "0 9 * * *",
+							tz: "Not/AZone",
+							inputSchema: { type: "object" },
+							outputSchema: {},
+						},
+					],
+				},
+			],
+		};
+		const result = await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(badManifest)],
+				["demo.js", BUNDLE_SOURCE],
+			]),
+		);
+		expect(result.ok).toBe(false);
+	});
+
+	it("accepts upload with a valid cron trigger", async () => {
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({ logger });
+		const goodManifest = {
+			workflows: [
+				{
+					...VALID_WORKFLOW,
+					triggers: [
+						{
+							name: "daily",
+							type: "cron",
+							schedule: "0 9 * * *",
+							tz: "UTC",
+							inputSchema: { type: "object" },
+							outputSchema: {},
+						},
+					],
+				},
+			],
+		};
+		const result = await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(goodManifest)],
+				["demo.js", BUNDLE_SOURCE],
+			]),
+		);
+		expect(result.ok).toBe(true);
+		expect(registry.list("acme")).toHaveLength(1);
+	});
 });
 
 describe("extractTenantTarGz: decompressed size cap", () => {

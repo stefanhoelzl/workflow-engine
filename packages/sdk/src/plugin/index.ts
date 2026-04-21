@@ -12,9 +12,11 @@ import ts from "typescript";
 import { build, type Plugin, type ResolvedConfig } from "vite";
 import {
 	type Action,
+	type CronTrigger,
 	extractParamNames,
 	type HttpTrigger,
 	isAction,
+	isCronTrigger,
 	isHttpTrigger,
 	isWorkflow,
 	type Workflow,
@@ -271,7 +273,16 @@ interface ManifestHttpTriggerEntry {
 	outputSchema: Record<string, unknown>;
 }
 
-type ManifestTriggerEntry = ManifestHttpTriggerEntry;
+interface ManifestCronTriggerEntry {
+	name: string;
+	type: "cron";
+	schedule: string;
+	tz: string;
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown>;
+}
+
+type ManifestTriggerEntry = ManifestHttpTriggerEntry | ManifestCronTriggerEntry;
 
 interface BuiltManifest {
 	name: string;
@@ -285,7 +296,8 @@ interface BuiltManifest {
 interface DiscoveredExports {
 	workflowEntries: [string, Workflow][];
 	actionEntries: [string, Action][];
-	triggerEntries: [string, HttpTrigger][];
+	httpTriggerEntries: [string, HttpTrigger][];
+	cronTriggerEntries: [string, CronTrigger][];
 }
 
 function discoverExports(
@@ -295,7 +307,8 @@ function discoverExports(
 ): DiscoveredExports {
 	const workflowEntries: [string, Workflow][] = [];
 	const actionEntries: [string, Action][] = [];
-	const triggerEntries: [string, HttpTrigger][] = [];
+	const httpTriggerEntries: [string, HttpTrigger][] = [];
+	const cronTriggerEntries: [string, CronTrigger][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
 		if (exportName === "default" && isAction(value)) {
 			ctx.error(
@@ -307,10 +320,17 @@ function discoverExports(
 		} else if (isAction(value)) {
 			actionEntries.push([exportName, value]);
 		} else if (isHttpTrigger(value)) {
-			triggerEntries.push([exportName, value]);
+			httpTriggerEntries.push([exportName, value]);
+		} else if (isCronTrigger(value)) {
+			cronTriggerEntries.push([exportName, value]);
 		}
 	}
-	return { workflowEntries, actionEntries, triggerEntries };
+	return {
+		workflowEntries,
+		actionEntries,
+		httpTriggerEntries,
+		cronTriggerEntries,
+	};
 }
 
 function buildActionEntries(
@@ -415,17 +435,63 @@ function buildTriggerEntry(
 	return entry;
 }
 
+function buildCronTriggerEntry(
+	exportName: string,
+	trigger: CronTrigger,
+	workflowName: string,
+	ctx: PluginContext,
+): ManifestCronTriggerEntry {
+	if (typeof trigger !== "function") {
+		ctx.error(
+			`Workflow "${workflowName}": cron trigger "${exportName}" is missing a handler function`,
+		);
+	}
+	if (typeof trigger.schedule !== "string" || trigger.schedule === "") {
+		ctx.error(
+			`Workflow "${workflowName}": cron trigger "${exportName}" has no schedule`,
+		);
+	}
+	if (typeof trigger.tz !== "string" || trigger.tz === "") {
+		ctx.error(
+			`Workflow "${workflowName}": cron trigger "${exportName}" has no tz (factory default resolution failed)`,
+		);
+	}
+	const inputSchemaLabel = `cron trigger "${exportName}".inputSchema`;
+	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
+	const outputSchemaLabel = `cron trigger "${exportName}".outputSchema`;
+	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
+	return {
+		name: exportName,
+		type: "cron",
+		schedule: trigger.schedule,
+		tz: trigger.tz,
+		inputSchema: toJsonSchema(
+			trigger.inputSchema,
+			inputSchemaLabel,
+			workflowName,
+			ctx,
+		),
+		outputSchema: toJsonSchema(
+			trigger.outputSchema,
+			outputSchemaLabel,
+			workflowName,
+			ctx,
+		),
+	};
+}
+
 function buildManifest(
 	mod: Record<string, unknown>,
 	filestem: string,
 	sha: string,
 	ctx: PluginContext,
 ): BuiltManifest {
-	const { workflowEntries, actionEntries, triggerEntries } = discoverExports(
-		mod,
-		filestem,
-		ctx,
-	);
+	const {
+		workflowEntries,
+		actionEntries,
+		httpTriggerEntries,
+		cronTriggerEntries,
+	} = discoverExports(mod, filestem, ctx);
 
 	if (workflowEntries.length > 1) {
 		ctx.error(
@@ -438,9 +504,12 @@ function buildManifest(
 	const env: Record<string, string> = workflow ? { ...workflow.env } : {};
 
 	const actions = buildActionEntries(actionEntries, name, ctx);
-	const triggers: ManifestTriggerEntry[] = triggerEntries.map(([k, v]) =>
-		buildTriggerEntry(k, v, name, ctx),
-	);
+	const triggers: ManifestTriggerEntry[] = [
+		...httpTriggerEntries.map(([k, v]) => buildTriggerEntry(k, v, name, ctx)),
+		...cronTriggerEntries.map(([k, v]) =>
+			buildCronTriggerEntry(k, v, name, ctx),
+		),
+	];
 
 	return {
 		name,

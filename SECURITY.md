@@ -828,6 +828,13 @@ Everything received on this surface must be treated as
 attacker-controlled: body, headers, query string, URL parameters, and
 timing.
 
+**Cron triggers are NOT on this surface.** `cronTrigger(...)` fires from the
+runtime's internal scheduler (`packages/runtime/src/triggers/cron.ts`) —
+there is no external caller, no external URL, and no untrusted input crosses
+a network boundary at fire time (the handler receives an empty payload `{}`).
+Cron triggers are exposed only via the authenticated `/trigger` UI's
+"Run now" affordance, which sits behind oauth2-proxy + `isMember` (§4).
+
 ### Entry points
 
 - `POST /webhooks/{tenant}/{workflow}/{trigger_path}` (or whatever `method` the

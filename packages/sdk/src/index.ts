@@ -4,6 +4,7 @@ import type {
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
 import { dispatchAction, ManifestSchema, z } from "@workflow-engine/core";
+import type { StandardCRON } from "ts-cron-validator";
 
 // ---------------------------------------------------------------------------
 // Brand symbols
@@ -12,6 +13,9 @@ import { dispatchAction, ManifestSchema, z } from "@workflow-engine/core";
 const ACTION_BRAND: unique symbol = Symbol.for("@workflow-engine/action");
 const HTTP_TRIGGER_BRAND: unique symbol = Symbol.for(
 	"@workflow-engine/http-trigger",
+);
+const CRON_TRIGGER_BRAND: unique symbol = Symbol.for(
+	"@workflow-engine/cron-trigger",
 );
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
@@ -380,10 +384,101 @@ function isHttpTrigger(value: unknown): value is HttpTrigger {
 }
 
 // ---------------------------------------------------------------------------
+// Cron trigger
+// ---------------------------------------------------------------------------
+
+interface CronTrigger {
+	(): Promise<unknown>;
+	readonly [CRON_TRIGGER_BRAND]: true;
+	readonly schedule: string;
+	readonly tz: string;
+	readonly inputSchema: z.ZodType;
+	readonly outputSchema: z.ZodType;
+}
+
+const cronTriggerInputSchema = z.object({});
+const cronTriggerOutputSchema = z.unknown();
+
+// The factory runs in two environments:
+//   - On the build host (Node), where `Intl.DateTimeFormat()` returns the
+//     host's IANA zone. The vite-plugin evaluates the bundle here and reads
+//     the resolved `.tz` off the branded export for the manifest.
+//   - Inside QuickJS at workflow load time, where `Intl` is not available
+//     and accessing `Intl.DateTimeFormat()` throws `ReferenceError`. The
+//     sandbox never reads the trigger's `.tz` (the runtime uses the
+//     manifest-derived descriptor's `tz` instead), so fall back to "UTC"
+//     when Intl is unavailable rather than crash on bundle load.
+const DEFAULT_TIME_ZONE: string = (() => {
+	try {
+		return Intl.DateTimeFormat().resolvedOptions().timeZone;
+	} catch {
+		return "UTC";
+	}
+})();
+
+function cronTrigger<const S extends string>(config: {
+	schedule: StandardCRON<S> extends never ? never : S;
+	tz?: string;
+	handler: () => Promise<unknown>;
+}): CronTrigger {
+	if (typeof config.handler !== "function") {
+		throw new Error(
+			`cronTrigger({ schedule: ${JSON.stringify(config.schedule)} }) is missing a handler function`,
+		);
+	}
+	const resolvedTz = config.tz ?? DEFAULT_TIME_ZONE;
+	const handler = config.handler;
+	const callable = function callCronTrigger(): Promise<unknown> {
+		return handler();
+	};
+	Object.defineProperty(callable, CRON_TRIGGER_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "schedule", {
+		value: config.schedule,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "tz", {
+		value: resolvedTz,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "inputSchema", {
+		value: cronTriggerInputSchema,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "outputSchema", {
+		value: cronTriggerOutputSchema,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	return callable as unknown as CronTrigger;
+}
+
+function isCronTrigger(value: unknown): value is CronTrigger {
+	if (value === null || value === undefined) {
+		return false;
+	}
+	if (typeof value !== "object" && typeof value !== "function") {
+		return false;
+	}
+	return (value as Record<symbol, unknown>)[CRON_TRIGGER_BRAND] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Trigger union
 // ---------------------------------------------------------------------------
 
-type Trigger = HttpTrigger;
+type Trigger = HttpTrigger | CronTrigger;
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -394,16 +489,27 @@ export type {
 	HttpTriggerResult,
 	Manifest,
 } from "@workflow-engine/core";
-export type { Action, EnvRef, ExtractParams, HttpTrigger, Trigger, Workflow };
+export type {
+	Action,
+	CronTrigger,
+	EnvRef,
+	ExtractParams,
+	HttpTrigger,
+	Trigger,
+	Workflow,
+};
 export {
 	ACTION_BRAND,
 	action,
+	CRON_TRIGGER_BRAND,
+	cronTrigger,
 	defineWorkflow,
 	env,
 	extractParamNames,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
 	isAction,
+	isCronTrigger,
 	isHttpTrigger,
 	isWorkflow,
 	ManifestSchema,

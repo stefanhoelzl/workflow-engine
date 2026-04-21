@@ -1,5 +1,6 @@
 import { html, raw } from "hono/html";
 import type {
+	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	TriggerDescriptor,
 } from "../../executor/types.js";
@@ -58,6 +59,7 @@ function prepareSchema(schema: unknown): unknown {
 // attribute surfaces the kind on hover.
 const KIND_ICONS: Record<string, string> = {
 	http: "\u{1F310}", // globe
+	cron: "\u{23F0}", // alarm clock
 };
 
 function kindIcon(kind: string) {
@@ -126,17 +128,16 @@ function descriptorToCardData(
 			meta: `${http.method} ${webhookUrl}`,
 		};
 	}
-	// Non-HTTP kinds: form is built from the full inputSchema and submits to
-	// the kind-agnostic /trigger/ endpoint. (No kinds exist yet; this branch
-	// is exercised once cron/mail land.)
+	const cron = descriptor as CronTriggerDescriptor;
 	return {
 		tenant,
 		workflow,
-		trigger: descriptor.name,
-		kind: descriptor.kind,
-		schema: (descriptor.inputSchema ?? { type: "object" }) as object,
-		submitUrl: `/trigger/${tenant}/${workflow}/${descriptor.name}`,
+		trigger: cron.name,
+		kind: "cron",
+		schema: (cron.inputSchema ?? { type: "object" }) as object,
+		submitUrl: `/trigger/${tenant}/${workflow}/${cron.name}`,
 		submitMethod: "POST",
+		meta: `${cron.schedule} (${cron.tz})`,
 	};
 }
 
