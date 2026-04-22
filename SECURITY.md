@@ -876,15 +876,27 @@ Both transports produce `UserContext = { name, mail, orgs }` (no
   header, invalid token, GitHub error, and allow-list miss are
   indistinguishable to the caller.
   (`packages/runtime/src/api/auth.ts`)
-- **Tenant membership enforcement for `/api/workflows/:tenant` (R-A12).**
-  Unchanged from prior revisions. The handler validates `<tenant>`
-  against the identifier regex
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) and evaluates
+- **Tenant membership enforcement via `requireTenantMember()` middleware
+  (R-A12).** A single Hono middleware factory is the sole enforcement
+  point for the `:tenant` authorization invariant. It validates
+  `<tenant>` against the identifier regex
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), then — unless the request-scoped
+  `authOpen` flag is set — evaluates
   `isMember(user, tenant) := user.orgs.includes(tenant) || user.name === tenant`.
-  Both failures return `404 Not Found` with an identical body. Teams
-  are not consulted (and are no longer part of `UserContext`).
+  Both failures return `404 Not Found` with an identical JSON body
+  (`{"error":"Not Found"}`) sourced from each sub-app's
+  `app.notFound(...)` handler. Teams are not consulted (and are no
+  longer part of `UserContext`). The identifier regex check is NOT
+  skipped in open mode — only the membership check is. The middleware
+  is mounted on `/api/workflows/:tenant` and on the `/trigger`-basePath
+  sub-app's `/:tenant/*` subtree. Inline `validateTenant` +
+  `isMember`/`tenantSet` checks in individual route handlers are
+  prohibited; any new route that accepts a `:tenant` path parameter
+  MUST mount `requireTenantMember()` on its subpath.
   (`packages/runtime/src/auth/tenant.ts`,
-  `packages/runtime/src/api/upload.ts`)
+  `packages/runtime/src/auth/tenant-mw.ts`,
+  `packages/runtime/src/api/index.ts`,
+  `packages/runtime/src/ui/trigger/middleware.ts`)
 - **No code path reads `X-Auth-Request-*` (A13 eliminated).** The
   `headerUserMiddleware` reader and all references to those headers
   were deleted. `bearerUserMiddleware` reads only `Authorization`;
@@ -976,6 +988,14 @@ Both transports produce `UserContext = { name, mail, orgs }` (no
     keyed by tenant. Format validation of a tenant identifier (the
     regex) is NOT a permission check and does NOT substitute for a
     tenant-scoped query (A14, R-A14, §1 I-T2).
+13. **NEVER enforce the `:tenant` authorization invariant inline in a
+    route handler.** `requireTenantMember()` is the sole enforcement
+    point and MUST be mounted on every subpath that accepts a
+    `:tenant` path parameter (today: `/api/workflows/:tenant` and
+    `/trigger/:tenant/*`). Inline `validateTenant(tenant)` +
+    `isMember(user, tenant)` / `tenantSet(user).has(tenant)` checks in
+    handlers are prohibited — they are the drift source the middleware
+    exists to prevent.
 
 ### File references
 
@@ -989,6 +1009,8 @@ Both transports produce `UserContext = { name, mail, orgs }` (no
 - GitHub API client (typed): `packages/runtime/src/auth/github-api.ts`
 - Bearer middleware: `packages/runtime/src/auth/bearer-user.ts`
 - API authorize middleware: `packages/runtime/src/api/auth.ts`
+- Tenant predicate + regex: `packages/runtime/src/auth/tenant.ts`
+- Tenant-authorization middleware: `packages/runtime/src/auth/tenant-mw.ts`
 - Deny banner template: `packages/runtime/src/ui/auth/login-page.ts`
 - Config / env (AUTH_ALLOW, OAuth creds, BASE_URL): `packages/runtime/src/config.ts`
 - App wiring (route ordering): `packages/runtime/src/main.ts`

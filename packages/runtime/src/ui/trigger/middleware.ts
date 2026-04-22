@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
+import { requireTenantMember } from "../../auth/tenant-mw.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderTriggerPage } from "./page.js";
@@ -32,6 +33,7 @@ interface TriggerMiddlewareDeps {
 
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 const HTTP_INTERNAL_ERROR = 500;
+const HTTP_NOT_FOUND = 404;
 
 function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
@@ -70,6 +72,8 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	if (deps.sessionMw) {
 		app.use("*", deps.sessionMw);
 	}
+	app.use("/:tenant/*", requireTenantMember());
+	app.notFound((c) => c.json({ error: "Not Found" }, HTTP_NOT_FOUND));
 
 	const render = (c: Context) => {
 		const user = c.get("user");
@@ -94,17 +98,9 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	// via the shared executor. Response returns `{ ok, output }` on success
 	// or `{ error: "internal_error" }` on failure.
 	app.post("/:tenant/:workflow/:trigger", async (c) => {
-		const user = c.get("user");
 		const tenant = c.req.param("tenant");
 		const workflowName = c.req.param("workflow");
 		const triggerName = c.req.param("trigger");
-
-		if (!validateTenant(tenant)) {
-			return c.notFound();
-		}
-		if (user && !tenantSet(user).has(tenant)) {
-			return c.notFound();
-		}
 
 		const entry = deps.registry.getEntry(tenant, workflowName, triggerName);
 		if (!entry) {
