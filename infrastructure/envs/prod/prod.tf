@@ -86,7 +86,7 @@ variable "domain" {
 
 variable "auth_allow" {
   type        = string
-  description = "AUTH_ALLOW env value; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl;github:org:acme\""
+  description = "AUTH_ALLOW env value; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl,github:org:acme\""
 }
 
 variable "image_digest" {

@@ -23,7 +23,7 @@ describe("parseAuthAllow (grammar)", () => {
 
 	it("parses mixed entries", () => {
 		const { users, orgs } = parseAuthAllow(
-			"github:user:alice;github:org:acme;github:user:bob",
+			"github:user:alice,github:org:acme,github:user:bob",
 		);
 		expect(users).toEqual(new Set(["alice", "bob"]));
 		expect(orgs).toEqual(new Set(["acme"]));
@@ -31,14 +31,14 @@ describe("parseAuthAllow (grammar)", () => {
 
 	it("trims whitespace around entries", () => {
 		const { users, orgs } = parseAuthAllow(
-			"  github:user:alice  ;github:org:acme",
+			"  github:user:alice  ,github:org:acme",
 		);
 		expect(users).toEqual(new Set(["alice"]));
 		expect(orgs).toEqual(new Set(["acme"]));
 	});
 
 	it("skips empty segments", () => {
-		const { users } = parseAuthAllow(";;github:user:alice;;");
+		const { users } = parseAuthAllow(",,github:user:alice,,");
 		expect(users).toEqual(new Set(["alice"]));
 	});
 
@@ -97,7 +97,7 @@ describe("parseAuth (mode resolution)", () => {
 	});
 
 	it("rejects sentinel mixed with entries", () => {
-		expect(() => parseAuth("github:user:alice;__DISABLE_AUTH__")).toThrow(
+		expect(() => parseAuth("github:user:alice,__DISABLE_AUTH__")).toThrow(
 			/must be the only value/,
 		);
 	});

@@ -50,7 +50,7 @@ variable "github_oauth_client_secret" {
 
 variable "auth_allow" {
   type        = string
-  description = "AUTH_ALLOW env value for the app; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl;github:org:acme\""
+  description = "AUTH_ALLOW env value for the app; provider-prefixed grammar, e.g. \"github:user:stefanhoelzl,github:org:acme\""
 }
 
 variable "s2_bucket" {

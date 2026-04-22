@@ -71,7 +71,7 @@ describe("createConfig", () => {
 	it("parses mixed user and org entries", () => {
 		const config = createConfig({
 			...RESTRICTED_REQS,
-			AUTH_ALLOW: "github:user:alice;github:org:acme;github:user:bob",
+			AUTH_ALLOW: "github:user:alice,github:org:acme,github:user:bob",
 		});
 		expect(config.auth.mode).toBe("restricted");
 		if (config.auth.mode === "restricted") {
@@ -83,7 +83,7 @@ describe("createConfig", () => {
 	it("trims whitespace around entries and skips empty segments", () => {
 		const config = createConfig({
 			...RESTRICTED_REQS,
-			AUTH_ALLOW: " github:user:alice ;  ;github:org:acme ",
+			AUTH_ALLOW: " github:user:alice ,  ,github:org:acme ",
 		});
 		if (config.auth.mode === "restricted") {
 			expect(config.auth.users).toEqual(new Set(["alice"]));
@@ -131,7 +131,7 @@ describe("createConfig", () => {
 		expect(() =>
 			createConfig({
 				...RESTRICTED_REQS,
-				AUTH_ALLOW: "github:user:alice;__DISABLE_AUTH__",
+				AUTH_ALLOW: "github:user:alice,__DISABLE_AUTH__",
 			}),
 		).toThrow(/must be the only value/);
 	});
