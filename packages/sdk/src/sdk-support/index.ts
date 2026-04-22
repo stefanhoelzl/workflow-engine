@@ -14,28 +14,44 @@ import { Guest } from "@workflow-engine/sandbox";
 const SDK_DISPATCH_DESCRIPTOR = "__sdkDispatchAction";
 
 /**
- * Signature exported by the `host-call-action` plugin. `validateAction`
- * throws (with Ajv `issues`) when the input fails the manifest's JSON Schema
- * for the given action name, and throws an unknown-action error when the
- * name is not in the manifest. The sdk-support plugin only needs this one
- * method from the peer.
+ * Signatures exported by the `host-call-action` plugin.
+ *
+ * - `validateAction(name, input)` throws (with Ajv `issues`) when the input
+ *   fails the manifest's JSON Schema for the given action name, and throws
+ *   an unknown-action error when the name is not in the manifest.
+ * - `validateActionOutput(name, output)` returns the validated output on
+ *   success, or throws (with Ajv `issues`) when the output fails the
+ *   manifest's output JSON Schema; also throws an unknown-action error when
+ *   the name is not in the manifest.
+ *
+ * Output validation runs host-side: guest code is untrusted, so the
+ * dispatcher does NOT accept a guest-supplied completer. The schema lives
+ * entirely on the host.
  */
 interface HostCallActionExports {
 	readonly validateAction: (name: string, input: unknown) => void;
+	readonly validateActionOutput: (name: string, output: unknown) => unknown;
 }
 
 function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 	const dep = deps["host-call-action"] as
-		| { validateAction?: unknown }
+		| { validateAction?: unknown; validateActionOutput?: unknown }
 		| undefined;
 	if (!dep || typeof dep.validateAction !== "function") {
 		throw new Error(
 			'sdk-support plugin: dependency "host-call-action" did not export validateAction',
 		);
 	}
+	if (typeof dep.validateActionOutput !== "function") {
+		throw new Error(
+			'sdk-support plugin: dependency "host-call-action" did not export validateActionOutput',
+		);
+	}
 	return {
 		validateAction:
 			dep.validateAction as HostCallActionExports["validateAction"],
+		validateActionOutput:
+			dep.validateActionOutput as HostCallActionExports["validateActionOutput"],
 	};
 }
 
@@ -44,11 +60,15 @@ function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 // frozen inner shape, so tenant code cannot replace the dispatcher with
 // a stub that bypasses action.* emission or validateAction. Phase-3
 // deletes the raw `__sdkDispatchAction` binding after this source runs.
+//
+// The bridge takes three args — name, input, handler — with no completer:
+// output validation is host-side (via `validateActionOutput`), not a
+// guest-supplied closure.
 const SDK_SUPPORT_SOURCE = `(() => {
 	const raw = globalThis[${JSON.stringify(SDK_DISPATCH_DESCRIPTOR)}];
 	const sdk = Object.freeze({
-		dispatchAction: (name, input, handler, completer) =>
-			raw(name, input, handler, completer),
+		dispatchAction: (name, input, handler) =>
+			raw(name, input, handler),
 	});
 	Object.defineProperty(globalThis, "__sdk", {
 		value: sdk,
@@ -66,33 +86,34 @@ const dependsOn: readonly string[] = ["host-call-action"];
  * `action()` callable routes through. The dispatcher body:
  *   1. Calls `deps["host-call-action"].validateAction(name, input)`.
  *   2. Invokes the guest handler callable → `raw`.
- *   3. Invokes the guest completer callable (`(raw) => outputSchema.parse(raw)`)
- *      so output-schema validation happens inside QuickJS.
- *   4. Returns the parsed output and disposes both callables in `finally`.
+ *   3. Calls `deps["host-call-action"].validateActionOutput(name, raw)`
+ *      host-side to enforce the declared output schema and return the
+ *      validated value.
+ *   4. Disposes the guest handler callable in `finally`.
+ *
+ * Any fourth positional argument passed by a stale tenant bundle (whose
+ * SDK still constructs a completer closure) is silently ignored — output
+ * validation is host-side regardless, so the security property holds even
+ * when the guest shape lags behind.
  */
 function worker(_ctx: SandboxContext, deps: DepsMap): PluginSetup {
-	const { validateAction } = resolveHostCallActionDeps(deps);
+	const { validateAction, validateActionOutput } =
+		resolveHostCallActionDeps(deps);
 
 	const dispatcher: GuestFunctionDescription = {
 		name: SDK_DISPATCH_DESCRIPTOR,
-		args: [Guest.string(), Guest.raw(), Guest.callable(), Guest.callable()],
+		args: [Guest.string(), Guest.raw(), Guest.callable()],
 		result: Guest.raw(),
-		handler: (async (
-			actionName: string,
-			input: unknown,
-			handler: Callable,
-			completer: Callable,
-		) => {
+		handler: (async (actionName: string, input: unknown, handler: Callable) => {
 			try {
 				validateAction(actionName, input);
 				// Guest-side input/output always cross the bridge as
 				// JSON-shaped GuestValue — the SDK's Zod validation
 				// produces plain JSON shapes. Cast is structural only.
 				const raw = await handler(input as GuestValue);
-				return await completer(raw);
+				return validateActionOutput(actionName, raw);
 			} finally {
 				handler.dispose();
-				completer.dispose();
 			}
 		}) as unknown as GuestFunctionDescription["handler"],
 		log: { request: "action" },

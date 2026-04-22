@@ -175,13 +175,14 @@ interface TenantState {
 	readonly entries: Map<string, TriggerEntry>;
 }
 
-// biome-ignore lint/complexity/useMaxParams: 5 orthogonal inputs (tenant, manifest, files, executor, allowedKinds); packaging would just shuffle the same fields
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (tenant, manifest, files, executor, allowedKinds, logger); packaging would just shuffle the same fields
 function buildTenantState(
 	tenant: string,
 	manifest: Manifest,
 	files: Map<string, string>,
 	executor: Executor,
 	allowedKinds: ReadonlySet<string> | undefined,
+	logger: Logger,
 ): { ok: true; state: TenantState } | { ok: false; error: string } {
 	const workflows = new Map<string, WorkflowManifest>();
 	const bundleSources = new Map<string, string>();
@@ -200,7 +201,14 @@ function buildTenantState(
 		bundleSources.set(wf.name, bundleSource);
 		descriptorsByWf.set(wf.name, built.descriptors);
 		for (const descriptor of built.descriptors) {
-			const fire = buildFire(executor, tenant, wf, descriptor, bundleSource);
+			const fire = buildFire(
+				executor,
+				tenant,
+				wf,
+				descriptor,
+				bundleSource,
+				logger,
+			);
 			entries.set(`${wf.name}/${descriptor.name}`, { descriptor, fire });
 		}
 	}
@@ -484,6 +492,7 @@ function createWorkflowRegistry(
 			files,
 			options.executor,
 			allowedKinds,
+			options.logger,
 		);
 		if (!built.ok) {
 			options.logger.warn("workflow-registry.register-failed", {

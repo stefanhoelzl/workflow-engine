@@ -14,14 +14,12 @@ type SdkDispatcher = (
 	name: string,
 	input: unknown,
 	handler: (input: unknown) => Promise<unknown>,
-	completer: (raw: unknown) => unknown,
 ) => Promise<unknown>;
 
 function dispatchViaSdk(
 	name: string,
 	input: unknown,
 	handler: (input: unknown) => Promise<unknown>,
-	completer: (raw: unknown) => unknown,
 ): Promise<unknown> {
 	const sdk = (globalThis as Record<string, unknown>).__sdk as
 		| { dispatchAction?: SdkDispatcher }
@@ -31,7 +29,7 @@ function dispatchViaSdk(
 			"No action dispatcher installed; actions can only run inside the workflow sandbox",
 		);
 	}
-	return sdk.dispatchAction(name, input, handler, completer);
+	return sdk.dispatchAction(name, input, handler);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,11 +152,11 @@ function isWorkflow(value: unknown): value is Workflow {
 /**
  * `action({input, output, handler, name})` returns a callable that routes
  * every invocation through `globalThis.__sdk.dispatchAction(name, input,
- * handler, completer)` — installed by the sdk-support plugin as a locked
- * global during sandbox boot. The sdk-support plugin validates the input via
- * the host-call-action plugin, invokes the handler in-sandbox, and runs the
- * completer on the raw output to produce the final parsed value. The SDK
- * itself contains zero bridge logic.
+ * handler)` — installed by the sdk-support plugin as a locked global during
+ * sandbox boot. The sdk-support plugin validates the input host-side via
+ * the host-call-action plugin, invokes the handler in-sandbox, and validates
+ * the returned value host-side against the declared output schema before
+ * returning to the caller. The SDK itself contains zero bridge logic.
  *
  * `name` is required. The vite-plugin injects it into each `action({...})`
  * call expression at build time by AST-transforming `export const X =
@@ -169,6 +167,11 @@ function isWorkflow(value: unknown): value is Workflow {
  * The captured `handler` is closed over the callable but NOT exposed as a
  * public property — the only way to invoke the handler is through the
  * callable, which always routes through the dispatcher.
+ *
+ * `config.output` is stored on the callable as the `output` readonly
+ * property (for the vite-plugin's `toJSONSchema()` emission + UI rendering)
+ * but is NOT invoked at runtime: output validation lives host-side, keyed
+ * on the action name and the manifest's declared output schema.
  */
 
 interface Action<I = unknown, O = unknown> {
@@ -186,7 +189,6 @@ function action<I, O>(config: {
 	name?: string;
 }): Action<I, O> {
 	const assignedName = config.name;
-	const outputSchema = config.output;
 	const handler = config.handler;
 	const callable = async function callAction(input: I): Promise<O> {
 		if (assignedName === undefined || assignedName === "") {
@@ -198,7 +200,6 @@ function action<I, O>(config: {
 			assignedName,
 			input,
 			handler as (input: unknown) => Promise<unknown>,
-			(raw: unknown) => outputSchema.parse(raw),
 		)) as O;
 	};
 	Object.defineProperty(callable, ACTION_BRAND, {
@@ -257,18 +258,53 @@ interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
 	readonly outputSchema: z.ZodType;
 }
 
+// Default envelope when no `responseBody` is declared: status/body/headers
+// are all optional, Zod's strict default applies additionalProperties: false
+// at the envelope — catches typos like `statusCode` for `status`.
 const httpTriggerOutputSchema = z.object({
 	status: z.exactOptional(z.number()),
 	body: z.exactOptional(z.unknown()),
 	headers: z.exactOptional(z.record(z.string(), z.string())),
 });
 
-function httpTrigger<B extends z.ZodType = z.ZodUnknown>(config: {
+/**
+ * Build the composed outputSchema for an HTTP trigger.
+ *
+ * - `responseBody` omitted → default envelope (all optional, strict).
+ * - `responseBody` declared → `body` becomes required and its content
+ *   follows the declared schema. The envelope stays strict; tenants opt
+ *   into body-passthrough by applying `.loose()` on the declared schema
+ *   themselves.
+ */
+function buildHttpOutputSchema(responseBody: z.ZodType | undefined): z.ZodType {
+	if (responseBody === undefined) {
+		return httpTriggerOutputSchema;
+	}
+	return z.object({
+		status: z.exactOptional(z.number()),
+		body: responseBody,
+		headers: z.exactOptional(z.record(z.string(), z.string())),
+	});
+}
+
+function httpTrigger<
+	B extends z.ZodType = z.ZodUnknown,
+	R extends z.ZodType | undefined = undefined,
+>(config: {
 	method?: string;
 	body?: B;
+	responseBody?: R;
 	handler: (
 		payload: HttpTriggerPayload<B extends z.ZodType ? z.infer<B> : unknown>,
-	) => Promise<HttpTriggerResult>;
+	) => Promise<
+		R extends z.ZodType
+			? {
+					status?: number;
+					body: z.infer<R>;
+					headers?: Record<string, string>;
+				}
+			: HttpTriggerResult
+	>;
 }): HttpTrigger<B extends z.ZodType ? B : z.ZodUnknown> {
 	if (typeof config.handler !== "function") {
 		throw new Error("httpTrigger(...) is missing a handler function");
@@ -285,6 +321,8 @@ function httpTrigger<B extends z.ZodType = z.ZodUnknown>(config: {
 		method: z.string().default(method),
 	});
 
+	const outputSchema = buildHttpOutputSchema(config.responseBody);
+
 	const handler = config.handler;
 	const callable = function callTrigger(
 		payload: Parameters<typeof handler>[0],
@@ -295,7 +333,7 @@ function httpTrigger<B extends z.ZodType = z.ZodUnknown>(config: {
 		method,
 		body: bodySchema,
 		inputSchema: compositeSchema,
-		outputSchema: httpTriggerOutputSchema,
+		outputSchema,
 	});
 	return callable as unknown as HttpTrigger<
 		B extends z.ZodType ? B : z.ZodUnknown

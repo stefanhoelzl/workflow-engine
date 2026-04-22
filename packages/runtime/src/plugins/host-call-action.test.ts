@@ -42,7 +42,7 @@ describe("host-call-action plugin (§10 shape)", () => {
 		expect(dependsOn).toEqual([]);
 	});
 
-	it("worker() exports validateAction and registers no guest functions", () => {
+	it("worker() exports validateAction + validateActionOutput and registers no guest functions", () => {
 		const config = configFor(
 			manifestWith([
 				{ name: "a", input: { type: "object" }, output: { type: "object" } },
@@ -50,6 +50,7 @@ describe("host-call-action plugin (§10 shape)", () => {
 		);
 		const setup = worker(ctx, {} as DepsMap, config);
 		expect(typeof setup.exports?.validateAction).toBe("function");
+		expect(typeof setup.exports?.validateActionOutput).toBe("function");
 		expect(setup.guestFunctions ?? []).toEqual([]);
 	});
 
@@ -146,6 +147,95 @@ describe("host-call-action plugin (§10 shape)", () => {
 			validateAction("a", { foo: `run-${i}` });
 		}
 		expect(() => validateAction("a", {})).toThrow(ValidationError);
+	});
+
+	it("validateActionOutput returns the validated value on success", () => {
+		const config = configFor(
+			manifestWith([
+				{
+					name: "a",
+					input: { type: "object" },
+					output: { type: "string" },
+				},
+			]),
+		);
+		const setup = worker(ctx, {} as DepsMap, config);
+		const validateActionOutput = setup.exports?.validateActionOutput as (
+			name: string,
+			output: unknown,
+		) => unknown;
+		expect(validateActionOutput("a", "ok")).toBe("ok");
+	});
+
+	it("validateActionOutput throws ValidationError with issues on schema mismatch", () => {
+		const config = configFor(
+			manifestWith([
+				{
+					name: "a",
+					input: { type: "object" },
+					output: { type: "string" },
+				},
+			]),
+		);
+		const setup = worker(ctx, {} as DepsMap, config);
+		const validateActionOutput = setup.exports?.validateActionOutput as (
+			name: string,
+			output: unknown,
+		) => unknown;
+		try {
+			validateActionOutput("a", 42);
+			expect.fail("validateActionOutput should have thrown");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ValidationError);
+			const ve = err as ValidationError;
+			expect(ve.name).toBe("ValidationError");
+			expect(ve.issues.length).toBeGreaterThan(0);
+			expect(ve.issues[0]?.message).toMatch(/string/);
+			expect(Array.isArray(ve.errors)).toBe(true);
+		}
+	});
+
+	it("validateActionOutput throws when the action name is not in the manifest", () => {
+		const config = configFor(
+			manifestWith([
+				{ name: "a", input: { type: "object" }, output: { type: "object" } },
+			]),
+		);
+		const setup = worker(ctx, {} as DepsMap, config);
+		const validateActionOutput = setup.exports?.validateActionOutput as (
+			name: string,
+			output: unknown,
+		) => unknown;
+		expect(() => validateActionOutput("z", {})).toThrow(
+			/"z" is not declared in the manifest/,
+		);
+	});
+
+	it("compiled output validators are reused across calls", () => {
+		const config = configFor(
+			manifestWith([
+				{
+					name: "a",
+					input: { type: "object" },
+					output: {
+						type: "object",
+						required: ["ok"],
+						properties: { ok: { type: "boolean" } },
+					},
+				},
+			]),
+		);
+		const setup = worker(ctx, {} as DepsMap, config);
+		const validateActionOutput = setup.exports?.validateActionOutput as (
+			name: string,
+			output: unknown,
+		) => unknown;
+		for (let i = 0; i < 50; i++) {
+			expect(validateActionOutput("a", { ok: true })).toEqual({ ok: true });
+		}
+		expect(() => validateActionOutput("a", { ok: "yes" })).toThrow(
+			ValidationError,
+		);
 	});
 
 	it("worker bundle tree-shakes Ajv: the source of host-call-action.ts never imports ajv", async () => {

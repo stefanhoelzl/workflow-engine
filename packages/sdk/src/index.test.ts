@@ -180,22 +180,22 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 	beforeEach(() => {
 		// The SDK delegates to globalThis.__sdk.dispatchAction (installed by the
 		// sdk-support plugin). Install the same dispatch shape used in
-		// production so the SDK callable runs the host bridge → handler →
-		// completer pipeline.
+		// production: the plugin validates input host-side, runs the guest
+		// handler, then validates output host-side. Output validation is NOT
+		// performed by the SDK; this mock simulates a passthrough host
+		// validator that accepts any value.
 		hostCallMock = vi.fn();
 		globalRef.__sdk = Object.freeze({
 			dispatchAction: async (
 				name: string,
 				input: unknown,
 				handler: (input: unknown) => Promise<unknown>,
-				completer: (raw: unknown) => unknown,
 			) => {
 				await (hostCallMock as (n: string, i: unknown) => Promise<unknown>)(
 					name,
 					input,
 				);
-				const raw = await handler(input);
-				return completer(raw);
+				return handler(input);
 			},
 		});
 	});
@@ -204,7 +204,7 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 		globalRef.__sdk = undefined;
 	});
 
-	it("notifies the host, then runs the handler, then returns the validated output", async () => {
+	it("notifies the host, then runs the handler, then returns the handler's output (host-side validation runs inside the dispatcher)", async () => {
 		hostCallMock.mockResolvedValue(undefined);
 		const handler = vi.fn(async ({ x }: { x: number }) => String(x));
 		const a = action({
@@ -249,8 +249,19 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 		expect(handler).not.toHaveBeenCalled();
 	});
 
-	it("validates the handler's output and rejects when it does not match the output schema", async () => {
-		hostCallMock.mockResolvedValue(undefined);
+	it("relies on the host-side dispatcher for output validation (SDK does not parse output itself)", async () => {
+		// Simulate the host-side validator rejecting a mismatched output.
+		const outputErr = new Error("output validation: /: must be string");
+		globalRef.__sdk = Object.freeze({
+			dispatchAction: async (
+				_name: string,
+				input: unknown,
+				handler: (input: unknown) => Promise<unknown>,
+			) => {
+				await handler(input);
+				throw outputErr;
+			},
+		});
 		const handler = vi.fn(async () => 42 as unknown as string);
 		const a = action({
 			input: z.unknown(),
@@ -259,7 +270,7 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 			name: "bad",
 		});
 
-		await expect(a(undefined)).rejects.toThrow();
+		await expect(a(undefined)).rejects.toThrow(/output validation/);
 		expect(handler).toHaveBeenCalledTimes(1);
 	});
 
@@ -274,17 +285,13 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 		expect(handler).not.toHaveBeenCalled();
 	});
 
-	it("invokes __sdk.dispatchAction with (name, input, handler, completer) — completer is (raw) => outputSchema.parse(raw)", async () => {
+	it("invokes __sdk.dispatchAction with exactly three positional args: (name, input, handler)", async () => {
 		const dispatchSpy = vi.fn(
 			async (
 				_name: string,
 				_input: unknown,
 				handler: (input: unknown) => Promise<unknown>,
-				completer: (raw: unknown) => unknown,
-			) => {
-				const raw = await handler(_input);
-				return completer(raw);
-			},
+			) => handler(_input),
 		);
 		globalRef.__sdk = Object.freeze({ dispatchAction: dispatchSpy });
 		const handler = vi.fn(async ({ x }: { x: number }) => x * 2);
@@ -298,14 +305,13 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 		expect(result).toBe(42);
 		expect(dispatchSpy).toHaveBeenCalledTimes(1);
 		const call = dispatchSpy.mock.calls[0];
+		expect(call?.length).toBe(3);
 		expect(call?.[0]).toBe("double");
 		expect(call?.[1]).toEqual({ x: 21 });
 		expect(typeof call?.[2]).toBe("function");
-		expect(typeof call?.[3]).toBe("function");
-		// completer runs outputSchema.parse — passing a mismatching raw value
-		// should throw.
-		const completer = call?.[3] as (raw: unknown) => unknown;
-		expect(() => completer("not-a-number")).toThrow();
+		// No fourth positional argument: output validation lives host-side,
+		// the guest no longer supplies a completer closure.
+		expect((call as unknown[] | undefined)?.[3]).toBeUndefined();
 	});
 
 	it("dispatches with the configured name", async () => {
@@ -489,6 +495,50 @@ describe("httpTrigger defaults", () => {
 		expect((t as unknown as Record<string, unknown>).path).toBeUndefined();
 		expect((t as unknown as Record<string, unknown>).params).toBeUndefined();
 		expect((t as unknown as Record<string, unknown>).query).toBeUndefined();
+	});
+
+	it("default outputSchema is strict (envelope-only, additionalProperties: false, all optional)", () => {
+		const t = httpTrigger({ handler: async () => ({}) });
+		const json = z.toJSONSchema(t.outputSchema) as Record<string, unknown>;
+		expect(json.additionalProperties).toBe(false);
+		expect(json.required).toBeUndefined();
+		const props = json.properties as Record<string, unknown>;
+		expect(props.status).toBeDefined();
+		expect(props.body).toBeDefined();
+		expect(props.headers).toBeDefined();
+	});
+
+	it("declaring responseBody makes body required and strict at the envelope", () => {
+		const responseBody = z.object({ orderId: z.string() });
+		const t = httpTrigger({
+			responseBody,
+			handler: async () => ({ body: { orderId: "x" } }),
+		});
+		const json = z.toJSONSchema(t.outputSchema) as Record<string, unknown>;
+		expect(json.additionalProperties).toBe(false);
+		expect(json.required).toEqual(["body"]);
+		const bodyProp = (json.properties as Record<string, unknown>).body as
+			| Record<string, unknown>
+			| undefined;
+		expect(bodyProp?.type).toBe("object");
+		expect((bodyProp?.properties as Record<string, unknown>)?.orderId).toEqual({
+			type: "string",
+		});
+		expect(bodyProp?.required).toEqual(["orderId"]);
+		// body of the declared schema inherits Zod's strict default.
+		expect(bodyProp?.additionalProperties).toBe(false);
+	});
+
+	it("TypeScript narrows the handler return type when responseBody is declared", () => {
+		// Compile-time assertion only: when `responseBody` is declared, the
+		// handler return type requires `body`. A handler returning `{status: 202}`
+		// without `body` fails TS at compile time. We assert the positive case
+		// compiles; the negative case is enforced by TypeScript.
+		const t = httpTrigger({
+			responseBody: z.object({ orderId: z.string() }),
+			handler: async () => ({ status: 202, body: { orderId: "x" } }),
+		});
+		expect(t.method).toBe("POST");
 	});
 });
 

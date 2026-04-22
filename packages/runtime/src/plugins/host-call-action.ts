@@ -36,9 +36,11 @@ interface AjvValidatorFn {
  * Per-action JSON-schema validator source, produced by Ajv's
  * `standaloneCode` on the main thread. The worker `new Function`s each
  * source into a plain predicate; no Ajv runtime is bundled into the worker.
+ * Input and output directions each have their own per-action map.
  */
 interface Config {
-	readonly validatorSources: Readonly<Record<string, string>>;
+	readonly inputValidatorSources: Readonly<Record<string, string>>;
+	readonly outputValidatorSources: Readonly<Record<string, string>>;
 }
 
 const name = "host-call-action";
@@ -46,41 +48,79 @@ const dependsOn: readonly string[] = [];
 
 /**
  * Instantiates pre-compiled per-action validators at `worker()` time and
- * exports `validateAction(name, input)` for consumption by sdk-support via
- * `dependsOn: ["host-call-action"]`. Registers no guest functions; the
- * only consumer is another plugin, not tenant code. Validators persist
- * for the sandbox's lifetime — no recompilation between runs.
+ * exports `validateAction(name, input)` + `validateActionOutput(name, output)`
+ * for consumption by sdk-support via `dependsOn: ["host-call-action"]`.
+ * Registers no guest functions; the only consumer is another plugin, not
+ * tenant code. Validators persist for the sandbox's lifetime — no
+ * recompilation between runs.
  */
-function worker(_ctx: unknown, _deps: DepsMap, config: Config): PluginSetup {
+function compileValidators(
+	sources: Readonly<Record<string, string>>,
+): Map<string, AjvValidatorFn> {
 	const validators = new Map<string, AjvValidatorFn>();
-	for (const [actionName, source] of Object.entries(config.validatorSources)) {
+	for (const [actionName, source] of Object.entries(sources)) {
 		validators.set(actionName, instantiateValidator(source));
 	}
+	return validators;
+}
+
+function issuesFromAjv(
+	errors: ReadonlyArray<{ instancePath?: string; message?: string }>,
+): ValidationIssue[] {
+	return errors.map((err) => ({
+		path: ajvPathToSegments(err.instancePath ?? ""),
+		message: err.message ?? "validation failed",
+	}));
+}
+
+function runValidator(
+	validators: Map<string, AjvValidatorFn>,
+	actionName: string,
+	value: unknown,
+	errorLabel: string,
+): void {
+	const validator = validators.get(actionName);
+	if (!validator) {
+		throw new Error(`action "${actionName}" is not declared in the manifest`);
+	}
+	const ok = validator(value);
+	if (ok) {
+		return;
+	}
+	const ajvErrors = validator.errors ?? [];
+	throw new ValidationError(errorLabel, issuesFromAjv(ajvErrors), ajvErrors);
+}
+
+function worker(_ctx: unknown, _deps: DepsMap, config: Config): PluginSetup {
+	const inputValidators = compileValidators(config.inputValidatorSources);
+	const outputValidators = compileValidators(config.outputValidatorSources);
 
 	const validateAction = (actionName: string, input: unknown): void => {
-		const validator = validators.get(actionName);
-		if (!validator) {
-			throw new Error(`action "${actionName}" is not declared in the manifest`);
-		}
-		// Ajv is configured without `useDefaults`/`coerceTypes`; validators
-		// are pure predicates and never mutate `input`. No defensive clone.
-		const ok = validator(input);
-		if (ok) {
-			return;
-		}
-		const ajvErrors = validator.errors ?? [];
-		const issues: ValidationIssue[] = ajvErrors.map((err) => ({
-			path: ajvPathToSegments(err.instancePath ?? ""),
-			message: err.message ?? "validation failed",
-		}));
-		throw new ValidationError(
+		runValidator(
+			inputValidators,
+			actionName,
+			input,
 			"action input validation failed",
-			issues,
-			ajvErrors,
 		);
 	};
 
-	const exports: DepsMap["host-call-action"] = { validateAction };
+	const validateActionOutput = (
+		actionName: string,
+		output: unknown,
+	): unknown => {
+		runValidator(
+			outputValidators,
+			actionName,
+			output,
+			"action output validation failed",
+		);
+		return output;
+	};
+
+	const exports: DepsMap["host-call-action"] = {
+		validateAction,
+		validateActionOutput,
+	};
 	return { exports };
 }
 

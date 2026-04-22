@@ -81,11 +81,13 @@ sections must append (§7 and onward), not renumber.
   │          │ Trigger handler (UNTRUSTED)           │          │
   │          │   └─► await action(input)             │          │
   │          │       ├─► __sdk.dispatchAction(name,  │          │
-  │          │       │     in, handler, completer)   │          │
+  │          │       │     in, handler)              │          │
   │          │       │   ├─► host-call-action plugin │          │
-  │          │       │   │     validates + audits    │          │
+  │          │       │   │     validates input       │          │
   │          │       │   ├─► captured handler(input) │          │
-  │          │       │   └─► completer(raw) → parsed │          │
+  │          │       │   └─► host-call-action plugin │          │
+  │          │       │       validateActionOutput    │          │
+  │          │       │       (validated value back)  │          │
   │          │   └─► fetch(url, …) → fetch plugin    │          │
   │          │                       (hardenedFetch) │          │
   │          └───────────────────────────────────────┘          │
@@ -415,11 +417,22 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   `__sdk.dispatchAction` before invoking the handler. Validation
   failures throw back into the guest with the Ajv `issues` array
   preserved. Input validation is host-authoritative.
-- **Action output validation in-sandbox.** The SDK wrapper validates the
-  handler's return value against the output Zod schema using the Zod
-  bundle inlined in the workflow bundle. If the guest tampers with its
-  own Zod copy, the self-harm is contained — input validation (the
-  canonical contract, host-side) remains authoritative.
+- **Action output validation host-side via `host-call-action`.** The
+  plugin also exports `validateActionOutput(name, raw)`, compiled from
+  the manifest's output schema. `sdk-support`'s dispatcher handler
+  invokes it after `await handler(input)` resolves, on the host side,
+  before returning to the guest caller. The `__sdk.dispatchAction`
+  bridge takes three positional args (`name, input, handler`) — there is
+  no guest-supplied `completer`, so a tampered SDK cannot substitute a
+  lenient output validator. Output validation is host-authoritative,
+  parallel to input validation.
+- **Trigger handler output validation host-side in `buildFire`.** After
+  `executor.invoke` resolves with `{ok:true, output}`, `buildFire` runs
+  Ajv against `descriptor.outputSchema`. Mismatches surface as
+  `{ok:false, error:{message:"output validation: …"}}` with no `issues`
+  field — the HTTP source maps `no-issues → 500` (handler bug, not
+  client fault). Structured per-field issues are logged via
+  `trigger.output-validation-failed` for dashboards/archives.
 - **Worker-thread isolation of plugin runtime.** QuickJS, plugin code,
   `hardenedFetch`, and Ajv validators all run inside a dedicated
   `worker_threads` Worker. Long synchronous guest CPU work (S3) does not

@@ -84,6 +84,7 @@ function makeCallableDouble(
 
 function makeHostCallActionDeps(
 	validate?: (name: string, input: unknown) => void,
+	validateOutput?: (name: string, output: unknown) => unknown,
 ): DepsMap {
 	return {
 		"host-call-action": {
@@ -92,6 +93,8 @@ function makeHostCallActionDeps(
 				(() => {
 					/* no-op: always valid */
 				}),
+			validateActionOutput:
+				validateOutput ?? ((_n: string, output: unknown) => output),
 		},
 	};
 }
@@ -115,39 +118,55 @@ describe("sdk-support plugin (§10 shape)", () => {
 	});
 
 	it("throws a descriptive error when host-call-action does not export validateAction", () => {
-		expect(() => worker(recordingContext(), {} as DepsMap)).toThrow(
-			/did not export validateAction/,
-		);
+		expect(() =>
+			worker(recordingContext(), {
+				"host-call-action": {
+					validateActionOutput: () => undefined,
+				},
+			} as DepsMap),
+		).toThrow(/did not export validateAction\b/);
+	});
+
+	it("throws a descriptive error when host-call-action does not export validateActionOutput", () => {
+		expect(() =>
+			worker(recordingContext(), {
+				"host-call-action": {
+					validateAction: () => {
+						/* no-op */
+					},
+				},
+			} as DepsMap),
+		).toThrow(/did not export validateActionOutput/);
 	});
 
 	it("logName extracts the action name from args[0]", () => {
 		const setup = worker(recordingContext(), makeHostCallActionDeps());
 		const gf = setup.guestFunctions?.[0];
-		expect(gf?.logName?.(["processOrder", { foo: "bar" }, {}, {}])).toBe(
+		expect(gf?.logName?.(["processOrder", { foo: "bar" }, {}])).toBe(
 			"processOrder",
 		);
 	});
 
-	it("logInput extracts the action input from args[1], omitting the Callable args", () => {
+	it("logInput extracts the action input from args[1], omitting the Callable arg", () => {
 		const setup = worker(recordingContext(), makeHostCallActionDeps());
 		const gf = setup.guestFunctions?.[0];
-		expect(gf?.logInput?.(["processOrder", { foo: "bar" }, {}, {}])).toEqual({
+		expect(gf?.logInput?.(["processOrder", { foo: "bar" }, {}])).toEqual({
 			foo: "bar",
 		});
 	});
 
-	it("handler validates input, invokes handler + completer, disposes callables, returns parsed output", async () => {
+	it("handler validates input, invokes handler, validates output host-side, disposes handler callable, returns validated output", async () => {
 		const validate = vi.fn();
+		const validateOutput = vi.fn((_n: string, output: unknown) => output);
 		const handlerCallable = makeCallableDouble(async (input) => ({
 			rawResult: 42,
 			echoed: input,
 		}));
-		const completerCallable = makeCallableDouble((raw) => ({
-			parsed: true,
-			from: raw,
-		}));
 
-		const setup = worker(recordingContext(), makeHostCallActionDeps(validate));
+		const setup = worker(
+			recordingContext(),
+			makeHostCallActionDeps(validate, validateOutput),
+		);
 		const gf = setup.guestFunctions?.[0];
 		if (!gf) {
 			throw new Error("expected a descriptor");
@@ -156,31 +175,53 @@ describe("sdk-support plugin (§10 shape)", () => {
 			name: string,
 			input: unknown,
 			handler: Callable,
-			completer: Callable,
 		) => Promise<unknown>;
 
-		const out = await handler(
-			"processOrder",
-			{ foo: "bar" },
-			handlerCallable,
-			completerCallable,
-		);
+		const out = await handler("processOrder", { foo: "bar" }, handlerCallable);
 
 		expect(validate).toHaveBeenCalledWith("processOrder", { foo: "bar" });
-		expect(out).toEqual({
-			parsed: true,
-			from: { rawResult: 42, echoed: { foo: "bar" } },
+		expect(validateOutput).toHaveBeenCalledWith("processOrder", {
+			rawResult: 42,
+			echoed: { foo: "bar" },
 		});
+		expect(out).toEqual({ rawResult: 42, echoed: { foo: "bar" } });
 		expect(handlerCallable.disposed).toBe(true);
-		expect(completerCallable.disposed).toBe(true);
 	});
 
-	it("propagates the original handler throw and still disposes both callables", async () => {
+	it("output-validation failure throws into the caller and still disposes the handler callable", async () => {
+		const handlerCallable = makeCallableDouble(async () => 42);
+		const outputErr = new Error("output validation failed");
+		(outputErr as Error & { issues?: unknown }).issues = [
+			{ path: [], message: "must be string" },
+		];
+		const validateOutput = vi.fn(() => {
+			throw outputErr;
+		});
+
+		const setup = worker(
+			recordingContext(),
+			makeHostCallActionDeps(undefined, validateOutput),
+		);
+		const gf = setup.guestFunctions?.[0];
+		if (!gf) {
+			throw new Error("expected a descriptor");
+		}
+		const handler = gf.handler as unknown as (
+			name: string,
+			input: unknown,
+			handler: Callable,
+		) => Promise<unknown>;
+
+		await expect(
+			handler("processOrder", { foo: "bar" }, handlerCallable),
+		).rejects.toThrow(/output validation failed/);
+		expect(validateOutput).toHaveBeenCalledWith("processOrder", 42);
+		expect(handlerCallable.disposed).toBe(true);
+	});
+
+	it("propagates the original handler throw and still disposes the handler callable", async () => {
 		const handlerCallable = makeCallableDouble(async () => {
 			throw new Error("handler boom");
-		});
-		const completerCallable = makeCallableDouble(() => {
-			throw new Error("completer should not be called");
 		});
 
 		const setup = worker(recordingContext(), makeHostCallActionDeps());
@@ -192,26 +233,17 @@ describe("sdk-support plugin (§10 shape)", () => {
 			name: string,
 			input: unknown,
 			handler: Callable,
-			completer: Callable,
 		) => Promise<unknown>;
 
 		await expect(
-			handler(
-				"processOrder",
-				{ foo: "bar" },
-				handlerCallable,
-				completerCallable,
-			),
+			handler("processOrder", { foo: "bar" }, handlerCallable),
 		).rejects.toThrow(/handler boom/);
 		expect(handlerCallable.disposed).toBe(true);
-		expect(completerCallable.disposed).toBe(true);
 	});
 
-	it("propagates validateAction throws without invoking handler or completer, and still disposes callables", async () => {
+	it("propagates validateAction throws without invoking handler, and still disposes the callable", async () => {
 		const handlerImpl = vi.fn();
-		const completerImpl = vi.fn();
 		const handlerCallable = makeCallableDouble(handlerImpl);
-		const completerCallable = makeCallableDouble(completerImpl);
 
 		const validateError = new Error("schema mismatch");
 		(validateError as Error & { issues?: unknown }).issues = [
@@ -230,21 +262,13 @@ describe("sdk-support plugin (§10 shape)", () => {
 			name: string,
 			input: unknown,
 			handler: Callable,
-			completer: Callable,
 		) => Promise<unknown>;
 
 		await expect(
-			handler(
-				"processOrder",
-				{ bad: true },
-				handlerCallable,
-				completerCallable,
-			),
+			handler("processOrder", { bad: true }, handlerCallable),
 		).rejects.toThrow(/schema mismatch/);
 		expect(handlerImpl).not.toHaveBeenCalled();
-		expect(completerImpl).not.toHaveBeenCalled();
 		expect(handlerCallable.disposed).toBe(true);
-		expect(completerCallable.disposed).toBe(true);
 	});
 
 	it("emits a source blob that installs a locked __sdk via Object.defineProperty and freezes the inner object", () => {
@@ -256,5 +280,19 @@ describe("sdk-support plugin (§10 shape)", () => {
 		expect(source).toContain("configurable: false");
 		expect(source).toContain("Object.freeze");
 		expect(source).toContain('"__sdkDispatchAction"');
+	});
+
+	it("source blob's dispatchAction forwards three positional args only (no completer)", () => {
+		const setup = worker(recordingContext(), makeHostCallActionDeps());
+		const source = setup.source ?? "";
+		expect(source).toContain("dispatchAction: (name, input, handler) =>");
+		expect(source).toContain("raw(name, input, handler)");
+		expect(source).not.toContain("completer");
+	});
+
+	it("descriptor args list omits the Callable completer", () => {
+		const setup = worker(recordingContext(), makeHostCallActionDeps());
+		const gf = setup.guestFunctions?.[0];
+		expect(gf?.args).toHaveLength(3);
 	});
 });

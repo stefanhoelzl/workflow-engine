@@ -6,6 +6,10 @@ type ValidateResult<T = unknown> =
 	| { readonly ok: true; readonly input: T }
 	| { readonly ok: false; readonly issues: ValidationIssue[] };
 
+type ValidateOutputResult<T = unknown> =
+	| { readonly ok: true; readonly output: T }
+	| { readonly ok: false; readonly issues: ValidationIssue[] };
+
 const ajv = new Ajv2020.default({ allErrors: true, strict: false });
 
 interface CompiledValidator {
@@ -29,6 +33,13 @@ function compile(schema: Record<string, unknown>): CompiledValidator {
 	return fn;
 }
 
+function issuesFromValidator(validator: CompiledValidator): ValidationIssue[] {
+	return (validator.errors ?? []).map((err) => ({
+		path: ajvPathToSegments(err.instancePath),
+		message: err.message ?? "validation failed",
+	}));
+}
+
 /**
  * Validate a raw trigger input against a descriptor's `inputSchema`.
  *
@@ -46,12 +57,31 @@ function validate(
 	if (ok) {
 		return { ok: true, input: copy };
 	}
-	const issues: ValidationIssue[] = (validator.errors ?? []).map((err) => ({
-		path: ajvPathToSegments(err.instancePath),
-		message: err.message ?? "validation failed",
-	}));
-	return { ok: false, issues };
+	return { ok: false, issues: issuesFromValidator(validator) };
 }
 
-export type { ValidateResult };
-export { validate };
+/**
+ * Validate a handler's return value against a descriptor's `outputSchema`.
+ *
+ * Runs host-side in `buildFire` after the executor resolves a successful
+ * `InvokeResult`. Failure is a server-side contract violation — callers
+ * should surface it as HTTP 500 (not a structured 422), and preserve the
+ * structured issues only via the invocation lifecycle event bus, not the
+ * client-facing HTTP response.
+ */
+function validateOutput(
+	descriptor: TriggerDescriptor,
+	rawOutput: unknown,
+): ValidateOutputResult<unknown> {
+	const validator = compile(descriptor.outputSchema);
+	// Output crosses the sandbox bridge as a structured-cloned value; no
+	// additional clone needed. Pure predicate, never mutates.
+	const ok = validator(rawOutput);
+	if (ok) {
+		return { ok: true, output: rawOutput };
+	}
+	return { ok: false, issues: issuesFromValidator(validator) };
+}
+
+export type { ValidateOutputResult, ValidateResult };
+export { compile, validate, validateOutput };

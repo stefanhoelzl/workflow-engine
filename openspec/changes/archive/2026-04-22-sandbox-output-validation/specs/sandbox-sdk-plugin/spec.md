@@ -1,8 +1,5 @@
-# sandbox-sdk-plugin Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change sandbox-plugin-architecture. Update Purpose after archive.
-## Requirements
 ### Requirement: createSdkSupportPlugin factory
 
 The SDK package SHALL export a `createSdkSupportPlugin(): Plugin` factory. The plugin SHALL declare `dependsOn: ["host-call-action"]`, consuming both `validateAction` and `validateActionOutput` from the host-call-action plugin's exports.
@@ -104,15 +101,3 @@ The SDK's `action()` factory SHALL produce callables whose implementation is a t
 - **THEN** it SHALL call `globalThis.__sdk.dispatchAction("myAction", { foo: "bar" }, handler)`
 - **AND** return the result of that call
 - **AND** it SHALL NOT pass any fourth positional argument
-
-### Requirement: No runtime-appended source
-
-The runtime SHALL NOT append `action-dispatcher.js` (or any other dispatcher source) to tenant workflow bundles. All action-dispatcher logic SHALL live in the SDK's support plugin.
-
-#### Scenario: Bundle contains no appended dispatcher
-
-- **GIVEN** a tenant workflow bundle produced by the vite plugin
-- **WHEN** the runtime loads the bundle
-- **THEN** no source SHALL be concatenated or appended to the user source
-- **AND** the runtime SHALL pass the user source to `sandbox({ source: ... })` unmodified
-
