@@ -23,6 +23,11 @@ COPY packages/sandbox/tsconfig.json packages/sandbox/vite.config.ts packages/san
 COPY packages/sandbox/src/ packages/sandbox/src/
 COPY packages/sandbox-stdlib/tsconfig.json packages/sandbox-stdlib/
 COPY packages/sandbox-stdlib/src/ packages/sandbox-stdlib/src/
+# SDK source is needed at build time: the runtime's vite bundle imports
+# `../../sdk/src/sdk-support/index.ts?sandbox-plugin`, which the
+# sandboxPlugins() vite transform resolves from disk.
+COPY packages/sdk/tsconfig.json packages/sdk/
+COPY packages/sdk/src/ packages/sdk/src/
 # Build sandbox so its dist/src/worker.js is emitted — the runtime bundles
 # sandbox's index.ts but the worker is loaded from disk at runtime via
 # `new Worker(pathToFileURL(.../dist/src/worker.js))` (see
