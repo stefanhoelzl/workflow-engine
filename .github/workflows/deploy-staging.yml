@@ -44,6 +44,7 @@ jobs:
           TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
           TF_VAR_github_oauth_client_id: ${{ secrets.GH_APP_CLIENT_ID_STAGING }}
           TF_VAR_github_oauth_client_secret: ${{ secrets.GH_APP_CLIENT_SECRET_STAGING }}
+          TF_VAR_auth_allow: ${{ vars.AUTH_ALLOW_STAGING }}
         run: |
           tofu init
           tofu apply -auto-approve -var "image_digest=${{ steps.build.outputs.digest }}"

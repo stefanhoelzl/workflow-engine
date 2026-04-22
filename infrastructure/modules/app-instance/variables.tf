@@ -42,8 +42,8 @@ variable "s3" {
   description = "S3 storage configuration"
 }
 
-# AUTH_ALLOW grammar: provider:kind:id, semicolon-separated.
-# Example: "github:user:stefanhoelzl;github:org:acme"
+# AUTH_ALLOW grammar: provider:kind:id, comma-separated.
+# Example: "github:user:stefanhoelzl,github:org:acme"
 # Empty or unset => disabled mode (401 everywhere).
 # See packages/runtime/src/auth/allowlist.ts.
 variable "auth_allow" {

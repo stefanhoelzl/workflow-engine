@@ -31,18 +31,18 @@ UserContext = {
 The runtime SHALL accept an `AUTH_ALLOW` environment variable with the grammar:
 
 ```
-AUTH_ALLOW = Entry ( ";" Entry )*
+AUTH_ALLOW = Entry ( "," Entry )*
 Entry      = Provider ":" Kind ":" Id
 Provider   = "github"
 Kind       = "user" | "org"
 Id         = [A-Za-z0-9][-A-Za-z0-9]*
 ```
 
-Whitespace around entries SHALL be trimmed. Empty entries (`";;"`) SHALL be ignored. Tokens whose `Provider` is not `github`, or whose `Kind` is not `user` or `org`, or whose `Id` does not match the identifier regex, SHALL cause `createConfig` to throw a validation error at startup; the runtime SHALL fail to start.
+Whitespace around entries SHALL be trimmed. Empty entries (`",,"`) SHALL be ignored. Tokens whose `Provider` is not `github`, or whose `Kind` is not `user` or `org`, or whose `Id` does not match the identifier regex, SHALL cause `createConfig` to throw a validation error at startup; the runtime SHALL fail to start.
 
 #### Scenario: Mixed user and org entries
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice;github:org:acme;github:user:bob"`
+- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice,github:org:acme,github:user:bob"`
 - **THEN** the parsed allowlist SHALL contain `users = { "alice", "bob" }` and `orgs = { "acme" }`
 
 #### Scenario: Unknown provider fails startup
@@ -62,7 +62,7 @@ Whitespace around entries SHALL be trimmed. Empty entries (`";;"`) SHALL be igno
 
 #### Scenario: Whitespace around entries is trimmed
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = " github:user:alice ;  github:org:acme "`
+- **WHEN** `createConfig` is called with `AUTH_ALLOW = " github:user:alice ,  github:org:acme "`
 - **THEN** the parsed allowlist SHALL contain `users = { "alice" }` and `orgs = { "acme" }`
 
 ### Requirement: AUTH_ALLOW mode resolution
@@ -81,7 +81,7 @@ Resolution rules:
 - `AUTH_ALLOW` equals the sentinel string `__DISABLE_AUTH__` → `auth = { mode: "open" }`.
 - Any other parseable value → `auth = { mode: "restricted", users, orgs }`.
 
-The sentinel `__DISABLE_AUTH__` SHALL be valid only when it is the entire value of `AUTH_ALLOW`. If it appears as a semicolon-separated segment alongside other entries, config parsing SHALL fail with a validation error.
+The sentinel `__DISABLE_AUTH__` SHALL be valid only when it is the entire value of `AUTH_ALLOW`. If it appears as a comma-separated segment alongside other entries, config parsing SHALL fail with a validation error.
 
 #### Scenario: AUTH_ALLOW unset produces disabled mode
 
@@ -95,12 +95,12 @@ The sentinel `__DISABLE_AUTH__` SHALL be valid only when it is the entire value 
 
 #### Scenario: Parseable value produces restricted mode
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice;github:org:acme"`
+- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice,github:org:acme"`
 - **THEN** the config SHALL contain `auth: { mode: "restricted", users: Set(["alice"]), orgs: Set(["acme"]) }`
 
 #### Scenario: Sentinel mixed with entries fails startup
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice;__DISABLE_AUTH__"`
+- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice,__DISABLE_AUTH__"`
 - **THEN** `createConfig` SHALL throw a validation error indicating the sentinel must be the only value
 
 ### Requirement: Allow predicate
@@ -729,7 +729,7 @@ In restricted mode, the log record SHALL include the number of user entries and 
 
 #### Scenario: Restricted mode logs counts only
 
-- **WHEN** the runtime starts with `AUTH_ALLOW = "github:user:alice;github:user:bob;github:org:acme"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "github:user:alice,github:user:bob,github:org:acme"`
 - **THEN** the log record SHALL indicate restricted mode with 2 users and 1 org
 - **AND** the record SHALL NOT contain the strings `"alice"`, `"bob"`, or `"acme"`
 

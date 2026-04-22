@@ -1,12 +1,12 @@
 import type { UserContext } from "./user-context.js";
 
 // AUTH_ALLOW grammar (see specs/auth):
-//   AUTH_ALLOW = Entry ( ";" Entry )*
+//   AUTH_ALLOW = Entry ( "," Entry )*
 //   Entry      = Provider ":" Kind ":" Id
 //   Provider   = "github"
 //   Kind       = "user" | "org"
 //   Id         = [A-Za-z0-9][-A-Za-z0-9]*
-// Whitespace around entries is trimmed. Empty entries (";;") are skipped.
+// Whitespace around entries is trimmed. Empty entries (",,") are skipped.
 
 const DISABLE_AUTH_SENTINEL = "__DISABLE_AUTH__";
 const ID_REGEX = /^[A-Za-z0-9][-A-Za-z0-9]*$/;
@@ -28,7 +28,7 @@ type Auth =
 function parseAuthAllow(raw: string): ParsedAllowlist {
 	const users = new Set<string>();
 	const orgs = new Set<string>();
-	for (const segment of raw.split(";")) {
+	for (const segment of raw.split(",")) {
 		const trimmed = segment.trim();
 		if (trimmed === "") {
 			continue;
@@ -73,7 +73,7 @@ function parseAuth(raw: string | undefined): Auth {
 	}
 	// Reject sentinel appearing as one entry among others with a dedicated
 	// message (clearer than the grammar error it would otherwise produce).
-	for (const segment of raw.split(";")) {
+	for (const segment of raw.split(",")) {
 		if (segment.trim() === DISABLE_AUTH_SENTINEL) {
 			throw new Error(
 				`AUTH_ALLOW sentinel "${DISABLE_AUTH_SENTINEL}" must be the only value`,
