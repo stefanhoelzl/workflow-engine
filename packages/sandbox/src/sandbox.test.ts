@@ -120,7 +120,7 @@ describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
 	`;
 	const STAMP_PLUGIN: PluginDescriptor = Object.freeze({
 		name: "stamp-emitter",
-		source: STAMP_PLUGIN_SOURCE,
+		workerSource: STAMP_PLUGIN_SOURCE,
 	});
 
 	it("delivers events with intrinsic fields and no runtime metadata", async () => {

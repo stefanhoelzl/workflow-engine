@@ -1,7 +1,9 @@
+import { withStagedGlobals } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import {
 	CONSOLE_METHODS,
 	name as CONSOLE_PLUGIN_NAME,
+	guest,
 	worker,
 } from "./index.js";
 
@@ -32,19 +34,36 @@ describe("console plugin (§10 shape)", () => {
 		}
 	});
 
-	it("returns a source string that installs globalThis.console without defineProperty (keeping the object writable per WebIDL)", () => {
-		const setup = worker();
-		expect(setup.source).toContain("globalThis.console = con");
-		expect(setup.source).not.toContain("Object.defineProperty");
-		expect(setup.source).not.toContain("Object.freeze");
+	it("exports a guest() function", () => {
+		expect(typeof guest).toBe("function");
 	});
 
-	it("source references every private descriptor by JSON-escaped name so non-identifier characters would not break capture", () => {
-		const setup = worker();
+	it("guest() installs globalThis.console forwarding each method to the matching staged __console_<method> bridge", () => {
+		const received: { method: string; args: unknown[] }[] = [];
+		const stage: Record<string, unknown> = {};
 		for (const method of CONSOLE_METHODS) {
-			expect(setup.source).toContain(
-				`globalThis[${JSON.stringify(`__console_${method}`)}]`,
-			);
+			stage[`__console_${method}`] = (args: unknown[]) => {
+				received.push({ method, args });
+			};
+		}
+		withStagedGlobals(stage, () => {
+			guest();
+			const con = (
+				globalThis as unknown as {
+					console?: Record<string, unknown>;
+				}
+			).console;
+			expect(con).toBeDefined();
+			for (const method of CONSOLE_METHODS) {
+				expect(typeof con?.[method]).toBe("function");
+				(con?.[method] as (...a: unknown[]) => void)("payload-for", method);
+			}
+		});
+		expect(received.map((r) => r.method).sort()).toEqual(
+			[...CONSOLE_METHODS].sort(),
+		);
+		for (const entry of received) {
+			expect(entry.args).toEqual(["payload-for", entry.method]);
 		}
 	});
 });

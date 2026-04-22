@@ -4,6 +4,7 @@ import type {
 	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
+import { install } from "./guest/install.js";
 
 // Name of the private descriptor the reportError polyfill captures in its
 // IIFE and then deletes from globalThis. See SECURITY.md §2 capture-and-
@@ -15,17 +16,6 @@ interface ReportErrorPayload {
 	readonly message: string;
 	readonly stack?: string;
 	readonly cause?: unknown;
-}
-
-/**
- * Per-sandbox config. `bundleSource` is the pre-built polyfill IIFE
- * (produced by the `sandboxPolyfills()` vite plugin — see
- * `packages/sandbox-stdlib/src/web-platform/vite-plugin.ts`). The consumer
- * passes it as `descriptor.config.bundleSource` so it survives the
- * JSON-clone boundary as a plain string.
- */
-interface Config {
-	readonly bundleSource?: string;
 }
 
 function reportErrorHostDescriptor(
@@ -51,27 +41,29 @@ function reportErrorHostDescriptor(
 }
 
 /**
- * Bundles the full suite of sandbox
- * polyfills (EventTarget, ErrorEvent, Observable, Streams, URLPattern,
- * CompressionStream, scheduler, indexedDB, performance.mark, reportError,
- * microtask, fetch WHATWG shape, structuredClone, etc.) plus the private
- * `__reportErrorHost` descriptor the reportError polyfill captures.
+ * Bundles the full suite of sandbox polyfills (EventTarget, ErrorEvent,
+ * Observable, Streams, URLPattern, CompressionStream, scheduler, indexedDB,
+ * performance.mark, reportError, microtask, fetch WHATWG shape,
+ * structuredClone, etc.) plus the private `__reportErrorHost` descriptor
+ * the reportError polyfill captures.
  */
 const name = "web-platform";
 
-function worker(
-	ctx: SandboxContext,
-	_deps: unknown,
-	config: Config,
-): PluginSetup {
-	const setup: PluginSetup = {
+function worker(ctx: SandboxContext): PluginSetup {
+	return {
 		guestFunctions: [reportErrorHostDescriptor(ctx)],
 	};
-	if (config?.bundleSource !== undefined) {
-		return { ...setup, source: config.bundleSource };
-	}
-	return setup;
 }
 
-export type { Config, ReportErrorPayload };
-export { name, REPORT_ERROR_HOST, worker };
+/**
+ * Guest-side entry point. The `?sandbox-plugin` vite transform bundles this
+ * zero-arg function into a standalone IIFE that evaluates inside QuickJS at
+ * Phase 2. Every polyfill in `./guest/entry.ts` is installed transitively
+ * via the `install()` import chain, in the exact order documented there.
+ */
+function guest(): void {
+	install();
+}
+
+export type { ReportErrorPayload };
+export { guest, name, REPORT_ERROR_HOST, worker };

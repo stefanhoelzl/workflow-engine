@@ -39,9 +39,9 @@ function sandbox(opts: {
 The factory SHALL:
 
 1. Spawn a fresh `worker_threads` Worker using the package-bundled entrypoint.
-2. Serialize each plugin into a descriptor `{ name, source, config?, dependsOn? }` where `source` is a pre-bundled ESM source string (loaded inside the worker via `data:text/javascript;base64,<...>` import) produced by the `sandboxPlugins()` vite transform at build time, and `config` is JSON-serializable data.
+2. Serialize each plugin into a descriptor `{ name, workerSource, guestSource?, config?, dependsOn? }` where `workerSource` is a pre-bundled ESM source string (loaded inside the worker via `data:text/javascript;base64,<...>` import) produced by the `?sandbox-plugin` vite transform at build time, `guestSource` is an OPTIONAL pre-bundled IIFE string evaluated as top-level guest script in Phase 2, and `config` is JSON-serializable data.
 3. Send the worker an `init` message carrying `source`, `pluginDescriptors`, `filename`, `memoryLimit`, and `interruptHandler` (if any).
-4. Inside the worker: topo-sort plugins by `dependsOn`, instantiate QuickJS WASM with WASI imports routed to mutable hook slots, invoke each plugin's `worker(ctx, deps, config)` in topo order to collect `PluginSetup`s, install `guestFunctions` as `vm.newFunction` bindings, populate `wasiHooks` slots, then run boot phases 2 (plugin sources), 3 (delete private descriptor globals), 4 (user source).
+4. Inside the worker: topo-sort plugins by `dependsOn`, instantiate QuickJS WASM with WASI imports routed to mutable hook slots, invoke each plugin's `worker(ctx, deps, config)` in topo order to collect `PluginSetup`s, install `guestFunctions` as `vm.newFunction` bindings, populate `wasiHooks` slots, then run boot phases 2 (guest sources), 3 (delete private descriptor globals), 4 (user source).
 5. Wait for the worker to reply with `ready` confirming all phases completed.
 6. Return a `Sandbox` object whose `run()`, `dispose()`, and `onEvent()` calls are routed to the worker.
 
@@ -1151,9 +1151,9 @@ The `Logger` interface exposed at `packages/sandbox/src/factory.ts` SHALL define
 
 ### Requirement: Safe globals — URLPattern
 
-The sandbox SHALL expose `globalThis.URLPattern` as a WHATWG URLPattern implementation, provided by the `urlpattern-polyfill` npm package (exact version pinned in `packages/sandbox/package.json`) and compiled into the sandbox polyfill IIFE via the `sandboxPolyfills()` Vite plugin. No host-bridge method is used; all pattern state lives in the QuickJS heap. This global is required by the WinterCG Minimum Common API.
+The sandbox SHALL expose `globalThis.URLPattern` as a WHATWG URLPattern implementation, provided by the `urlpattern-polyfill` npm package (exact version pinned in `packages/sandbox-stdlib/package.json`) and compiled into the web-platform plugin's guest IIFE by the `?sandbox-plugin` vite transform's guest pass. No host-bridge method is used; all pattern state lives in the QuickJS heap. This global is required by the WinterCG Minimum Common API.
 
-The polyfill's own `index.js` self-installs the class on `globalThis` behind a feature-detect guard (`if (!globalThis.URLPattern) globalThis.URLPattern = URLPattern;`) when the `virtual:sandbox-polyfills` IIFE runs. Adding `URLPattern` to `RESERVED_BUILTIN_GLOBALS` in `packages/sandbox/src/index.ts` SHALL make the name collide at sandbox-construction time if a host passes `extraMethods: { URLPattern: … }`, matching every other shim-installed global.
+The polyfill's own `index.js` self-installs the class on `globalThis` behind a feature-detect guard (`if (!globalThis.URLPattern) globalThis.URLPattern = URLPattern;`) when the web-platform plugin's guest IIFE runs in Phase 2. Adding `URLPattern` to `RESERVED_BUILTIN_GLOBALS` in `packages/sandbox/src/index.ts` SHALL make the name collide at sandbox-construction time if a host passes `extraMethods: { URLPattern: … }`, matching every other shim-installed global.
 
 #### Scenario: URLPattern is a constructible function
 
@@ -1628,9 +1628,9 @@ Guest-callable host bindings SHALL be installed exclusively via plugin-declared 
 
 The sandbox SHALL execute boot in phases:
 
-- **Phase 0**: Load plugin worker modules; topo-sort; instantiate WASM with WASI imports (mutable hook slots).
-- **Phase 1**: For each plugin in topo order, invoke `plugin.worker(ctx, deps, config)`; register `guestFunctions` via `vm.newFunction`; populate `wasiHooks` slots; store `source`, `exports`, hooks.
-- **Phase 2**: For each plugin in topo order, `vm.evalCode(plugin.source, "<plugin:${name}>")`. Plugin IIFEs capture private bindings into closures.
+- **Phase 0**: Load plugin worker modules from `descriptor.workerSource` via `data:text/javascript;base64,<...>` dynamic `import()`; topo-sort; instantiate WASM with WASI imports (mutable hook slots).
+- **Phase 1**: For each plugin in topo order, invoke `plugin.worker(ctx, deps, config)`; register `guestFunctions` via `vm.newFunction`; populate `wasiHooks` slots; store `exports`, hooks.
+- **Phase 2**: For each plugin in topo order, if `descriptor.guestSource` is defined, `vm.evalCode(descriptor.guestSource, "<plugin:${name}>")`. Plugin IIFEs capture private bindings into closures.
 - **Phase 3**: For each guest function descriptor with `public !== true`, `delete globalThis[name]`.
 - **Phase 4**: `vm.evalCode(userSource, filename)`.
 
@@ -1642,6 +1642,13 @@ Any failure at any phase SHALL dispose the VM, post `init-error`, `process.exit(
 - **WHEN** phase 3 runs
 - **THEN** `globalThis.fetch` SHALL remain accessible
 - **AND** `globalThis["$internal"]` SHALL be deleted
+
+#### Scenario: Plugin without guestSource skips phase 2 evaluation
+
+- **GIVEN** a plugin whose descriptor omits `guestSource`
+- **WHEN** phase 2 iterates to that plugin
+- **THEN** no `vm.evalCode` call SHALL be made for it
+- **AND** iteration SHALL continue to the next plugin without error
 
 ### Requirement: WASI override dispatch via plugin hooks
 

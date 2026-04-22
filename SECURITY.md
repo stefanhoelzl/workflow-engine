@@ -220,13 +220,18 @@ descriptor).
 
 Every `create()` runs deterministically through:
 
-0. Module load + WASM instantiation.
+0. Module load + WASM instantiation. Each plugin descriptor's
+   `workerSource` is dynamic-imported from a `data:` URI to resolve the
+   host-side `worker` function.
 1. `plugin.worker(ctx, deps, config)` for each plugin in topo order;
-   returns a `PluginSetup` (source, exports, guestFunctions, wasiHooks,
+   returns a `PluginSetup` (exports, guestFunctions, wasiHooks,
    lifecycle hooks).
-2. Phase-2 evaluation of each plugin's `source` IIFE. Plugin source
-   captures private descriptors into closures and installs guest-facing
-   globals (e.g. `globalThis.fetch`, `globalThis.console`).
+2. Phase-2 evaluation of each plugin descriptor's `guestSource` IIFE
+   (produced at build time by the `?sandbox-plugin` transform from the
+   plugin file's optional `guest()` export). The IIFE captures private
+   descriptors into closures and installs guest-facing globals (e.g.
+   `globalThis.fetch`, `globalThis.console`). Descriptors without
+   `guestSource` are skipped.
 3. **Private-binding auto-deletion.** The sandbox iterates every
    registered `GuestFunctionDescription` and `delete globalThis[name]` for
    every entry with `public !== true`. This is structural enforcement,

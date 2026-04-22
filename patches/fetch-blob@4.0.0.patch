@@ -1,0 +1,29 @@
+diff --git a/index.js b/index.js
+index 0683fa5a5f34972b9ed475784426993144836e34..132e668aa38224822449cb940fb672a35c3d960a 100644
+--- a/index.js
++++ b/index.js
+@@ -1,20 +1,9 @@
+ /*! fetch-blob. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
+ 
+-if (!globalThis.ReadableStream) {
+-  try {
+-    const process = await import('node:process').then(m => m.default)
+-    const { emitWarning } = process
+-    try {
+-      process.emitWarning = () => {}
+-      const streams = await import('node:stream/web').then(m => m.default)
+-      Object.assign(globalThis, streams)
+-      process.emitWarning = emitWarning
+-    } catch (error) {
+-      process.emitWarning = emitWarning
+-      throw error
+-    }
+-  } catch (error) {}
+-}
++// Patched by workflow-engine: removed the top-level-await ReadableStream Node
++// fallback so rollup IIFE format can bundle this module. The sandbox installs
++// ReadableStream via @workflow-engine/sandbox-stdlib before fetch-blob loads,
++// making this branch dead at runtime.
+ 
+ // 64 KiB (same size chrome slice theirs blob into Uint8array's)
+ const POOL_SIZE = 65536

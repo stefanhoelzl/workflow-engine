@@ -1,10 +1,9 @@
 import { defineConfig } from "vitest/config";
 import { sandboxPlugins } from "./packages/sandbox/src/vite/sandbox-plugins.js";
-import { sandboxPolyfills } from "./packages/sandbox-stdlib/src/web-platform/vite-plugin.js";
 import { wptPreamble } from "./packages/sandbox-stdlib/test/wpt/harness/preamble/vite-plugin.js";
 
 export default defineConfig({
-	plugins: [wptPreamble(), sandboxPlugins(), sandboxPolyfills()],
+	plugins: [wptPreamble(), sandboxPlugins()],
 	test: {
 		include: [
 			"packages/*/src/**/*.{test,spec}.ts",

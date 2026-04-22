@@ -12,6 +12,10 @@ COPY packages/runtime/package.json packages/runtime/
 COPY packages/sandbox/package.json packages/sandbox/
 COPY packages/sandbox-stdlib/package.json packages/sandbox-stdlib/
 COPY packages/sdk/package.json packages/sdk/
+# pnpm.patchedDependencies in pnpm-workspace.yaml references patches/ which
+# must exist before `pnpm install --frozen-lockfile` or the install errors
+# with "patch file not found".
+COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.base.json ./

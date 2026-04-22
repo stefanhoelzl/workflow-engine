@@ -9,7 +9,7 @@ const NOOP_PLUGIN_SOURCE = "export default () => ({});";
 
 /** A single plugin whose `worker()` returns an empty PluginSetup. */
 const NOOP_PLUGINS: readonly PluginDescriptor[] = Object.freeze([
-	Object.freeze({ name: "noop", source: NOOP_PLUGIN_SOURCE }),
+	Object.freeze({ name: "noop", workerSource: NOOP_PLUGIN_SOURCE }),
 ]);
 
 export { NOOP_PLUGIN_SOURCE, NOOP_PLUGINS };

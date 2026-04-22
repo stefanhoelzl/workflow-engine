@@ -5,6 +5,11 @@ settings:
   excludeLinksFromLockfile: false
   injectWorkspacePackages: true
 
+patchedDependencies:
+  fetch-blob@4.0.0:
+    hash: 2992dc126ec02c4209ed213a9d85ddcdc45846fe0111b3ce7dc0c0a639a8e77c
+    path: patches/fetch-blob@4.0.0.patch
+
 importers:
 
   .:
@@ -163,7 +168,7 @@ importers:
         version: 6.2.5
       fetch-blob:
         specifier: ^4.0.0
-        version: 4.0.0
+        version: 4.0.0(patch_hash=2992dc126ec02c4209ed213a9d85ddcdc45846fe0111b3ce7dc0c0a639a8e77c)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -4505,7 +4510,7 @@ snapshots:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
 
-  fetch-blob@4.0.0:
+  fetch-blob@4.0.0(patch_hash=2992dc126ec02c4209ed213a9d85ddcdc45846fe0111b3ce7dc0c0a639a8e77c):
     dependencies:
       node-domexception: 1.0.0
 

@@ -38,7 +38,7 @@ function descriptor(
 ): PluginDescriptor {
 	const d: PluginDescriptor = {
 		name,
-		source: `export default () => ({ name: "${name}" });`,
+		workerSource: `export default () => ({ name: "${name}" });`,
 	};
 	if (opts.dependsOn !== undefined) {
 		return { ...d, dependsOn: opts.dependsOn };
@@ -190,7 +190,15 @@ function phase1From(
 }
 
 describe("runPhaseSourceEval", () => {
-	it("evaluates each plugin's source in the phase-1 order with a <plugin:name> filename", () => {
+	function desc(name: string, guestSource?: string): PluginDescriptor {
+		const d: PluginDescriptor = {
+			name,
+			workerSource: "/* worker */",
+		};
+		return guestSource === undefined ? d : { ...d, guestSource };
+	}
+
+	it("evaluates each plugin's guestSource in the phase-1 order with a <plugin:name> filename", () => {
 		const evalCalls: { source: string; filename: string }[] = [];
 		const evaluator: SourceEvaluator = {
 			eval(source, filename) {
@@ -198,10 +206,8 @@ describe("runPhaseSourceEval", () => {
 			},
 		};
 		runPhaseSourceEval(
-			phase1From(["a", "b"], {
-				a: { source: "/* a */" },
-				b: { source: "/* b */" },
-			}),
+			phase1From(["a", "b"], { a: {}, b: {} }),
+			[desc("a", "/* a */"), desc("b", "/* b */")],
 			evaluator,
 		);
 		expect(evalCalls).toEqual([
@@ -210,10 +216,11 @@ describe("runPhaseSourceEval", () => {
 		]);
 	});
 
-	it("skips plugins whose PluginSetup has no source", () => {
+	it("skips plugins whose descriptor has no guestSource", () => {
 		const evaluator: SourceEvaluator = { eval: vi.fn() };
 		runPhaseSourceEval(
-			phase1From(["a", "b"], { a: {}, b: { source: "/* b */" } }),
+			phase1From(["a", "b"], { a: {}, b: {} }),
+			[desc("a"), desc("b", "/* b */")],
 			evaluator,
 		);
 		expect(evaluator.eval).toHaveBeenCalledTimes(1);
@@ -228,7 +235,8 @@ describe("runPhaseSourceEval", () => {
 		};
 		expect(() =>
 			runPhaseSourceEval(
-				phase1From(["boom"], { boom: { source: "/* bad */" } }),
+				phase1From(["boom"], { boom: {} }),
+				[desc("boom", "/* bad */")],
 				evaluator,
 			),
 		).toThrow(/plugin "boom" failed during source-eval: bad in <plugin:boom>/);

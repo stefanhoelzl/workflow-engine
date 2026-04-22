@@ -5,6 +5,7 @@ import type {
 } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import {
+	guest,
 	SDK_DISPATCH_DESCRIPTOR,
 	dependsOn as SDK_SUPPORT_DEPENDS_ON,
 	name as SDK_SUPPORT_PLUGIN_NAME,
@@ -271,24 +272,16 @@ describe("sdk-support plugin (§10 shape)", () => {
 		expect(handlerCallable.disposed).toBe(true);
 	});
 
-	it("emits a source blob that installs a locked __sdk via Object.defineProperty and freezes the inner object", () => {
-		const setup = worker(recordingContext(), makeHostCallActionDeps());
-		expect(setup.source).toBeTruthy();
-		const source = setup.source ?? "";
-		expect(source).toContain('Object.defineProperty(globalThis, "__sdk"');
-		expect(source).toContain("writable: false");
-		expect(source).toContain("configurable: false");
-		expect(source).toContain("Object.freeze");
-		expect(source).toContain('"__sdkDispatchAction"');
+	it("exports a guest() function", () => {
+		expect(typeof guest).toBe("function");
 	});
 
-	it("source blob's dispatchAction forwards three positional args only (no completer)", () => {
-		const setup = worker(recordingContext(), makeHostCallActionDeps());
-		const source = setup.source ?? "";
-		expect(source).toContain("dispatchAction: (name, input, handler) =>");
-		expect(source).toContain("raw(name, input, handler)");
-		expect(source).not.toContain("completer");
-	});
+	// Note: a direct `guest()` invocation test is intentionally omitted here —
+	// `guest()` installs `__sdk` with `configurable: false` (SECURITY.md §2
+	// R-2), which breaks Node-level test isolation (subsequent calls throw).
+	// The 3-arg contract is asserted below via `gf.args.length` and via the
+	// handler invocation tests above; end-to-end IIFE behavior is covered by
+	// the runtime package's sandbox integration tests.
 
 	it("descriptor args list omits the Callable completer", () => {
 		const setup = worker(recordingContext(), makeHostCallActionDeps());

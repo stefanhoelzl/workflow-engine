@@ -128,8 +128,7 @@
 		},
 		{
 			"includes": [
-				"packages/sandbox-stdlib/src/web-platform/source/**/*.ts",
-				"packages/sandbox-stdlib/src/web-platform/vite-plugin.ts",
+				"packages/sandbox-stdlib/src/web-platform/guest/**/*.ts",
 				"packages/sandbox/src/vite/**/*.ts",
 				"packages/sandbox-stdlib/test/wpt/harness/preamble/**/*.ts"
 			],

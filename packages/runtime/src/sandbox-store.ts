@@ -1,4 +1,3 @@
-import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
 import type { WorkflowManifest } from "@workflow-engine/core";
 import type {
 	PluginDescriptor,
@@ -60,16 +59,13 @@ function buildPluginDescriptors(
 	// TS can't prove they satisfy the index-signature constraint of
 	// `SerializableConfig`. `serializePluginDescriptors` asserts the shape
 	// at construction time; a widening cast through `unknown` is required.
-	const webPlatformConfig = {
-		bundleSource: SANDBOX_POLYFILLS,
-	} as unknown as PluginDescriptor["config"];
 	const hostCallActionConfig = compileActionValidators(
 		workflow,
 	) as unknown as PluginDescriptor["config"];
 	return [
 		{ ...wasiPlugin },
 		{ ...wasiTelemetryPlugin },
-		{ ...webPlatformPlugin, config: webPlatformConfig },
+		{ ...webPlatformPlugin },
 		{ ...fetchPlugin },
 		{ ...timersPlugin },
 		{ ...consolePlugin },

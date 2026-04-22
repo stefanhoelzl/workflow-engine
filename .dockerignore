@@ -10,6 +10,7 @@
 !packages/sandbox/
 !packages/sandbox-stdlib/
 !packages/sdk/
+!patches/
 packages/core/node_modules
 packages/core/dist
 packages/runtime/node_modules

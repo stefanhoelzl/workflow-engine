@@ -19,7 +19,15 @@ interface PluginDescriptor<
 	 * by `sandboxPlugins()`; the sandbox worker loads it via a `data:` URI
 	 * dynamic import (no filesystem resolution, no package-exports surface).
 	 */
-	readonly source: string;
+	readonly workerSource: string;
+	/**
+	 * Optional self-contained IIFE source string, evaluated as a top-level
+	 * guest script inside the QuickJS VM at plugin boot Phase 2. Produced at
+	 * build time by `sandboxPlugins()` when the plugin source file exports
+	 * a `guest(): void` function; omitted when the file has no `guest`
+	 * export. See SECURITY.md §2 R-1 / R-5.
+	 */
+	readonly guestSource?: string;
 	readonly config?: Config;
 	readonly dependsOn?: readonly string[];
 }
@@ -144,7 +152,6 @@ type RunResult =
 	| { readonly ok: false; readonly error: unknown };
 
 interface PluginSetup {
-	readonly source?: string;
 	readonly exports?: Record<string, unknown>;
 	readonly guestFunctions?: readonly GuestFunctionDescription<
 		readonly ArgSpec<unknown>[],

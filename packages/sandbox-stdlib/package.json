@@ -4,9 +4,6 @@
 	"type": "module",
 	"version": "0.0.0",
 	"private": true,
-	"exports": {
-		"./vite": "./src/web-platform/vite-plugin.ts"
-	},
 	"files": [
 		"src",
 		"!src/**/*.test.ts"

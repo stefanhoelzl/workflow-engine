@@ -40,3 +40,4 @@ export type { Logger, RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
 export { sandbox } from "./sandbox.js";
 export type { LifecycleError } from "./sandbox-context.js";
 export { serializeLifecycleError } from "./sandbox-context.js";
+export { withPluginSandbox, withStagedGlobals } from "./test-harness.js";
