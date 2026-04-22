@@ -8,6 +8,7 @@
 !packages/core/
 !packages/runtime/
 !packages/sandbox/
+!packages/sandbox-stdlib/
 !packages/sdk/
 packages/core/node_modules
 packages/core/dist
@@ -15,3 +16,6 @@ packages/runtime/node_modules
 packages/runtime/dist
 packages/sandbox/node_modules
 packages/sandbox/dist
+packages/sandbox-stdlib/node_modules
+packages/sandbox-stdlib/dist
+packages/sandbox-stdlib/test
