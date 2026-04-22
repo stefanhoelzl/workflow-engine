@@ -1,8 +1,5 @@
-# sandbox-host-call-action-plugin Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change sandbox-plugin-architecture. Update Purpose after archive.
-## Requirements
 ### Requirement: createHostCallActionPlugin factory
 
 The runtime package SHALL export a `createHostCallActionPlugin(config: { manifest: Manifest; logger?: Logger }): Plugin` factory. The plugin's `worker()` SHALL construct an Ajv instance and compile input-validation and output-validation schemas for each action in `config.manifest.actions`. The plugin SHALL return `exports: { validateAction, validateActionOutput }` where:
@@ -52,26 +49,3 @@ The plugin SHALL register no guest functions (actions reach it via the sdk-suppo
 - **GIVEN** a manifest without action `z`
 - **WHEN** `validateAction("z", anyInput)` or `validateActionOutput("z", anyOutput)` is called
 - **THEN** it SHALL throw with an error naming the unknown action
-
-### Requirement: Plugin depends on none
-
-`createHostCallActionPlugin` SHALL declare `dependsOn: []` (or omit it). It provides validation capability to downstream plugins via exports but depends on nothing.
-
-#### Scenario: Plugin loads before sdk-support
-
-- **GIVEN** a composition with `createHostCallActionPlugin` and `createSdkSupportPlugin` (whose `dependsOn: ["host-call-action"]`)
-- **WHEN** the sandbox is constructed
-- **THEN** host-call-action's `worker()` SHALL be invoked before sdk-support's
-- **AND** sdk-support SHALL receive the validateAction function via its `deps["host-call-action"].validateAction`
-
-### Requirement: Per-sandbox manifest binding
-
-The plugin SHALL be constructed with its `{manifest}` config at sandbox construction time (once per cached `(tenant, sha)` sandbox, not per run). The compiled validators SHALL persist for the sandbox's lifetime.
-
-#### Scenario: Validators persist across runs
-
-- **GIVEN** a sandbox cached for `(tenantA, sha123)` serving multiple runs
-- **WHEN** consecutive runs each call `validateAction`
-- **THEN** the same pre-compiled validator instances SHALL be used
-- **AND** no recompilation SHALL occur between runs
-
