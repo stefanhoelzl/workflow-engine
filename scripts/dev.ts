@@ -14,12 +14,20 @@ const PID_PATTERN = /\d+/;
 
 const rootDir = resolve(import.meta.dirname, "..");
 const workflowsDir = resolve(rootDir, "workflows");
+const sandboxSrcDir = resolve(rootDir, "packages/sandbox/src");
 const runtimeWatchDirs = [
 	resolve(rootDir, "packages/runtime/src"),
 	resolve(rootDir, "packages/core/src"),
-	resolve(rootDir, "packages/sandbox/src"),
+	sandboxSrcDir,
 	resolve(rootDir, "packages/sdk/src"),
 ];
+
+function buildSandbox(): void {
+	execSync("pnpm --filter @workflow-engine/sandbox build", {
+		stdio: "inherit",
+		cwd: rootDir,
+	});
+}
 
 function parseArgs(): { randomPort: boolean; kill: boolean } {
 	return {
@@ -209,6 +217,7 @@ function watchRuntime(
 ): void {
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let restarting = false;
+	let sandboxDirty = false;
 
 	const restart = async () => {
 		if (restarting) {
@@ -224,6 +233,11 @@ function watchRuntime(
 			killProcessTree(current, "SIGTERM");
 			await exited;
 			await waitForPortFree(port, PORT_POLL_TIMEOUT_MS);
+			if (sandboxDirty) {
+				sandboxDirty = false;
+				console.log("Rebuilding sandbox worker...");
+				buildSandbox();
+			}
 			const next = spawnRuntime(port);
 			setRuntime(next);
 			await waitForPort(port, PORT_POLL_TIMEOUT_MS);
@@ -239,11 +253,15 @@ function watchRuntime(
 
 	const runtimeWatchExtensions = [".ts", ".css", ".js", ".html"];
 	for (const dir of runtimeWatchDirs) {
+		const isSandboxDir = dir === sandboxSrcDir;
 		watch(dir, { recursive: true }, (_event, filename) => {
 			if (
 				!(filename && runtimeWatchExtensions.some((e) => filename.endsWith(e)))
 			) {
 				return;
+			}
+			if (isSandboxDir) {
+				sandboxDirty = true;
 			}
 			if (debounceTimer) {
 				clearTimeout(debounceTimer);
@@ -258,6 +276,9 @@ async function main(): Promise<void> {
 	const port = args.randomPort ? await getFreePort() : DEFAULT_PORT;
 
 	await ensurePortAvailable(port, args.kill);
+
+	console.log("Building sandbox worker...");
+	buildSandbox();
 
 	let runtime = spawnRuntime(port);
 
