@@ -119,67 +119,67 @@ function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
 	};
 }
 
+// `logInput` strips the Callable from the `timer.set` event — a Callable is
+// a host-thread wrapper holding an `invoke` function and a `JSValueHandle`
+// ref; forwarding it to the main thread via `port.postMessage` fails with
+// DataCloneError because functions are not structured-cloneable. Emit only
+// the delay. (timerId belongs on the ensuing `timer.request` event, not the
+// leaf.)
+function timerSetLogInput(args: readonly unknown[]): { delay: unknown } {
+	return { delay: args[1] };
+}
+
+// `delay` is `Guest.raw()` because WHATWG allows `setTimeout(cb)` (no delay)
+// and `setTimeout(cb, "10")` (string delay); both must work. Strict
+// `Guest.number()` would throw `expected number, got undefined` on valid
+// guest calls. Coercion happens in `normaliseDelay`.
+function setDescriptor(
+	name: "setTimeout" | "setInterval",
+	schedule: (cb: Callable, delay: unknown) => number,
+): GuestFunctionDescription {
+	return {
+		name,
+		args: [Guest.callable(), Guest.raw()],
+		result: Guest.number(),
+		handler: ((cb: Callable, delay: unknown) =>
+			schedule(cb, delay)) as unknown as GuestFunctionDescription["handler"],
+		log: { event: "timer.set" },
+		logInput: timerSetLogInput,
+		public: true,
+	};
+}
+
+// clearTimeout/clearInterval per WHATWG coerce any value to an integer
+// handle; `null`, `undefined`, and non-numeric values MUST be no-ops, not
+// type errors. Use `Guest.raw()` and coerce host-side.
+function clearDescriptor(
+	name: "clearTimeout" | "clearInterval",
+	cancel: (id: number) => void,
+): GuestFunctionDescription {
+	return {
+		name,
+		args: [Guest.raw()],
+		result: Guest.void(),
+		handler: ((id: unknown) => {
+			const n = Number(id);
+			if (Number.isFinite(n)) {
+				cancel(n);
+			}
+		}) as unknown as GuestFunctionDescription["handler"],
+		log: { event: "timer.clear" },
+		public: true,
+	};
+}
+
 function timersGuestFunctions(
 	registry: TimerRegistry,
 ): GuestFunctionDescription[] {
-	// `delay` is `Guest.raw()` because WHATWG allows `setTimeout(cb)` (no
-	// delay) and `setTimeout(cb, "10")` (string delay); both must work.
-	// Strict `Guest.number()` would throw `expected number, got undefined`
-	// on valid guest calls. Coercion happens in `normaliseDelay`.
-	const setTimeoutDesc: GuestFunctionDescription = {
-		name: "setTimeout",
-		args: [Guest.callable(), Guest.raw()],
-		result: Guest.number(),
-		handler: ((cb: Callable, delay: unknown) =>
-			registry.scheduleOnce(
-				cb,
-				delay,
-			)) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.set" },
-		public: true,
-	};
-	const setIntervalDesc: GuestFunctionDescription = {
-		name: "setInterval",
-		args: [Guest.callable(), Guest.raw()],
-		result: Guest.number(),
-		handler: ((cb: Callable, delay: unknown) =>
-			registry.scheduleInterval(
-				cb,
-				delay,
-			)) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.set" },
-		public: true,
-	};
-	// clearTimeout/clearInterval per WHATWG coerce any value to an integer
-	// handle; `null`, `undefined`, and non-numeric values MUST be no-ops, not
-	// type errors. Use `Guest.raw()` and coerce host-side.
-	const clearTimeoutDesc: GuestFunctionDescription = {
-		name: "clearTimeout",
-		args: [Guest.raw()],
-		result: Guest.void(),
-		handler: ((id: unknown) => {
-			const n = Number(id);
-			if (Number.isFinite(n)) {
-				registry.cancel(n);
-			}
-		}) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.clear" },
-		public: true,
-	};
-	const clearIntervalDesc: GuestFunctionDescription = {
-		name: "clearInterval",
-		args: [Guest.raw()],
-		result: Guest.void(),
-		handler: ((id: unknown) => {
-			const n = Number(id);
-			if (Number.isFinite(n)) {
-				registry.cancel(n);
-			}
-		}) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.clear" },
-		public: true,
-	};
-	return [setTimeoutDesc, setIntervalDesc, clearTimeoutDesc, clearIntervalDesc];
+	return [
+		setDescriptor("setTimeout", registry.scheduleOnce),
+		setDescriptor("setInterval", registry.scheduleInterval),
+		clearDescriptor("clearTimeout", registry.cancel),
+		clearDescriptor("clearInterval", registry.cancel),
+	];
 }
 
 /**

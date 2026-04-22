@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
 import {
 	type PluginDescriptor,
 	type Sandbox,
@@ -11,7 +12,6 @@ import consolePlugin from "../../../src/console/index.ts?sandbox-plugin";
 import fetchPlugin from "../../../src/fetch/index.ts?sandbox-plugin";
 import timersPlugin from "../../../src/timers/index.ts?sandbox-plugin";
 import webPlatformPlugin from "../../../src/web-platform/index.ts?sandbox-plugin";
-import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
 import { compose } from "./composer.js";
 
 // WPT-specific harness plugin: installs a public `__wptReport(name, status,
