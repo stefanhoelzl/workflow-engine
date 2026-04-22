@@ -1,6 +1,5 @@
 import { defineConfig } from "vitest/config";
 import { sandboxPlugins } from "../../../sandbox/src/vite/sandbox-plugins.js";
-import { sandboxPolyfills } from "../../src/web-platform/vite-plugin.js";
 import { wptPreamble } from "./harness/preamble/vite-plugin.js";
 import { WptReporter } from "./harness/wpt-reporter.js";
 
@@ -16,7 +15,7 @@ const FIVE_MINUTES_MS = 5 * 60_000;
 const ONE_MINUTE_MS = 60_000;
 
 export default defineConfig({
-	plugins: [wptPreamble(), sandboxPlugins(), sandboxPolyfills()],
+	plugins: [wptPreamble(), sandboxPlugins()],
 	test: {
 		include: ["packages/sandbox-stdlib/test/wpt/wpt.test.ts"],
 		testTimeout: FIVE_MINUTES_MS,

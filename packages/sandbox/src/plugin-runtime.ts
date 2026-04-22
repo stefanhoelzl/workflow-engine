@@ -14,15 +14,16 @@ import type { ArgSpec, ResultSpec } from "./plugin-types.js";
 /**
  * Phased init pipeline.
  *
- * Phase 0: module load. The caller resolves each descriptor's `source`
+ * Phase 0: module load. The caller resolves each descriptor's `workerSource`
  *          to a Plugin value. In production this is a `data:` URI
  *          dynamic import of the tree-shaken bundle; in tests it's a
  *          direct registry.
  * Phase 1: plugin.worker(ctx, deps, config). Plugins may read exports of
  *          their declared `dependsOn` peers via `deps`.
- * Phase 2: plugin source evaluation. Each plugin's PluginSetup.source is
- *          evaluated in topo order. Guest source captures any private
- *          descriptors (e.g. `const capture = globalThis.__x; delete globalThis.__x;`).
+ * Phase 2: plugin guest source evaluation. Each plugin's descriptor.guestSource
+ *          (when present) is evaluated in topo order. The guest IIFE captures
+ *          any private descriptors (e.g. `const capture = globalThis.__x;
+ *          delete globalThis.__x;`) before Phase 3 removes them.
  * Phase 3: private-descriptor auto-deletion. For every registered guest
  *          function with `public !== true`, `delete globalThis[name]` — so
  *          that plugins which forgot to self-delete still end up structurally
@@ -44,8 +45,8 @@ type ModuleLoader = (descriptor: PluginDescriptor) => Promise<Plugin> | Plugin;
 
 /**
  * Phase 0 — resolve each descriptor's Plugin value via the caller-supplied
- * ModuleLoader. In production the loader evaluates `descriptor.source` via
- * `data:` URI dynamic import and picks its default export (the worker
+ * ModuleLoader. In production the loader evaluates `descriptor.workerSource`
+ * via `data:` URI dynamic import and picks its default export (the worker
  * function); in tests it's a direct registry lookup.
  */
 async function loadPluginModules(
@@ -132,25 +133,31 @@ interface SourceEvaluator {
 }
 
 /**
- * Phase 2 — evaluate each plugin's PluginSetup.source in the given order.
- * Plugins without a `source` are skipped. A thrown evaluation is annotated
- * with the offending plugin name before re-throwing. The evaluator is
- * caller-supplied so this phase is VM-agnostic and unit-testable.
+ * Phase 2 — evaluate each plugin's `descriptor.guestSource` in the given
+ * order. Plugins whose descriptor omits `guestSource` are skipped. A thrown
+ * evaluation is annotated with the offending plugin name before re-throwing.
+ * The evaluator is caller-supplied so this phase is VM-agnostic and
+ * unit-testable.
  *
  * The filename passed to the evaluator is stable per plugin
  * (`<plugin:${name}>`) so stack traces point to the origin plugin.
  */
 function runPhaseSourceEval(
 	phase1: Phase1Result,
+	descriptors: readonly PluginDescriptor[],
 	evaluator: SourceEvaluator,
 ): void {
+	const byName = new Map<string, PluginDescriptor>();
+	for (const descriptor of descriptors) {
+		byName.set(descriptor.name, descriptor);
+	}
 	for (const name of phase1.order) {
-		const setup = phase1.setups.get(name);
-		if (setup?.source === undefined) {
+		const descriptor = byName.get(name);
+		if (descriptor?.guestSource === undefined) {
 			continue;
 		}
 		try {
-			evaluator.eval(setup.source, `<plugin:${name}>`);
+			evaluator.eval(descriptor.guestSource, `<plugin:${name}>`);
 		} catch (err) {
 			throw annotatePluginError(name, "source-eval", err);
 		}

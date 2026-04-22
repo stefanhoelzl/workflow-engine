@@ -21,7 +21,8 @@ describe("defaultPluginLoader — data: URI path", () => {
 	test("evaluates source, extracts default-exported worker, wraps as Plugin", async () => {
 		const descriptor: PluginDescriptor = {
 			name: "example",
-			source: "export default (ctx, deps, config) => ({ gotConfig: config });",
+			workerSource:
+				"export default (ctx, deps, config) => ({ gotConfig: config });",
 		};
 		const plugin = await defaultPluginLoader(descriptor);
 		expect(plugin.name).toBe("example");
@@ -39,7 +40,7 @@ describe("defaultPluginLoader — data: URI path", () => {
 		const descriptor: PluginDescriptor = {
 			name: "child",
 			dependsOn: ["parent"],
-			source: "export default () => ({});",
+			workerSource: "export default () => ({});",
 		};
 		const plugin = await defaultPluginLoader(descriptor);
 		expect(plugin.dependsOn).toEqual(["parent"]);
@@ -48,20 +49,20 @@ describe("defaultPluginLoader — data: URI path", () => {
 	test("throws when the source module has no default export", async () => {
 		const descriptor: PluginDescriptor = {
 			name: "broken",
-			source: "export const notDefault = () => ({});",
+			workerSource: "export const notDefault = () => ({});",
 		};
 		await expect(defaultPluginLoader(descriptor)).rejects.toThrow(
-			/"broken" source module has no default-exported worker function/,
+			/"broken" workerSource module has no default-exported worker function/,
 		);
 	});
 
 	test("throws when the default export is not a function", async () => {
 		const descriptor: PluginDescriptor = {
 			name: "weird",
-			source: `export default { hello: "world" };`,
+			workerSource: `export default { hello: "world" };`,
 		};
 		await expect(defaultPluginLoader(descriptor)).rejects.toThrow(
-			/"weird" source module has no default-exported worker function/,
+			/"weird" workerSource module has no default-exported worker function/,
 		);
 	});
 });
@@ -84,7 +85,7 @@ describe("defaultPluginLoader — override hook", () => {
 		const descriptor: PluginDescriptor = {
 			name: "override",
 			// Bogus source — the override path must NOT evaluate it.
-			source: "this is not valid JavaScript @@@",
+			workerSource: "this is not valid JavaScript @@@",
 		};
 		const plugin = await defaultPluginLoader(descriptor);
 		expect(plugin).toBe(overridePlugin);
@@ -101,7 +102,7 @@ describe("loadPluginFromSource", () => {
 		try {
 			const plugin = await loadPluginFromSource({
 				name: "pure",
-				source: "export default () => ({ ok: true });",
+				workerSource: "export default () => ({ ok: true });",
 			});
 			expect(plugin.name).toBe("pure");
 		} finally {

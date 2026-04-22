@@ -177,34 +177,52 @@ function assertSerializableConfig(
 	assertObjectEntriesSerializable(pluginName, path, obj, seen);
 }
 
+function validateDependsOn(descriptor: PluginDescriptor): void {
+	if (descriptor.dependsOn === undefined) {
+		return;
+	}
+	if (!Array.isArray(descriptor.dependsOn)) {
+		throw new TypeError(
+			`plugin "${descriptor.name}" dependsOn must be an array of plugin names`,
+		);
+	}
+	for (const dep of descriptor.dependsOn) {
+		if (typeof dep !== "string" || dep.length === 0) {
+			throw new TypeError(
+				`plugin "${descriptor.name}" dependsOn entries must be non-empty strings`,
+			);
+		}
+	}
+}
+
 /**
- * Validates a single plugin descriptor's shape: non-empty name, source,
- * optional dependsOn is an array of non-empty strings, and config is deeply
- * JSON-serializable. Throws on any violation before the worker is spawned.
+ * Validates a single plugin descriptor's shape: non-empty name + workerSource,
+ * optional guestSource is a string (when present), optional dependsOn is an
+ * array of non-empty strings, and config is deeply JSON-serializable. Throws
+ * on any violation before the worker is spawned.
  */
 function validateDescriptor(descriptor: PluginDescriptor): void {
 	if (typeof descriptor.name !== "string" || descriptor.name.length === 0) {
 		throw new TypeError("plugin descriptor must have a non-empty name");
 	}
-	if (typeof descriptor.source !== "string" || descriptor.source.length === 0) {
+	if (
+		typeof descriptor.workerSource !== "string" ||
+		descriptor.workerSource.length === 0
+	) {
 		throw new TypeError(
-			`plugin "${descriptor.name}" must have a non-empty source`,
+			`plugin "${descriptor.name}" must have a non-empty workerSource`,
 		);
 	}
-	if (descriptor.dependsOn !== undefined) {
-		if (!Array.isArray(descriptor.dependsOn)) {
-			throw new TypeError(
-				`plugin "${descriptor.name}" dependsOn must be an array of plugin names`,
-			);
-		}
-		for (const dep of descriptor.dependsOn) {
-			if (typeof dep !== "string" || dep.length === 0) {
-				throw new TypeError(
-					`plugin "${descriptor.name}" dependsOn entries must be non-empty strings`,
-				);
-			}
-		}
+	if (
+		descriptor.guestSource !== undefined &&
+		(typeof descriptor.guestSource !== "string" ||
+			descriptor.guestSource.length === 0)
+	) {
+		throw new TypeError(
+			`plugin "${descriptor.name}" guestSource, when present, must be a non-empty string`,
+		);
 	}
+	validateDependsOn(descriptor);
 	if (descriptor.config !== undefined) {
 		assertSerializableConfig(
 			descriptor.name,

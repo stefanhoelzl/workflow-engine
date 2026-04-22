@@ -114,11 +114,11 @@ describe("sandboxPlugins()", () => {
 		expect(code).toContain(JSON.stringify(pluginFile));
 		expect(code).toContain("export const name = mod.name;");
 		expect(code).toContain("export const dependsOn = mod.dependsOn;");
-		expect(code).toContain("export const source =");
-		expect(code).toContain("export default { name, dependsOn, source };");
+		expect(code).toContain("export const workerSource =");
+		expect(code).toContain("export default { name, dependsOn, workerSource };");
 		// Tree-shaking check: the prepare function and its token must NOT
-		// appear in the serialized `source` constant.
-		const sourceMatch = code.match(/export const source = "([\s\S]*?)";/);
+		// appear in the serialized `workerSource` constant.
+		const sourceMatch = code.match(/export const workerSource = "([\s\S]*?)";/);
 		expect(sourceMatch).not.toBeNull();
 		if (!sourceMatch) {
 			throw new Error("unreachable");
@@ -156,7 +156,7 @@ describe("sandboxPlugins()", () => {
 		if (!code) {
 			throw new Error("unreachable");
 		}
-		const sourceMatch = code.match(/export const source = "([\s\S]*?)";/);
+		const sourceMatch = code.match(/export const workerSource = "([\s\S]*?)";/);
 		if (!sourceMatch) {
 			throw new Error("unreachable");
 		}
@@ -167,6 +167,199 @@ describe("sandboxPlugins()", () => {
 		expect(typeof mod.default).toBe("function");
 		const setup = mod.default(null, {}, { payload: 42 });
 		expect(setup).toEqual({ note: "worker-side", gotConfig: { payload: 42 } });
+	});
+
+	test("emits workerSource but omits guestSource when plugin file has no `guest` export", async () => {
+		const pluginFile = join(dir, "worker-only.ts");
+		await writeFile(
+			pluginFile,
+			[
+				'export const name = "worker-only";',
+				"export function worker() { return {}; }",
+				"",
+			].join("\n"),
+		);
+		const plugin = sandboxPlugins();
+		const resolve = getResolve(plugin);
+		const load = getLoad(plugin);
+		const id = resolve(
+			`${pathToFileURL(pluginFile).pathname}?sandbox-plugin`,
+			join(dir, "consumer.ts"),
+		);
+		if (!id) {
+			throw new Error("unreachable");
+		}
+		const result = await load(id);
+		const code = typeof result === "string" ? result : result?.code;
+		if (!code) {
+			throw new Error("unreachable");
+		}
+		expect(code).toContain("export const workerSource =");
+		expect(code).not.toContain("export const guestSource =");
+		expect(code).toContain("export default { name, dependsOn, workerSource };");
+	});
+
+	test("emits both workerSource and guestSource when plugin file exports `guest`", async () => {
+		const pluginFile = join(dir, "both.ts");
+		await writeFile(
+			pluginFile,
+			[
+				'export const name = "both";',
+				"export function worker() { return {}; }",
+				"export function guest() {",
+				'  (globalThis as unknown as { __stagedByGuest?: string }).__stagedByGuest = "installed";',
+				"}",
+				"",
+			].join("\n"),
+		);
+		const plugin = sandboxPlugins();
+		const resolve = getResolve(plugin);
+		const load = getLoad(plugin);
+		const id = resolve(
+			`${pathToFileURL(pluginFile).pathname}?sandbox-plugin`,
+			join(dir, "consumer.ts"),
+		);
+		if (!id) {
+			throw new Error("unreachable");
+		}
+		const result = await load(id);
+		const code = typeof result === "string" ? result : result?.code;
+		if (!code) {
+			throw new Error("unreachable");
+		}
+		expect(code).toContain("export const workerSource =");
+		expect(code).toContain("export const guestSource =");
+		expect(code).toContain(
+			"export default { name, dependsOn, workerSource, guestSource };",
+		);
+		// The guest IIFE, when eval'd, must install the global by invoking guest().
+		// Parse the emitted `export const guestSource = "...";` by extracting the
+		// JSON-quoted string literal (the transform emits via `JSON.stringify`).
+		const guestLine = code.match(
+			/export const guestSource = ("(?:[^"\\]|\\.)*");/,
+		);
+		if (!guestLine) {
+			throw new Error("unreachable");
+		}
+		const guestIife = JSON.parse(guestLine[1] ?? "") as string;
+		const g = globalThis as unknown as { __stagedByGuest?: unknown };
+		const hadProp = Object.hasOwn(globalThis as object, "__stagedByGuest");
+		const prior = g.__stagedByGuest;
+		try {
+			new Function(guestIife)();
+			expect(g.__stagedByGuest).toBe("installed");
+		} finally {
+			if (hadProp) {
+				g.__stagedByGuest = prior;
+			} else {
+				delete g.__stagedByGuest;
+			}
+		}
+	});
+
+	test("worker and guest bundles drop each other's top-level imports via independent tree-shake passes", async () => {
+		// Worker-side uses Node builtins (node:module); guest-side uses a pure
+		// JS constant. The two rollup passes should cleanly separate them.
+		const pluginFile = join(dir, "split.ts");
+		await writeFile(
+			pluginFile,
+			[
+				'import { createRequire } from "node:module";',
+				'export const name = "split";',
+				"export function worker() {",
+				"  const req = createRequire(import.meta.url);",
+				"  return { WORKER_ONLY_TOKEN_AAA: typeof req };",
+				"}",
+				"export function guest() {",
+				'  const GUEST_ONLY_TOKEN_BBB = "guest-side-value";',
+				"  (globalThis as unknown as { __v?: string }).__v = GUEST_ONLY_TOKEN_BBB;",
+				"}",
+				"",
+			].join("\n"),
+		);
+		const plugin = sandboxPlugins();
+		const resolve = getResolve(plugin);
+		const load = getLoad(plugin);
+		const id = resolve(
+			`${pathToFileURL(pluginFile).pathname}?sandbox-plugin`,
+			join(dir, "consumer.ts"),
+		);
+		if (!id) {
+			throw new Error("unreachable");
+		}
+		const result = await load(id);
+		const code = typeof result === "string" ? result : result?.code;
+		if (!code) {
+			throw new Error("unreachable");
+		}
+		const workerLine = code.match(
+			/export const workerSource = ("(?:[^"\\]|\\.)*");/,
+		);
+		const guestLine = code.match(
+			/export const guestSource = ("(?:[^"\\]|\\.)*");/,
+		);
+		if (!(workerLine && guestLine)) {
+			throw new Error("unreachable");
+		}
+		const workerBundle = JSON.parse(workerLine[1] ?? "") as string;
+		const guestBundle = JSON.parse(guestLine[1] ?? "") as string;
+		// Worker keeps its own token + node import, drops guest's.
+		expect(workerBundle).toContain("WORKER_ONLY_TOKEN_AAA");
+		expect(workerBundle).not.toContain("GUEST_ONLY_TOKEN_BBB");
+		// Guest keeps its own token, drops worker's.
+		expect(guestBundle).toContain("GUEST_ONLY_TOKEN_BBB");
+		expect(guestBundle).not.toContain("WORKER_ONLY_TOKEN_AAA");
+		expect(guestBundle).not.toContain("node:module");
+	});
+
+	test("worker bundle fails when plugin file has no `worker` export", async () => {
+		const pluginFile = join(dir, "no-worker.ts");
+		await writeFile(
+			pluginFile,
+			[
+				'export const name = "no-worker";',
+				"// intentionally no `worker` export",
+				"",
+			].join("\n"),
+		);
+		const plugin = sandboxPlugins();
+		const resolve = getResolve(plugin);
+		const load = getLoad(plugin);
+		const id = resolve(
+			`${pathToFileURL(pluginFile).pathname}?sandbox-plugin`,
+			join(dir, "consumer.ts"),
+		);
+		if (!id) {
+			throw new Error("unreachable");
+		}
+		await expect(load(id)).rejects.toThrow();
+	});
+
+	test("guest bundle fails when guest code imports node:*", async () => {
+		const pluginFile = join(dir, "leaks-node.ts");
+		await writeFile(
+			pluginFile,
+			[
+				'import { readFileSync } from "node:fs";',
+				'export const name = "leaks-node";',
+				"export function worker() { return {}; }",
+				"export function guest() {",
+				"  (globalThis as unknown as { __x?: unknown }).__x = readFileSync;",
+				"}",
+				"",
+			].join("\n"),
+		);
+		const plugin = sandboxPlugins();
+		const resolve = getResolve(plugin);
+		const load = getLoad(plugin);
+		const id = resolve(
+			`${pathToFileURL(pluginFile).pathname}?sandbox-plugin`,
+			join(dir, "consumer.ts"),
+		);
+		if (!id) {
+			throw new Error("unreachable");
+		}
+		await expect(load(id)).rejects.toThrow();
 	});
 
 	test("plugin without dependsOn yields `undefined` through the namespace re-export", async () => {

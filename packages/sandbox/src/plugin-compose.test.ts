@@ -18,7 +18,7 @@ function d(
 ): PluginDescriptor {
 	return {
 		name,
-		source: `export default () => ({ name: "${name}" });`,
+		workerSource: `export default () => ({ name: "${name}" });`,
 		...(dependsOn.length > 0 ? { dependsOn } : {}),
 		...(config === undefined ? {} : { config: config as never }),
 	};
@@ -52,7 +52,7 @@ describe("serializePluginDescriptors — dependsOn validation", () => {
 	it("throws on non-string dependsOn entry", () => {
 		const bad: PluginDescriptor = {
 			name: "a",
-			source: "export default () => ({});",
+			workerSource: "export default () => ({});",
 			dependsOn: [42 as unknown as string],
 		};
 		expect(() => serializePluginDescriptors([bad])).toThrow(TypeError);
@@ -61,7 +61,7 @@ describe("serializePluginDescriptors — dependsOn validation", () => {
 	it("throws on non-array dependsOn", () => {
 		const bad: PluginDescriptor = {
 			name: "a",
-			source: "export default () => ({});",
+			workerSource: "export default () => ({});",
 			dependsOn: "x" as unknown as readonly string[],
 		};
 		expect(() => serializePluginDescriptors([bad])).toThrow(TypeError);

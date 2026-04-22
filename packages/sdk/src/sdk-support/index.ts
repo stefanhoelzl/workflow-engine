@@ -9,7 +9,7 @@ import type {
 import { Guest } from "@workflow-engine/sandbox";
 
 // The private dispatcher descriptor name. Phase-3 deletes it from globalThis
-// after Phase-2 source eval has captured it into the locked `__sdk` object,
+// after Phase-2 guest() has captured it into the locked `__sdk` object,
 // so tenant code never sees this binding.
 const SDK_DISPATCH_DESCRIPTOR = "__sdkDispatchAction";
 
@@ -54,29 +54,6 @@ function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 			dep.validateActionOutput as HostCallActionExports["validateActionOutput"],
 	};
 }
-
-// Captures `__sdkDispatchAction` from globalThis into a locked `__sdk`
-// object (non-writable, non-configurable via defineProperty) with a
-// frozen inner shape, so tenant code cannot replace the dispatcher with
-// a stub that bypasses action.* emission or validateAction. Phase-3
-// deletes the raw `__sdkDispatchAction` binding after this source runs.
-//
-// The bridge takes three args — name, input, handler — with no completer:
-// output validation is host-side (via `validateActionOutput`), not a
-// guest-supplied closure.
-const SDK_SUPPORT_SOURCE = `(() => {
-	const raw = globalThis[${JSON.stringify(SDK_DISPATCH_DESCRIPTOR)}];
-	const sdk = Object.freeze({
-		dispatchAction: (name, input, handler) =>
-			raw(name, input, handler),
-	});
-	Object.defineProperty(globalThis, "__sdk", {
-		value: sdk,
-		writable: false,
-		configurable: false,
-		enumerable: false,
-	});
-})();`;
 
 const name = "sdk-support";
 const dependsOn: readonly string[] = ["host-call-action"];
@@ -124,9 +101,34 @@ function worker(_ctx: SandboxContext, deps: DepsMap): PluginSetup {
 
 	return {
 		guestFunctions: [dispatcher],
-		source: SDK_SUPPORT_SOURCE,
 	};
 }
 
+// Captures `__sdkDispatchAction` from globalThis into a locked `__sdk` object
+// (non-writable, non-configurable via defineProperty) with a frozen inner
+// shape, so tenant code cannot replace the dispatcher with a stub that
+// bypasses action.* emission or validateAction (SECURITY.md §2 R-2).
+// Phase-3 deletes the raw `__sdkDispatchAction` binding after this runs,
+// leaving only the reference captured into `raw` below.
+//
+// The bridge takes three args — name, input, handler — with no completer:
+// output validation is host-side (via `validateActionOutput`), not a
+// guest-supplied closure.
+function guest(): void {
+	type DispatchFn = (name: string, input: unknown, handler: unknown) => unknown;
+	const g = globalThis as unknown as Record<string, unknown>;
+	const raw = g[SDK_DISPATCH_DESCRIPTOR] as DispatchFn;
+	const sdk = Object.freeze({
+		dispatchAction: (name: string, input: unknown, handler: unknown) =>
+			raw(name, input, handler),
+	});
+	Object.defineProperty(globalThis, "__sdk", {
+		value: sdk,
+		writable: false,
+		configurable: false,
+		enumerable: false,
+	});
+}
+
 export type { HostCallActionExports };
-export { dependsOn, name, SDK_DISPATCH_DESCRIPTOR, SDK_SUPPORT_SOURCE, worker };
+export { dependsOn, guest, name, SDK_DISPATCH_DESCRIPTOR, worker };

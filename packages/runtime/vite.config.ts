@@ -1,9 +1,8 @@
 import { sandboxPlugins } from "@workflow-engine/sandbox/vite";
-import { sandboxPolyfills } from "@workflow-engine/sandbox-stdlib/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-	plugins: [sandboxPlugins(), sandboxPolyfills()],
+	plugins: [sandboxPlugins()],
 	build: {
 		ssr: "src/main.ts",
 		outDir: "dist",

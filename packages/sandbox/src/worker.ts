@@ -233,7 +233,7 @@ async function runPluginBootPipeline(
 			r.dispose();
 		},
 	};
-	runPhaseSourceEval(phase1, evaluator);
+	runPhaseSourceEval(phase1, descriptors, evaluator);
 
 	// Phase 3 — private-descriptor auto-deletion.
 	// QuickJS has no deleteProp — use evalCode with a JSON-escaped name so

@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
 import {
 	type PluginDescriptor,
 	type Sandbox,
@@ -50,7 +49,7 @@ export default worker;
 
 const WPT_HARNESS_PLUGIN: PluginDescriptor = {
 	name: "wpt-harness",
-	source: WPT_HARNESS_PLUGIN_SOURCE,
+	workerSource: WPT_HARNESS_PLUGIN_SOURCE,
 };
 
 interface RunnableEntry {
@@ -201,15 +200,14 @@ async function runWpt(
 		// timers, console, etc.) that live in sandbox-stdlib plugins. Compose
 		// the subset of the production plugin list that's relevant to WPT;
 		// runtime-only plugins (host-call-action, sdk-support, trigger) are
-		// omitted because no action/trigger manifest applies.
-		const webPlatformConfig = {
-			bundleSource: SANDBOX_POLYFILLS,
-		} as unknown as PluginDescriptor["config"];
+		// omitted because no action/trigger manifest applies. The polyfill
+		// IIFE ships as `webPlatformPlugin.guestSource` produced by the
+		// `?sandbox-plugin` transform — no runtime config wiring needed.
 		sb = await sandbox({
 			source,
 			plugins: [
 				{ ...wasiPlugin },
-				{ ...webPlatformPlugin, config: webPlatformConfig },
+				{ ...webPlatformPlugin },
 				{ ...fetchPlugin },
 				{ ...timersPlugin },
 				{ ...consolePlugin },

@@ -5,3 +5,5 @@ allowBuilds:
   '@fission-ai/openspec': true
   esbuild: true
   protobufjs: true
+patchedDependencies:
+  fetch-blob@4.0.0: patches/fetch-blob@4.0.0.patch
