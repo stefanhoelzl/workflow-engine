@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	CronTriggerDescriptor,
@@ -168,7 +168,14 @@ function makeCronStub(
 }
 
 function mount(registry: WorkflowRegistry) {
-	const m = triggerMiddleware({ registry });
+	// Stub session middleware: seeds `user` so `requireTenantMember()` accepts
+	// requests to tenant "t0" (mirrors the pre-refactor behaviour where tests
+	// ran without authn and the inline check bypassed on missing user).
+	const sessionMw: MiddlewareHandler = async (c, next) => {
+		c.set("user", { name: "user", mail: "user@example.test", orgs: ["t0"] });
+		await next();
+	};
+	const m = triggerMiddleware({ registry, sessionMw });
 	const app = new Hono();
 	app.all(m.match, m.handler);
 	if (m.match.endsWith("/*")) {

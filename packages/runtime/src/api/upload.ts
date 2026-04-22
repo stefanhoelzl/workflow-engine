@@ -1,8 +1,6 @@
 import { constants } from "node:http2";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { isMember, validateTenant } from "../auth/tenant.js";
-import type { UserContext } from "../auth/user-context.js";
 import type { Logger } from "../logger.js";
 import {
 	extractTenantTarGz,
@@ -18,10 +16,11 @@ import {
 // (tenant manifest with `workflows: [...]`) plus one `<name>.js` per
 // workflow at the tarball root.
 //
-// Auth: `githubAuthMiddleware` gates the /api/* surface; `userMiddleware`
-// populates `UserContext` (orgs + name). The handler performs a tenant
-// membership check — non-members (and invalid tenant strings) receive
-// 404 Not Found, indistinguishable from "tenant does not exist."
+// Auth: the /api/* surface is gated by `bearerUserMiddleware` +
+// `authorizeMiddleware`; `requireTenantMember()` is mounted on
+// `/workflows/:tenant` and enforces identifier regex + `isMember` with a
+// JSON 404 fail-closed response (see auth spec: "Tenant-authorization
+// middleware"). This handler never performs tenant checks inline.
 //
 // Error classification:
 //   - 415: not a valid gzip/tar archive.
@@ -45,26 +44,10 @@ const HTTP_BAD_REQUEST =
 	constants.HTTP_STATUS_BAD_REQUEST as ContentfulStatusCode;
 const HTTP_INTERNAL_ERROR =
 	constants.HTTP_STATUS_INTERNAL_SERVER_ERROR as ContentfulStatusCode;
-const HTTP_NOT_FOUND = constants.HTTP_STATUS_NOT_FOUND as ContentfulStatusCode;
 
 interface UploadDeps {
 	readonly registry: WorkflowRegistry;
 	readonly logger: Logger;
-}
-
-function notFound(c: Context): Response {
-	return c.json({ error: "Not Found" }, HTTP_NOT_FOUND);
-}
-
-function checkTenantAccess(c: Context, tenant: string): Response | undefined {
-	if (c.get("authOpen")) {
-		return;
-	}
-	const user = c.get("user") as UserContext | undefined;
-	if (user && isMember(user, tenant)) {
-		return;
-	}
-	return notFound(c);
 }
 
 function failureResponse(
@@ -99,14 +82,6 @@ function failureResponse(
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
 		const tenant = c.req.param("tenant") ?? "";
-		if (!validateTenant(tenant)) {
-			return notFound(c);
-		}
-
-		const accessDenied = checkTenantAccess(c, tenant);
-		if (accessDenied) {
-			return accessDenied;
-		}
 
 		const body = await c.req.arrayBuffer();
 		const tarballBytes = new Uint8Array(body);

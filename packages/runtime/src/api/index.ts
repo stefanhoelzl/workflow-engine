@@ -1,11 +1,16 @@
+import { constants } from "node:http2";
 import { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Auth } from "../auth/allowlist.js";
 import { bearerUserMiddleware } from "../auth/bearer-user.js";
+import { requireTenantMember } from "../auth/tenant-mw.js";
 import type { Logger } from "../logger.js";
 import type { Middleware } from "../triggers/http.js";
 import type { WorkflowRegistry } from "../workflow-registry.js";
 import { authorizeMiddleware, rejectAllMiddleware } from "./auth.js";
 import { createUploadHandler } from "./upload.js";
+
+const HTTP_NOT_FOUND = constants.HTTP_STATUS_NOT_FOUND as ContentfulStatusCode;
 
 // ---------------------------------------------------------------------------
 // /api/* mount
@@ -60,6 +65,9 @@ function apiMiddleware(options: ApiOptions): Middleware {
 			throw new Error(`unreachable: ${JSON.stringify(exhaustive)}`);
 		}
 	}
+
+	app.use("/workflows/:tenant", requireTenantMember());
+	app.notFound((c) => c.json({ error: "Not Found" }, HTTP_NOT_FOUND));
 
 	app.post(
 		"/workflows/:tenant",
