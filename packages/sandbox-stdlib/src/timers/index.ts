@@ -20,16 +20,21 @@ interface PendingTimer {
 // code passes NaN, <0, or >=2^31. Matches the legacy normaliseDelay in
 // packages/sandbox/src/globals.ts.
 const INT32_MAX = 2_147_483_647;
-function normaliseDelay(raw: number): number {
-	if (!Number.isFinite(raw) || raw < 0 || raw > INT32_MAX) {
+function normaliseDelay(raw: unknown): number {
+	const n = typeof raw === "number" ? raw : Number(raw);
+	if (!Number.isFinite(n) || n < 0 || n > INT32_MAX) {
 		return 0;
 	}
-	return Math.trunc(raw);
+	return Math.trunc(n);
 }
 
 interface TimerRegistry {
-	readonly scheduleOnce: (cb: Callable, delay: number) => number;
-	readonly scheduleInterval: (cb: Callable, delay: number) => number;
+	// Delay is accepted as `unknown` to match WHATWG/HTML semantics:
+	// `setTimeout`/`setInterval` coerce any value (undefined → 0, NaN → 0,
+	// string "10" → 10, etc.). Strict number-typing here would reject
+	// valid guest calls like `setTimeout(cb)` (no delay arg).
+	readonly scheduleOnce: (cb: Callable, delay: unknown) => number;
+	readonly scheduleInterval: (cb: Callable, delay: unknown) => number;
 	readonly cancel: (id: number) => void;
 	readonly clearAll: () => void;
 }
@@ -81,7 +86,7 @@ function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
 		}
 	}
 
-	function scheduleOnce(cb: Callable, rawDelay: number): number {
+	function scheduleOnce(cb: Callable, rawDelay: unknown): number {
 		const delay = normaliseDelay(rawDelay);
 		const nodeId = setTimeout(() => fire(numId, "setTimeout"), delay);
 		const numId = Number(nodeId);
@@ -89,7 +94,7 @@ function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
 		return numId;
 	}
 
-	function scheduleInterval(cb: Callable, rawDelay: number): number {
+	function scheduleInterval(cb: Callable, rawDelay: unknown): number {
 		const delay = normaliseDelay(rawDelay);
 		const nodeId = setInterval(() => fire(numId, "setInterval"), delay);
 		const numId = Number(nodeId);
@@ -117,11 +122,15 @@ function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
 function timersGuestFunctions(
 	registry: TimerRegistry,
 ): GuestFunctionDescription[] {
+	// `delay` is `Guest.raw()` because WHATWG allows `setTimeout(cb)` (no
+	// delay) and `setTimeout(cb, "10")` (string delay); both must work.
+	// Strict `Guest.number()` would throw `expected number, got undefined`
+	// on valid guest calls. Coercion happens in `normaliseDelay`.
 	const setTimeoutDesc: GuestFunctionDescription = {
 		name: "setTimeout",
-		args: [Guest.callable(), Guest.number()],
+		args: [Guest.callable(), Guest.raw()],
 		result: Guest.number(),
-		handler: ((cb: Callable, delay: number) =>
+		handler: ((cb: Callable, delay: unknown) =>
 			registry.scheduleOnce(
 				cb,
 				delay,
@@ -131,9 +140,9 @@ function timersGuestFunctions(
 	};
 	const setIntervalDesc: GuestFunctionDescription = {
 		name: "setInterval",
-		args: [Guest.callable(), Guest.number()],
+		args: [Guest.callable(), Guest.raw()],
 		result: Guest.number(),
-		handler: ((cb: Callable, delay: number) =>
+		handler: ((cb: Callable, delay: unknown) =>
 			registry.scheduleInterval(
 				cb,
 				delay,
