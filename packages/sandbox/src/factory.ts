@@ -4,7 +4,7 @@ import {
 	type Sandbox,
 	type SandboxOptions,
 	sandbox,
-} from "./index.js";
+} from "./sandbox.js";
 
 /** @deprecated Kept as an alias for `SandboxOptions`. Remove in the next breaking change. */
 type FactoryCreateOptions = Omit<SandboxOptions, "logger">;
