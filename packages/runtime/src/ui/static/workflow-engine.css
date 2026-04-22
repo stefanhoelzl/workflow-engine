@@ -868,8 +868,7 @@ body {
 :root {
 	--kind-trigger: #3b82f6;
 	--kind-action: #6366f1;
-	--kind-system: #b45309;
-	--kind-timer: #14b8a6;
+	--kind-rest: #b45309;
 }
 
 .flame-fragment {
@@ -925,11 +924,8 @@ body {
 .kind-action {
 	fill: var(--kind-action);
 }
-.kind-system {
-	fill: var(--kind-system);
-}
-.kind-timer {
-	fill: var(--kind-timer);
+.kind-rest {
+	fill: var(--kind-rest);
 }
 
 .bar-error {
@@ -965,11 +961,11 @@ body {
 }
 
 .marker-set {
-	fill: var(--kind-timer);
+	fill: var(--kind-rest);
 	cursor: pointer;
 }
 .marker-clear-bg {
-	fill: var(--kind-timer);
+	fill: var(--kind-rest);
 	cursor: pointer;
 }
 .marker-x {
@@ -982,12 +978,12 @@ body {
 	opacity: 0.55;
 }
 .marker-call {
-	fill: var(--kind-system);
+	fill: var(--kind-rest);
 	cursor: pointer;
 }
 
 .timer-connector {
-	stroke: var(--kind-timer);
+	stroke: var(--kind-rest);
 	stroke-width: 1.3;
 	stroke-dasharray: 3 3;
 	fill: none;

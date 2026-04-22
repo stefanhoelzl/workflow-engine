@@ -3,9 +3,7 @@
 ## Purpose
 
 Own tenant-scoped reuse of `Sandbox` instances in the runtime. Map `(tenant, workflow.sha)` pairs to long-lived sandboxes built on demand, wire per-workflow host methods at construction, and dispose every instance once on process shutdown.
-
 ## Requirements
-
 ### Requirement: SandboxStore provides per-`(tenant, sha)` sandbox access
 
 The runtime SHALL provide a `SandboxStore` component that maps `(tenant, workflow.sha)` pairs to `Sandbox` instances. The store SHALL be the sole runtime-internal accessor for workflow sandboxes. The store SHALL build sandboxes lazily on the first `get` for a given key and SHALL hold them for the lifetime of the store.
@@ -52,20 +50,26 @@ interface SandboxStore {
 
 ### Requirement: SandboxStore owns per-workflow `__hostCallAction` construction
 
-The `SandboxStore` SHALL, on sandbox construction, build the per-workflow `__hostCallAction` closure from the supplied `WorkflowManifest`. The closure SHALL validate action inputs against manifest-declared JSON Schemas using Ajv and SHALL audit-log each action invocation. The store SHALL pass the closure as a host method to `SandboxFactory.create`.
+The SandboxStore SHALL compose plugins per cached `(tenant, sha)` sandbox. For each new sandbox, it SHALL assemble the plugin list including `createHostCallActionPlugin({ manifest })` where `manifest` is the workflow's tenant-specific manifest. The Ajv validators compiled by `createHostCallActionPlugin` persist for the sandbox's lifetime (cached across runs).
 
-#### Scenario: Host method is wired per workflow
+The SandboxStore SHALL NOT construct `__hostCallAction` closures itself (that logic lives entirely inside the plugin's host-side handler); it only wires the plugin factory with the correct `{ manifest }` config.
 
-- **WHEN** the store builds a sandbox for `(tenant, workflow.sha)`
-- **THEN** the sandbox SHALL be constructed with a `__hostCallAction` host method whose input validators are compiled from `workflow.actions`
-- **AND** the sandbox's action dispatcher SHALL reach the host validator via the installed `__hostCallAction` global before it is captured and deleted by the action-dispatcher IIFE
+The SandboxStore SHALL NOT append `action-dispatcher.js` (or any other dispatcher source) to the workflow bundle. The `createSdkSupportPlugin` handles dispatcher logic.
 
-#### Scenario: Validator is compiled once per sandbox
+#### Scenario: Plugin receives tenant manifest
 
-- **GIVEN** a sandbox built for `(tenant, workflow.sha)`
-- **WHEN** multiple invocations of the same workflow reach `__hostCallAction`
-- **THEN** the same compiled Ajv validator SHALL be used for every call
-- **AND** the validator SHALL NOT be rebuilt per invocation
+- **GIVEN** a SandboxStore serving tenant "acme" workflow "orders" at sha "abc123"
+- **WHEN** the sandbox is constructed (on cache miss)
+- **THEN** `createHostCallActionPlugin({ manifest: <orders.manifest for sha abc123> })` SHALL be added to the plugin list
+- **AND** `createSdkSupportPlugin()` SHALL be added with `dependsOn` satisfied by host-call-action
+- **AND** no dispatcher source SHALL be appended to `workflow.sourceBundle`
+
+#### Scenario: Validators cached across runs
+
+- **GIVEN** a cached sandbox for `(tenant, sha)`
+- **WHEN** multiple invocations fire against the same sandbox
+- **THEN** the Ajv validators compiled at construction SHALL be reused
+- **AND** no recompilation SHALL occur between runs
 
 ### Requirement: Sandboxes live for the lifetime of the store
 
@@ -101,3 +105,43 @@ The `SandboxStore` SHALL be constructed via a factory function accepting `{ sand
 - **WHEN** `createSandboxStore({ sandboxFactory, logger })` is called
 - **THEN** the returned store SHALL retain references to both dependencies
 - **AND** every `get` that misses SHALL call `sandboxFactory.create(source, options)` exactly once
+
+### Requirement: SandboxStore composes full plugin catalog
+
+The SandboxStore SHALL compose a standard plugin catalog for every production sandbox, in a fixed order compatible with `dependsOn` declarations:
+
+```ts
+plugins: [
+  createWasiPlugin(runtimeWasiTelemetry),        // sandbox package
+  createWebPlatformPlugin(),                     // sandbox-stdlib
+  createFetchPlugin(),                           // sandbox-stdlib (uses hardenedFetch by default)
+  createTimersPlugin(),                          // sandbox-stdlib
+  createConsolePlugin(),                         // sandbox-stdlib
+  createHostCallActionPlugin({ manifest }),      // runtime
+  createSdkSupportPlugin(),                      // sdk
+  createTriggerPlugin(),                         // runtime
+]
+```
+
+`runtimeWasiTelemetry` SHALL be a setup function exported by the runtime that emits `wasi.clock_time_get` / `wasi.random_get` / `wasi.fd_write` leaf events for downstream dashboard/audit consumption. The store SHALL NOT include the trigger plugin or wasi telemetry plugin in test compositions when a silent sandbox is desired; that concern lives at the test-fixture layer.
+
+#### Scenario: Default composition
+
+- **GIVEN** the SandboxStore at runtime
+- **WHEN** a new sandbox is constructed
+- **THEN** the plugin list SHALL include all eight plugins named above
+- **AND** their topo-sort SHALL be valid
+- **AND** sandbox construction SHALL complete without error
+
+### Requirement: SandboxStore wires onEvent with metadata stamping
+
+On every sandbox creation, the SandboxStore SHALL register an `onEvent` callback that stamps `tenant`, `workflow`, `workflowSha`, `invocationId` onto every incoming event before forwarding it to the bus. The metadata SHALL come from the "current run" state tracked by the store (populated when `sandbox.run()` is invoked, cleared after it returns).
+
+#### Scenario: Metadata stamping on event forward
+
+- **GIVEN** a sandbox with events flowing from a run
+- **WHEN** the sandbox emits any event
+- **THEN** the store's `onEvent` callback SHALL add tenant/workflow/workflowSha/invocationId to the event
+- **AND** the stamped event SHALL reach `bus.emit`
+- **AND** the tenant SHALL match the tenant that owns the cached sandbox (invariant I-T2)
+

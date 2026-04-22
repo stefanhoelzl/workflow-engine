@@ -53,13 +53,17 @@ const TENANT_MANIFEST = { workflows: [WORKFLOW] };
 
 // IIFE bundle: the vite-plugin emits `format: "iife"` and assigns exports to
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
+// Post-PR 2 (sandbox-plugin-architecture §2.2): SDK-produced action callables
+// route through `globalThis.__sdk.dispatchAction(name, input, handler,
+// completer)` where completer is `(raw) => outputSchema.parse(raw)`. The
+// sandbox-store's dispatcher IIFE installs `__sdk` as a locked global.
 const BUNDLE = `
 var __wfe_exports__ = (function(exports) {
-  exports.echo = async (input) => globalThis.__dispatchAction(
+  exports.echo = async (input) => globalThis.__sdk.dispatchAction(
     "echo",
     input,
     async (i) => i,
-    { parse: (x) => x },
+    (raw) => raw,
   );
   exports.ping = Object.assign(
     async (payload) => {
@@ -148,8 +152,10 @@ describe("end-to-end event flow", () => {
 		expect(kinds.at(-1)).toBe("trigger.response");
 		expect(kinds).toContain("action.request");
 		expect(kinds).toContain("action.response");
-		expect(kinds).toContain("system.request");
-		expect(kinds).toContain("system.response");
+		// system.* retired under plugin composition (§10): host-side Ajv
+		// validation no longer fires system.request/system.response pairs —
+		// validation is now a plugin-internal call (`deps["host-call-action"]
+		// .validateAction`) and the action.* pair fully covers the audit trail.
 
 		// All events share the same invocation id and workflow metadata.
 		const ids = new Set(rows.map((r) => r.id));
@@ -378,11 +384,11 @@ const CRON_TENANT_MANIFEST = { workflows: [CRON_WORKFLOW] };
 // `every-minute` must exist on the exports namespace.
 const CRON_BUNDLE = `
 var __wfe_exports__ = (function(exports) {
-  exports.echo = async (input) => globalThis.__dispatchAction(
+  exports.echo = async (input) => globalThis.__sdk.dispatchAction(
     "echo",
     input,
     async (i) => i,
-    { parse: (x) => x },
+    (raw) => raw,
   );
   exports["every-minute"] = Object.assign(
     async () => {

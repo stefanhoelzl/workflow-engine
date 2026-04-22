@@ -24,117 +24,77 @@ The system SHALL provide a workspace package `@workflow-engine/sandbox` at `pack
 
 ### Requirement: Public API — sandbox() factory
 
-The sandbox package SHALL export a `sandbox(source, methods, options?)` async factory that returns a `Sandbox` instance whose guest execution runs inside a dedicated `worker_threads` worker.
+The sandbox package SHALL export a `sandbox(opts)` async factory that returns a `Sandbox` instance whose guest execution runs inside a dedicated `worker_threads` worker.
 
 ```ts
-function sandbox(
-  source: string,
-  methods: Record<string, (...args: unknown[]) => Promise<unknown>>,
-  options?: {
-    filename?: string;
-    fetch?: typeof globalThis.fetch;
-    clock?: (clockId: number, precision: bigint) => bigint;
-    random?: (bufPtr: number, bufLen: number, memory: WebAssembly.Memory) => void;
-    memoryLimit?: number;
-    interruptHandler?: () => boolean;
-  }
-): Promise<Sandbox>
+function sandbox(opts: {
+  source: string;
+  plugins: Plugin[];
+  filename?: string;
+  memoryLimit?: number;
+  interruptHandler?: () => boolean;
+}): Promise<Sandbox>
 ```
 
 The factory SHALL:
 
-1. Spawn a fresh `worker_threads` Worker using the package-bundled entrypoint resolved via `new URL('./worker.js', import.meta.url)`.
-2. Send the worker an `init` message carrying `source`, the method names of `methods`, `options.filename`, and serializable representations of `options.clock`, `options.random`, `options.memoryLimit`, and `options.interruptHandler`.
-3. Register per-method main-side RPC handlers so that every `method` in `methods` is callable from guest code.
-4. Inside the worker, instantiate the QuickJS WASM module via `QuickJS.create()` with the provided WASI overrides, memory limit, interrupt handler, and WASM extensions (url, encoding, base64, structured-clone, headers, crypto). Install the crypto Promise shim, the built-in host bridges (console, timers, `__hostFetch`), and the construction-time methods. Evaluate `source` as an IIFE script using `vm.evalCode(source, filename)`.
-5. Wait for the worker to reply with a `ready` message confirming WASM initialization and successful source evaluation.
-6. Return a `Sandbox` object whose `run()`, `dispose()`, and `onDied()` calls are routed to the worker.
+1. Spawn a fresh `worker_threads` Worker using the package-bundled entrypoint.
+2. Serialize each plugin into a descriptor `{ name, source, config?, dependsOn? }` where `source` is a pre-bundled ESM source string (loaded inside the worker via `data:text/javascript;base64,<...>` import) produced by the `sandboxPlugins()` vite transform at build time, and `config` is JSON-serializable data.
+3. Send the worker an `init` message carrying `source`, `pluginDescriptors`, `filename`, `memoryLimit`, and `interruptHandler` (if any).
+4. Inside the worker: topo-sort plugins by `dependsOn`, instantiate QuickJS WASM with WASI imports routed to mutable hook slots, invoke each plugin's `worker(ctx, deps, config)` in topo order to collect `PluginSetup`s, install `guestFunctions` as `vm.newFunction` bindings, populate `wasiHooks` slots, then run boot phases 2 (plugin sources), 3 (delete private descriptor globals), 4 (user source).
+5. Wait for the worker to reply with `ready` confirming all phases completed.
+6. Return a `Sandbox` object whose `run()`, `dispose()`, and `onEvent()` calls are routed to the worker.
 
-The returned promise SHALL NOT resolve until the worker has reported `ready`. If source evaluation fails or the worker exits during initialization, the promise SHALL reject with the underlying error and the worker SHALL be terminated before the rejection is raised.
+The factory SHALL NOT accept `methods`, `onEvent`, `logger`, or `fetch` top-level options. All of these are plugin-level concerns.
 
-#### Scenario: Construction evaluates source once
+The returned promise SHALL NOT resolve until the worker has reported `ready`. Any failure in phases 0-4 SHALL cause the worker to post `init-error`, dispose the VM, and `process.exit(0)`; the promise SHALL reject with the serialized error.
 
-- **GIVEN** a valid IIFE source string
-- **WHEN** `sandbox(source, {})` is called
-- **THEN** the source SHALL be evaluated exactly once inside the worker at construction time
-- **AND** the returned `Sandbox` object SHALL expose `run`, `dispose`, and `onDied` methods
+#### Scenario: Factory signature
 
-#### Scenario: Construction rejects on source parse error
+- **GIVEN** a valid source string and a plugin list
+- **WHEN** `sandbox({ source, plugins: [createWebPlatformPlugin(), createFetchPlugin(), ...] })` is called
+- **THEN** the returned promise SHALL resolve with a `Sandbox` exposing `run`, `dispose`, and `onEvent`
 
-- **GIVEN** a source string with a syntax error
-- **WHEN** `sandbox(source, {})` is called
-- **THEN** the returned promise SHALL reject with an error describing the syntax failure
-- **AND** the spawned worker SHALL be terminated before the rejection resolves
+#### Scenario: Construction rejects on plugin collision
 
-#### Scenario: Construction-time methods are installed as globals
+- **GIVEN** two plugins in the composition both declaring `name: "timers"`
+- **WHEN** `sandbox(...)` is called
+- **THEN** the returned promise SHALL reject before any worker init completes
+- **AND** the error SHALL identify the colliding plugin name
 
-- **GIVEN** `sandbox(source, { hello: async (n) => n * 2 })`
-- **WHEN** source code inside the sandbox calls `hello(21)`
-- **THEN** the guest call SHALL resolve to `42` via an RPC round-trip between the worker and the main thread
+#### Scenario: Construction rejects on unsatisfied dependsOn
 
-#### Scenario: Worker fails to spawn
+- **GIVEN** a plugin with `dependsOn: ["nonexistent"]` in the composition
+- **WHEN** `sandbox(...)` is called
+- **THEN** the returned promise SHALL reject
+- **AND** the error SHALL identify the missing dependency
 
-- **GIVEN** a host environment where `new Worker(...)` throws synchronously
-- **WHEN** `sandbox(source, {})` is called
-- **THEN** the returned promise SHALL reject with the spawn error
+#### Scenario: Non-serializable plugin config rejected
+
+- **GIVEN** a plugin descriptor whose `config` contains a function or class instance
+- **WHEN** `sandbox(...)` is called
+- **THEN** the returned promise SHALL reject with a serialization error identifying the offending config path
 
 ### Requirement: Public API — Sandbox.run()
 
-The `Sandbox` interface SHALL provide a `run(name, ctx, options)` method that invokes a named export from the source module with `ctx` as the single argument.
+The `Sandbox.run(exportName, input)` method SHALL execute a guest export inside the VM and return a promise resolving to a `RunResult`: `{ ok: true, output: unknown } | { ok: false, error: SerializedError }`. The run primitive SHALL NOT accept or interpret runtime-engine metadata (tenant, workflow, workflowSha, invocationId). Metadata stamping is the caller's responsibility via `sb.onEvent` interception.
 
-```ts
-interface RunOptions {
-  readonly invocationId: string
-  readonly workflow: string
-  readonly workflowSha: string
-}
+The run primitive SHALL execute:
+1. Invoke each plugin's `onBeforeRunStarted({ name: exportName, input })` in topo order. Preserve refStack state if the plugin returns truthy; truncate the plugin's pushes if falsy/void.
+2. `await vm.callFunction(exportHandle, undefined, input)`.
+3. Build the `RunResult`.
+4. Invoke each plugin's `onRunFinished(result, runInput)` in reverse topo order. Events emitted here SHALL stamp with the refStack state from step 1.
+5. Truncate refStack back to pre-run depth.
+6. Return the `RunResult`.
 
-interface Sandbox {
-  run(name: string, ctx: unknown, options: RunOptions): Promise<RunResult>
-  dispose(): void
-  onDied(cb: (err: Error) => void): void
-}
-```
+Events emitted during the run SHALL flow to the main thread via `{type: "event", event}` worker messages. The event SHALL carry `id, seq, ref, ts, at, kind, name, input?, output?, error?` but SHALL NOT carry tenant/workflow/workflowSha/invocationId (the caller adds these in `onEvent`).
 
-The method SHALL:
+#### Scenario: Run stamping excludes runtime metadata
 
-1. Clear the run-local log buffer (performed inside the worker as part of handling the `run` message).
-2. Attach the `RunOptions` fields (`invocationId`, `workflow`, `workflowSha`) to the run-local bridge context so they can stamp every `InvocationEvent` emitted during the run.
-3. Post a `run` message to the worker containing `exportName: name` and `ctx` (structured-cloned).
-4. Service incoming `request` messages by dispatching to the construction-time `methods` registered at `sandbox(source, methods, options)` construction and replying with `response` messages. No per-run method installation or uninstallation SHALL occur.
-5. On `done`, resolve with the `RunResult` payload carried in the message.
-
-All host methods the guest can call SHALL have been installed once at init time from the `methods` parameter of `sandbox(...)`; the set of callable host methods SHALL NOT vary across `run()` invocations of the same sandbox.
-
-Concurrent `run()` invocations on the same `Sandbox` are documented undefined behavior; the implementation is not required to detect or serialize them.
-
-#### Scenario: Named export called with ctx
-
-- **GIVEN** a source with `export async function onFoo(ctx) { return ctx.n * 2; }`
-- **AND** a sandbox constructed from that source
-- **WHEN** `sb.run("onFoo", { n: 21 }, { invocationId: "i1", workflow: "w", workflowSha: "s" })` is called
-- **THEN** the returned `RunResult` SHALL be `{ ok: true, result: 42 }`
-
-#### Scenario: Missing export yields error result
-
-- **GIVEN** a sandbox whose source has no `nonexistent` export
-- **WHEN** `sb.run("nonexistent", {}, opts)` is called
-- **THEN** the returned `RunResult` SHALL have `ok: false` with an error describing the missing export
-- **AND** the worker SHALL remain alive and usable for subsequent runs
-
-#### Scenario: Construction-time methods persist across runs
-
-- **GIVEN** a sandbox constructed with `methods = { tally: async (n) => n + 1 }`
-- **WHEN** guest code inside two successive `sb.run(...)` invocations both call `tally(41)`
-- **THEN** each call SHALL resolve to `42` via the construction-time `tally` implementation
-
-#### Scenario: Concurrent host-method requests correlate via requestId
-
-- **GIVEN** a sandbox constructed with `methods = { echo: async (x) => x }`
-- **AND** guest code that invokes `await Promise.all([echo("a"), echo("b")])`
-- **WHEN** the worker posts two `request` messages with distinct `requestId` values
-- **THEN** the main side SHALL reply to each with a matching `response` carrying the same `requestId`
-- **AND** the worker SHALL resolve each pending guest promise against the correct `requestId`
+- **GIVEN** any event emitted during a run
+- **WHEN** the main thread receives the `{type: "event"}` message
+- **THEN** the event SHALL have `id, seq, ref, ts, at, kind, name, input?, output?, error?` fields
+- **AND** the event SHALL NOT have `tenant`, `workflow`, `workflowSha`, or `invocationId` fields
 
 ### Requirement: RunResult discriminated union
 
@@ -218,36 +178,14 @@ The sandbox SHALL NOT expose host object references, closures, proxies, or any h
 
 ### Requirement: Isolation — no Node.js surface
 
-The sandbox SHALL provide a hard isolation boundary. Guest code SHALL have no access to `process`, `require`, `global` (as a Node.js object), filesystem APIs, child_process, or any Node.js built-ins.
+The sandbox SHALL install no Node.js-specific globals. Node core modules (fs, net, http, process, etc.) SHALL NOT be reachable from guest code. All guest-visible globals SHALL come from: (a) web-platform polyfills installed by the web-platform plugin, (b) WASM-native WHATWG APIs (URL, TextEncoder, TextDecoder, crypto, atob, btoa, structuredClone), (c) public-descriptor guest functions registered by plugins (fetch, setTimeout, console.*, reportError). The sandbox core SHALL install nothing directly on `globalThis`.
 
-The sandbox SHALL expose only the following globals to guest code after initialization completes: the host methods registered via `methods` (each installed on `globalThis` at init time, subject to the capture-and-delete rules in the `__hostFetch bridge`, `__reportError host bridge`, `__emitEvent init-time bridge`, and `__hostCallAction bridge global` requirements), the built-in host-bridged globals that remain guest-visible (`console`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`), the guest-side shims (`fetch`, `reportError`, `self`, `navigator`, `URLPattern`), the globals provided by WASM extensions (`URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`, `Headers`, `crypto`, `performance`), and the locked runtime-appended dispatcher global (`__dispatchAction`). The names `__hostFetch`, `__emitEvent`, `__hostCallAction`, and `__reportError` SHALL NOT be present on `globalThis` by the time workflow source evaluation begins, or at any later point in the sandbox's lifetime.
+#### Scenario: Node core modules absent
 
-Any addition to this allowlist SHALL be made in the same change proposal that amends `/SECURITY.md §2`, with a written rationale and threat assessment per surface added.
-
-#### Scenario: Node.js globals absent
-
-- **GIVEN** a sandbox
-- **WHEN** guest code references `process`, `require`, or `fs`
-- **THEN** a `ReferenceError` SHALL be thrown inside QuickJS
-
-#### Scenario: WASM extension globals available
-
-- **GIVEN** a sandbox
-- **WHEN** guest code references `URL`, `TextEncoder`, `Headers`, `crypto`, `atob`, `structuredClone`
-- **THEN** each SHALL be a defined global provided by the WASM extensions
-
-#### Scenario: MCA shim globals available
-
-- **GIVEN** a sandbox
-- **WHEN** guest code references `self`, `navigator.userAgent`, `reportError`, `URLPattern`
-- **THEN** each SHALL be a defined global provided by the sandbox init sequence
-
-#### Scenario: Underscore-prefixed bridge names absent post-init
-
-- **GIVEN** a sandbox whose initialization has completed (workflow source evaluated, runtime-appended dispatcher shim evaluated)
-- **WHEN** guest code evaluates `typeof globalThis.__hostFetch`, `typeof globalThis.__emitEvent`, `typeof globalThis.__hostCallAction`, and `typeof globalThis.__reportError`
-- **THEN** each expression SHALL evaluate to `"undefined"`
-- **AND** guest attempts to reinstall any of these names via plain assignment (e.g., `globalThis.__hostFetch = myFn`) SHALL NOT affect the behavior of the corresponding shim (the shim's captured reference from init time is invariant)
+- **GIVEN** any composition of plugins (including full runtime stack)
+- **WHEN** user source evaluates `typeof require, typeof process, typeof Buffer`
+- **THEN** all three SHALL be `"undefined"`
+- **AND** `import("fs")` or dynamic import of any Node module SHALL fail
 
 ### Requirement: Source evaluated as IIFE script
 
@@ -320,82 +258,34 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 
 ### Requirement: Safe globals — console
 
-The sandbox SHALL expose a `console` global with methods `log`, `info`, `warn`, `error`, `debug`. Calls SHALL push a `LogEntry` with `method: "console.<level>"`, `args: [...args]`, `status: "ok"` into the run's log buffer.
+Console (log, info, warn, error, debug) SHALL be installed by the `createConsolePlugin()` from `@workflow-engine/sandbox-stdlib`. Each method SHALL emit a `console.<method>` leaf event with `input: [args...]`. The `console` object SHALL be installed as a writable, configurable global per WebIDL.
 
-#### Scenario: console.log captures
+#### Scenario: console.log emits a leaf
 
-- **GIVEN** guest code `console.log("hello", 42)`
-- **WHEN** the run completes
-- **THEN** `RunResult.logs` SHALL contain an entry with `method: "console.log"` and `args: ["hello", 42]`
+- **GIVEN** guest code calls `console.log("hello", { x: 1 })`
+- **WHEN** the call returns
+- **THEN** a leaf event with kind `console.log` and `input: ["hello", { x: 1 }]` SHALL be emitted
 
 ### Requirement: Safe globals — timers
 
-The sandbox SHALL expose `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` implemented inside the worker using the worker's own Node timer APIs. Timer callbacks SHALL be invoked inside the QuickJS context with `executePendingJobs` pumped after each callback.
+Timers (setTimeout, setInterval, clearTimeout, clearInterval) SHALL be installed by the `createTimersPlugin()` from `@workflow-engine/sandbox-stdlib`. Each SHALL be a public guest function descriptor (writable, configurable per WebIDL). `setTimeout` and `setInterval` SHALL emit a `timer.set` leaf event at scheduling time. `clearTimeout` and `clearInterval` SHALL emit a `timer.clear` leaf event. When a scheduled timer fires host-side, the plugin SHALL wrap the captured callable invocation in `ctx.request("timer", name, { input: { timerId } }, () => callable())`, producing `timer.request`/`timer.response`/`timer.error` around the callback. Unfired timers still live at run end SHALL be cleared by the plugin's `onRunFinished` hook via the same code path as guest-initiated `clearTimeout`, emitting a `timer.clear` event for each.
 
-Timers that the guest registers during a `run()` invocation SHALL be tracked by the worker. When the guest's exported function resolves or throws (i.e., `run()` is about to report `done`), the worker SHALL clear every such pending timer before posting `done`. Timers SHALL NOT leak across runs.
+#### Scenario: setTimeout emits timer.set and wraps callback with timer.request/response
 
-This is a deliberate behavioral change from the prior in-process implementation, where timers persisted across runs. The new semantics eliminate cross-run callback leakage (e.g., a `setTimeout(() => emit(...), N)` that would have fired during a later run against the wrong event context).
+- **GIVEN** guest code calls `setTimeout(cb, 100)` and the timer fires
+- **WHEN** observing the event stream
+- **THEN** `timer.set` SHALL be emitted at scheduling time (leaf, with `{ delay, timerId }`)
+- **AND** `timer.request` SHALL be emitted when the timer fires (createsFrame, with `{ timerId }`)
+- **AND** the captured callable SHALL run
+- **AND** `timer.response` SHALL be emitted with `closesFrame: true` after callable returns
 
-**Event emission.** Each timer global SHALL produce `InvocationEvent`s on the bridge as defined by the "Timer event kinds" requirement below:
+#### Scenario: Unfired timer cleared at run end
 
-- `setTimeout` / `setInterval` calls SHALL emit a `timer.set` event at the call site, with `ref` equal to the active stack-parent.
-- When a callback fires, the worker SHALL emit `timer.request` (with `ref: null`), push its `seq` onto the bridge's ref-stack for the callback duration so that any nested events take it as parent, invoke the callback inside QuickJS, and on return emit `timer.response` (for normal completion, with `output` set to `vm.dump(returnValue)` when serialisable) or `timer.error` (when the callback throws).
-- `timer.error` SHALL NOT promote to `trigger.error` or terminate the invocation; `setInterval` timers SHALL continue firing after an errored tick.
-- Explicit `clearTimeout` / `clearInterval` calls that target a pending timer SHALL emit `timer.clear` with `ref` equal to the active stack-parent. Calls targeting unknown or already-disposed ids SHALL emit no event.
-
-**Ordering at run finalisation.** The worker's `handleRun` path in `worker.ts` SHALL be arranged such that `timers.clearActive()` runs BEFORE the terminal `trigger.response` or `trigger.error` event for the run is emitted. `clearActive()` SHALL emit one `timer.clear` event per pending timer (with `ref: null`, matching the system-initiated convention) before disposing the callbacks. The terminal trigger event SHALL be emitted after `clearActive()` completes, so that auto-clear events land in the archive flushed on that terminal event.
-
-#### Scenario: setTimeout callback fires during its originating run
-
-- **GIVEN** guest code `await new Promise(resolve => setTimeout(() => resolve(42), 0))`
-- **WHEN** the run completes
-- **THEN** the callback SHALL have executed inside QuickJS
-- **AND** the resulting promise SHALL resolve with `42`
-
-#### Scenario: Timers registered but not awaited are cleared on run end
-
-- **GIVEN** guest code that calls `setTimeout(() => emit("late", {}), 5000)` without awaiting anything
-- **WHEN** the exported function returns
-- **THEN** the worker SHALL clear that timer before posting `done`
-- **AND** no `emit` RPC SHALL be posted to the main side after `done`
-
-#### Scenario: setTimeout call emits timer.set with stack-parent ref
-
-- **GIVEN** a trigger handler running at stack-parent `seq: 1`
-- **WHEN** the guest calls `setTimeout(cb, 250)` and receives `timerId = 7`
-- **THEN** the worker SHALL emit a `timer.set` event with `name: "setTimeout"`, `input: { delay: 250, timerId: 7 }`, and `ref: 1`
-
-#### Scenario: Firing callback produces request/response pair with correct nesting
-
-- **GIVEN** a pending `setTimeout` with `timerId: 7`
-- **WHEN** the Node timer fires and the callback returns `"ok"`
-- **THEN** the worker SHALL emit `timer.request` with `ref: null` and `input: { timerId: 7 }`, push that event's `seq` onto the bridge ref-stack for the callback duration, and after the callback returns emit `timer.response` with `ref` equal to the request's `seq`, `input: { timerId: 7 }`, and `output: "ok"`
-
-#### Scenario: Throwing callback emits timer.error and does not fail the invocation
-
-- **GIVEN** guest code `setTimeout(() => { throw new Error("boom") }, 0)` inside a trigger handler that otherwise returns `{ status: 202 }`
-- **WHEN** the callback runs and throws
-- **THEN** the worker SHALL emit a `timer.error` carrying `error.message: "boom"` and `input: { timerId: <id> }`
-- **AND** the trigger SHALL terminate with `trigger.response` carrying `{ status: 202 }`, not `trigger.error`
-
-#### Scenario: Auto-cleared timer produces timer.clear before trigger.response
-
-- **GIVEN** a trigger handler that registers `setInterval(cb, 100)` producing `timerId: 9` and returns immediately
-- **WHEN** the run completes
-- **THEN** `timers.clearActive()` SHALL emit a `timer.clear` with `name: "clearInterval"`, `input: { timerId: 9 }`, and `ref: null`
-- **AND** that `timer.clear` event SHALL appear at a lower `seq` than the `trigger.response` event in the invocation's archive file
-
-#### Scenario: Explicit clearInterval emits timer.clear with stack-parent ref
-
-- **GIVEN** a trigger handler at stack-parent `seq: 1` with a pending `setInterval` that produced `timerId: 9`
-- **WHEN** the guest calls `clearInterval(9)`
-- **THEN** the worker SHALL emit a `timer.clear` with `name: "clearInterval"`, `input: { timerId: 9 }`, and `ref: 1`
-
-#### Scenario: clearTimeout on unknown id emits no event
-
-- **GIVEN** no pending timer with `timerId: 42`
-- **WHEN** the guest calls `clearTimeout(42)`
-- **THEN** the worker SHALL NOT emit any `timer.clear` event
+- **GIVEN** `setTimeout(cb, 30000)` scheduled during a run that completes in 1s
+- **WHEN** the run ends
+- **THEN** the plugin's `onRunFinished` SHALL clear the host timer and emit `timer.clear`
+- **AND** the timer's callable SHALL be disposed
+- **AND** no callback SHALL fire during subsequent runs against the same sandbox
 
 ### Requirement: Safe globals — performance.now
 
@@ -460,26 +350,14 @@ The sandbox SHALL expose `globalThis.navigator` as a frozen object containing a 
 
 ### Requirement: Safe globals — reportError
 
-The sandbox SHALL expose `globalThis.reportError(error)` as a guest-side shim that (a) constructs a cancelable `ErrorEvent` carrying the reported value in `event.error` and the error's message in `event.message`, (b) dispatches that event on `globalThis`, and (c) if the event was not default-prevented, serializes the error into a JSON payload `{ name, message, stack?, cause? }` and invokes the `__reportError` host-bridge method (if one was provided via construction-time `methods`). The shim SHALL capture its reference to `__reportError` at initialization time into the shim's IIFE closure. After the shim installs `reportError` on `globalThis`, it SHALL delete `globalThis.__reportError` so guest code cannot read or overwrite the underlying bridge. The shim SHALL tolerate the absence of a construction-time `__reportError` (its captured reference is `undefined`); when guest code calls `reportError(...)` in this case, steps (a) and (b) SHALL still run but the captured-call path SHALL be wrapped in a `try/catch` and the outer `reportError` SHALL complete silently without propagating an error into guest code. The `cause` field SHALL be recursively serialized using the same schema when present. Each field read SHALL be guarded against throwing getters; on any field-read failure the shim SHALL substitute a sentinel string without propagating the throw into guest code.
+`reportError` SHALL be installed by the `createWebPlatformPlugin()` from `@workflow-engine/sandbox-stdlib`. The polyfill SHALL dispatch a cancelable `ErrorEvent` on `globalThis`; if not default-prevented, it SHALL forward a serialized payload to the plugin's captured private `__reportErrorHost` reference. The `__reportErrorHost` descriptor SHALL emit an `uncaught-error` leaf event. The raw `__reportErrorHost` SHALL NOT be visible to user source (auto-deleted after phase 2).
 
-#### Scenario: reportError dispatches ErrorEvent before host forwarding
+#### Scenario: Uncaught exception in microtask routes through reportError
 
-- **GIVEN** a sandbox constructed with `methods: { __reportError: (p) => captured.push(p) }` and a listener registered via `self.addEventListener("error", handler)`
-- **WHEN** guest code calls `reportError(new Error("oops"))`
-- **THEN** `handler` SHALL be invoked with an `ErrorEvent` whose `error.message === "oops"`
-- **AND** the host implementation SHALL receive a payload with `name: "Error"`, `message: "oops"`, and a `stack` string
-
-#### Scenario: preventDefault() suppresses host forwarding
-
-- **GIVEN** a listener that calls `event.preventDefault()` on the reported error event
-- **WHEN** guest code calls `reportError(new Error("oops"))`
-- **THEN** the host `__reportError` implementation SHALL NOT be invoked
-
-#### Scenario: reportError accepts non-Error values
-
-- **GIVEN** a sandbox constructed with a `__reportError` capture
-- **WHEN** guest code calls `reportError("a string")`
-- **THEN** the host implementation SHALL receive `{ name: "Error", message: "a string" }` (no stack), provided no listener prevents default
+- **GIVEN** guest code calls `queueMicrotask(() => { throw new Error("boom") })`
+- **WHEN** the microtask fires
+- **THEN** `reportError` SHALL be invoked with the thrown error
+- **AND** an `uncaught-error` leaf event SHALL be emitted unless a listener called `preventDefault()` on the dispatched ErrorEvent
 
 ### Requirement: Safe globals — EventTarget
 
@@ -692,69 +570,6 @@ The `CryptoKey` object SHALL expose read-only properties: `type`, `algorithm`, `
 - **WHEN** guest code calls `crypto.subtle.exportKey(...)` on it
 - **THEN** the operation SHALL reject
 
-### Requirement: __hostFetch bridge
-
-The sandbox SHALL install `globalThis.__hostFetch(method, url, headers, body)` at initialization time as an async host-bridged function that performs an HTTP request using the fetch implementation resolved at sandbox construction: either the `SandboxOptions.fetch` override supplied by the caller, or — when no override is supplied — the `hardenedFetch` default exported by `packages/sandbox/src/hardened-fetch.ts` (see the `Hardened outbound fetch` requirement for egress policy). The response SHALL be a JSON object `{ status, statusText, headers, body }` where `body` is the response text.
-
-`__hostFetch` is the target of the sandbox's in-worker `fetch` shim, which builds a WHATWG-compatible `fetch` on top of the bridge. The worker SHALL install `__hostFetch` **before** evaluating the `fetch` shim IIFE. The `fetch` shim IIFE SHALL capture a reference to `globalThis.__hostFetch` into its closure at evaluation time, install the guest-facing `fetch` global via `Object.defineProperty` with `writable: false, configurable: false`, and then `delete globalThis.__hostFetch` so that by the time workflow source evaluation begins, the bridge name is not present on `globalThis`. The captured reference inside the `fetch` shim closure SHALL be used for all subsequent `fetch()` calls.
-
-The worker-to-main `__hostFetchForward` request envelope SHALL carry the fields `{ method, url, headers, body, invocationId, tenant, workflow, workflowSha }`. The worker SHALL populate `invocationId`, `tenant`, `workflow`, and `workflowSha` from the `run` init message it received at run start. The main-thread handler SHALL use these fields exclusively for warn-log enrichment when an outbound fetch is blocked or fails (see `Hardened outbound fetch`); the fields SHALL NOT be reflected back to the guest or included in the response envelope.
-
-In-flight `__hostFetch` requests initiated by the guest during a `run()` SHALL be threaded with an `AbortSignal` scoped to that run. When the exported function resolves or throws, the worker SHALL abort the signal before posting `done`. Outstanding requests SHALL reject inside the guest with an `AbortError`; the guest's `done` report SHALL still be delivered.
-
-#### Scenario: __hostFetch is not guest-visible post-init
-
-- **GIVEN** a sandbox whose initialization has completed
-- **WHEN** guest code evaluates `typeof globalThis.__hostFetch`
-- **THEN** the result SHALL be `"undefined"`
-- **AND** guest assignment `globalThis.__hostFetch = myFn` SHALL NOT affect the behavior of subsequent `fetch(...)` calls
-
-#### Scenario: fetch routes through captured bridge
-
-- **GIVEN** guest code that calls `fetch("https://example.com/data")`
-- **WHEN** the `fetch` shim resolves the call via its captured `__hostFetch` reference
-- **THEN** the underlying HTTP request SHALL be performed by the host-side fetch implementation (either an `options.fetch` override or `hardenedFetch`)
-- **AND** the response SHALL be returned to guest code as a WHATWG `Response`-shaped object
-
-#### Scenario: In-flight fetch is aborted on run end
-
-- **GIVEN** guest code that calls `fetch("https://slow.example")` without awaiting it
-- **WHEN** the exported function returns before the response arrives
-- **THEN** the worker SHALL abort the per-run `AbortSignal` before posting `done`
-- **AND** the underlying network request SHALL be cancelled
-
-#### Scenario: Forward envelope carries run labels
-
-- **GIVEN** a sandbox running a workflow with `invocationId = "evt_1"`, `tenant = "acme"`, `workflow = "notify"`, `workflowSha = "abc123"`
-- **WHEN** guest code calls `fetch("https://example.com/")`
-- **THEN** the worker-to-main `__hostFetchForward` envelope SHALL include these four fields as populated strings
-- **AND** the response sent back to the worker SHALL NOT include them
-
-### Requirement: __reportError host bridge
-
-The sandbox SHALL accept a `__reportError(payload)` host method via the construction-time `methods` parameter. When provided, the sandbox SHALL install it as a host-bridged global at initialization time so that the `REPORT_ERROR_SHIM` IIFE can capture its reference. The method SHALL be write-only: the host implementation SHALL return nothing (or `undefined`) and no host state SHALL flow back to the guest through this bridge. The risk class is equivalent to the existing `console.log` channel.
-
-The `REPORT_ERROR_SHIM` IIFE SHALL capture `globalThis.__reportError` into its closure at evaluation time, install the guest-facing `reportError` global, and then `delete globalThis.__reportError` so that the bridge is not reachable from guest code for the remainder of the sandbox's lifetime.
-
-#### Scenario: Construction-time __reportError receives calls from reportError shim
-
-- **GIVEN** `sandbox(src, { __reportError: (p) => captured.push(p) })`
-- **WHEN** the guest `reportError` shim calls the captured `__reportError` reference with a serialized payload
-- **THEN** the construction-time implementation SHALL be invoked with the payload
-
-#### Scenario: __reportError is not guest-visible post-init
-
-- **GIVEN** a sandbox constructed with a `__reportError` entry in `methods`
-- **WHEN** guest code evaluates `typeof globalThis.__reportError` after init
-- **THEN** the result SHALL be `"undefined"`
-- **AND** guest assignment `globalThis.__reportError = myFn` SHALL NOT affect the behavior of subsequent `reportError(...)` calls
-
-#### Scenario: No host state returns to guest
-
-- **GIVEN** a sandbox
-- **WHEN** the captured `__reportError` reference is called with a payload
-- **THEN** the return value observed by the `reportError` shim SHALL be `undefined`
-
 ### Requirement: Security context
 
 The implementation SHALL conform to the threat model documented at `/SECURITY.md §2 Sandbox Boundary`. This capability is the single strongest isolation boundary in the system; any change to the public API, installed globals, host bridges, or VM lifecycle is a change to that boundary.
@@ -958,65 +773,6 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 - **THEN** it SHALL obtain the sandbox via `SandboxStore.get(tenant, workflow, bundleSource)`
 - **AND** it SHALL NOT call `SandboxFactory.create` directly
 
-### Requirement: __hostCallAction bridge global
-
-The sandbox SHALL install a host-bridge global `__hostCallAction(actionName, input)` at initialization time, before evaluating the runtime-appended dispatcher shim. The global SHALL accept the action's name (string) and its input (JSON-serializable value). The host SHALL: validate `input` against the action's declared input JSON Schema (from the manifest); on success, emit an audit-log entry and return `undefined`. The host SHALL NOT dispatch the action's handler --- the runtime-appended dispatcher in the guest context is the sole handler dispatcher, via a direct JS function call in the same QuickJS context. On input-validation failure, the host SHALL throw a serializable error back into the calling guest context.
-
-The runtime-appended dispatcher shim (see the `Action call host wiring` requirement) SHALL capture `globalThis.__hostCallAction` into its IIFE closure and `delete globalThis.__hostCallAction` after installing the locked `__dispatchAction` global. From guest code's perspective, `__hostCallAction` SHALL NOT be readable or writable at any point after the dispatcher shim returns.
-
-The name SHALL be installed alongside the other host-bridged names (`console`, timers, `performance`, `crypto`, `__emitEvent`) at sandbox construction time. It SHALL count as one additional surface in the host-bridge JSON-marshaled boundary documented in `/SECURITY.md §2`.
-
-#### Scenario: Action dispatched in same sandbox via dispatcher
-
-- **GIVEN** a workflow with two actions `a` and `b` loaded into one sandbox
-- **AND** `a`'s handler calls `await b(input)` (the SDK callable)
-- **WHEN** `a` is running
-- **THEN** the SDK callable SHALL reach `globalThis.__dispatchAction(name, input, handler, outputSchema)` via the core `dispatchAction` helper
-- **AND** the dispatcher SHALL call its captured `__hostCallAction("b", input)` reference, through which the host validates input and audit-logs
-- **AND** the dispatcher SHALL invoke `b`'s handler via a direct JS function call in the same QuickJS context
-- **AND** the dispatcher SHALL validate the handler's return value against `b`'s output Zod schema using the bundled Zod
-- **AND** the validated result SHALL be returned to `a`'s caller
-
-#### Scenario: __hostCallAction is not guest-visible post-init
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code evaluates `typeof globalThis.__hostCallAction`
-- **THEN** the result SHALL be `"undefined"`
-- **AND** guest assignment `globalThis.__hostCallAction = myFn` SHALL NOT affect the behavior of subsequent action calls
-
-#### Scenario: Input validation failure throws into caller; handler does not run
-
-- **GIVEN** action `b` with `input: z.object({ x: z.number() })`
-- **WHEN** the dispatcher invokes its captured `__hostCallAction("b", { x: "not a number" })` reference
-- **THEN** the host SHALL throw a validation error across the bridge
-- **AND** `b`'s handler SHALL NOT execute
-- **AND** the calling guest code SHALL observe the error as a thrown rejection
-
-#### Scenario: Output validation failure throws into caller
-
-- **GIVEN** action `b` with `output: z.string()` whose handler returns `42`
-- **WHEN** the SDK callable invokes `b(validInput)`
-- **THEN** the dispatcher's captured `__hostCallAction` call SHALL succeed (input is valid)
-- **AND** the handler SHALL execute and return `42`
-- **AND** the dispatcher SHALL call the output schema's `.parse(42)` which throws
-- **AND** the calling guest code SHALL observe the error as a thrown rejection
-
-#### Scenario: Action handler exception propagates as rejection
-
-- **GIVEN** action `b` whose handler throws `new Error("boom")`
-- **WHEN** the SDK callable invokes `b(validInput)`
-- **THEN** the dispatcher's captured `__hostCallAction` call SHALL succeed
-- **AND** the handler SHALL throw inside the sandbox
-- **AND** the dispatcher SHALL emit an `action.error` event via its captured `__emitEvent` reference
-- **AND** the dispatcher SHALL let the rejection propagate to the caller
-
-#### Scenario: Bridge is JSON-marshaled
-
-- **GIVEN** an action input crossing the bridge
-- **WHEN** input crosses the host/sandbox boundary
-- **THEN** values SHALL be JSON-serializable (objects, arrays, primitives, `null`)
-- **AND** non-serializable values (functions, symbols, classes) SHALL produce a serialization error
-
 ### Requirement: Action call host wiring
 
 The runtime SHALL register `__hostCallAction` per-workflow at sandbox construction time by passing it in `methods` to `sandbox(source, methods, options)`. The host implementation SHALL look up the called action by name in the workflow's manifest, validate the input against the JSON Schema from the manifest, audit-log the invocation, and return. The host SHALL NOT invoke the handler --- dispatch is performed by the runtime-appended dispatcher shim inside the sandbox.
@@ -1049,62 +805,6 @@ After this IIFE completes, guest code SHALL NOT be able to read, reassign, or de
 - **WHEN** guest code attempts `delete globalThis.__dispatchAction`
 - **THEN** the delete SHALL be rejected (TypeError in strict mode, `false` in sloppy mode)
 - **AND** subsequent action calls SHALL continue to route through the original dispatcher
-
-### Requirement: __emitEvent init-time bridge
-
-The sandbox SHALL install `globalThis.__emitEvent(event)` at initialization time as a write-only telemetry channel. The method SHALL accept a JSON object payload with a `kind` field constrained to the set `{ "action.request", "action.response", "action.error" }`; any other `kind` value SHALL throw a `TypeError` into the guest. The worker SHALL stamp the supplied event with `id`, `seq`, `ref`, `ts`, `workflow`, and `workflowSha` derived from the current run context before posting it to the main thread as a `{ type: "event" }` message. `__emitEvent` itself SHALL NOT appear in the system-request event stream (it is installed directly on `globalThis` via `vm.newFunction`, not through the bridge's `sync`/`async` wrappers).
-
-The runtime-appended dispatcher shim (see the `Action call host wiring` requirement) SHALL capture `globalThis.__emitEvent` into its IIFE closure and `delete globalThis.__emitEvent` after installing the locked `__dispatchAction` global. From guest code's perspective, `__emitEvent` SHALL NOT be readable or writable at any point after the dispatcher shim returns.
-
-The guest cannot read host state through this channel, cannot influence other events' metadata, and cannot post `trigger.*` or `system.*` events (those are emitted by the worker and bridge respectively, never by guest code).
-
-#### Scenario: Dispatcher emits action events via captured reference
-
-- **GIVEN** a workflow that calls an action `notify` via the SDK callable
-- **WHEN** the dispatcher executes the action lifecycle
-- **THEN** an `action.request` event SHALL be posted to the main thread with `name: "notify"` and the validated input
-- **AND** on successful return an `action.response` event SHALL be posted with the validated output
-- **AND** on thrown rejection an `action.error` event SHALL be posted with the error serialization
-
-#### Scenario: __emitEvent is not guest-visible post-init
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code evaluates `typeof globalThis.__emitEvent`
-- **THEN** the result SHALL be `"undefined"`
-- **AND** guest assignment `globalThis.__emitEvent = myFn` SHALL NOT affect the events emitted by subsequent dispatcher invocations
-
-#### Scenario: Disallowed event kinds rejected
-
-- **GIVEN** a sandbox during initialization (before the capture-and-delete happens)
-- **WHEN** code inside the sandbox would call `__emitEvent({ kind: "system.request", name: "x" })`
-- **THEN** the call SHALL throw a `TypeError` identifying the invalid kind
-
-### Requirement: __dispatchAction locked guest global
-
-The sandbox SHALL permit the runtime-appended dispatcher shim to install `globalThis.__dispatchAction(name, input, handler, outputSchema)` as a guest-callable global via `Object.defineProperty` with `writable: false` and `configurable: false`. The locked property SHALL survive for the life of the VM, across all `run()` calls. Guest code MAY call the dispatcher; guest code SHALL NOT be able to overwrite, reassign, or delete it.
-
-The dispatcher is installed exposed (rather than hidden by a shim-closure indirection) because the SDK's `core.dispatchAction()` helper reads `globalThis.__dispatchAction` on every action call, and the helper's lookup path is not being altered by this requirement. The exposure residual — guest code calling the live dispatcher with `(validActionName, realInput, fakeHandler, fakeSchema)` to emit `action.*` audit events that misrepresent which handler actually ran — is accepted and documented in `/SECURITY.md §2`.
-
-#### Scenario: Guest can call __dispatchAction
-
-- **GIVEN** a workflow that authentically invokes an action via the SDK callable
-- **WHEN** the callable reaches `globalThis.__dispatchAction(name, input, handler, outputSchema)`
-- **THEN** the dispatcher SHALL execute the captured action lifecycle (input validation, handler call, output validation, event emission)
-- **AND** the action's result SHALL be returned to the caller
-
-#### Scenario: Guest cannot replace __dispatchAction
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code attempts `globalThis.__dispatchAction = fakeDispatcher` in strict mode
-- **THEN** a `TypeError` SHALL be thrown
-- **AND** `globalThis.__dispatchAction` SHALL still reference the original dispatcher
-
-#### Scenario: Guest cannot delete __dispatchAction
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code attempts `delete globalThis.__dispatchAction` in strict mode
-- **THEN** a `TypeError` SHALL be thrown
-- **AND** `globalThis.__dispatchAction` SHALL still reference the original dispatcher
 
 ### Requirement: Memory limit configuration
 
@@ -1901,4 +1601,68 @@ When a caller supplies `SandboxOptions.fetch` as a test override, the handler SH
 - **THEN** the caught error SHALL be `TypeError`
 - **AND** `err.message` SHALL be `"fetch failed"`
 - **AND** the string `"private-ip"` SHALL NOT appear in `err.message`, `err.stack`, or any enumerable property on `err`
+
+### Requirement: Plugin composition per sandbox
+
+The sandbox SHALL accept a `plugins: Plugin[]` array at construction. Plugins SHALL be topo-sorted by `dependsOn` (cycles throw, unsatisfied dependencies throw). Plugin `worker()` functions SHALL execute in topo order; `onRunFinished` SHALL execute in reverse topo order. Plugin name collisions and guest-function name collisions SHALL throw at construction time. (Detailed plugin contract: see sandbox-plugin capability.)
+
+#### Scenario: Topo order
+
+- **GIVEN** plugins A (dependsOn B), B (no deps), C (dependsOn A)
+- **WHEN** the sandbox is constructed
+- **THEN** `worker()` calls SHALL happen in order: B, A, C
+- **AND** each `deps` parameter SHALL contain the exports of its declared dependencies
+
+### Requirement: Plugin-installed guest functions via descriptors
+
+Guest-callable host bindings SHALL be installed exclusively via plugin-declared `guestFunctions` descriptors, not via a separate `methods` option on the factory. Each descriptor's `handler` runs worker-side. Args are marshaled per descriptor `args` spec (including `Guest.callable()` which produces a `Callable` with `.dispose()`). Result is marshaled per descriptor `result` spec. `log` controls per-call event emission (default `{ request: name }`). `public` (default false) controls visibility after phase 2.
+
+#### Scenario: public: false auto-deleted
+
+- **GIVEN** a descriptor `{ name: "__privateFunc", handler: ... }` with no `public` field
+- **WHEN** phase-2 plugin-source evaluation completes
+- **THEN** `globalThis.__privateFunc` SHALL be deleted
+- **AND** user source SHALL see `typeof globalThis.__privateFunc === "undefined"`
+
+### Requirement: Boot phase sequence
+
+The sandbox SHALL execute boot in phases:
+
+- **Phase 0**: Load plugin worker modules; topo-sort; instantiate WASM with WASI imports (mutable hook slots).
+- **Phase 1**: For each plugin in topo order, invoke `plugin.worker(ctx, deps, config)`; register `guestFunctions` via `vm.newFunction`; populate `wasiHooks` slots; store `source`, `exports`, hooks.
+- **Phase 2**: For each plugin in topo order, `vm.evalCode(plugin.source, "<plugin:${name}>")`. Plugin IIFEs capture private bindings into closures.
+- **Phase 3**: For each guest function descriptor with `public !== true`, `delete globalThis[name]`.
+- **Phase 4**: `vm.evalCode(userSource, filename)`.
+
+Any failure at any phase SHALL dispose the VM, post `init-error`, `process.exit(0)` the worker.
+
+#### Scenario: Phase 3 deletes private globals
+
+- **GIVEN** a plugin with descriptors `{ name: "fetch", public: true }` and `{ name: "$internal", public: false }`
+- **WHEN** phase 3 runs
+- **THEN** `globalThis.fetch` SHALL remain accessible
+- **AND** `globalThis["$internal"]` SHALL be deleted
+
+### Requirement: WASI override dispatch via plugin hooks
+
+The sandbox SHALL instantiate WASI imports with mutable callback slots for `clockTimeGet`, `randomGet`, and `fdWrite`. Plugin setup SHALL populate these slots via the `wasiHooks` field. Each WASI override SHALL compute the default value (real clock, real random, line-buffered decoded text), invoke the registered hook (if any) with `{ args..., defaultNs | defaultBytes | text }`, and use the hook's return value (`{ ns }` or `{ bytes }`) as override if present, else the default. Hooks run on the worker thread; hook-invoked `ctx.emit` calls produce worker-stamped events. Only one plugin MAY register each hook key; collisions throw at sandbox construction. WASI calls firing before any plugin's `worker()` has populated the slot SHALL use the default value and emit nothing. (Detailed plugin contract: see sandbox-plugin capability.)
+
+#### Scenario: Hook collision throws
+
+- **GIVEN** two plugins each registering `wasiHooks.clockTimeGet`
+- **WHEN** sandbox is constructed
+- **THEN** construction SHALL throw naming the colliding plugin names
+
+#### Scenario: Observation does not override
+
+- **GIVEN** a plugin with `clockTimeGet: ({ label, defaultNs }) => { ctx.emit(...); /* no return */ }`
+- **WHEN** guest triggers a WASI clock call
+- **THEN** `defaultNs` SHALL be returned to WASM unchanged
+- **AND** a leaf event MAY have been emitted with the plugin's declared kind
+
+#### Scenario: Override replaces result
+
+- **GIVEN** a plugin with `clockTimeGet: () => ({ ns: 0n })`
+- **WHEN** guest triggers a WASI clock call
+- **THEN** `0n` SHALL be returned to WASM in place of the real clock value
 

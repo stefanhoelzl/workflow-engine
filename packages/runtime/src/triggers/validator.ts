@@ -1,4 +1,5 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import { ajvPathToSegments, structuredCloneJson } from "../ajv-shared.js";
 import type { TriggerDescriptor, ValidationIssue } from "../executor/types.js";
 
 type ValidateResult<T = unknown> =
@@ -26,30 +27,6 @@ function compile(schema: Record<string, unknown>): CompiledValidator {
 	const fn = ajv.compile(schema as any) as CompiledValidator;
 	compiledCache.set(schema, fn);
 	return fn;
-}
-
-function structuredCloneJson<T>(value: T): T {
-	if (value === undefined) {
-		return value;
-	}
-	try {
-		return JSON.parse(JSON.stringify(value)) as T;
-	} catch {
-		return value;
-	}
-}
-
-function ajvPathToSegments(instancePath: string): (string | number)[] {
-	if (instancePath === "") {
-		return [];
-	}
-	return instancePath
-		.split("/")
-		.slice(1)
-		.map((seg) => {
-			const n = Number(seg);
-			return Number.isFinite(n) && seg !== "" ? n : seg;
-		});
 }
 
 /**

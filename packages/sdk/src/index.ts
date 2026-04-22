@@ -3,8 +3,36 @@ import type {
 	HttpTriggerResult,
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
-import { dispatchAction, ManifestSchema, z } from "@workflow-engine/core";
+import { ManifestSchema, z } from "@workflow-engine/core";
 import type { StandardCRON } from "ts-cron-validator";
+
+// ---------------------------------------------------------------------------
+// Action dispatch (routed through the sdk-support plugin's locked __sdk)
+// ---------------------------------------------------------------------------
+
+type SdkDispatcher = (
+	name: string,
+	input: unknown,
+	handler: (input: unknown) => Promise<unknown>,
+	completer: (raw: unknown) => unknown,
+) => Promise<unknown>;
+
+function dispatchViaSdk(
+	name: string,
+	input: unknown,
+	handler: (input: unknown) => Promise<unknown>,
+	completer: (raw: unknown) => unknown,
+): Promise<unknown> {
+	const sdk = (globalThis as Record<string, unknown>).__sdk as
+		| { dispatchAction?: SdkDispatcher }
+		| undefined;
+	if (!sdk || typeof sdk.dispatchAction !== "function") {
+		throw new Error(
+			"No action dispatcher installed; actions can only run inside the workflow sandbox",
+		);
+	}
+	return sdk.dispatchAction(name, input, handler, completer);
+}
 
 // ---------------------------------------------------------------------------
 // Brand symbols
@@ -125,10 +153,12 @@ function isWorkflow(value: unknown): value is Workflow {
 
 /**
  * `action({input, output, handler, name})` returns a callable that routes
- * every invocation through `dispatchAction(name, input, handler, outputSchema)`
- * — the host-side `__hostCallAction` bridge validates the input, the handler
- * runs in the same QuickJS context, and the output is validated against the
- * output schema before being returned.
+ * every invocation through `globalThis.__sdk.dispatchAction(name, input,
+ * handler, completer)` — installed by the sdk-support plugin as a locked
+ * global during sandbox boot. The sdk-support plugin validates the input via
+ * the host-call-action plugin, invokes the handler in-sandbox, and runs the
+ * completer on the raw output to produce the final parsed value. The SDK
+ * itself contains zero bridge logic.
  *
  * `name` is required. The vite-plugin injects it into each `action({...})`
  * call expression at build time by AST-transforming `export const X =
@@ -164,11 +194,11 @@ function action<I, O>(config: {
 				"Action constructed without a name; pass name explicitly or build via @workflow-engine/sdk/vite-plugin",
 			);
 		}
-		return (await dispatchAction(
+		return (await dispatchViaSdk(
 			assignedName,
 			input,
 			handler as (input: unknown) => Promise<unknown>,
-			outputSchema,
+			(raw: unknown) => outputSchema.parse(raw),
 		)) as O;
 	};
 	Object.defineProperty(callable, ACTION_BRAND, {
@@ -228,9 +258,9 @@ interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
 }
 
 const httpTriggerOutputSchema = z.object({
-	status: z.number().optional(),
-	body: z.unknown().optional(),
-	headers: z.record(z.string(), z.string()).optional(),
+	status: z.exactOptional(z.number()),
+	body: z.exactOptional(z.unknown()),
+	headers: z.exactOptional(z.record(z.string(), z.string())),
 });
 
 function httpTrigger<B extends z.ZodType = z.ZodUnknown>(config: {

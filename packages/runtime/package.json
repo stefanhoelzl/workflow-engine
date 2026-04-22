@@ -16,6 +16,7 @@
 		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/core": "workspace:*",
 		"@workflow-engine/sandbox": "workspace:*",
+		"@workflow-engine/sandbox-stdlib": "workspace:*",
 		"ajv": "^8.18.0",
 		"alpinejs": "^3.14.9",
 		"cron-parser": "^5.5.0",

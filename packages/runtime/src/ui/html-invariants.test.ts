@@ -198,7 +198,7 @@ describe("HTML CSP invariants", () => {
 		// Kind classes + timer data attrs are present
 		expect(html).toContain("kind-trigger");
 		expect(html).toContain("kind-action");
-		expect(html).toContain("kind-timer");
+		expect(html).toContain("kind-rest");
 		expect(html).toMatch(DATA_TIMER_ID_7_RE);
 		// Paired bars carry data-event-pair
 		expect(html).toMatch(DATA_EVENT_PAIR_0_6_RE);

@@ -3,9 +3,7 @@
 ## Purpose
 
 Test-time infrastructure for running the WinterCG Minimum Common API (MCA) applicable subset of Web Platform Tests (WPT) against the QuickJS sandbox. The harness covers the vendor script, manifest contract, `spec.ts` classifier, testharness adapter, top-level-await runner, watchdog-based infinite-loop safety, and drift detection. The harness is test-only — no production sandbox surface lives in this capability.
-
 ## Requirements
-
 ### Requirement: spec.ts source of truth
 
 The change SHALL provide `packages/sandbox/test/wpt/spec.ts` as the single human-authored classification file. It SHALL export a constant named `spec` of type `Record<string, Expectation>` where `Expectation` is `{ expected: "pass" } | { expected: "skip"; reason: string }`. Keys SHALL be either glob patterns over WPT file paths (e.g., `"fetch/api/**"`, `"**/idlharness-*.any.js"`) or file-scoped subtest overrides using the syntax `"<file-path>:<subtest-name>"` where the subtest name starts at the first colon. Patterns SHALL NOT use a catchall other than `"**"` for unclassified-default behaviour.
@@ -48,33 +46,14 @@ The harness SHALL export a `findMostSpecific(spec, key)` function at `packages/s
 
 ### Requirement: Vendor refresh script
 
-The change SHALL provide `scripts/wpt-refresh.ts` invokable via `pnpm test:wpt:refresh [--sha <commit>] [--strict]`. The script SHALL clone `web-platform-tests/wpt` to a temporary directory (using the provided `--sha` or the latest `main`), walk the entire tree, enumerate files matching `*.any.js`, `*.any.https.js`, `*.worker.js`, `*.worker.https.js`, and process each applicable file. A file is applicable iff its META `global=` directive includes `worker`, `dedicatedworker`, `sharedworker`, `serviceworker`, or `shadowrealm`, OR `global=` is absent. Inapplicable files SHALL NOT appear in the manifest. For each applicable file, the script SHALL parse META, BFS-walk `script=` references, apply `.sub.js` template substitution with fixed placeholder values, classify via `spec.ts`, copy pass-classified files plus transitive dependencies to `packages/sandbox/test/wpt/vendor/`, and write `vendor/manifest.json`.
+The `pnpm test:wpt:refresh` script SHALL operate against `packages/sandbox-stdlib/test/wpt/vendor/` (relocated from `packages/sandbox/test/wpt/vendor/`). The upstream WPT suite SHALL be downloaded and vendored under this path. Related paths (harness source, skip list, runner, manifest) SHALL follow the same relocation.
 
-#### Scenario: Refresh creates vendor directory
+#### Scenario: Refresh populates stdlib test directory
 
-- **GIVEN** a checkout with no `vendor/` directory
-- **WHEN** a developer runs `pnpm test:wpt:refresh`
-- **THEN** `packages/sandbox/test/wpt/vendor/` SHALL contain `manifest.json`, `resources/testharness.js`, and the transitive closure of pass-classified files
-
-#### Scenario: Non-worker-scope file excluded
-
-- **GIVEN** a WPT file with `// META: global=window`
-- **WHEN** the refresh script processes it
-- **THEN** the file SHALL NOT appear in `manifest.json` at all
-
-#### Scenario: Pinned commit via --sha
-
-- **GIVEN** a command `pnpm test:wpt:refresh --sha abc123`
-- **WHEN** the script runs
-- **THEN** it SHALL clone the upstream repo at commit `abc123`
-- **AND** `manifest.json` SHALL record `"wptSha": "abc123..."`
-
-#### Scenario: Strict mode fails on missing spec-referenced subtests
-
-- **GIVEN** `spec.ts` declares a skip for `"file.any.js:subtest X"`
-- **AND** the upstream file at `file.any.js` no longer contains any subtest named `"subtest X"` (e.g., file was removed, or static parse heuristic flags it)
-- **WHEN** a developer runs `pnpm test:wpt:refresh --strict`
-- **THEN** the script SHALL exit with non-zero status
+- **GIVEN** the `pnpm test:wpt:refresh` script
+- **WHEN** executed
+- **THEN** the WPT vendored suite SHALL be placed under `packages/sandbox-stdlib/test/wpt/vendor/`
+- **AND** no files SHALL be placed under `packages/sandbox/test/wpt/`
 
 ### Requirement: Manifest JSON shape
 
@@ -95,19 +74,17 @@ The change SHALL provide `scripts/wpt-refresh.ts` invokable via `pnpm test:wpt:r
 
 ### Requirement: Vitest runner — top-level await
 
-The harness SHALL provide `packages/sandbox/test/wpt/wpt.test.ts` that uses the top-level-await pattern. It SHALL import the manifest and `spec.ts` synchronously, partition entries into runnable vs skipped, `await limitedAll(tasks, CONCURRENCY)` where `CONCURRENCY = max(4, os.availableParallelism() * 2)` overridable via the `WPT_CONCURRENCY` environment variable, then synchronously register `describe` and `it` nodes from observed results. The runner SHALL NOT use `async describe` callbacks or `beforeAll`-based dynamic test generation.
+The WPT vitest runner SHALL be located at `packages/sandbox-stdlib/test/wpt/runner.ts` (moved from `packages/sandbox/test/wpt/runner.ts`). The runner SHALL import `createWptHarnessPlugin` from the local test utilities and compose a sandbox with plugins: `createWasiPlugin()` (inert), `createWebPlatformPlugin()`, `createFetchPlugin({ fetch: noNetworkFetch })` (mock), `createTimersPlugin()`, `createConsolePlugin()`, and `createWptHarnessPlugin({ collect })`. The runner SHALL invoke WPT tests via `sandbox.run()` and collect results via the `collect` callback.
 
-#### Scenario: Concurrency default scales with cores
+The runner SHALL NOT use the `methods` / `onEvent` / `fetch` factory options on `sandbox()` — the new API is plugin-based (already reflected in the sandbox capability).
 
-- **GIVEN** a 8-core machine with `os.availableParallelism() === 8` and no `WPT_CONCURRENCY` env var
-- **WHEN** the runner starts
-- **THEN** the concurrency limit SHALL be 16
+#### Scenario: Runner composes sandbox-stdlib plugins
 
-#### Scenario: Concurrency env override
-
-- **GIVEN** `WPT_CONCURRENCY=4` in the environment
-- **WHEN** the runner starts
-- **THEN** the concurrency limit SHALL be 4
+- **GIVEN** the WPT runner at `packages/sandbox-stdlib/test/wpt/runner.ts`
+- **WHEN** invoked by vitest
+- **THEN** it SHALL import plugin factories from `@workflow-engine/sandbox-stdlib` and from its co-located test utilities
+- **AND** compose a sandbox with exactly the plugins listed above
+- **AND** run WPT tests via `sandbox.run()`, collecting results via the WPT harness plugin's `collect` callback
 
 ### Requirement: Per-subtest vitest registration
 
@@ -176,19 +153,22 @@ For each runnable file, the runner SHALL verify that every name in the manifest 
 
 ### Requirement: Harness never adds production sandbox surface
 
-The WPT harness package SHALL pass `__wptReport` only via the construction-time `methods` argument of its own `sandbox(...)` call in `packages/sandbox/test/wpt/harness/runner.ts`. No production sandbox construction site SHALL pass `__wptReport` in `methods`. `__wptReport` SHALL NOT be installed on any production sandbox by any other mechanism.
+The WPT harness SHALL NOT install guest-callable surface that production sandboxes don't have — except via the test-only `createWptHarnessPlugin({ collect })` registered exclusively in WPT test compositions. The harness plugin installs the `__wptReport` descriptor as a private guest function; the WPT harness source captures `__wptReport` into an IIFE closure and the sandbox auto-deletes the global after phase 2.
 
-#### Scenario: __wptReport absent in production
+Production sandbox compositions SHALL NOT include `createWptHarnessPlugin`.
 
-- **GIVEN** a production sandbox constructed via `sandbox(source, methods, options)` where `methods` does not contain `__wptReport`
-- **WHEN** guest code attempts to call `__wptReport(...)`
-- **THEN** a `ReferenceError` SHALL be thrown
+#### Scenario: Production sandboxes have no __wptReport
 
-#### Scenario: __wptReport available only during WPT runs
+- **GIVEN** any production runtime sandbox composition (no WPT harness plugin)
+- **WHEN** guest code evaluates `typeof __wptReport`
+- **THEN** the result SHALL be `"undefined"`
 
-- **GIVEN** a WPT test run initiated by `sandbox(source, { __wptReport }, opts)` followed by `sb.run("__wptEntry", {}, runOpts)`
-- **WHEN** guest code calls `__wptReport(name, status, message)`
-- **THEN** the host-side implementation registered via construction-time `methods` SHALL receive the call
+#### Scenario: Test sandbox with WPT harness plugin
+
+- **GIVEN** a WPT test sandbox composed with `createWptHarnessPlugin({ collect })`
+- **WHEN** the WPT preamble runs and reports a test result
+- **THEN** the harness's captured `__wptReport` reference SHALL invoke the plugin's host-side descriptor handler
+- **AND** `collect` SHALL receive `{ name, status, message? }` on the main thread
 
 ### Requirement: Test commands
 
@@ -204,3 +184,4 @@ The root `package.json` SHALL provide two scripts: `test:wpt` that invokes the W
 - **WHEN** a developer runs `pnpm test`
 - **THEN** only unit tests matching the existing discovery pattern SHALL run
 - **AND** the WPT suite SHALL NOT execute
+

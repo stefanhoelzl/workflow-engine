@@ -1,9 +1,16 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
+import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
 import type { Sandbox } from "@workflow-engine/sandbox";
 import type { EventBus } from "../event-bus/index.js";
 import type { SandboxStore } from "../sandbox-store.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";
 import type { InvokeResult, TriggerDescriptor } from "./types.js";
+
+interface InvocationMeta {
+	readonly id: string;
+	readonly tenant: string;
+	readonly workflow: string;
+	readonly workflowSha: string;
+}
 
 // ---------------------------------------------------------------------------
 // Executor
@@ -48,6 +55,14 @@ function createExecutor(options: ExecutorOptions): Executor {
 	// callers a "events committed before response" guarantee.
 	const emitTails = new WeakMap<Sandbox, Promise<void>>();
 	const wired = new WeakSet<Sandbox>();
+	// Current invocation metadata per sandbox — set synchronously before
+	// `sb.run()`, cleared after it resolves. The sandbox serves one run at a
+	// time (enforced by `sb.run`'s concurrent-run reject), so every
+	// `SandboxEvent` arriving on `sb.onEvent` between set and clear belongs to
+	// this invocation. This is where runtime metadata is stamped — SECURITY.md
+	// §2 R-8: the sandbox has no tenant concept; the runtime widens events
+	// from `SandboxEvent` to `InvocationEvent` at this boundary.
+	const activeMeta = new WeakMap<Sandbox, InvocationMeta>();
 
 	function queueFor(key: string): RunQueue {
 		let q = queues.get(key);
@@ -64,9 +79,23 @@ function createExecutor(options: ExecutorOptions): Executor {
 		}
 		emitTails.set(sb, Promise.resolve());
 		sb.onEvent((event) => {
+			const meta = activeMeta.get(sb);
+			if (!meta) {
+				// Event arrived outside any invocation (should not happen — the
+				// sandbox's buildEvent gates on runActive). Drop rather than emit
+				// unstamped event into the bus.
+				return;
+			}
+			const widened: InvocationEvent = {
+				...event,
+				id: meta.id,
+				tenant: meta.tenant,
+				workflow: meta.workflow,
+				workflowSha: meta.workflowSha,
+			};
 			const prev = emitTails.get(sb) ?? Promise.resolve();
 			const next = prev.then(() =>
-				bus.emit(event).catch(() => {
+				bus.emit(widened).catch(() => {
 					/* swallow consumer errors — they shouldn't block the next emit */
 				}),
 			);
@@ -86,14 +115,15 @@ function createExecutor(options: ExecutorOptions): Executor {
 		const sb = await sandboxStore.get(tenant, workflow, bundleSource);
 		ensureWired(sb);
 		const invocationId = newInvocationId();
+		activeMeta.set(sb, {
+			id: invocationId,
+			tenant,
+			workflow: workflow.name,
+			workflowSha: workflow.sha,
+		});
 		let result: InvokeResult<unknown>;
 		try {
-			const runResult = await sb.run(descriptor.name, input, {
-				invocationId,
-				tenant,
-				workflow: workflow.name,
-				workflowSha: workflow.sha,
-			});
+			const runResult = await sb.run(descriptor.name, input);
 			if (runResult.ok) {
 				result = { ok: true, output: runResult.result };
 			} else {
@@ -113,6 +143,8 @@ function createExecutor(options: ExecutorOptions): Executor {
 					...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
 				},
 			};
+		} finally {
+			activeMeta.delete(sb);
 		}
 		// Wait for all in-flight bus emits to settle so callers see a
 		// "persistence committed before response" guarantee.

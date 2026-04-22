@@ -1,10 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import SANDBOX_POLYFILLS from "virtual:sandbox-polyfills";
-import {
-	type EventKind,
-	IIFE_NAMESPACE,
-	type InvocationEvent,
-} from "@workflow-engine/core";
+import { IIFE_NAMESPACE } from "@workflow-engine/core";
 import {
 	JSException,
 	type JSValueHandle,
@@ -17,22 +12,38 @@ import { encodingExtension } from "quickjs-wasi/encoding";
 import { headersExtension } from "quickjs-wasi/headers";
 import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
 import { urlExtension } from "quickjs-wasi/url";
-import { bridgeHostFetch } from "./bridge.js";
 import { type Bridge, createBridge } from "./bridge-factory.js";
-import { setupGlobals, type TimerCleanup } from "./globals.js";
-import { installRpcMethods } from "./install-host-methods.js";
+import { installGuestFunctions } from "./guest-function-install.js";
+import type { PluginDescriptor } from "./plugin.js";
+import {
+	collectGuestFunctions,
+	type FrameTracker,
+	type GlobalBinder,
+	loadPluginModules,
+	runOnBeforeRunStarted,
+	runOnRunFinished,
+	runPhasePrivateDelete,
+	runPhaseSourceEval,
+	runPhaseWorker,
+	type SourceEvaluator,
+	truncateFinalRefStack,
+	type WarnFn,
+} from "./plugin-runtime.js";
 import type {
 	MainToWorker,
 	RunResultPayload,
 	SerializedError,
 	WorkerToMain,
 } from "./protocol.js";
+import { createSandboxContext } from "./sandbox-context.js";
 import {
 	createWasiFactory,
 	createWasiState,
+	installWasiHooks,
 	perfNowNs,
 	type WasiState,
 } from "./wasi.js";
+import { defaultPluginLoader } from "./worker-plugin-loader.js";
 
 if (!parentPort) {
 	throw new Error("worker.ts must be loaded as a worker_threads Worker");
@@ -76,131 +87,18 @@ function serializeJsException(err: JSException): SerializedError {
 	};
 }
 
-// --- RPC request/response state ---
-
-let nextRequestId = 1;
-const pendingRequests = new Map<
-	number,
-	{ resolve: (value: unknown) => void; reject: (err: Error) => void }
->();
-
-function sendRequest(method: string, args: unknown[]): Promise<unknown> {
-	return new Promise((resolve, reject) => {
-		const requestId = nextRequestId++;
-		pendingRequests.set(requestId, { resolve, reject });
-		post({ type: "request", requestId, method, args });
-	});
-}
-
-function handleResponse(
-	requestId: number,
-	ok: boolean,
-	result?: unknown,
-	error?: SerializedError,
-): void {
-	const pending = pendingRequests.get(requestId);
-	if (!pending) {
-		return;
-	}
-	pendingRequests.delete(requestId);
-	if (ok) {
-		pending.resolve(result);
-	} else {
-		const err = new Error(error?.message ?? "unknown RPC error");
-		err.name = error?.name ?? "Error";
-		err.stack = error?.stack ?? "";
-		if (error?.issues !== undefined) {
-			(err as Error & { issues?: unknown }).issues = error.issues;
-		}
-		if (error?.data) {
-			for (const [key, value] of Object.entries(error.data)) {
-				(err as unknown as Record<string, unknown>)[key] = value;
-			}
-		}
-		pending.reject(err);
-	}
-}
-
-// --- __emitEvent guest global ---
-//
-// Installed once per sandbox via vm.newFunction (NOT via bridge.sync/async).
-// Accepts only `action.*` event kinds. Stamps id/seq/ref/ts/workflow/workflowSha
-// from the bridge's current run context and posts the event to the main thread.
-// Does NOT generate system events for itself.
-
-const ALLOWED_EMIT_KINDS = new Set<EventKind>([
-	"action.request",
-	"action.response",
-	"action.error",
-]);
-
-function installEmitEvent(bridge: Bridge): void {
-	const fn = bridge.vm.newFunction("__emitEvent", (eventHandle) => {
-		const raw = bridge.vm.dump(eventHandle) as {
-			kind?: string;
-			name?: string;
-			input?: unknown;
-			output?: unknown;
-			error?: unknown;
-		};
-		const ctx = bridge.getRunContext();
-		if (!ctx) {
-			return bridge.vm.undefined;
-		}
-		const kind = raw?.kind as EventKind | undefined;
-		if (!(kind && ALLOWED_EMIT_KINDS.has(kind))) {
-			throw new TypeError(
-				`__emitEvent: invalid kind '${String(raw?.kind)}' (only action.* allowed)`,
-			);
-		}
-		const name = String(raw?.name ?? "");
-		const seqValue = bridge.nextSeq();
-
-		let ref: number | null;
-		if (kind === "action.request") {
-			ref = bridge.currentRef();
-			bridge.pushRef(seqValue);
-		} else {
-			ref = bridge.popRef();
-		}
-
-		const event: InvocationEvent = {
-			kind,
-			id: ctx.invocationId,
-			seq: seqValue,
-			ref,
-			at: new Date().toISOString(),
-			ts: bridge.tsUs(),
-			tenant: ctx.tenant,
-			workflow: ctx.workflow,
-			workflowSha: ctx.workflowSha,
-			name,
-			...(raw.input === undefined ? {} : { input: raw.input }),
-			...(raw.output === undefined ? {} : { output: raw.output }),
-			...(raw.error === undefined
-				? {}
-				: {
-						error: raw.error as {
-							message: string;
-							stack: string;
-							issues?: unknown;
-						},
-					}),
-		};
-		bridge.emit(event);
-		return bridge.vm.undefined;
-	});
-	bridge.vm.setProp(bridge.vm.global, "__emitEvent", fn);
-	fn.dispose();
-}
-
 // --- Sandbox state (lives for the life of this worker) ---
+
+interface PluginLifecycleState {
+	readonly setups: ReadonlyMap<string, import("./plugin.js").PluginSetup>;
+	readonly order: readonly string[];
+}
 
 interface SandboxState {
 	vm: QuickJS;
 	bridge: Bridge;
-	timers: TimerCleanup;
 	currentAbort: AbortController | null;
+	pluginLifecycle: PluginLifecycleState;
 }
 
 let state: SandboxState | null = null;
@@ -209,140 +107,82 @@ let state: SandboxState | null = null;
 
 const wasiState: WasiState = createWasiState();
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: init sets up VM, bridge, timers, fetch forwarding, and source eval as an atomic sequence
+// --- Init phases ---
+//
+// Phase 0 — module load: worker.ts imports are processed at module evaluation
+//           time. Plugin descriptor modules are resolved inside Phase 1a via
+//           dynamic import.
+// Phase 1 — WASM instantiate: QuickJS.create(); bridge + timers + fetch/RPC
+//           method setup; polyfill bundle eval + assertion.
+// Phase 1a — plugin.worker() iteration (only when msg.pluginDescriptors
+//            non-empty): resolve each descriptor's source via data: URI
+//            import, run its worker(ctx, deps, config), collect
+//            PluginSetup results.
+// Phase 2 — plugin source eval (in topo order).
+// Phase 3 — private-descriptor auto-deletion (delete globalThis[name] for
+//           every guestFunction with public !== true).
+// Phase 4 — user source eval (msg.source at msg.filename).
+//
+// Any throw in any phase above is caught at the outer try/catch: partial VM
+// resources are disposed, an init-error is posted to main, and the worker
+// exits with code 0 so the main-thread init handshake can report a typed
+// error without also surfacing a non-zero exit.
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: handleInit sets up VM, bridge, plugin pipeline, and user-source eval as an atomic sequence
 async function handleInit(
 	msg: Extract<MainToWorker, { type: "init" }>,
 ): Promise<void> {
-	const createOptions: QuickJSOptions = {
-		extensions: [
-			base64Extension,
-			cryptoExtension,
-			encodingExtension,
-			headersExtension,
-			structuredCloneExtension,
-			urlExtension,
-		],
-	};
-	if (msg.memoryLimit !== undefined) {
-		createOptions.memoryLimit = msg.memoryLimit;
-	}
-
-	// Seed the shared anchor BEFORE QuickJS.create so the WASI monotonic
-	// clock returns small values during VM init; otherwise QuickJS caches a
-	// large reference for performance.now() and every subsequent guest read
-	// is skewed by the Node process uptime at init time.
-	wasiState.anchor.ns = perfNowNs();
-	createOptions.wasi = createWasiFactory(wasiState, post);
-
-	const vm = await QuickJS.create(createOptions);
-
-	const bridge = createBridge(vm, wasiState.anchor);
-	wasiState.bridge = bridge;
-	bridge.setSink((event) => post({ type: "event", event }));
-	const timers = setupGlobals(bridge);
-
-	const fetchImpl: typeof globalThis.fetch = msg.forwardFetch
-		? ((async (input, init) => {
-				const url = typeof input === "string" ? input : String(input);
-				const method = init?.method ?? "GET";
-				const headers =
-					init?.headers && typeof init.headers === "object"
-						? Object.fromEntries(
-								Object.entries(init.headers as Record<string, string>),
-							)
-						: {};
-				const body = init?.body ?? null;
-				// Piggy-back the run labels so the main-thread handler can
-				// enrich the `sandbox.fetch.blocked` warn log. When fetch is
-				// invoked outside a run() (e.g. during init-time source eval),
-				// the context is absent and the handler logs with empty labels.
-				const ctx = bridge.getRunContext();
-				const context = ctx
-					? {
-							invocationId: ctx.invocationId,
-							tenant: ctx.tenant,
-							workflow: ctx.workflow,
-							workflowSha: ctx.workflowSha,
-						}
-					: {
-							invocationId: "",
-							tenant: "",
-							workflow: "",
-							workflowSha: "",
-						};
-				const response = (await sendRequest("__hostFetchForward", [
-					method,
-					url,
-					headers,
-					body,
-					context,
-				])) as {
-					status: number;
-					statusText: string;
-					headers: Record<string, string>;
-					body: string;
-				};
-				return new Response(response.body, {
-					status: response.status,
-					statusText: response.statusText,
-					headers: response.headers,
-				});
-			}) as typeof globalThis.fetch)
-		: globalThis.fetch;
-	bridgeHostFetch(bridge, fetchImpl, () => state?.currentAbort?.signal);
-
-	installEmitEvent(bridge);
-
-	// Two-pass host-method install. Pass 1 installs only `__*` names so the
-	// polyfill bundle below can capture-and-delete bridges like __reportError.
-	// Pass 2 installs the rest after polyfill eval, so a host method named
-	// `fetch`/`console`/`EventTarget`/etc. shadows the polyfill (last writer
-	// wins, matching browser/Node platform semantics).
-	const pass1Names = msg.methodNames.filter((n) => n.startsWith("__"));
-	const pass2Names = msg.methodNames.filter((n) => !n.startsWith("__"));
-	installRpcMethods(
-		bridge,
-		bridge.vm.global,
-		pass1Names,
-		sendRequest,
-		msg.methodEventNames,
-	);
-
-	const polyfillResult = vm.evalCode(SANDBOX_POLYFILLS, "<sandbox-polyfills>");
-	polyfillResult.dispose();
-
-	// Init-assertion runs before pass-2 host install so a host stub that
-	// shadows `EventTarget` cannot break the polyfill self-check.
-	const assertResult = vm.evalCode(
-		`(function(){
-			if (typeof globalThis.addEventListener !== 'function')
-				throw new Error('sandbox init: globalThis.addEventListener missing');
-			if (!(globalThis instanceof EventTarget))
-				throw new Error('sandbox init: globalThis is not an EventTarget');
-			if (typeof globalThis.scheduler?.postTask !== 'function')
-				throw new Error('sandbox init: scheduler.postTask missing');
-			if (typeof globalThis.TaskController !== 'function')
-				throw new Error('sandbox init: TaskController missing');
-			if (typeof globalThis.Observable !== 'function')
-				throw new Error('sandbox init: Observable missing');
-			if (typeof EventTarget.prototype.when !== 'function')
-				throw new Error('sandbox init: EventTarget.prototype.when missing');
-		})();`,
-		"<sandbox-polyfill-assert>",
-	);
-	assertResult.dispose();
-
-	installRpcMethods(
-		bridge,
-		bridge.vm.global,
-		pass2Names,
-		sendRequest,
-		msg.methodEventNames,
-	);
-
+	let vm: QuickJS | null = null;
+	let bridge: Bridge | null = null;
 	try {
+		const createOptions: QuickJSOptions = {
+			extensions: [
+				base64Extension,
+				cryptoExtension,
+				encodingExtension,
+				headersExtension,
+				structuredCloneExtension,
+				urlExtension,
+			],
+		};
+		if (msg.memoryLimit !== undefined) {
+			createOptions.memoryLimit = msg.memoryLimit;
+		}
+
+		// Seed the shared anchor BEFORE QuickJS.create so the WASI monotonic
+		// clock returns small values during VM init; otherwise QuickJS caches a
+		// large reference for performance.now() and every subsequent guest read
+		// is skewed by the Node process uptime at init time.
+		wasiState.anchor.ns = perfNowNs();
+		createOptions.wasi = createWasiFactory(wasiState, post);
+
+		vm = await QuickJS.create(createOptions);
+
+		bridge = createBridge(vm, wasiState.anchor);
+		wasiState.bridge = bridge;
+		bridge.setSink((event) => post({ type: "event", event }));
+
+		// Phases 1a–3: plugin-boot pipeline. Performs the full
+		// `worker() → source eval → private-delete` sequence before user-
+		// source evaluation.
+		const pluginLifecycle = await runPluginBootPipeline(
+			vm,
+			bridge,
+			msg.pluginDescriptors,
+		);
+
+		// Phase 4 — user source eval.
 		const evalResult = vm.evalCode(msg.source, msg.filename);
 		evalResult.dispose();
+
+		state = {
+			vm,
+			bridge,
+			currentAbort: null,
+			pluginLifecycle,
+		};
+
+		post({ type: "ready" });
 	} catch (err) {
 		const serialized =
 			err instanceof JSException
@@ -351,66 +191,158 @@ async function handleInit(
 		if (err instanceof JSException) {
 			err.dispose();
 		}
-		timers.dispose();
-		bridge.dispose();
-		vm.dispose();
+		bridge?.dispose();
+		vm?.dispose();
 		post({ type: "init-error", error: serialized });
 		process.exit(0);
 	}
-
-	state = {
-		vm,
-		bridge,
-		timers,
-		currentAbort: null,
-	};
-
-	post({ type: "ready" });
 }
 
-function emitTriggerEvent(
+async function runPluginBootPipeline(
+	vm: QuickJS,
 	bridge: Bridge,
-	kind: EventKind,
-	name: string,
-	extra: { input?: unknown; output?: unknown; error?: unknown },
-): number {
-	const ctx = bridge.getRunContext();
-	if (!ctx) {
-		return -1;
+	descriptors: readonly PluginDescriptor[],
+): Promise<PluginLifecycleState> {
+	const ctx = createSandboxContext(bridge);
+	// Phase 1a — module load + plugin.worker().
+	const loaded = await loadPluginModules(descriptors, defaultPluginLoader);
+	const phase1 = await runPhaseWorker(loaded, ctx);
+
+	// Phase 1b — install WASI hooks collected during plugin.worker().
+	// `installWasiHooks` enforces hook-slot collision (one plugin per slot);
+	// a throw here is caught by the outer init try/catch and reported as an
+	// init-error.
+	for (const name of phase1.order) {
+		const setup = phase1.setups.get(name);
+		if (setup?.wasiHooks) {
+			installWasiHooks(wasiState, setup.wasiHooks);
+		}
 	}
-	const seqValue = bridge.nextSeq();
-	let ref: number | null;
-	if (kind === "trigger.request") {
-		ref = null;
-		bridge.pushRef(seqValue);
-	} else {
-		ref = bridge.popRef();
-	}
-	const event: InvocationEvent = {
-		kind,
-		id: ctx.invocationId,
-		seq: seqValue,
-		ref,
-		at: new Date().toISOString(),
-		ts: bridge.tsUs(),
-		tenant: ctx.tenant,
-		workflow: ctx.workflow,
-		workflowSha: ctx.workflowSha,
-		name,
-		...(extra.input === undefined ? {} : { input: extra.input }),
-		...(extra.output === undefined ? {} : { output: extra.output }),
-		...(extra.error === undefined
-			? {}
-			: {
-					error: extra.error as {
-						message: string;
-						stack: string;
-						issues?: unknown;
-					},
-				}),
+
+	// Phase 1c — install each plugin's guest functions on globalThis so that
+	// Phase 2 plugin-source evaluation can capture private descriptors
+	// (`const x = globalThis.__x; delete globalThis.__x;`). Public
+	// descriptors remain visible through Phase 3 and into user source.
+	const guestFunctions = collectGuestFunctions(phase1);
+	installGuestFunctions(vm, ctx, guestFunctions);
+
+	// Phase 2 — plugin source eval.
+	const evaluator: SourceEvaluator = {
+		eval(source, filename) {
+			const r = vm.evalCode(source, filename);
+			r.dispose();
+		},
 	};
-	bridge.emit(event);
-	return seqValue;
+	runPhaseSourceEval(phase1, evaluator);
+
+	// Phase 3 — private-descriptor auto-deletion.
+	// QuickJS has no deleteProp — use evalCode with a JSON-escaped name so
+	// the delete semantically removes the binding (not just sets undefined).
+	const binder: GlobalBinder = {
+		delete(name) {
+			const r = vm.evalCode(
+				`delete globalThis[${JSON.stringify(name)}];`,
+				"<sandbox-phase3-delete>",
+			);
+			r.dispose();
+		},
+	};
+	runPhasePrivateDelete(phase1, binder);
+
+	return { setups: phase1.setups, order: phase1.order };
+}
+
+/**
+ * Wraps the Bridge's refStack primitives as a FrameTracker so plugin-runtime
+ * lifecycle helpers can depth-check / truncate without depending on the
+ * Bridge type directly.
+ */
+function bridgeFrameTracker(bridge: Bridge): FrameTracker {
+	return {
+		depth() {
+			return bridge.refStackDepth();
+		},
+		truncateTo(depth) {
+			return bridge.truncateRefStackTo(depth);
+		},
+	};
+}
+
+/**
+ * Emits a `log` message to the main thread for a dangling-frame warning.
+ * Plugin-runtime surfaces these when onBeforeRunStarted or the final
+ * cleanup drop frames that weren't explicitly closed; surfacing them via
+ * the existing logger channel keeps the signal visible without requiring a
+ * new protocol message.
+ */
+const logDanglingFrame: WarnFn = (warning) => {
+	post({
+		type: "log",
+		level: "warn",
+		message: "sandbox.plugin.dangling_frame",
+		meta: {
+			phase: warning.phase,
+			...(warning.plugin === undefined ? {} : { plugin: warning.plugin }),
+			dropped: warning.dropped,
+		},
+	});
+};
+
+/**
+ * Runs onBeforeRunStarted hooks across all registered plugins. A hook throw
+ * does NOT abort the run — we log an error and continue with the guest
+ * handler. Frames pushed by hooks that threw are already truncated by
+ * runOnBeforeRunStarted internally.
+ */
+function runLifecycleBefore(
+	pluginLifecycle: PluginLifecycleState | null,
+	runInput: import("./plugin.js").RunInput,
+	tracker: FrameTracker,
+): void {
+	if (!pluginLifecycle) {
+		return;
+	}
+	try {
+		runOnBeforeRunStarted({
+			setups: pluginLifecycle.setups,
+			order: pluginLifecycle.order,
+			runInput,
+			tracker,
+			warn: logDanglingFrame,
+		});
+	} catch (err) {
+		post({
+			type: "log",
+			level: "error",
+			message: "sandbox.plugin.onBeforeRunStarted_failed",
+			meta: { error: err instanceof Error ? err.message : String(err) },
+		});
+	}
+}
+
+/**
+ * Runs onRunFinished hooks in reverse topo order, then truncates any
+ * remaining refStack frames with a dangling-frame warning. Invoked from
+ * handleRun's finally block so it always fires — even if the guest handler
+ * threw.
+ */
+function runLifecycleAfter(
+	pluginLifecycle: PluginLifecycleState,
+	runInput: import("./plugin.js").RunInput,
+	payload: RunResultPayload,
+	tracker: FrameTracker,
+): void {
+	const runResult: import("./plugin.js").RunResult = payload.ok
+		? { ok: true, output: payload.result }
+		: { ok: false, error: new Error(payload.error.message) };
+	runOnRunFinished({
+		setups: pluginLifecycle.setups,
+		order: pluginLifecycle.order,
+		result: runResult,
+		runInput,
+		warn: logDanglingFrame,
+	});
+	truncateFinalRefStack(tracker, logDanglingFrame);
 }
 
 function readExportFromIife(
@@ -473,23 +405,42 @@ async function callGuestFunction(
 	return { ok: true, result: resultValue };
 }
 
-function emitTerminalTriggerEvent(
-	bridge: Bridge,
+async function invokeGuestHandler(
+	vm: QuickJS,
 	exportName: string,
-	payload: RunResultPayload,
-): void {
-	if (payload.ok) {
-		emitTriggerEvent(bridge, "trigger.response", exportName, {
-			output: payload.result,
-		});
-	} else {
-		emitTriggerEvent(bridge, "trigger.error", exportName, {
+	ctx: unknown,
+): Promise<RunResultPayload> {
+	const fnHandle = readExportFromIife(vm, exportName);
+	if (!fnHandle) {
+		return {
+			ok: false,
 			error: {
-				message: payload.error.message,
-				stack: payload.error.stack,
+				message: `export '${exportName}' not found in workflow bundle`,
+				stack: "",
 			},
-		});
+		};
 	}
+	try {
+		return await callGuestFunction(vm, fnHandle, ctx);
+	} finally {
+		fnHandle.dispose();
+	}
+}
+
+interface RunFinalizeArgs {
+	readonly state: SandboxState;
+	readonly runInput: import("./plugin.js").RunInput;
+	readonly payload: RunResultPayload;
+	readonly tracker: FrameTracker;
+}
+
+function finalizeRun(args: RunFinalizeArgs): void {
+	const { state, runInput, payload, tracker } = args;
+	const { bridge, pluginLifecycle } = state;
+	runLifecycleAfter(pluginLifecycle, runInput, payload, tracker);
+	state.currentAbort?.abort();
+	state.currentAbort = null;
+	bridge.clearRunActive();
 }
 
 async function handleRun(
@@ -505,54 +456,33 @@ async function handleRun(
 		});
 		return;
 	}
-	const { vm, bridge, timers } = state;
+	const { vm, bridge, pluginLifecycle } = state;
 
 	bridge.resetAnchor();
-	bridge.setRunContext({
-		invocationId: msg.invocationId,
-		tenant: msg.tenant,
-		workflow: msg.workflow,
-		workflowSha: msg.workflowSha,
-	});
+	// Run metadata (tenant/workflow/workflowSha/invocationId) is tracked on
+	// the main thread (`packages/sandbox/src/index.ts`) and stamped onto
+	// events before they reach `sb.onEvent` subscribers. The worker only
+	// flips a boolean "run active" flag so the bridge knows to produce
+	// events (vs. the init-phase "no run" state which would short-circuit
+	// emission).
+	bridge.setRunActive();
 	state.currentAbort = new AbortController();
 
-	emitTriggerEvent(bridge, "trigger.request", msg.exportName, {
+	const runInput: import("./plugin.js").RunInput = {
+		name: msg.exportName,
 		input: msg.ctx,
-	});
+	};
+	const tracker = bridgeFrameTracker(bridge);
+	runLifecycleBefore(pluginLifecycle, runInput, tracker);
 
-	let payload: RunResultPayload | null = null;
+	let payload: RunResultPayload;
 	try {
-		const fnHandle = readExportFromIife(vm, msg.exportName);
-		if (fnHandle) {
-			payload = await callGuestFunction(vm, fnHandle, msg.ctx);
-			fnHandle.dispose();
-		} else {
-			payload = {
-				ok: false,
-				error: {
-					message: `export '${msg.exportName}' not found in workflow bundle`,
-					stack: "",
-				},
-			};
-		}
+		payload = await invokeGuestHandler(vm, msg.exportName, msg.ctx);
 	} catch (err) {
 		const e = serializeError(err);
-		payload = {
-			ok: false,
-			error: { message: e.message, stack: e.stack },
-		};
-	} finally {
-		// Clear pending timers (emitting timer.clear events) BEFORE the terminal
-		// trigger event so those clear events land in the same archive flush.
-		timers.clearActive();
-		if (payload) {
-			emitTerminalTriggerEvent(bridge, msg.exportName, payload);
-		}
-		state.currentAbort?.abort();
-		state.currentAbort = null;
-		bridge.clearRunContext();
+		payload = { ok: false, error: { message: e.message, stack: e.stack } };
 	}
-
+	finalizeRun({ state, runInput, payload, tracker });
 	post({ type: "done", payload });
 }
 
@@ -563,12 +493,6 @@ port.on("message", (msg: MainToWorker) => {
 				await handleInit(msg);
 			} else if (msg.type === "run") {
 				await handleRun(msg);
-			} else if (msg.type === "response") {
-				if (msg.ok) {
-					handleResponse(msg.requestId, true, msg.result);
-				} else {
-					handleResponse(msg.requestId, false, undefined, msg.error);
-				}
 			}
 		} catch (err) {
 			queueMicrotask(() => {

@@ -11,8 +11,8 @@ trust boundaries, and enumerated threats per attack surface.
 Before writing or reviewing code that touches security-sensitive areas,
 consult the relevant section:
 
-- **Adding or modifying a sandbox global / host bridge API** → §2 Sandbox
-  Boundary
+- **Adding or modifying a sandbox plugin, a guest-visible global, or a
+  host-bridged descriptor** → §2 Sandbox Boundary
 - **Adding or changing an HTTP route** → determine trust level first
   (§3–§4)
 - **Adding a new webhook handler or trigger type** → §3 Webhook Ingress
@@ -80,13 +80,14 @@ sections must append (§7 and onward), not renumber.
   │          ┌───────────────────────────────────────┐          │
   │          │ Trigger handler (UNTRUSTED)           │          │
   │          │   └─► await action(input)             │          │
-  │          │       ├─► __dispatchAction(name, in,  │          │
-  │          │       │     handler, outputSchema)    │          │
-  │          │       │   ├─► __hostCallAction(name,  │          │
-  │          │       │   │     in) — Ajv + audit     │          │
+  │          │       ├─► __sdk.dispatchAction(name,  │          │
+  │          │       │     in, handler, completer)   │          │
+  │          │       │   ├─► host-call-action plugin │          │
+  │          │       │   │     validates + audits    │          │
   │          │       │   ├─► captured handler(input) │          │
-  │          │       │   └─► Zod validate output     │          │
-  │          │   └─► fetch(url, …) → __hostFetch     │          │
+  │          │       │   └─► completer(raw) → parsed │          │
+  │          │   └─► fetch(url, …) → fetch plugin    │          │
+  │          │                       (hardenedFetch) │          │
   │          └───────────────────────────────────────┘          │
   └─────────────────────────────────────────────────────────────┘
                                 │
@@ -130,7 +131,7 @@ table below is the navigation map:
 |----------------------------------------|-------------------------------------------------------------|------------------------------------|
 | `POST /api/workflows/:tenant`          | Tenant regex + `isMember(user, tenant)` gate; identical 404 | §4, threat A12                     |
 | Invocation event reads                 | `EventStore.query(tenant)` pre-binds `.where("tenant", …)`  | `event-store/spec.md`              |
-| Invocation event writes                | Sandbox stamps `tenant` from workflow registration          | §2 sandbox invariants              |
+| Invocation event writes                | Runtime stamps `tenant` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no tenant concept) | `executor/spec.md`, §2 R-2 |
 | `POST /webhooks/:tenant/:workflow/*`   | Registry lookup by `(tenant, workflow)` pair                | §3, `http-trigger/spec.md`         |
 | Workflow bundle storage                | Storage key = `workflows/<tenant>.tar.gz`                   | `workflow-registry/spec.md`        |
 
@@ -138,676 +139,433 @@ The regex-validated tenant identifier is NOT a permission check — it is
 a format check. Every mechanism above is load-bearing; weakening any one
 of them breaks I-T2. Threats that specifically target I-T2 are
 enumerated in §4 (A12, A13, A14) alongside their mitigations.
-
 ## §2 Sandbox Boundary
 
 ### Trust level
 
-**UNTRUSTED.** All code inside `sandbox(source, methods).run(name, ctx, options)` is
-user-authored action code. Treat it as hostile: it may attempt to read
-host state, reach network services it shouldn't, run indefinitely, or
-exfiltrate secrets through any channel available to it.
+**UNTRUSTED.** All code inside `sandbox({source, plugins}).run(name, input)`
+is user-authored trigger + action code. Treat it as hostile: it may attempt
+to read host state, reach network services it shouldn't, run indefinitely,
+or exfiltrate secrets through any channel available to it.
 
 The sandbox is **the single strongest isolation boundary in the system**.
-Most security decisions in this document reduce to: *does this expose
-new capability across the sandbox boundary?*
+Most security decisions in this document reduce to: *does this expose new
+capability across the sandbox boundary?*
 
 **Engine:** the sandbox uses `quickjs-wasi` (QuickJS-ng compiled to
-`wasm32-wasip1`), not `quickjs-emscripten`. Each `Sandbox` instance has
-its own `QuickJS.create()` VM with its own dedicated WASM linear
-memory; there is no runtime/context split. Standard Web APIs (`URL`,
-`TextEncoder`/`TextDecoder`, `atob`/`btoa`, `structuredClone`,
-`Headers`, WebCrypto) are provided by the engine's native WASM
-extensions, not by host-side polyfills bundled into the workflow.
-Source is evaluated as an IIFE script (not an ES module) because
-`quickjs-wasi`'s `evalCode` does not expose the ES module namespace;
-the vite-plugin emits `format: "iife"` with a fixed namespace name
-(`IIFE_NAMESPACE` exported from `@workflow-engine/core`), and the
-sandbox reads exports from `globalThis[IIFE_NAMESPACE]`.
+`wasm32-wasip1`), not `quickjs-emscripten`. Each `Sandbox` instance has its
+own `QuickJS.create()` VM with its own dedicated WASM linear memory; there
+is no runtime/context split. Standard Web APIs (`URL`,
+`TextEncoder`/`TextDecoder`, `atob`/`btoa`, `structuredClone`, `Headers`,
+WebCrypto) are provided by the engine's native WASM extensions, not by
+host-side polyfills bundled into the workflow. Source is evaluated as an
+IIFE script (not an ES module) because `quickjs-wasi`'s `evalCode` does not
+expose the ES module namespace; the vite-plugin emits `format: "iife"`
+with a fixed namespace name (`IIFE_NAMESPACE` exported from
+`@workflow-engine/core`), and the sandbox reads exports from
+`globalThis[IIFE_NAMESPACE]`.
+
+### Architecture: plugins are the sole host-callable surface
+
+The sandbox core is a pure mechanism: WASM hosting, event stamping
+(`seq`/`ref`/`ts`/`at`/`id`), WASI routing, run lifecycle, and plugin
+composition. It emits **zero** application events. Every host-callable
+surface — fetch, timers, console, action dispatch, trigger lifecycle,
+WASI telemetry — is installed by a `Plugin` passed to the factory.
+
+A plugin contributes some combination of: guest-visible / private
+`GuestFunctionDescription`s, polyfill source evaluated after plugins boot,
+WASI hook overrides (clock, random, fd_write), and run-lifecycle hooks
+(`onBeforeRunStarted`, `onRunFinished`). All plugin code executes worker-
+side; plugin configs must be JSON-serializable.
+
+**Plugin catalog (v1).** `web-platform` (polyfills: EventTarget, Streams,
+URLPattern, CompressionStream, reportError, microtask, fetch WHATWG shape),
+`fetch` (dispatcher closing over `hardenedFetch` by default), `timers`
+(setTimeout/setInterval/clearTimeout/clearInterval + per-run cleanup),
+`console` (`console.log`/`info`/`warn`/`error`/`debug` leaf events),
+`wasi` (inert by default; runtime supplies telemetry setup), `host-call-
+action` (Ajv input validation, exports `validateAction` to dependents),
+`sdk-support` (installs locked `__sdk.dispatchAction`; depends on
+`host-call-action`), `trigger` (emits `trigger.request`/`response`/`error`
+around every run). Test-only: `wpt-harness` (`__wptReport` private
+descriptor).
 
 ### Entry points
 
-- `sandbox(source, methods, options)` — spawns a dedicated Node
-  `worker_threads` Worker that constructs the QuickJS WASM context,
-  installs host-bridged globals and host methods inside the worker,
-  and evaluates the workflow module source once. The main thread
-  holds only a thin Sandbox proxy that routes `run` / `dispose` /
-  `onDied` to the worker and services per-run `request` / `response`
-  bridge messages. Guest code never observes the worker boundary —
-  the set of exposed globals is unchanged from the pre-worker design.
+- `sandbox({source, plugins, filename?, memoryLimit?, interruptHandler?})`
+  — spawns a dedicated Node `worker_threads` Worker that constructs the
+  QuickJS WASM context and boots plugins. The main thread holds only a
+  thin Sandbox proxy that routes `run` / `dispose` / `onDied` / `onEvent`
+  to the worker.
 - `createSandboxFactory({ logger })` — construction primitive for
-  `Sandbox` instances. Every `create(source, options?)` call spawns a
-  new worker and evaluates the module source; the factory does NOT
-  cache by source. Tenant-scoped sandbox reuse is owned by the
-  runtime-level `SandboxStore` (`packages/runtime/src/sandbox-store.ts`),
-  which keys sandboxes by `(tenant, workflow.sha)` and holds them for
-  process lifetime. The store is the sole accessor consumed by the
-  executor when it resolves a sandbox to dispatch a trigger handler.
-- `Sandbox.run(name, ctx, runOptions)` — invokes a named export from
-  the workflow module with a JSON-shaped `ctx` argument. `runOptions`
-  carries `invocationId`, `workflow`, and `workflowSha`. The worker uses
-  these to stamp every `InvocationEvent` emitted during the run (see
-  `__emitEvent` below). Host-provided methods in `methods` (registered
-  at construction time) are installed as top-level globals inside the
-  sandbox via RPC proxies: the worker posts a `request` carrying
-  `method` + `args`, the main thread dispatches to the provided
-  implementation, and the response travels back as a `response` message.
-  The set of callable host methods is fixed at construction time and
-  does not vary across runs.
-- `Sandbox.onEvent(cb)` — registers a callback the main-thread sandbox
-  proxy invokes for each `InvocationEvent` the worker streams. The
-  worker posts `{ type: "event", event }` messages as paired
-  `system.request` / `system.response` (or `*.error`) events fire from
-  the bridge, plus `trigger.*` events around the export call and
-  `action.*` events emitted by the in-sandbox dispatcher via
-  `__emitEvent`. Events flow main-thread → consumer (typically the
-  runtime's event bus) → persistence + DuckDB. The sandbox package
-  itself does not know about the bus; it just calls back.
-- All arguments and return values crossing the host/sandbox boundary
-  via consumer-provided methods are JSON-serializable. Host object
-  references, closures, and proxies never cross.
-- Globals exposed inside the sandbox (post-init guest-visible surface):
-  `console.*`, `performance.now` (QuickJS intrinsic, reads through the
-  WASI `clock_time_get` syscall), `crypto.*` (full WebCrypto —
-  `crypto.randomUUID`, `crypto.getRandomValues`, and `crypto.subtle.*`
-  provided natively by the WASM crypto extension with a JS Promise shim
-  so `crypto.subtle.*` returns Promises per spec), `setTimeout` /
-  `setInterval` / `clearTimeout` / `clearInterval` (host bridges,
-  scheduled on the worker event loop), `fetch` (JS shim inside the
-  sandbox that captures `__hostFetch` into an IIFE closure, locked via
-  `Object.defineProperty({writable: false, configurable: false})`),
-  `self` (identity shim, `self === globalThis`; additionally inherits
-  `EventTarget.prototype`, with `addEventListener` / `removeEventListener`
-  / `dispatchEvent` installed as non-enumerable bound own-properties
-  routed to a private EventTarget instance — `Object.keys(globalThis)`
-  is unchanged, but `globalThis instanceof EventTarget === true`),
-  `navigator` (frozen object with a single
-  `userAgent: "WorkflowEngine/<version>"` string), `reportError` (JS
-  shim that captures `__reportError` into an IIFE closure, then
-  constructs a cancelable `ErrorEvent`, dispatches it on `globalThis`,
-  and — unless a listener calls `event.preventDefault()` — serializes
-  the error and forwards to the captured bridge), `queueMicrotask`
-  (JS wrap around the native implementation that catches uncaught
-  microtask exceptions and routes them through `reportError` above),
-  `EventTarget` and `Event` (pure-JS polyfills sourced from
-  `event-target-shim@6`, resolved by the `sandboxPolyfills()` Vite
-  plugin as the `virtual:sandbox-polyfills` module and inlined as an
-  IIFE string into `dist/src/worker.js` by
-  `packages/sandbox/vite.config.ts` at sandbox build time), `ErrorEvent`
-  (pure-JS class extending `Event`, carries
-  `message`/`filename`/`lineno`/`colno`/`error`), `AbortController` and
-  `AbortSignal` (hand-written pure-JS classes on top of
-  `event-target-shim`'s EventTarget; `AbortSignal` includes the static
-  factories `abort(reason?)`, `timeout(ms)` — which uses the
-  allowlisted `setTimeout` bridge — and `any(signals)`; default abort
-  reasons are native `DOMException`s), `URLPattern` (pure-JS polyfill
-  `urlpattern-polyfill@10.0.0` (exact-pinned in
-  `packages/sandbox/package.json`), bundled into the same
-  `virtual:sandbox-polyfills` IIFE by the `sandboxPolyfills()` Vite
-  plugin. The polyfill's own `index.js` self-installs the class on
-  initial evaluation with `if (!globalThis.URLPattern) globalThis.URLPattern = URLPattern;`
-  — a §2 reader does not need to open `node_modules/` to audit the
-  install site. No host bridge; pure compute. Pattern-side user input
-  can trigger catastrophic regex backtracking in QuickJS's engine —
-  identical attack surface to the already-exposed `RegExp` (guest-
-  crafted regex patterns can do the same today). Blast radius is
-  bounded to the invoking workflow's own worker thread by per-workflow
-  `worker_thread` isolation; the host main thread and other workflows'
-  workers remain responsive. No new attacker capability beyond what
-  `RegExp` already exposes. Version bumps require a §2 re-audit PR —
-  the pin is deliberate, not an oversight), `CompressionStream` and
-  `DecompressionStream` (pure-JS polyfills in
-  `packages/sandbox/src/polyfills/compression.ts` wrapping `TransformStream`
-  and the `fflate@^0.8.2` deflate/gzip implementation (pinned in
-  `packages/sandbox/package.json`), bundled into the same
-  `virtual:sandbox-polyfills` IIFE by the `sandboxPolyfills()` Vite plugin.
-  Supports the three WHATWG formats — `gzip` (fflate `Gzip`/`Gunzip`),
-  `deflate` = zlib-wrapped deflate (fflate `Zlib`/`Unzlib`), and
-  `deflate-raw` (fflate `Deflate`/`Inflate`). No host bridge; all
-  compression and decompression runs inside the QuickJS VM's linear
-  memory. Adversarial inputs (zip-bomb-style expansion, pathological
-  deflate sequences) are bounded by the existing QuickJS memory cap and
-  the invoking workflow's worker-thread isolation; the attack surface is
-  identical to any unbounded in-guest computation already reachable via
-  plain JS. No new host capability is added. Version bumps require a §2
-  re-audit PR — the pin is deliberate, not an oversight), `scheduler`,
-  `TaskController`, `TaskSignal`, and `TaskPriorityChangeEvent` (W3C
-  Scheduler API via `scheduler-polyfill@^1.3.0` (GoogleChromeLabs,
-  Apache-2.0); pure-JS, bundled into the same `virtual:sandbox-polyfills`
-  IIFE. `TaskController` extends the in-guest `AbortController`;
-  `TaskSignal` extends `AbortSignal`; scheduling is backed by the
-  already-allowlisted `setTimeout` bridge and `queueMicrotask` — the
-  polyfill feature-detects `MessageChannel` and `requestIdleCallback`
-  (both absent in the sandbox) and falls back to `setTimeout` for all
-  three priority classes. No new host surface; `postTask(..., {delay})`
-  is equivalent to a `setTimeout` reachability already allowed. Version
-  bumps require a §2 re-audit PR), `Observable`, `Subscriber`, and
-  `EventTarget.prototype.when` (WICG Observable proposal via
-  `observable-polyfill@^0.0.29` (MIT, keithamus; referenced by
-  WICG/observable#107 as the canonical implementation); pure-JS, bundled
-  into the same `virtual:sandbox-polyfills` IIFE. Layered on
-  `queueMicrotask`, `Promise`, `EventTarget`, and the in-guest
-  `AbortController`/`AbortSignal`. No new host surface; `Observable.from`
-  accepts iterables, async iterables, Promises, and existing Observables
-  — all surfaces already reachable from plain JS. Version bumps require
-  a §2 re-audit PR), `__dispatchAction` (runtime-
-  appended action dispatcher, locked via
-  `Object.defineProperty({writable: false, configurable: false})`),
-  plus the host methods registered via `methods`.
-  WASM extensions contribute the additional standard globals `URL`,
-  `URLSearchParams`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`,
-  `structuredClone`, `Headers`, and `DOMException` — these are
-  implemented in C/WASM inside the WASM linear memory, not as host
-  bridges.
+  `Sandbox` instances. Every `create({source, plugins}, options?)` call
+  spawns a new worker. Tenant-scoped sandbox reuse is owned by
+  `SandboxStore` (`packages/runtime/src/sandbox-store.ts`), keyed by
+  `(tenant, workflow.sha)`.
+- `Sandbox.run(name, input)` — invokes a named export from the workflow
+  module. Runtime metadata (tenant/workflow/workflowSha/invocationId) is
+  NOT passed into `run` — the runtime stamps those fields on events in
+  its `sb.onEvent` receiver after the sandbox emits them (see R-2 below).
+- `Sandbox.onEvent(cb)` — registers a callback invoked for each
+  `InvocationEvent` the worker streams. Events carry only intrinsic
+  fields (`id`, `seq`, `ref`, `ts`, `at`, `kind`, `name`, `input?`,
+  `output?`, `error?`). Downstream consumers see identical shape to
+  pre-plugin-architecture events because the runtime stamps metadata
+  post-hoc.
 
-  **WHATWG Streams family (`ReadableStream`, `WritableStream`,
-  `TransformStream`, `ReadableByteStreamController`,
-  `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest`,
-  `ReadableStreamDefaultController`, `ReadableStreamDefaultReader`,
-  `TransformStreamDefaultController`, `WritableStreamDefaultController`,
-  `WritableStreamDefaultWriter`, `ByteLengthQueuingStrategy`,
-  `CountQueuingStrategy`, `TextEncoderStream`, `TextDecoderStream`)** —
-  pure-JS polyfills from `web-streams-polyfill@^4.2.0` (pinned in
-  `packages/sandbox/package.json`), bundled into the same
-  `virtual:sandbox-polyfills` IIFE. `TextEncoderStream` /
-  `TextDecoderStream` are hand-rolled `TransformStream` wrappers around
-  the WASM-native `TextEncoder` / `TextDecoder` in
-  `packages/sandbox/src/polyfills/streams.ts` (the ponyfill ships the
-  streams but not the Encoding-spec siblings). No host bridge; all
-  queue, backpressure, and tee state lives in QuickJS linear memory.
-  Version bumps require a §2 re-audit PR.
+### Boot sequence (phases 0-5)
 
-  **IndexedDB family (`indexedDB`, `IDBFactory`, `IDBDatabase`,
-  `IDBTransaction`, `IDBObjectStore`, `IDBIndex`, `IDBCursor`,
-  `IDBCursorWithValue`, `IDBKeyRange`, `IDBRequest`, `IDBOpenDBRequest`,
-  `IDBVersionChangeEvent`)** — `fake-indexeddb@^6.2.5` (pinned), bundled
-  into the same IIFE. State lives in a module singleton that does not
-  outlive one sandbox run — each QuickJS VM gets a fresh module
-  evaluation, so databases are ephemeral per-invocation and never
-  persisted to disk. `FDB<Name>` class names are rewritten to the
-  WebIDL `IDB<Name>` prefix on `globalThis`. A `DOMException`-wrapping
-  shim in `packages/sandbox/src/polyfills/idb-domexception-fix.ts` runs
-  before the IDB import so subclass throws surface as plain
-  `DOMException` instances. No host bridge, no disk I/O, no host state
-  leak. `instanceof Event` / `instanceof EventTarget` checks on
-  `FDB`-sourced events are not guaranteed (documented in the polyfill
-  source); WPT subtests asserting those checks remain skipped.
+Every `create()` runs deterministically through:
 
-  **User Timing Level 3 (`performance.mark`, `performance.measure`,
-  `performance.clearMarks`, `performance.clearMeasures`,
-  `performance.getEntries`, `performance.getEntriesByType`,
-  `performance.getEntriesByName`, `PerformanceEntry`, `PerformanceMark`,
-  `PerformanceMeasure`)** — pure-JS polyfill in
-  `packages/sandbox/src/polyfills/user-timing.ts`, built on the native
-  `performance.now` provided by the quickjs-wasi monotonic-clock
-  extension. Timeline buffers are in-process arrays scoped to the VM
-  lifetime. `PerformanceObserver` is NOT in scope. `mark()` / `measure()`
-  `detail` options are deep-cloned via `structuredClone` at
-  entry-creation time. No host bridge.
+0. Module load + WASM instantiation.
+1. `plugin.worker(ctx, deps, config)` for each plugin in topo order;
+   returns a `PluginSetup` (source, exports, guestFunctions, wasiHooks,
+   lifecycle hooks).
+2. Phase-2 evaluation of each plugin's `source` IIFE. Plugin source
+   captures private descriptors into closures and installs guest-facing
+   globals (e.g. `globalThis.fetch`, `globalThis.console`).
+3. **Private-binding auto-deletion.** The sandbox iterates every
+   registered `GuestFunctionDescription` and `delete globalThis[name]` for
+   every entry with `public !== true`. This is structural enforcement,
+   not review discipline.
+4. Phase-4: user source evaluation (the tenant bundle IIFE).
+5. Ready. Subsequent `run()` calls invoke exports.
 
-  **`structuredClone` override** — pure-JS wrapper in
-  `packages/sandbox/src/polyfills/structured-clone.ts` on top of
-  `@ungap/structured-clone@^1.3.0` (pinned), replacing the quickjs-wasi
-  native implementation which drops wrapper objects, sparse-array
-  length, and non-index array properties. Throws `DataCloneError`
-  `DOMException` for non-cloneable inputs; rejects non-empty `transfer`
-  option (QuickJS does not support `ArrayBuffer` detachment). Errors
-  thrown from user code during serialization (e.g. throwing getters)
-  propagate unchanged. No host bridge.
+Failures in any phase dispose the bridge, post `init-error`, and
+`process.exit(0)`.
 
-  **Fetch interfaces (`Blob`, `File`, `FormData`, `Request`, `Response`)** —
-  pure-JS classes added inside the polyfill IIFE. No host bridge; no
-  new attacker capability. Body data lives in JS-side typed arrays
-  inside QuickJS linear memory and is bounded by the existing memory
-  cap. `Blob` and `File` come from `fetch-blob@^4.0.0` (pin in
-  `packages/sandbox/package.json`); the `sandboxPolyfills()` Vite
-  plugin strips fetch-blob's top-level Node-fallback `await import`
-  prelude — `globalThis.ReadableStream` is provided by the
-  `web-streams-polyfill` ponyfill loaded immediately before. `FormData`
-  comes from `formdata-polyfill@^4.0.10`; it transitively pulls
-  `fetch-blob@^3.x` for type marker checks (its CJS Node fallback
-  inside `streams.cjs` is wrapped in try/catch and is a no-op once
-  `globalThis.ReadableStream` is set, so its `require()` ReferenceError
-  is silently caught at QuickJS eval time — reviewers should confirm
-  this when bumping either package). `Request` and `Response` are
-  hand-rolled in `packages/sandbox/src/polyfills/request.ts` and
-  `response.ts`; `Request.signal` exists per spec but is **not**
-  threaded through to `__hostFetch` (the bridge ignores it — adding
-  abort plumbing requires a host wire change). The `Response` class
-  replaces the previous duck-typed object literal in `fetch.ts` and is
-  guest-constructible per spec; that grants no new host capability
-  (guest could already mint plain objects with the same shape). Bumps
-  to `fetch-blob` or `formdata-polyfill` require a §2 re-audit PR.
+### Globals surface (post-init guest-visible)
 
-  The host-bridged names `__hostFetch`, `__emitEvent`, `__hostCallAction`,
-  and `__reportError` are each installed on `globalThis` briefly at
-  initialization time for exactly one consumer shim to capture into an
-  IIFE closure. Each shim then `delete`s its bridge name from
-  `globalThis` before guest source evaluation begins, so guest code
-  cannot read or overwrite the underlying host wire. The captured
-  reference inside the shim closure is used for all subsequent calls
-  (`fetch()`, `reportError()`, action dispatch via `__dispatchAction`)
-  and is invariant — a guest attempt to `globalThis.__hostFetch = ...`
-  creates a new global with no effect on the shim's captured reference.
-  The sandbox package itself has no knowledge of manifests,
-  Zod, or action dispatch; it exposes `__hostFetch` and `__emitEvent`
-  as built-ins (captured by `packages/sandbox/src/polyfills/fetch.ts`
-  and the runtime dispatcher shim respectively) and installs whatever
-  additional methods the host provides via `methods`.
-  The runtime passes `__hostCallAction` (and optionally
-  `__reportError`) as construction-time methods and appends the
-  action-dispatcher shim that captures `__hostCallAction` +
-  `__emitEvent`, installs the locked `__dispatchAction`, and deletes
-  the two captured names.
-- **EventTarget/Event/ErrorEvent/AbortController/AbortSignal
-  residual risks**: event dispatch is purely in-guest — no host bridge.
-  Listener chains are bounded by the existing QuickJS memory cap;
-  dispatch re-entrancy is bounded by the existing stack cap. All
-  guest-constructed events have `event.isTrusted === false` by
-  construction — there is no pathway to `true`.
-  `AbortSignal.timeout` extends reachability only via the already
-  allowlisted `setTimeout` bridge; it adds no new host surface. A
-  guest listener that calls `event.preventDefault()` on a `reportError`
-  ErrorEvent suppresses the `__reportError` host forwarding for that
-  report; this grants no new attacker capability (malicious guest code
-  could already choose not to call `reportError`). The polyfill IIFE is
-  built from `packages/sandbox/src/polyfills/entry.ts` by the
-  `sandboxPolyfills()` Vite plugin at sandbox build time; reviewers audit
-  the polyfill source files under `packages/sandbox/src/polyfills/`
-  (`trivial.ts`, `event-target.ts`, `report-error.ts`, `microtask.ts`,
-  `streams.ts`, `compression.ts`, `blob.ts`, `form-data.ts`,
-  `body-mixin.ts`, `request.ts`, `response.ts`, `fetch.ts`,
-  `structured-clone.ts`, `idb-domexception-fix.ts`, `indexed-db.ts`,
-  `user-timing.ts`, `subtle-crypto.ts`, `scheduler.ts`, `observable.ts`)
-  and the pinned dependencies `event-target-shim@^6`,
-  `web-streams-polyfill@^4.2.0`, `fflate@^0.8.2`, `fetch-blob@^4.0.0`,
+The surface below is contributed by the v1 plugin catalog. Adding a new
+global requires adding or extending a plugin AND extending the list here.
+
+- From `web-platform`: `console.*` (via console plugin), `self` (identity
+  shim with EventTarget), `navigator` (frozen `{userAgent}`),
+  `reportError`, `queueMicrotask`, `EventTarget`, `Event`, `ErrorEvent`,
+  `AbortController`, `AbortSignal`, `URLPattern`, `CompressionStream`,
+  `DecompressionStream`, `scheduler`, `TaskController`, `TaskSignal`,
+  `TaskPriorityChangeEvent`, `Observable`, `Subscriber`,
+  `EventTarget.prototype.when`, the WHATWG Streams family, IndexedDB
+  family, User Timing Level 3 entries, `structuredClone` override, and
+  the fetch interfaces (`Blob`, `File`, `FormData`, `Request`, `Response`).
+  Pinned polyfills: `event-target-shim@^6`, `urlpattern-polyfill@10.0.0`,
+  `fflate@^0.8.2`, `web-streams-polyfill@^4.2.0`, `fetch-blob@^4.0.0`,
   `formdata-polyfill@^4.0.10`, `@ungap/structured-clone@^1.3.0`,
-  `fake-indexeddb@^6.2.5`, `scheduler-polyfill@^1.3.0`, and
-  `observable-polyfill@^0.0.29`.
-- **Test-only surfaces (`__wptReport`)**: The WPT compliance harness at
-  `packages/sandbox/test/wpt/` installs `__wptReport` via the
-  construction-time `methods` argument of its own `sandbox(source,
-  { __wptReport }, opts)` call in `harness/runner.ts` to collect
-  testharness.js subtest outcomes. `__wptReport` is never passed to
-  production sandbox construction; its presence is scoped to the WPT
-  test runner only. Vendored WPT files, the harness adapter (preamble,
-  composer, runner), and `scripts/wpt-refresh.ts` are test-time artifacts
-  and do not extend the production sandbox surface. The harness also
-  exposes `importScripts()` as a guest-only shim backed by a
-  compose-time source registry (`globalThis.__wptScripts`) populated by
-  the runner; it is not a host bridge and is never installed in
-  production sandboxes. See `packages/sandbox/test/wpt/README.md`.
-- **`__emitEvent(event)`** — write-only telemetry primitive installed
-  at init directly on `globalThis` via `vm.newFunction` (NOT through
-  `bridge.sync()` / `bridge.async()`, so it does not itself appear in
-  the event stream). Accepts a JSON payload constrained to
-  `kind ∈ {action.request, action.response, action.error}`; any other
-  `kind` is rejected with a `TypeError`. The worker stamps the supplied
-  event with `id`, `seq`, `ref`, `ts`, `workflow`, `workflowSha` from
-  the current run context and posts it to the main thread as a
-  `{ type: "event" }` message. The runtime-appended action-dispatcher
-  shim captures the `__emitEvent` reference into its IIFE closure at
-  init and then `delete`s `globalThis.__emitEvent`, so guest code
-  cannot read or overwrite the channel after init. The dispatcher's
-  captured reference is the sole emitter of `action.*` events;
-  `trigger.*` and `system.*` events are emitted by the worker and
-  bridge respectively, never by guest code.
-- **Action dispatch model.** The author writes
-  `await sendNotification(input)` against the SDK-returned callable.
-  That callable delegates to `dispatchAction()` from
-  `@workflow-engine/core`, which reads `globalThis.__dispatchAction`
-  and calls it. The runtime appends an IIFE after the workflow bundle
-  in `buildSandboxSource`; the IIFE captures `__hostCallAction` and
-  `__emitEvent` into closure locals, installs `__dispatchAction` via
-  `Object.defineProperty(globalThis, "__dispatchAction", { value: fn,
-  writable: false, configurable: false })`, and then `delete`s
-  `globalThis.__hostCallAction` and `globalThis.__emitEvent` so
-  neither bridge is reachable from guest code after init. The locked
-  `__dispatchAction` runs entirely inside the QuickJS context and does
-  five things, in order:
-  1. Calls its captured `__emitEvent({ kind: "action.request", name, input })`
-     to emit the start of the action lifecycle.
-  2. Notifies the host via its captured `__hostCallAction(name, input)`.
-     The host (registered with the bridge method name
-     `host.validateAction`) looks up the action by name in the
-     workflow's manifest, validates `input` against the declared JSON
-     Schema (Ajv on the host side), and emits an audit-log entry. The
-     host returns `undefined` — it does NOT dispatch the user's
-     handler.
-  3. Invokes the author's handler as a plain JS function call in the
-     same QuickJS context (no nested `sandbox.run()`).
-  4. Validates the handler's return value against the action's output
-     Zod schema using the Zod bundle that ships inlined in the
-     workflow bundle.
-  5. Calls its captured `__emitEvent({ kind: "action.response", name,
-     output })` (or `action.error` on any thrown rejection in
-     steps 2-4).
-  Action code runs inside the sandbox's QuickJS boundary at all times
-  — the host bridge is reached only for input validation + audit
-  logging. Validation errors from either end propagate across the
-  bridge (when thrown host-side) or propagate directly (when thrown
-  sandbox-side, step 4) as JS `Error` rejections. On the host-thrown
-  path, the guest-side error carries the Zod-shaped `issues` array
-  preserved as a JSON-marshaled own property. Because
-  `__dispatchAction` is locked (non-writable, non-configurable), guest
-  code cannot replace the dispatcher; calling it directly remains
-  possible and is an accepted residual (see R-S10).
-- If the runtime does not pass `__hostCallAction` in `methods`, the
-  dispatcher shim captures `undefined`; the first step of dispatch
-  throws "is not a function" and the author's handler MUST NOT
-  execute.
-- **Bridge surface inventory** (install → capture → delete lifecycle
-  for the underscore-prefixed host bridges, plus the post-init guest-
-  visible globals):
-  - **Built-ins installed then captured-and-deleted** (hardcoded in
-    `packages/sandbox/src/globals.ts` / `worker.ts`): `__hostFetch`
-    (captured by `FETCH_SHIM` at init, deleted after the shim installs
-    `fetch`) and `__emitEvent` (installed via `vm.newFunction`,
-    captured by the runtime's dispatcher shim, deleted after the shim
-    installs `__dispatchAction`). Neither name is reachable from guest
-    code after init.
-  - **Runtime-passed bridges, then captured-and-deleted** (via
-    `methods` at `sandbox(source, methods)` construction):
-    `__hostCallAction` (captured by the runtime's dispatcher shim,
-    deleted after the shim installs `__dispatchAction`) and
-    `__reportError` (captured by `REPORT_ERROR_SHIM` at init, deleted
-    after the shim installs `reportError`). Neither name is reachable
-    from guest code after init. `__reportError` has construction-time
-    binding only; per-run override is not supported.
-  - **Built-ins that remain guest-visible**: `console`, `setTimeout`,
-    `setInterval`, `clearTimeout`, `clearInterval`, `fetch` (locked
-    JS shim), `reportError` (JS shim), `self`, `navigator`, plus the
-    `crypto.subtle` Promise shim that wraps the WASM crypto
-    extension's synchronous API.
-  - **WASM extension globals** (provided by `quickjs-wasi` extensions
-    loaded at VM creation in `worker.ts`): `URL`, `URLSearchParams`,
-    `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`,
-    `Headers`, `crypto` (including `crypto.subtle.*`), `performance`.
-    These live inside WASM linear memory; they are not host bridges
-    and consume no host capability.
-  - **Runtime-appended and locked**: `__dispatchAction`. Installed via
-    `Object.defineProperty` with `writable: false, configurable: false`
-    by the runtime's post-bundle IIFE. Guest may call it; guest may
-    not replace or delete it. This is the sole underscore-prefixed
-    global that remains on `globalThis` after init. The sandbox
-    package itself does not install it — it is plain workflow-bundle-
-    appended source that the runtime emits to wire the captured
-    `__emitEvent` and `__hostCallAction` together for the SDK's action
-    callable.
-- Handlers receive `(payload)` (trigger) or `(input)` (action) — no
-  `ctx` parameter. Workflow-level env is declared on
-  `defineWorkflow({env})` and is referenced via the imported
-  `workflow.env` record (module-scoped, frozen at load time). Env
-  values are resolved from `process.env` on the host at bundle load
-  and shipped into the sandbox as JSON; no per-action scoping, no
-  cross-workflow leakage (each workflow has its own sandbox + its own
-  env record).
-- No other globals are present. `process`, `require`, `fs`, and Node
-  APIs are absent.
+  `fake-indexeddb@^6.2.5`, `scheduler-polyfill@^1.3.0`,
+  `observable-polyfill@^0.0.29`. Version bumps require a §2 re-audit PR.
+- From `fetch`: `globalThis.fetch` (WHATWG shape around the private
+  dispatcher `$fetch/do`). Default implementation closes over
+  `hardenedFetch` (see R-4 below).
+- From `timers`: `setTimeout`, `setInterval`, `clearTimeout`,
+  `clearInterval`.
+- From `sdk-support`: `__sdk` — locked via
+  `Object.defineProperty(globalThis, "__sdk", {writable: false,
+  configurable: false})` wrapping an `Object.freeze`d inner
+  `{dispatchAction}` object. This is the sole `__`-prefixed global that
+  remains on `globalThis` post-init. The underlying
+  `__sdkDispatchAction` private descriptor is captured by the plugin's
+  IIFE and auto-deleted in phase 3.
+- **WASM extension globals** (contributed by quickjs-wasi extensions
+  loaded at VM creation): `URL`, `URLSearchParams`, `TextEncoder`,
+  `TextDecoder`, `atob`, `btoa`, `structuredClone`, `Headers`, `crypto`
+  (including `crypto.subtle.*` with a JS Promise shim), `performance`,
+  `DOMException`. These live inside WASM linear memory; they are not
+  host bridges and consume no host capability.
+
+No other globals are present. `process`, `require`, `fs`, and Node APIs
+are absent.
 
 ### WASI override inventory
 
-The QuickJS WASM module imports a small set of `wasi_snapshot_preview1`
-functions. Three are overridden by `packages/sandbox/src/wasi.ts` so
-host-reaching calls that bypass the explicit bridge are still
-observable. The others keep `quickjs-wasi`'s default shim.
+The `wasi` plugin owns WASI override dispatch. In production the runtime
+passes a telemetry setup that emits `wasi.clock_time_get`,
+`wasi.random_get`, and `wasi.fd_write` leaf events. Without a setup
+function the plugin is inert — WASI calls compute real values, no events
+emitted.
 
-- **`clock_time_get(clockId, _precision, resultPtr)`** — drives
-  `Date.now()`, `new Date()`, `performance.now()`, and the one-time seed
-  of QuickJS's xorshift64\* PRNG (so `Math.random()` inherits from this
-  clock). `CLOCK_REALTIME` passes through to host `Date.now() × 1e6` ns.
-  `CLOCK_MONOTONIC` returns `(performance.now() × 1e6) − anchorNs`,
-  where `anchorNs` is captured at worker init and re-captured every
-  time `bridge.setRunContext` fires, so guest `performance.now()`
-  restarts near zero at the beginning of each run. While a run context
-  is active, each call emits one `system.call` InvocationEvent
-  (`name = "wasi.clock_time_get"`, `input = { clockId }`,
-  `output = { ns }`). Calls outside a run context (during
-  `QuickJS.create`, WASI libc init, guest source eval) pass through
-  silently without emitting.
-- **`random_get(bufPtr, bufLen)`** — drives `crypto.getRandomValues`,
-  `crypto.randomUUID`, and every internal entropy read made by the
-  WASM crypto extension (key generation, IV, nonces, HKDF seeds). The
-  override fills the requested buffer from host
-  `crypto.getRandomValues`. While a run context is active, each call
-  emits one `system.call` InvocationEvent
-  (`name = "wasi.random_get"`, `input = { bufLen }`,
-  `output = { bufLen, sha256First16 }`). The `sha256First16` field is
-  the hex encoding of the first 16 bytes of the SHA-256 digest of the
-  returned bytes. **The raw entropy bytes MUST NEVER appear in any
-  emitted event or log** — only the size and this bounded fingerprint.
-  Calls outside a run context pass through silently.
-- **`fd_write(fd, iovsPtr, iovsLen, nwrittenPtr)`** — receives bytes
-  QuickJS engine-internal paths write to stdout/stderr (rare — mostly
-  mbedTLS notices and engine panic paths). Guest `console.log` does
-  NOT reach `fd_write`; it uses the `console.*` bridge installed by
-  `globals.ts`. The override decodes bytes as UTF-8, line-buffers per
-  fd, and on each completed line posts a
-  `WorkerToMain { type: "log", level: "debug", message:
-  "quickjs.fd_write", meta: { fd, text } }` message. The main thread
-  routes the message to the sandbox's injected `Logger.debug` (or
-  silently drops it when no logger is injected). **`fd_write` bytes
-  never become InvocationEvents** — engine plumbing belongs in the
-  operational log, not the workflow event stream. Host `process.stdout`
-  and `process.stderr` receive nothing: the default shim's
-  pass-through is fully replaced.
+- **`clock_time_get`** — drives `Date.now()`, `new Date()`,
+  `performance.now()`, and the one-time seed of QuickJS's xorshift64\*
+  PRNG. `CLOCK_REALTIME` passes through to host `Date.now() × 1e6` ns.
+  `CLOCK_MONOTONIC` returns `(performance.now() × 1e6) − anchorNs`.
+- **`random_get`** — drives `crypto.getRandomValues`, `crypto.randomUUID`,
+  and internal entropy reads made by the WASM crypto extension. The
+  telemetry setup emits a `wasi.random_get` leaf carrying only
+  `{bufLen, sha256First16}` (first 16 bytes of the SHA-256 digest, hex).
+  **The raw entropy bytes MUST NEVER appear in any emitted event or
+  log** — only size and this bounded fingerprint.
+- **`fd_write`** — receives bytes QuickJS engine-internal paths write to
+  stdout/stderr (rare; mostly mbedTLS notices and engine panic paths).
+  Guest `console.log` does NOT reach `fd_write`; it flows through the
+  console plugin's descriptor. The telemetry setup emits `wasi.fd_write`
+  with `{fd, text}`. **`fd_write` bytes never become tenant-visible
+  `console.*` events** — engine plumbing belongs in the operational log.
 
 **Residual observability gap.** Operations inside the WASM crypto
-extension (`crypto.subtle.digest`, `crypto.subtle.generateKey`,
-`crypto.subtle.encrypt`, and so on) run entirely inside the extension's
-WASM memory without crossing a boundary this project instruments. The
-extension's entropy consumption is observable via the `wasi.random_get`
-events above, but the higher-level operation (e.g. "a private key was
-generated") is not directly observable. Closing that gap would require
-separate instrumentation at the crypto extension ABI layer and is out
-of scope here.
+extension (`crypto.subtle.digest`, `generateKey`, `encrypt`, etc.) run
+entirely inside the extension's WASM memory without crossing an
+instrumented boundary. Entropy consumption is observable via
+`wasi.random_get`; the higher-level operation is not. Closing that gap
+would require separate instrumentation at the crypto extension ABI layer
+and is out of scope.
+
+### Event emission model
+
+Every event is stamped with `id/seq/ref/ts/at/kind/name/input?/output?/error?`
+by the sandbox on the worker thread (single-authority counter). The
+sandbox does NOT know tenant/workflow/workflowSha/invocationId; those
+are labels the runtime attaches post-hoc in its `sb.onEvent` receiver
+(see R-2, R-8). `seq` is monotonic per run; `ref` forms the parent-
+frame stack (`createsFrame` pushes after emit; `closesFrame` emits with
+current top then pops). Plugin code never reads or writes these fields
+directly — only `ctx.emit(kind, name, extra, options?)` and
+`ctx.request(prefix, name, extra, fn)`.
 
 ### Threats
 
 | ID | Threat | Category |
 |----|--------|----------|
-| S1 | Action escapes sandbox by manipulating the host bridge (e.g. forging promise resolution, re-entering host code) | Elevation of privilege |
-| S2 | Action consumes unbounded memory in the WASM heap, starving the host | DoS |
-| S3 | Action runs an infinite loop, blocking the host event loop on the `vm.evalCode` call | DoS |
-| S4 | Action schedules infinite timers to keep the host pumping jobs | DoS |
-| S5 | Action uses `fetch()` / `__hostFetch` to reach internal K8s services, cloud metadata endpoints, or private network ranges (SSRF) | Information disclosure / EoP |
-| S6 | Action reads secrets via `workflow.env` that were declared by another workflow | Information disclosure |
-| S7 | Action exfiltrates trigger payload data or secrets by returning them from the trigger handler (visible in HTTP response + archive record) or by passing them as action input (audit-logged + written to archive on failure) | Information disclosure |
-| S8 | Action generates cryptographic material and exports it through the handler return value or an outbound `fetch()` | Information disclosure |
-| S9 | A new host-bridge API is added that accepts a raw host-object reference, allowing reflection / mutation of host state | Elevation of privilege |
-| S10 | Guest code calls `__hostCallAction` with a payload that triggers prototype pollution on the host (`__proto__`, `constructor.prototype`) | Tampering / EoP |
-| S11 | Guest code calls the locked `__dispatchAction` with `(validActionName, realInput, fakeHandler, fakeSchema)` to emit `action.*` audit events that misrepresent which handler actually ran | Tampering (audit-log integrity) |
+| S1 | Plugin or user code escapes sandbox by reflecting a host-object reference, forging promise resolution, or re-entering host code | Elevation of privilege |
+| S2 | User code consumes unbounded memory in the WASM heap, starving the host | DoS |
+| S3 | User code runs an infinite loop, blocking the host event loop on the `vm.evalCode` call | DoS |
+| S4 | User code schedules infinite timers to keep the host pumping jobs | DoS |
+| S5 | User code uses `fetch()` to reach internal K8s services, cloud metadata endpoints, or private network ranges (SSRF) | Information disclosure / EoP |
+| S6 | User code reads secrets via `workflow.env` that were declared by another workflow | Information disclosure |
+| S7 | User code exfiltrates trigger payload data or secrets by returning them from the trigger handler (visible in HTTP response + archive record) or by passing them as action input (audit-logged + written to archive on failure) | Information disclosure |
+| S8 | User code generates cryptographic material and exports it through the handler return value or an outbound `fetch()` | Information disclosure |
+| S9 | A new plugin is added that accepts a raw host-object reference or leaks one back to the guest, allowing reflection / mutation of host state | Elevation of privilege |
+| S10 | Guest code calls a validated host function with a payload that triggers prototype pollution on the host (`__proto__`, `constructor.prototype`) | Tampering / EoP |
+| S11 | Guest code calls the locked `__sdk.dispatchAction` with `(validActionName, realInput, fakeHandler, fakeCompleter)` to emit `action.*` audit events that misrepresent which handler actually ran | Tampering (audit-log integrity) |
+| S12 | A private descriptor fails to auto-delete in phase 3 (descriptor marked `public: true` by mistake, or phase-3 iteration is skipped) and becomes reachable from guest code | Elevation of privilege (audit-log forging / bridge access) |
+| S13 | A plugin with long-lived state (timers, pending `Callable`s) fails to clean up on `onRunFinished`, leaking state across runs or firing callbacks after the run closed | Tampering (cross-run state) / DoS |
+| S14 | A plugin emits events with hand-crafted `seq`/`ref`/`ts` values (via direct `bridge.*` mutation) that desync the event stream | Tampering (audit-log integrity) |
 
 ### Mitigations (current)
 
-- **Fresh VM per workflow module load.** `QuickJS.create()` (one-level
-  model; `quickjs-wasi` exposes a single VM handle per instance, not
-  the runtime/context split that `quickjs-emscripten` used) is called
-  once when the workflow registry first instantiates a workflow. The
-  VM is reused across all subsequent `run()` / handler-invoke calls
-  for that workflow. Module-level state persists across runs within
-  the same workflow. Disposal happens on workflow reload/unload via
-  `Sandbox.dispose()`. Each VM has its own dedicated WASM linear
-  memory; cross-VM memory access is physically impossible.
+- **Fresh VM per workflow module load.** `QuickJS.create()` is called
+  once when the workflow registry first instantiates a workflow. The VM
+  is reused across `run()` calls for that workflow; module-level state
+  persists across runs within the same workflow. Cross-workflow leakage
+  is physically impossible: separate VMs, separate WASM memory, separate
+  env records.
   (`packages/sandbox/src/index.ts`, `packages/runtime/src/sandbox-store.ts`)
-- **Cross-workflow isolation preserved.** Each workflow gets its own
-  `Sandbox` instance with its own QuickJS VM and its own WASM linear
-  memory. State leaking within a workflow is self-leakage (same trust
-  domain — one author, one manifest, one deploy). Cross-workflow
-  leakage is physically impossible: separate VMs, separate WASM
-  memory, separate env records. `CryptoKey` objects also live inside
-  WASM linear memory (as PSA key handles managed by the WASM crypto
-  extension) and are freed automatically when the VM is disposed — no
-  host-side opaque reference store is involved.
-- **No Node.js surface.** QuickJS WASM (via `quickjs-wasi`, the WASI
-  build — no Emscripten / no `require`, no `process`, no `fs`,
-  `child_process`, or network APIs) has no built-in Node.js APIs.
-  Only the explicit globals set in `packages/sandbox/src/globals.ts`
-  and `worker.ts` (including the `fetch` shim routing through
-  `__hostFetch`), the globals contributed by the loaded WASM
-  extensions (url, encoding, base64, structured-clone, headers,
-  crypto), and the construction-time + per-run host methods are
-  present.
-- **Allowlist of globals.** Adding a built-in bridge requires editing
-  `globals.ts` explicitly. Consumer-provided methods are declared as a
-  plain `Record<string, async fn>` — the Bridge primitive
-  (`sync`/`async`/`arg`/`marshal`/`opaque-ref`) is fully internal to the
-  sandbox package and cannot be reached by consumers.
-- **JSON-only host/sandbox boundary.** Arguments and return values of
-  host-provided methods are JSON-marshalled. Host object references,
-  closures, and proxies cannot cross. Trigger payloads, action input
-  and output, and `workflow.env` all cross the boundary as JSON values.
+- **Private-by-default descriptors (S12).** Every
+  `GuestFunctionDescription` defaults to `public: false`. After phase-2
+  source evaluation, the sandbox iterates registered descriptors and
+  `delete globalThis[name]` for every entry with `public !== true`.
+  Reviewers grep for `public: true` to audit what remains guest-visible.
+  Currently only the web-platform / fetch / timers / console user-facing
+  surfaces + `__sdk` pass the filter.
+- **Locked `__sdk` (S11 bounded, S12 structural).** `sdk-support` installs
+  `__sdk` via `Object.defineProperty({writable: false, configurable:
+  false})` wrapping a frozen inner `{dispatchAction}`. Guest code cannot
+  replace the dispatcher with a stub, cannot delete the binding, cannot
+  reassign `__sdk.dispatchAction`. S11 (guest calls real dispatcher with
+  fake handler) remains an accepted audit-log residual (R-10).
+- **Structural hardened fetch (S5).** `createFetchPlugin` closes over
+  `hardenedFetch` as its default. Production composition does not pass an
+  override; tests replace the entire plugin via `__pluginLoaderOverride`.
+  `hardenedFetch` enforces: scheme allowlist (http, https, data; `data:`
+  short-circuits), `dns.lookup(host, {all: true})` with IPv4-mapped-IPv6
+  unwrap, IANA special-use blocklist (loopback, RFC1918, CGNAT, link-
+  local, TEST-NET, benchmark, 6to4, multicast, reserved, ULA), fail-
+  closed if any resolved address is blocked, connect to validated IP
+  directly with SNI preserved, manual redirect follow re-running the
+  full pipeline on every hop, 5-hop cap, `Authorization` stripped on
+  cross-origin redirects, 30s total-wall-clock timeout. On a block the
+  main-thread handler logs `sandbox.fetch.blocked` and returns a generic
+  `TypeError("fetch failed")` to the guest.
+- **Per-run cleanup (S13).** Plugins with long-lived state MUST
+  implement `onRunFinished`. The `timers` plugin iterates live timers at
+  run end and routes each through the same clear path as guest-initiated
+  `clearTimeout`, emitting `timer.clear` leaves. The `fetch` plugin's
+  per-run `AbortController` aborts in-flight requests. Cleanup runs
+  inside the run's refStack frame so audit events parent correctly.
+- **ctx-only emission (S14).** All events flow through `ctx.emit` /
+  `ctx.request`. `seq`/`ref`/`ts`/`at`/`id` are stamped internally and
+  never exposed to plugin code. Direct `bridge.*` mutation from plugin
+  code is prohibited by convention and reviewed per plugin (catalog is
+  small — ~8 plugins).
+- **Reserved event prefixes.** `trigger`, `action`, `fetch`, `timer`,
+  `console`, `wasi`, `uncaught-error` are reserved for stdlib / runtime
+  plugins. Third-party plugins use domain-specific prefixes to avoid
+  conflating with core audit categories.
+- **Worker-only plugin execution.** Plugin code runs in the Node worker
+  thread exclusively. No cross-thread method calls. Plugin configs are
+  validated JSON-serializable (`assertSerializableConfig`) at sandbox
+  construction. This closes a whole class of thread-crossing bugs
+  (closure capture, proxy marshaling) that prior method-RPC designs
+  allowed.
+- **No Node.js surface.** QuickJS WASM has no built-in Node.js APIs. Only
+  plugin-installed globals plus WASM-extension globals are present.
+- **JSON-only host/sandbox boundary.** `GuestFunctionDescription` args/
+  results use a fixed vocabulary (`string`, `number`, `boolean`,
+  `object`, `array`, `callable`, `raw`, `void`); host object references,
+  closures, and proxies cannot cross directly. The sole exception is
+  `callable` (first-class QuickJS function handle with explicit
+  `.dispose()`) — invocable multiple times, surfaces guest throws as
+  host `Error`, and throws `CallableDisposedError` on post-dispose use.
 - **Per-workflow env scoping.** `workflow.env` exposes only the keys
   declared in that workflow's `defineWorkflow({env})`. Other workflows'
-  env vars are not reachable — each workflow has its own sandbox with
-  its own env record (mitigates S6 structurally, not just by policy).
-- **Action input validation at the host bridge.** When a handler does
-  `await sendNotification(input)`, the SDK wrapper calls
-  `__hostCallAction("sendNotification", input)`. The runtime's
-  dispatcher (`sandbox-store.ts`'s `buildHostCallAction()`) looks
-  up the action in the manifest, runs `input` through a pre-compiled
-  Ajv validator against the manifest's JSON Schema, and audit-logs the
-  invocation. The host does NOT dispatch the handler — the SDK wrapper
-  does, in-sandbox, immediately after the bridge returns. Validation
-  failures throw back into the guest with the Zod/Ajv `issues` array
-  preserved as a JSON-marshaled own property on the Error. This makes
-  input validation authoritative (the manifest schemas live on the
-  host) even if the guest-side Zod bundle is compromised.
-  (`packages/runtime/src/sandbox-store.ts`,
-  `packages/runtime/src/triggers/http.ts`)
-- **Action output validation in-sandbox.** The SDK wrapper validates
-  the handler's return value against the output Zod schema using the
-  Zod bundle inlined in the workflow bundle. A single bridge crossing
-  covers input; output validation stays guest-side because the return
-  is already a guest value. If the guest tampers with its own Zod
-  copy, the self-harm is contained — input validation (the canonical
-  contract, host-side) remains authoritative.
-- **Trigger payload validation on ingress.** Before the executor
-  is invoked, the HTTP trigger middleware validates the request body
-  against the trigger's JSON Schema (Ajv, compiled once per trigger at
-  registry load). Validation failure → 422 response, no sandbox entry,
-  no archive record.
-  (`packages/runtime/src/triggers/http.ts`)
-- **Static analysis.** TypeScript strict mode and Biome `all` rules are
-  enabled to catch unsafe bridge patterns early.
-- **Worker-thread isolation of the host-bridge layer.** The QuickJS
-  runtime and the host-bridge implementation (`bridge-factory.ts`,
-  `bridge.ts`, `globals.ts`) run inside a dedicated `worker_threads`
-  Worker, not on the Node main thread. This is an
-  implementation-level defense-in-depth layer: guest code still cannot
-  observe Node internals (QuickJS is the primary boundary), and the
-  worker has no additional permissions (same `process.env`, same file
-  system). What it does buy is that long synchronous guest CPU work
-  (S3) no longer freezes the main event loop — trigger ingestion and
-  the operator UI stay responsive. Unexpected worker termination is
-  surfaced as a `Sandbox.onDied` callback; the factory evicts and
-  respawns on next `create(source)`.
-  (`packages/sandbox/src/worker.ts`, `packages/sandbox/src/factory.ts`)
-- **Cancel-on-run-end.** When a guest's exported function resolves
-  (or throws), the worker clears every `setTimeout`/`setInterval`
-  registered during that run and aborts the per-run `AbortController`
-  that wraps in-flight `__hostFetch` calls. Un-awaited background
-  work does not outlive the run. This closes a latent bug where a
-  guest's `setTimeout(() => fetch(...), N)` could fire after the
-  trigger handler returned and touch the response headers of a later
-  invocation.
+  env vars are unreachable — each workflow has its own sandbox + own
+  env record (mitigates S6 structurally).
+- **Action input validation via `host-call-action`.** Ajv validators are
+  compiled per action from the manifest at plugin boot. The plugin
+  exports `validateAction(name, input)`; `sdk-support` calls it inside
+  `__sdk.dispatchAction` before invoking the handler. Validation
+  failures throw back into the guest with the Ajv `issues` array
+  preserved. Input validation is host-authoritative.
+- **Action output validation in-sandbox.** The SDK wrapper validates the
+  handler's return value against the output Zod schema using the Zod
+  bundle inlined in the workflow bundle. If the guest tampers with its
+  own Zod copy, the self-harm is contained — input validation (the
+  canonical contract, host-side) remains authoritative.
+- **Worker-thread isolation of plugin runtime.** QuickJS, plugin code,
+  `hardenedFetch`, and Ajv validators all run inside a dedicated
+  `worker_threads` Worker. Long synchronous guest CPU work (S3) does not
+  freeze the main event loop — trigger ingestion and the operator UI
+  stay responsive. Unexpected worker termination is surfaced as
+  `Sandbox.onDied`; the factory evicts and respawns on next `create()`.
+- **Cancel-on-run-end.** When a guest's exported function resolves (or
+  throws), the run lifecycle's `onRunFinished` hooks run in reverse topo
+  order, clearing timers and aborting in-flight fetches. Un-awaited
+  background work does not outlive the run.
 - **Per-workflow runQueue serialization.** The executor serializes one
   trigger invocation at a time per workflow (cross-workflow invocations
-  remain parallel). Combined with cancel-on-run-end, this eliminates
-  a whole class of module-state race conditions between concurrent
-  invocations against the same sandbox.
-  (`packages/runtime/src/executor/run-queue.ts`)
+  remain parallel). Combined with per-run cleanup, module-state race
+  conditions across invocations are eliminated.
 
 ### Residual risks
 
 These are **known gaps**. AI agents must not assume protection where none
-exists. Each item should be tracked as a follow-up security task.
+exists.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that pass it get enforcement, callers that omit it fall back to the WASM module defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
-| R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. An interrupt handler that fires after N bytecode steps or a deadline would need a worker-side factory reconstituted from a serializable descriptor. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
-| R-S3 | Host timers (`setTimeout` / `setInterval`) run on the Node event loop with no per-spawn cap; cancel-on-run-end mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
-| R-S4 | `__hostFetch` routes through `hardenedFetch` (`packages/sandbox/src/hardened-fetch.ts`): scheme allowlist (http, https, data; `data:` URLs short-circuit the DNS/connect pipeline because they carry no network component per RFC 2397), `dns.lookup(host, {all: true})` with IPv4-mapped-IPv6 unwrap, IANA special-use blocklist (loopback, RFC1918, CGNAT, link-local, TEST-NET, benchmark, 6to4 relay, multicast, reserved, ULA — full CIDR list in the file), fail-closed if **any** resolved address is blocked, connect to the validated IP directly with SNI preserved, manual redirect follow with the full pipeline re-run on every hop, 5-hop cap, `Authorization` stripped on cross-origin redirects, 30s total-wall-clock timeout composed with any caller `AbortSignal`. On a block the main-thread handler emits a pino warn log `sandbox.fetch.blocked` with `{invocationId, tenant, workflow, workflowSha, url, reason}` and sanitizes the error returned to the guest to a generic `TypeError("fetch failed")` so the block reason is not distinguishable from a real network failure. `hardenedFetch` is the default value of `SandboxOptions.fetch` (secure-by-default); test callers that supply a mock bypass it. | S5 closed | **Resolved** (see openspec change `codify-sandbox-guest-surface`) |
-| R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. **Defence-in-depth** under R-S4 — the load-bearing control is now the app-layer `hardenedFetch`; this netpol remains as a second line (and is the only line in local kind dev where `kindnet` no-ops NetworkPolicy). | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
-| R-S12 | **No public-URL allowlist.** Guest workflow code can still issue `fetch()` / `POST` to any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration of workflow-visible data to an attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-tenant host allowlist declared in the tenant manifest, enforced at upload-time validation + runtime in `hardenedFetch`, plus a dashboard UX for authors to register allowed hosts. Deferred as a separate change pending UX design. | S8 deferred | **Deferred** (follow-up change scoped separately) |
-| R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret baked into `workflow.env` that a handler deliberately returns, echoes into an action input, or logs will appear in the archive record / pino logs | S7 partial | Behavioural; author responsibility |
-| R-S7 | **Resolved.** CryptoKey objects no longer live in a host-side opaque reference store — the WASM crypto extension manages them internally (PSA key handles in WASM linear memory) and they are freed with the VM. The previous unbounded-growth concern is eliminated by the engine swap. | — | **Resolved** (quickjs-wasi migration) |
-| R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). Workflows that require JWK export must export as raw and serialize to JWK themselves, or wait for the extension to add the format. | Feature gap | v1 limitation (engine-level) |
-| R-S9 | WASI `clock` and `random` overrides (for deterministic / replay execution) cannot be sent across the worker `postMessage` boundary as-is. Engine supports them at `QuickJS.create({ wasi: ... })`; wire-up requires a serializable descriptor resolved on the worker side. | Replay infrastructure | **Follow-up** (engine supports it; wire-up is pending) |
-| R-S10 | `__dispatchAction` remains on `globalThis` after init so the SDK's `core.dispatchAction()` helper can find it. The property is locked (`writable: false, configurable: false`), so guest code cannot replace or delete it. It can still be *called* directly — guest calling `__dispatchAction(validActionName, realInput, fakeHandler, fakeSchema)` causes `action.*` events to name `validActionName` and pass host-side input validation, while the fake handler actually runs. This poisons the audit log: the event stream claims the real action ran successfully when a different handler executed. Input validation (host-side) remains authoritative; sandbox isolation is not breached. | S11 accepted | **Accepted** (documented residual; fix would require moving dispatcher reachability off `globalThis`, e.g. via a core-package `setDispatcher` indirection) |
+| R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that omit it fall back to WASM defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
+| R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
+| R-S3 | Host timers run on the Node event loop with no per-spawn cap; per-run cleanup mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
+| R-S4 | `hardenedFetch` is the structural default in `createFetchPlugin` (closes over it; override requires replacing the entire plugin via `__pluginLoaderOverride`, which is a test-only path). | S5 closed | **Resolved** |
+| R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. Defence-in-depth under R-S4. | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
+| R-S12 | **No public-URL allowlist.** Guest code can still `fetch()` any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration to attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-tenant host allowlist in the tenant manifest, enforced at upload-time + in `hardenedFetch`. | S8 deferred | **Deferred** (separate change) |
+| R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret a handler returns, echoes into an action input, or logs will appear in the archive / pino logs | S7 partial | Behavioural; author responsibility |
+| R-S7 | **Resolved.** CryptoKey objects live in WASM linear memory (PSA key handles managed by the crypto extension) and are freed with the VM. | — | **Resolved** |
+| R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). | Feature gap | v1 limitation (engine-level) |
+| R-S9 | WASI clock / random overrides (for deterministic replay) cannot be sent across the worker `postMessage` boundary as functions. The `wasi` plugin's setup function pattern enables replay via a descriptor-based path, but no replay plugin ships in v1. | Replay infrastructure | **Follow-up** |
+| R-S10 | `__sdk.dispatchAction` is reachable on `globalThis` after init so the SDK's `action()` callable can find it. The binding is locked and the inner object is frozen, so guest code cannot replace the dispatcher. It CAN still be *called* directly with `(validActionName, realInput, fakeHandler, fakeCompleter)` — emitting `action.*` events that pass host-side input validation while a fake handler actually runs. Poisons the audit log; input validation remains authoritative; sandbox isolation is not breached. | S11 accepted | **Accepted** (fix would require moving dispatcher reachability off `globalThis`, e.g. via a core-package `setDispatcher` indirection) |
+| R-S13 | Plugin discipline ("don't leak a private descriptor via `public: true`, don't bypass `ctx.emit`, don't forget `onRunFinished` cleanup") is partially structural and partially review-enforced. Phase-3 auto-deletion + descriptor-level `public: false` default + `ctx`-only emission close the common cases; per-plugin review remains load-bearing for the small catalog. | S9, S12, S13, S14 partial | Accepted (structurally bounded; reviewer-enforced for the plugin catalog) |
 
 ### Rules for AI agents
 
-1. **NEVER add a global, host-bridge API, or Node.js surface to the
-   QuickJS sandbox without extending the allowlist in this section in the
-   same PR**, with a written rationale and threat assessment per surface
-   added. The enumeration in "Globals exposed inside the sandbox" above is
-   the exhaustive set of surfaces the sandbox exposes; anything not listed
-   is forbidden. New globals expand the attack surface by definition.
-2. **NEVER pass a live host-object reference into the sandbox.** Only
-   JSON-serializable snapshots cross the boundary. If a new bridge API
-   needs to accept data from the sandbox, receive it as a string or
-   number and validate it with Zod on the host side before acting on it.
-3. **NEVER expose Node.js APIs, `process`, `require`, or filesystem
-   access to sandbox code** — directly or through a bridge wrapper.
-4. **NEVER reuse a sandbox context across workflows.** Each loaded
-   workflow SHALL have its own `Sandbox` instance. Within a single
-   workflow, reuse is permitted and expected — module-level state
-   persists across `run()` calls for the same workflow. Disposal happens
-   on workflow reload/unload; always call `Sandbox.dispose()` when
-   evicting from the workflow registry.
-5. **NEVER return a host `Promise`'s original reference to the sandbox.**
-   The sandbox-internal Bridge primitive handles deferred-promise
-   translation via `vm.newPromise()`; consumers provide plain async
-   functions and let the sandbox marshal.
-6. **NEVER expose the Bridge primitive through the public API.**
-   `sync`/`async`/`arg`/`marshal` are sandbox-internal implementation
-   details. Consumers register host methods only via `methods` at
-   construction time. All arguments and return values on the public
-   boundary are JSON.
-7. **When adding an outbound capability (fetch, action call, etc.),
-   explicitly consider SSRF and exfiltration.** If there is no URL
-   allowlist today, say so in the change proposal; do not claim the
-   sandbox "prevents" the action from reaching an internal service.
-8. **Sandbox-related changes MUST include security tests** (per
-   `openspec/config.yaml` task rules) covering: escape attempts, global
-   visibility, sandbox disposal, and any new bridge API's failure modes.
-9. **Every new runtime-passed method in `methods` MUST validate its
-   input on the host side before acting on it.** The host is the
-   authoritative validation boundary (the guest's Zod copy is
-   untrusted). `__hostCallAction` compiles Ajv validators from the
-   manifest at registry load and runs every input through one before
-   audit-logging or returning. New methods SHALL follow the same
-   pattern and SHALL be covered by a prototype-pollution test.
-10. **NEVER install a `__*`-prefixed host bridge without wrapping its
-    consumer in a capture-and-delete shim that removes the bridge name
-    from `globalThis` before workflow source can read it.** The shim
-    SHALL capture the bridge reference into its IIFE closure at init
-    time, expose only the non-bridge guest-facing surface it implements
-    (e.g. `fetch`, `reportError`), and SHALL `delete globalThis.__name`
-    before returning. See the "Bridge surface inventory" subsection
-    above and the sandbox spec's post-init surface requirement. The
-    sole exception is `__dispatchAction`, which is installed with
-    `Object.defineProperty({writable: false, configurable: false})` and
-    documented as an accepted residual (R-S10); new bridges SHALL NOT
-    follow this exception without an explicit threat assessment.
+The invariants below collapse the pre-plugin-architecture per-shim rules
+into 8 plugin-discipline rules. Each applies to every new or modified
+plugin, and every change that adds a guest-visible surface.
+
+1. **R-1 Private by default.** `GuestFunctionDescription.public` defaults
+   to `false`. Phase 3 auto-deletes every non-public descriptor from
+   `globalThis` after phase-2 source eval. A new descriptor is guest-
+   visible only if the author writes `public: true` explicitly. Any such
+   addition MUST extend the "Globals surface" list above in the same PR,
+   with a written rationale and threat assessment.
+2. **R-2 Locked internals.** Any `globalThis` binding installed for
+   guest access MUST be
+   `Object.defineProperty({writable: false, configurable: false})`
+   wrapping an `Object.freeze`d inner object. Canonical example: `__sdk`.
+   Rationale: tenant code cannot replace the dispatcher with a stub that
+   bypasses `action.*` emission. Adding a new top-level host-callable
+   global without this structural lock is forbidden.
+3. **R-3 Hardened fetch default.** `createFetchPlugin` closes over
+   `hardenedFetch` as the structural production default (scheme
+   allowlist + IANA blocklist + DNS validation + redirect re-check +
+   30 s timeout). Overriding requires replacing the entire plugin via
+   `__pluginLoaderOverride` — a test-only path. Production composition
+   MUST NOT pass a fetch override; tests that need a mock replace the
+   plugin, not its default.
+4. **R-4 Per-run cleanup.** Plugins with long-lived state (timers,
+   pending `Callable`s, in-flight fetches, etc.) MUST implement
+   `onRunFinished` to release / dispose that state. Cleanup MUST route
+   through the same code paths as guest-initiated teardown so audit
+   events fire (e.g. the `timers` plugin emits a `timer.clear` leaf per
+   pending timer at run end). Skipping this rule leaks state across runs
+   and de-correlates the event stream.
+5. **R-5 ctx-only emission.** All events flow through `ctx.emit` /
+   `ctx.request`. Direct `bridge.*` mutation from plugin code is
+   prohibited. `seq`, `ref`, `ts`, `at`, and `id` are stamped by the
+   sandbox; plugin authors never construct these fields. A plugin that
+   needs a frame-producing event uses `createsFrame: true` /
+   `closesFrame: true` options on `ctx.emit`; it never computes a ref
+   value itself.
+6. **R-6 Worker-only execution.** Plugin code executes in the Node
+   worker thread exclusively. No cross-thread method calls. Plugin
+   configs passed to `descriptor.config` MUST be JSON-serializable
+   (verified by `assertSerializableConfig` at sandbox construction).
+   Main-thread state (connection pools, persistent caches) cannot live
+   in a plugin — it must be passed in as serialized config or reached
+   via a descriptor-bridged guest function that the plugin registers.
+7. **R-7 Reserved prefixes.** Event prefixes `trigger`, `action`,
+   `fetch`, `timer`, `console`, `wasi`, and `uncaught-error` are
+   reserved for stdlib / runtime plugins. Third-party plugins use
+   domain-specific prefixes (e.g. `mypkg.request` /
+   `mypkg.response`) to avoid conflating with core audit categories.
+8. **R-8 No runtime metadata in the sandbox.** The sandbox stamps only
+   intrinsic event fields: `kind`, `name`, `id`, `seq`, `ref`, `ts`,
+   `at`, and `input?` / `output?` / `error?`. Tenant, workflow,
+   workflowSha, and invocationId are stamped by the runtime in its
+   `sb.onEvent` receiver before forwarding events to the bus. A plugin
+   that needs to attach a tenant or workflow label is doing something
+   wrong — that labelling belongs on the runtime side.
+
+Additional standing rules that predate the plugin rewrite:
+
+- **Sandbox-related changes MUST include security tests** covering
+  escape attempts, global visibility, sandbox disposal, and any new
+  plugin's failure modes. Private-descriptor deletion, `__sdk` lock
+  semantics, and `hardenedFetch` defaults each have dedicated probes.
+- **Every new host-callable descriptor MUST validate its input** before
+  acting on it (the guest's Zod copy is untrusted). `host-call-action`'s
+  Ajv pipeline is the canonical pattern; new descriptors either reuse it
+  or follow the same shape, and SHALL be covered by a prototype-
+  pollution test.
+- **When adding an outbound capability (fetch, action call, etc.),
+  explicitly consider SSRF and exfiltration.** If no URL allowlist
+  applies, say so in the change proposal; do not claim the sandbox
+  "prevents" reaching an internal service beyond what `hardenedFetch`
+  structurally blocks.
 
 ### File references
 
 - Sandbox factory + `run()`: `packages/sandbox/src/index.ts`
-- Host fetch bridge: `packages/sandbox/src/bridge.ts`
-- Bridge primitive (internal; promise / host-function plumbing): `packages/sandbox/src/bridge-factory.ts`
-- Host-method installer (internal): `packages/sandbox/src/install-host-methods.ts`
-- Globals allowlist + fetch / crypto-subtle-Promise JS shims: `packages/sandbox/src/globals.ts`
-- WebCrypto: provided natively by the `quickjs-wasi` `cryptoExtension` WASM extension (loaded in `worker.ts`); a JS Promise shim in `globals.ts` wraps `crypto.subtle.*` to return Promises per WebCrypto spec
-- Workflow registry (metadata + per-tenant trigger index): `packages/runtime/src/workflow-registry.ts`
-- Sandbox store (per-`(tenant, sha)` sandbox cache + `__hostCallAction` dispatcher): `packages/runtime/src/sandbox-store.ts`
-- HTTP trigger middleware (payload validation + executor delegation): `packages/runtime/src/triggers/http.ts`
-- Executor (per-workflow runQueue + lifecycle emission): `packages/runtime/src/executor/`
-- SDK (authoring API + in-sandbox action wrapper): `packages/sdk/src/index.ts`
+- Plugin types + composition: `packages/sandbox/src/plugin.ts`,
+  `packages/sandbox/src/plugin-compose.ts`
+- Worker boot phases + WASI dispatch: `packages/sandbox/src/worker.ts`,
+  `packages/sandbox/src/wasi.ts`
+- Guest function install (arg/result marshaling, `Callable`):
+  `packages/sandbox/src/guest-function-install.ts`
+- Vite plugin + worker-side loader: `packages/sandbox/src/vite/sandbox-plugins.ts`,
+  `packages/sandbox/src/worker-plugin-loader.ts`
+- Sandbox stdlib plugins: `packages/sandbox-stdlib/src/{web-platform,fetch,timers,console}/`
+- WASI plugin: `packages/sandbox/src/plugins/wasi-plugin.ts`
+- WebCrypto: provided natively by the `quickjs-wasi` `cryptoExtension`
+  WASM extension (loaded in `worker.ts`)
+- `hardenedFetch`: `packages/sandbox-stdlib/src/fetch/hardened-fetch.ts`
+  (re-exported from `@workflow-engine/sandbox-stdlib`)
+- SDK support plugin + action callable: `packages/sdk/src/sdk-support/`,
+  `packages/sdk/src/index.ts`
+- Runtime host-call-action plugin: `packages/runtime/src/plugins/host-call-action.ts`,
+  `packages/runtime/src/host-call-action-config.ts`
+- Runtime trigger plugin: `packages/runtime/src/plugins/trigger.ts`
+- Sandbox store (per-`(tenant, sha)` sandbox cache + plugin composition):
+  `packages/runtime/src/sandbox-store.ts`
+- Workflow registry (metadata + per-tenant trigger index):
+  `packages/runtime/src/workflow-registry.ts`
+- HTTP trigger middleware: `packages/runtime/src/triggers/http.ts`
+- Executor (per-workflow runQueue + `sb.onEvent` stamping):
+  `packages/runtime/src/executor/`
 - OpenSpec spec: `openspec/specs/sandbox/spec.md`
+- OpenSpec spec: `openspec/specs/sandbox-plugin/spec.md`
+- OpenSpec spec: `openspec/specs/sandbox-stdlib/spec.md`
 - OpenSpec spec: `openspec/specs/sdk/spec.md`
+
 
 ## §3 Webhook Ingress
 
@@ -1357,7 +1115,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
-| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of `__hostFetch` (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4. | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
+| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of the sandbox `fetch` plugin (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4 (`hardenedFetch` structural default). | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
 | R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
 | R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
 | R-I13 | **App Deployment is locked to `replicas = 1`** because the auth subsystem's session-cookie sealing password lives in memory (`packages/runtime/src/auth/key.ts`) and is not shared across pods. A second replica would sign cookies with a different password, causing deterministic decryption failures whenever a request lands on the pod that did not seal the cookie. Raising replicas above 1 requires first migrating the password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted |
@@ -1385,9 +1143,10 @@ following as **must-have** before exposing to real traffic:
    and HTTP-01 challenge is wired in (`infrastructure/envs/upcloud/cluster/upcloud.tf`,
    `infrastructure/modules/cert-manager/`). Resolves R-I5 and I8.
 5. **Egress policy** — NetworkPolicy half DONE (see item 1). Private-range
-   filtering inside `__hostFetch` (§2 R-S4) now closes the app-layer
-   half — internal SSRF (S5) is mitigated end-to-end. Public-URL allowlist
-   for exfiltration (S8 / §2 R-S12) remains deferred pending UX design.
+   filtering inside the sandbox `fetch` plugin's structural `hardenedFetch`
+   default (§2 R-S4) now closes the app-layer half — internal SSRF (S5)
+   is mitigated end-to-end. Public-URL allowlist for exfiltration (S8 /
+   §2 R-S12) remains deferred pending UX design.
 6. **Encrypted event storage** — if UpCloud Object Storage is used,
    enable server-side encryption. Document the key custody model.
 7. **Secret rotation procedure** — document how to rotate the

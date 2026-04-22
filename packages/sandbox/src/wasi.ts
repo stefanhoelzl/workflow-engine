@@ -1,10 +1,31 @@
-import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { Bridge } from "./bridge-factory.js";
+import type {
+	WasiClockArgs,
+	WasiClockResult,
+	WasiFdWriteArgs,
+	WasiRandomArgs,
+	WasiRandomResult,
+} from "./plugin.js";
 import type { WorkerToMain } from "./protocol.js";
 
 interface AnchorCell {
 	ns: bigint;
+}
+
+/**
+ * Mutable callback slots for WASI host-side overrides. Start unset; a
+ * plugin populates them by returning `wasiHooks` from `worker()`, which
+ * `installWasiHooks` routes into these slots (one plugin per slot,
+ * collision rejected at install time). At WASI dispatch each slot is
+ * consulted: if set, the hook observes the computed default and may
+ * return an override (`{ ns }` / `{ bytes }`); if unset, the default
+ * value is used unchanged and no event is emitted.
+ */
+interface WasiSlots {
+	clockTimeGet: ((args: WasiClockArgs) => WasiClockResult | undefined) | null;
+	randomGet: ((args: WasiRandomArgs) => WasiRandomResult | undefined) | null;
+	fdWrite: ((args: WasiFdWriteArgs) => void) | null;
 }
 
 interface WasiState {
@@ -19,6 +40,8 @@ interface WasiState {
 	// Per-fd line buffers. fd_write hands us arbitrary byte slices; we only
 	// post a log message once a complete line accumulates.
 	fdLineBuffer: Map<number, string>;
+	// Plugin-supplied override callbacks — see WasiSlots for semantics.
+	slots: WasiSlots;
 }
 
 function createWasiState(): WasiState {
@@ -26,7 +49,54 @@ function createWasiState(): WasiState {
 		bridge: null,
 		anchor: { ns: 0n },
 		fdLineBuffer: new Map<number, string>(),
+		slots: { clockTimeGet: null, randomGet: null, fdWrite: null },
 	};
+}
+
+class WasiHookCollisionError extends Error {
+	readonly name = "WasiHookCollisionError";
+	readonly hook: "clockTimeGet" | "randomGet" | "fdWrite";
+	constructor(hook: "clockTimeGet" | "randomGet" | "fdWrite") {
+		super(
+			`multiple plugins registered a wasi hook for "${hook}" — only one is allowed`,
+		);
+		this.hook = hook;
+	}
+}
+
+/**
+ * Install a plugin's WasiHooks into the shared WasiSlots. Throws
+ * WasiHookCollisionError if a slot is already populated — only one plugin
+ * may own any given WASI hook.
+ */
+function installWasiHooks(
+	state: WasiState,
+	hooks: {
+		readonly clockTimeGet?: (
+			args: WasiClockArgs,
+		) => WasiClockResult | undefined;
+		readonly randomGet?: (args: WasiRandomArgs) => WasiRandomResult | undefined;
+		readonly fdWrite?: (args: WasiFdWriteArgs) => void;
+	},
+): void {
+	if (hooks.clockTimeGet) {
+		if (state.slots.clockTimeGet !== null) {
+			throw new WasiHookCollisionError("clockTimeGet");
+		}
+		state.slots.clockTimeGet = hooks.clockTimeGet;
+	}
+	if (hooks.randomGet) {
+		if (state.slots.randomGet !== null) {
+			throw new WasiHookCollisionError("randomGet");
+		}
+		state.slots.randomGet = hooks.randomGet;
+	}
+	if (hooks.fdWrite) {
+		if (state.slots.fdWrite !== null) {
+			throw new WasiHookCollisionError("fdWrite");
+		}
+		state.slots.fdWrite = hooks.fdWrite;
+	}
 }
 
 const WASI_CLOCK_REALTIME = 0;
@@ -41,9 +111,6 @@ const WASI_STDERR_FD = 2;
 // WASI ciovec (const iovec) is {bufPtr: u32, bufLen: u32} packed little-endian.
 const WASI_CIOVEC_SIZE = 8;
 const WASI_CIOVEC_LEN_OFFSET = 4;
-// First 16 bytes of a SHA-256 digest rendered as lowercase hex.
-const SHA256_FIRST_16_HEX_CHARS = 32;
-
 function perfNowNs(): bigint {
 	return BigInt(Math.trunc(performance.now() * NS_PER_MS_NUM));
 }
@@ -55,25 +122,30 @@ function wasiClockTimeGet(
 	resultPtr: number,
 ): number {
 	const view = new DataView(memory.buffer);
-	let timeNs: bigint;
+	let defaultNs: bigint;
 	let clockLabel: "REALTIME" | "MONOTONIC";
 	if (clockId === WASI_CLOCK_REALTIME) {
-		timeNs = BigInt(Date.now()) * NS_PER_MS;
+		defaultNs = BigInt(Date.now()) * NS_PER_MS;
 		clockLabel = "REALTIME";
 	} else if (clockId === WASI_CLOCK_MONOTONIC) {
-		timeNs = perfNowNs() - wState.anchor.ns;
+		defaultNs = perfNowNs() - wState.anchor.ns;
 		clockLabel = "MONOTONIC";
 	} else {
 		return WASI_ERRNO_NOSYS;
 	}
-	view.setBigUint64(resultPtr, timeNs, true);
-	if (wState.bridge?.getRunContext()) {
-		wState.bridge.emitSystemCall(
-			"wasi.clock_time_get",
-			{ clockId: clockLabel },
-			{ ns: Number(timeNs) },
-		);
+	// Plugin-supplied hook (if any) observes the default and may override
+	// it; return undefined to keep the default.
+	let timeNs = defaultNs;
+	if (wState.slots.clockTimeGet) {
+		const result = wState.slots.clockTimeGet({
+			label: clockLabel,
+			defaultNs: Number(defaultNs),
+		});
+		if (result?.ns !== undefined) {
+			timeNs = BigInt(result.ns);
+		}
 	}
+	view.setBigUint64(resultPtr, timeNs, true);
 	return WASI_ERRNO_SUCCESS;
 }
 
@@ -84,19 +156,21 @@ function wasiRandomGet(
 	bufLen: number,
 ): number {
 	const bytes = new Uint8Array(memory.buffer, bufPtr, bufLen);
-	globalThis.crypto.getRandomValues(bytes);
-	if (wState.bridge?.getRunContext()) {
-		// First 16 bytes of SHA-256 only — raw entropy bytes are never logged.
-		const sha256First16 = createHash("sha256")
-			.update(bytes)
-			.digest("hex")
-			.slice(0, SHA256_FIRST_16_HEX_CHARS);
-		wState.bridge.emitSystemCall(
-			"wasi.random_get",
-			{ bufLen },
-			{ bufLen, sha256First16 },
-		);
+	// Compute the default (real entropy) first so the plugin hook can
+	// observe it or replace it. Using a temp buffer avoids touching WASM
+	// memory twice in the common (no-hook) case.
+	const defaultBytes = new Uint8Array(bufLen);
+	globalThis.crypto.getRandomValues(defaultBytes);
+	// Type as the widened Uint8Array so a plugin's Uint8Array<ArrayBufferLike>
+	// can be assigned without a TS narrowing error.
+	let finalBytes: Uint8Array = defaultBytes;
+	if (wState.slots.randomGet) {
+		const result = wState.slots.randomGet({ bufLen, defaultBytes });
+		if (result?.bytes !== undefined) {
+			finalBytes = result.bytes;
+		}
 	}
+	bytes.set(finalBytes.subarray(0, bufLen));
 	return WASI_ERRNO_SUCCESS;
 }
 
@@ -132,19 +206,25 @@ function wasiFdWrite(
 		totalWritten += chunkLen;
 	}
 	view.setUint32(nwrittenPtr, totalWritten, true);
-	const prev = wState.fdLineBuffer.get(fd) ?? "";
-	const combined = prev + decoded;
-	const lines = combined.split("\n");
-	const trailing = lines.pop() ?? "";
-	for (const line of lines) {
-		postFn({
-			type: "log",
-			level: "debug",
-			message: "quickjs.fd_write",
-			meta: { fd, text: line },
-		});
+	// Plugin hook sees each raw write individually; default line-buffering
+	// only applies when no hook is installed.
+	if (wState.slots.fdWrite) {
+		wState.slots.fdWrite({ fd, text: decoded });
+	} else {
+		const prev = wState.fdLineBuffer.get(fd) ?? "";
+		const combined = prev + decoded;
+		const lines = combined.split("\n");
+		const trailing = lines.pop() ?? "";
+		for (const line of lines) {
+			postFn({
+				type: "log",
+				level: "debug",
+				message: "quickjs.fd_write",
+				meta: { fd, text: line },
+			});
+		}
+		wState.fdLineBuffer.set(fd, trailing);
 	}
-	wState.fdLineBuffer.set(fd, trailing);
 	return WASI_ERRNO_SUCCESS;
 }
 
@@ -175,10 +255,11 @@ function createWasiFactory(
 	});
 }
 
-export type { AnchorCell, WasiState };
+export type { AnchorCell, WasiSlots, WasiState };
 export {
 	createWasiFactory,
 	createWasiState,
+	installWasiHooks,
 	perfNowNs,
 	WASI_CIOVEC_LEN_OFFSET,
 	WASI_CIOVEC_SIZE,
@@ -188,6 +269,7 @@ export {
 	WASI_ERRNO_SUCCESS,
 	WASI_STDERR_FD,
 	WASI_STDOUT_FD,
+	WasiHookCollisionError,
 	wasiClockTimeGet,
 	wasiFdWrite,
 	wasiRandomGet,

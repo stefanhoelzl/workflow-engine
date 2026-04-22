@@ -1,23 +1,14 @@
 import { performance } from "node:perf_hooks";
-import type { EventKind, InvocationEvent } from "@workflow-engine/core";
+import type { EventKind, SandboxEvent } from "@workflow-engine/core";
 import type { JSValueHandle, QuickJS } from "quickjs-wasi";
 import type { AnchorCell } from "./wasi.js";
 
 const NS_PER_MS = 1_000_000;
 const US_PER_MS = 1000;
 
-// --- Run context (set by worker before each run) ---
-
-interface RunContext {
-	readonly invocationId: string;
-	readonly tenant: string;
-	readonly workflow: string;
-	readonly workflowSha: string;
-}
-
 // --- Event sink (worker installs to forward events to main thread) ---
 
-type EventSink = (event: InvocationEvent) => void;
+type EventSink = (event: SandboxEvent) => void;
 
 // --- Extractor types ---
 
@@ -38,30 +29,15 @@ interface RestExtractor<T> {
 	readonly extractFn: (vm: QuickJS, handle: JSValueHandle) => T;
 }
 
-type AnyExtractor =
-	| RequiredExtractor<unknown>
-	| OptionalExtractor<unknown>
-	| RestExtractor<unknown>;
-
-// --- Type inference ---
-
-type InferArg<E> =
-	E extends RequiredExtractor<infer T>
-		? T
-		: E extends OptionalExtractor<infer T>
-			? T | undefined
-			: E extends RestExtractor<infer T>
-				? T[]
-				: never;
-
-type InferArgs<E extends readonly AnyExtractor[]> = E extends readonly [
-	...infer Init extends AnyExtractor[],
-	RestExtractor<infer T>,
-]
-	? [...{ [K in keyof Init]: InferArg<Init[K]> }, ...T[]]
-	: { [K in keyof E]: InferArg<E[K]> };
-
-// --- Bridge interface ---
+// The bridge emits `SandboxEvent` — the subset of event fields the sandbox
+// owns (`kind`, `seq`, `ref`, `at`, `ts`, `name`, `input`/`output`/`error`).
+// Runtime metadata (`id`, `tenant`, `workflow`, `workflowSha`) is added by
+// the runtime's `sb.onEvent` receiver in the executor before events reach
+// the bus (SECURITY.md §2 R-8: no runtime metadata in sandbox).
+//
+// `runActive` is a boolean gate — `buildEvent` returns null when no run
+// is in progress, matching the pre-refactor "silent pre-run emission"
+// behaviour without requiring the bridge to know about run metadata.
 
 interface Bridge {
 	readonly vm: QuickJS;
@@ -79,44 +55,25 @@ interface Bridge {
 		// biome-ignore lint/suspicious/noConfusingVoidType: void marshal must accept void return values from impl
 		readonly void: (value: void) => JSValueHandle;
 	};
-	sync<Args extends readonly AnyExtractor[], R>(
-		target: JSValueHandle,
-		name: string,
-		opts: {
-			args: [...Args];
-			marshal: (value: R) => JSValueHandle;
-			impl: (...args: InferArgs<Args>) => R;
-			method?: string;
-		},
-	): void;
-	async<Args extends readonly AnyExtractor[], R>(
-		target: JSValueHandle,
-		name: string,
-		opts: {
-			args: [...Args];
-			marshal: (value: R) => JSValueHandle;
-			impl: (...args: InferArgs<Args>) => Promise<R>;
-			method?: string;
-		},
-	): void;
-	// Run-context lifecycle:
-	setRunContext(ctx: RunContext): void;
-	clearRunContext(): void;
+	// Run-active lifecycle (boolean state, no metadata):
+	setRunActive(): void;
+	clearRunActive(): void;
+	runActive(): boolean;
 	resetSeq(): void;
 	nextSeq(): number;
 	currentRef(): number | null;
 	pushRef(seq: number): void;
 	popRef(): number | null;
-	getRunContext(): RunContext | null;
+	refStackDepth(): number;
+	truncateRefStackTo(depth: number): number;
 	buildEvent(
 		kind: EventKind,
 		seq: number,
 		ref: number | null,
 		name: string,
 		extra: { input?: unknown; output?: unknown; error?: unknown },
-	): InvocationEvent | null;
-	emit(event: InvocationEvent): void;
-	emitSystemCall(method: string, input: unknown, output: unknown): void;
+	): SandboxEvent | null;
+	emit(event: SandboxEvent): void;
 	setSink(sink: EventSink | null): void;
 	resetAnchor(): void;
 	anchorNs(): bigint;
@@ -141,78 +98,11 @@ const ARG_EXTRACTORS = {
 	boolean: makeExtractor<unknown>((vm, h) => vm.dump(h)),
 };
 
-function extractArgValues(
-	vm: QuickJS,
-	extractors: readonly AnyExtractor[],
-	handles: JSValueHandle[],
-): unknown[] {
-	const result: unknown[] = [];
-	for (let i = 0; i < extractors.length; i++) {
-		// biome-ignore lint/style/noNonNullAssertion: index is within bounds from loop condition
-		const ext = extractors[i]!;
-		if (ext.kind === "rest") {
-			for (let j = i; j < handles.length; j++) {
-				// biome-ignore lint/style/noNonNullAssertion: index is within bounds from loop condition
-				result.push(ext.extractFn(vm, handles[j]!));
-			}
-			break;
-		}
-		const handle = handles[i];
-		if (ext.kind === "optional" && handle === undefined) {
-			result.push(undefined);
-		} else {
-			// biome-ignore lint/style/noNonNullAssertion: required/optional extractor with present handle
-			result.push(ext.extractFn(vm, handle!));
-		}
-	}
-	return result;
-}
-
-function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
-
-function errorStack(err: unknown): string {
-	return err instanceof Error ? (err.stack ?? "") : "";
-}
-
-const RESERVED_HOST_ERROR_KEYS = new Set(["name", "message", "stack"]);
-
-function isJsonSafe(value: unknown): boolean {
-	try {
-		JSON.stringify(value);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function newGuestErrorFromHost(vm: QuickJS, err: unknown): JSValueHandle {
-	if (!(err instanceof Error)) {
-		return vm.newError(String(err));
-	}
-	const handle = vm.newError(err);
-	const source = err as unknown as Record<string, unknown>;
-	for (const key of Object.keys(source)) {
-		if (RESERVED_HOST_ERROR_KEYS.has(key)) {
-			continue;
-		}
-		const value = source[key];
-		if (!isJsonSafe(value)) {
-			continue;
-		}
-		const valueHandle = vm.hostToHandle(value);
-		vm.setProp(handle, key, valueHandle);
-		valueHandle.dispose();
-	}
-	return handle;
-}
-
 // --- Factory ---
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-context state, and event emission as one cohesive unit
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-active state, and event emission as one cohesive unit
 function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
-	let runContext: RunContext | null = null;
+	let runActive = false;
 	let seq = 0;
 	const refStack: number[] = [];
 	let sink: EventSink | null = null;
@@ -235,7 +125,7 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		void: (_value: void) => vm.undefined,
 	};
 
-	function emit(event: InvocationEvent): void {
+	function emit(event: SandboxEvent): void {
 		if (sink) {
 			sink(event);
 		}
@@ -248,20 +138,16 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		ref: number | null,
 		method: string,
 		extra: { input?: unknown; output?: unknown; error?: unknown },
-	): InvocationEvent | null {
-		if (!runContext) {
+	): SandboxEvent | null {
+		if (!runActive) {
 			return null;
 		}
-		const event: InvocationEvent = {
+		const event: SandboxEvent = {
 			kind,
-			id: runContext.invocationId,
 			seq: seqValue,
 			ref,
 			at: new Date().toISOString(),
 			ts: tsUs(),
-			tenant: runContext.tenant,
-			workflow: runContext.workflow,
-			workflowSha: runContext.workflowSha,
 			name: method,
 			...(extra.input === undefined ? {} : { input: extra.input }),
 			...(extra.output === undefined ? {} : { output: extra.output }),
@@ -278,166 +164,22 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		return event;
 	}
 
-	function emitSystemRequest(method: string, args: unknown[]): number {
-		const requestSeq = seq++;
-		const ref = refStack.at(-1) ?? null;
-		refStack.push(requestSeq);
-		const evt = buildEvent("system.request", requestSeq, ref, method, {
-			input: args,
-		});
-		if (evt) {
-			emit(evt);
-		}
-		return requestSeq;
-	}
-
-	function emitSystemResponse(
-		method: string,
-		requestSeq: number,
-		result: unknown,
-	): void {
-		const responseSeq = seq++;
-		// Pop the matching request from the stack.
-		const popped = refStack.pop();
-		const ref = popped ?? requestSeq;
-		const evt = buildEvent("system.response", responseSeq, ref, method, {
-			output: result,
-		});
-		if (evt) {
-			emit(evt);
-		}
-	}
-
-	function emitSystemError(
-		method: string,
-		requestSeq: number,
-		err: unknown,
-	): void {
-		const errorSeq = seq++;
-		const popped = refStack.pop();
-		const ref = popped ?? requestSeq;
-		const evt = buildEvent("system.error", errorSeq, ref, method, {
-			error: {
-				message: errorMessage(err),
-				stack: errorStack(err),
-			},
-		});
-		if (evt) {
-			emit(evt);
-		}
-	}
-
-	function emitSystemCall(
-		method: string,
-		input: unknown,
-		output: unknown,
-	): void {
-		const seqValue = seq++;
-		const ref = refStack.at(-1) ?? null;
-		const evt = buildEvent("system.call", seqValue, ref, method, {
-			input,
-			output,
-		});
-		if (evt) {
-			emit(evt);
-		}
-	}
-
-	function sync<Args extends readonly AnyExtractor[], R>(
-		target: JSValueHandle,
-		name: string,
-		opts: {
-			args: [...Args];
-			marshal: (value: R) => JSValueHandle;
-			impl: (...args: InferArgs<Args>) => R;
-			method?: string;
-		},
-	): void {
-		const method = opts.method ?? name;
-		const fn = vm.newFunction(name, (...handles) => {
-			const extracted = extractArgValues(vm, opts.args, handles);
-			const requestSeq = emitSystemRequest(method, extracted);
-			try {
-				const result = opts.impl(...(extracted as InferArgs<Args>));
-				emitSystemResponse(method, requestSeq, result);
-				return opts.marshal(result);
-			} catch (err) {
-				emitSystemError(method, requestSeq, err);
-				// newFunction's trampoline catches thrown host errors and
-				// converts them to QuickJS exceptions via vm.newError() —
-				// that preserves name/message/stack but strips custom props
-				// (e.g. Zod .issues). For sync bridges this is acceptable
-				// because the run loop primarily reports error.message and
-				// error.stack. Async bridges (the common path) preserve
-				// custom props via deferred.reject(newGuestErrorFromHost(...)).
-				throw err;
-			}
-		});
-		vm.setProp(target, name, fn);
-		fn.dispose();
-	}
-
-	function asyncBridge<Args extends readonly AnyExtractor[], R>(
-		target: JSValueHandle,
-		name: string,
-		opts: {
-			args: [...Args];
-			marshal: (value: R) => JSValueHandle;
-			impl: (...args: InferArgs<Args>) => Promise<R>;
-			method?: string;
-		},
-	): void {
-		const method = opts.method ?? name;
-		const fn = vm.newFunction(name, (...handles) => {
-			const extracted = extractArgValues(vm, opts.args, handles);
-			const requestSeq = emitSystemRequest(method, extracted);
-			const deferred = vm.newPromise();
-
-			opts.impl(...(extracted as InferArgs<Args>)).then(
-				(result) => {
-					try {
-						const handle = opts.marshal(result);
-						deferred.resolve(handle);
-						handle.dispose();
-						emitSystemResponse(method, requestSeq, result);
-					} catch (err) {
-						const errHandle = newGuestErrorFromHost(vm, err);
-						deferred.reject(errHandle);
-						errHandle.dispose();
-						emitSystemError(method, requestSeq, err);
-					}
-					vm.executePendingJobs();
-				},
-				(err) => {
-					const errHandle = newGuestErrorFromHost(vm, err);
-					deferred.reject(errHandle);
-					errHandle.dispose();
-					emitSystemError(method, requestSeq, err);
-					vm.executePendingJobs();
-				},
-			);
-
-			return deferred.handle;
-		});
-		vm.setProp(target, name, fn);
-		fn.dispose();
-	}
-
 	return {
 		vm,
 		arg: ARG_EXTRACTORS,
 		marshal,
-		sync,
-		async: asyncBridge,
-		setRunContext(ctx: RunContext) {
-			runContext = ctx;
+		setRunActive() {
+			runActive = true;
 			seq = 0;
 			refStack.length = 0;
 		},
-		clearRunContext() {
-			runContext = null;
+		clearRunActive() {
+			runActive = false;
 			seq = 0;
 			refStack.length = 0;
+		},
+		runActive() {
+			return runActive;
 		},
 		resetSeq() {
 			seq = 0;
@@ -455,12 +197,19 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		popRef() {
 			return refStack.pop() ?? null;
 		},
-		getRunContext() {
-			return runContext;
+		refStackDepth() {
+			return refStack.length;
+		},
+		truncateRefStackTo(depth: number) {
+			if (depth < 0 || depth > refStack.length) {
+				return 0;
+			}
+			const dropped = refStack.length - depth;
+			refStack.length = depth;
+			return dropped;
 		},
 		buildEvent,
 		emit,
-		emitSystemCall,
 		setSink(s: EventSink | null) {
 			sink = s;
 		},
@@ -475,5 +224,5 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	};
 }
 
-export type { Bridge, EventSink, RunContext };
+export type { Bridge, EventSink };
 export { createBridge };
