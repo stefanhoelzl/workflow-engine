@@ -1,6 +1,9 @@
-import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
-import { makeEvent } from "@workflow-engine/core/test-utils";
-import type { RunOptions, Sandbox } from "@workflow-engine/sandbox";
+import type {
+	InvocationEvent,
+	SandboxEvent,
+	WorkflowManifest,
+} from "@workflow-engine/core";
+import type { Sandbox } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import { createEventBus, type EventBus } from "../event-bus/index.js";
 import type { SandboxStore } from "../sandbox-store.js";
@@ -37,27 +40,20 @@ function makeDescriptor(
 }
 
 interface FakeSandboxOptions {
-	onRun?: (
-		exportName: string,
-		ctx: unknown,
-		options: RunOptions,
-	) => unknown | Promise<unknown>;
+	onRun?: (exportName: string, ctx: unknown) => unknown | Promise<unknown>;
 	capture?: {
-		readonly eventCallbacks: ((e: InvocationEvent) => void)[];
+		readonly eventCallbacks: ((e: SandboxEvent) => void)[];
 	};
 }
 
 function makeSandbox(options: FakeSandboxOptions = {}): Sandbox {
 	return {
-		run: vi
-			.fn<Sandbox["run"]>()
-			.mockImplementation(async (exportName, ctx, runOpts) => {
-				const opts = runOpts ?? ({} as RunOptions);
-				const result = options.onRun
-					? await options.onRun(exportName, ctx, opts)
-					: { status: 200 };
-				return { ok: true, result };
-			}),
+		run: vi.fn<Sandbox["run"]>().mockImplementation(async (exportName, ctx) => {
+			const result = options.onRun
+				? await options.onRun(exportName, ctx)
+				: { status: 200 };
+			return { ok: true, result };
+		}),
 		onEvent: vi.fn<Sandbox["onEvent"]>().mockImplementation((cb) => {
 			options.capture?.eventCallbacks.push(cb);
 		}),
@@ -74,12 +70,35 @@ function makeStore(sandbox: Sandbox): SandboxStore {
 }
 
 describe("executor", () => {
-	it("generates an invocation id and passes it to sandbox.run", async () => {
-		const sandbox = makeSandbox();
+	it("stamps invocation metadata onto sandbox events before emitting to the bus", async () => {
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
+		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
-		const executor = createExecutor({
-			bus: createEventBus([]),
-			sandboxStore: makeStore(sandbox),
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
+			},
+		};
+		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+
+		// Drive an event from the sandbox mid-invocation by intercepting `run`
+		// and firing the captured onEvent callback synchronously before
+		// returning.
+		runSpy.mockImplementationOnce(async (_exportName, _ctx) => {
+			const cb = capture.eventCallbacks[0];
+			if (!cb) {
+				throw new Error("expected onEvent wired before run");
+			}
+			cb({
+				kind: "trigger.request",
+				seq: 0,
+				ref: null,
+				at: "2026-01-01T00:00:00.000Z",
+				ts: 1,
+				name: "trig",
+			});
+			return { ok: true, result: { status: 200 } };
 		});
 
 		await executor.invoke(
@@ -97,16 +116,24 @@ describe("executor", () => {
 		}
 		expect(call[0]).toBe("trig");
 		expect(call[1]).toEqual({ hello: "world" });
-		const runOpts = call[2] as RunOptions;
-		expect(runOpts.invocationId).toMatch(EVT_ID_RE);
-		expect(runOpts.tenant).toBe("t0");
-		expect(runOpts.workflow).toBe("wf");
-		expect(runOpts.workflowSha).toBe("0".repeat(64));
+		// sb.run takes no 3rd arg — runtime metadata lives on bus events only
+		expect(call).toHaveLength(2);
+
+		expect(seen).toHaveLength(1);
+		const first = seen[0];
+		if (!first) {
+			throw new Error("expected bus emission");
+		}
+		expect(first.id).toMatch(EVT_ID_RE);
+		expect(first.tenant).toBe("t0");
+		expect(first.workflow).toBe("wf");
+		expect(first.workflowSha).toBe("0".repeat(64));
 	});
 
 	it("wires onEvent → bus.emit on first invoke and reuses the wiring", async () => {
-		const capture = { eventCallbacks: [] as ((e: InvocationEvent) => void)[] };
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
 		const sandbox = makeSandbox({ capture });
+		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
 		const seen: InvocationEvent[] = [];
 		const bus: EventBus = {
 			emit: async (e) => {
@@ -116,27 +143,32 @@ describe("executor", () => {
 		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
 		const wf = makeManifest("wf");
 
+		// Fire one event per invocation via the captured callback while a run
+		// is active — the executor's activeMeta slot is populated then.
+		runSpy.mockImplementation(async (_exportName, _ctx) => {
+			const cb = capture.eventCallbacks[0];
+			if (!cb) {
+				throw new Error("expected onEvent wired before run");
+			}
+			cb({
+				kind: "trigger.request",
+				seq: 0,
+				ref: null,
+				at: "2026-01-01T00:00:00.000Z",
+				ts: 1,
+				name: "t",
+			});
+			return { ok: true, result: { status: 200 } };
+		});
+
 		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
 		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
 
 		// onEvent should be wired exactly once across multiple invocations.
 		expect(capture.eventCallbacks).toHaveLength(1);
-
-		const evt = makeEvent({
-			kind: "trigger.request",
-			id: "evt_x",
-			seq: 0,
-			ref: null,
-			ts: 1,
-			workflow: "wf",
-		});
-		const cb = capture.eventCallbacks[0];
-		if (!cb) {
-			throw new Error("expected onEvent to have been called");
-		}
-		cb(evt);
-		await new Promise((r) => setImmediate(r));
-		expect(seen).toContain(evt);
+		expect(seen).toHaveLength(2);
+		expect(seen[0]?.workflow).toBe("wf");
+		expect(seen[1]?.workflow).toBe("wf");
 	});
 
 	it("returns { ok: true, output } when the handler returns normally", async () => {
@@ -191,9 +223,10 @@ describe("executor", () => {
 		const callOrder: string[] = [];
 		let active = 0;
 		let maxActive = 0;
+		let seq = 0;
 		const sandbox = makeSandbox({
-			onRun: async (_name, _ctx, opts) => {
-				const id = opts.invocationId;
+			onRun: async (_name, _ctx) => {
+				const id = `run${++seq}`;
 				active++;
 				maxActive = Math.max(maxActive, active);
 				callOrder.push(`start:${id}`);

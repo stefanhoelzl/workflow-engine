@@ -5,14 +5,12 @@ import {
 	type SandboxOptions,
 	sandbox,
 } from "./index.js";
-import type { MethodMap } from "./install-host-methods.js";
 
-interface FactoryCreateOptions extends SandboxOptions {
-	methods?: MethodMap;
-}
+/** @deprecated Kept as an alias for `SandboxOptions`. Remove in the next breaking change. */
+type FactoryCreateOptions = Omit<SandboxOptions, "logger">;
 
 interface SandboxFactory {
-	create(source: string, options?: FactoryCreateOptions): Promise<Sandbox>;
+	create(options: FactoryCreateOptions): Promise<Sandbox>;
 	dispose(): Promise<void>;
 }
 
@@ -29,14 +27,10 @@ function createSandboxFactory(opts: { logger: Logger }): SandboxFactory {
 	const { logger } = opts;
 	const created = new Set<Sandbox>();
 
-	async function create(
-		source: string,
-		options?: FactoryCreateOptions,
-	): Promise<Sandbox> {
-		const hash = sourceHash(source);
+	async function create(options: FactoryCreateOptions): Promise<Sandbox> {
+		const hash = sourceHash(options.source);
 		const start = performance.now();
-		const { methods, ...rest } = options ?? {};
-		const sb = await sandbox(source, methods ?? {}, { ...rest, logger });
+		const sb = await sandbox({ ...options, logger });
 		const durationMs = Math.round(performance.now() - start);
 
 		created.add(sb);

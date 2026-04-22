@@ -5,17 +5,20 @@ import { renderFlamegraph } from "./flamegraph.js";
 
 const ACTION_20_40_RE =
 	/kind-action[^"]*"[^>]* x="20\.\d+%"[^>]* width="40\.\d+%"/;
-const SYSTEM_MIN_WIDTH_RE =
-	/kind-system[^"]*"[^>]* x="10\.\d+%"[^>]* width="(\d+\.\d+)%"/;
+const REST_MIN_WIDTH_RE =
+	/kind-rest[^"]*"[^>]* x="10\.\d+%"[^>]* width="(\d+\.\d+)%"/;
 const ACTION_ORPHAN_RE =
 	/kind-action[^"]*orphan[^"]*"[^>]* x="20\.\d+%"[^>]* width="80\.\d+%"/;
 const CONNECTOR_RE = /class="timer-connector"/g;
 const CONNECTOR_ID_9_RE = /class="timer-connector"[^>]*data-timer-id="9"/g;
 const CONNECTOR_ID_7_RE = /class="timer-connector"[^>]*data-timer-id="7"/;
 const CONNECTOR_ID_9_ONE_RE = /class="timer-connector"[^>]*data-timer-id="9"/;
-const TIMER_BAR_ID_7_RE = /kind-timer[^"]*"[^>]*data-timer-id="7"/;
-const TIMER_BAR_ID_9_RE = /kind-timer[^"]*"[^>]*data-timer-id="9"/;
-const TIMER_Y_RE = /kind-timer[^"]*"[^>]* x="[^"]*" y="(\d+)"/g;
+const TIMER_BAR_ID_7_RE = /kind-rest[^"]*"[^>]*data-timer-id="7"/;
+const TIMER_BAR_ID_9_RE = /kind-rest[^"]*"[^>]*data-timer-id="9"/;
+const TIMER_Y_RE =
+	/kind-rest[^"]*"[^>]* x="[^"]*" y="(\d+)"[^>]*data-timer-id="\d+"/g;
+const FETCH_REST_RE = /kind-rest[^"]*"[^>]* x="20\.\d+%"[^>]* width="20\.\d+%"/;
+const WASI_MARKER_CIRCLE_RE = /class="marker-call"[^>]*data-event-seq="2"/;
 const DURATION_1MS_RE = /1\.0 ms/;
 
 // ---------------------------------------------------------------------------
@@ -26,6 +29,22 @@ function req(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind" | "seq">,
 ): InvocationEvent {
 	return makeEvent({ id: "evt_a", ...overrides });
+}
+
+// reqOpen widens the `kind` field so tests can simulate plugin-era prefixes
+// (fetch.*, wasi.*) that are outside core's closed `EventKind` union.
+function reqOpen(
+	overrides: Partial<Omit<InvocationEvent, "kind">> & {
+		kind: string;
+		seq: number;
+	},
+): InvocationEvent {
+	const { kind, ...rest } = overrides;
+	return makeEvent({
+		id: "evt_a",
+		...rest,
+		kind: kind as InvocationEvent["kind"],
+	});
 }
 
 async function html(fragment: unknown): Promise<string> {
@@ -108,7 +127,7 @@ describe("renderFlamegraph — canonical tree", () => {
 		expect(out).toContain('class="flame-graph"');
 		expect(out).toContain("kind-trigger");
 		expect(out).toContain("kind-action");
-		expect(out).toContain("kind-system");
+		expect(out).toContain("kind-rest");
 		// Summary line content
 		expect(out).toContain("webhook");
 		expect(out).toContain("sendEmail"); // action name inside bar label
@@ -138,7 +157,7 @@ describe("renderFlamegraph — canonical tree", () => {
 		];
 		const out = await html(renderFlamegraph(events));
 		// min width floor is 4/1000 * 100 = 0.4%
-		const match = out.match(SYSTEM_MIN_WIDTH_RE);
+		const match = out.match(REST_MIN_WIDTH_RE);
 		expect(match).not.toBeNull();
 		if (match) {
 			expect(Number(match[1])).toBeGreaterThanOrEqual(0.4);
@@ -238,7 +257,7 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 		expect(matches).not.toBeNull();
 		expect(matches?.length).toBe(1);
 		expect(out).toContain('data-timer-id="7"');
-		expect(out).toContain("kind-timer");
+		expect(out).toContain("kind-rest");
 		// Summary includes timer count
 		expect(out).toContain("1 timer");
 	});
@@ -486,6 +505,141 @@ describe("renderFlamegraph — concurrent overlap", () => {
 		);
 		expect(yValues.length).toBe(2);
 		expect(yValues[0]).not.toBe(yValues[1]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Open-ended prefixes (plugin-era: fetch.*, wasi.*, legacy system.*)
+// ---------------------------------------------------------------------------
+
+describe("renderFlamegraph — rest-lane bars", () => {
+	it("renders fetch.request/response as a kind-rest bar", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0 }),
+			reqOpen({
+				kind: "fetch.request",
+				seq: 1,
+				ref: 0,
+				ts: 200,
+				name: "fetch",
+			}),
+			reqOpen({
+				kind: "fetch.response",
+				seq: 2,
+				ref: 1,
+				ts: 400,
+				name: "fetch",
+			}),
+			req({ kind: "trigger.response", seq: 3, ref: 0, ts: 1000 }),
+		];
+		const out = await html(renderFlamegraph(events));
+		expect(out).toContain("kind-rest");
+		// fetch bar spans 200→400 of 0→1000 → x=20%, width=20%.
+		expect(out).toMatch(FETCH_REST_RE);
+	});
+
+	it("renders legacy system.request/response as a kind-rest bar", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0 }),
+			req({
+				kind: "system.request",
+				seq: 1,
+				ref: 0,
+				ts: 200,
+				name: "host.fetch",
+			}),
+			req({
+				kind: "system.response",
+				seq: 2,
+				ref: 1,
+				ts: 400,
+				name: "host.fetch",
+			}),
+			req({ kind: "trigger.response", seq: 3, ref: 0, ts: 1000 }),
+		];
+		const out = await html(renderFlamegraph(events));
+		expect(out).toContain("kind-rest");
+	});
+
+	it("renders timer.request/response as a kind-rest bar", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0 }),
+			req({
+				kind: "timer.request",
+				seq: 1,
+				ref: null,
+				ts: 200,
+				name: "setTimeout",
+				input: { timerId: 3 },
+			}),
+			req({
+				kind: "timer.response",
+				seq: 2,
+				ref: 1,
+				ts: 400,
+				name: "setTimeout",
+				input: { timerId: 3 },
+			}),
+			req({ kind: "trigger.response", seq: 3, ref: 0, ts: 1000 }),
+		];
+		const out = await html(renderFlamegraph(events));
+		expect(out).toContain("kind-rest");
+		expect(out).toContain('data-timer-id="3"');
+	});
+});
+
+describe("renderFlamegraph — open-ended markers", () => {
+	it("renders wasi.* leaf event as a marker-call circle", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0 }),
+			req({ kind: "action.request", seq: 1, ref: 0, ts: 100, name: "work" }),
+			reqOpen({
+				kind: "wasi.clock_time_get",
+				seq: 2,
+				ref: 1,
+				ts: 200,
+				name: "wasi.clock_time_get",
+			}),
+			req({ kind: "action.response", seq: 3, ref: 1, ts: 300, name: "work" }),
+			req({ kind: "trigger.response", seq: 4, ref: 0, ts: 500 }),
+		];
+		const out = await html(renderFlamegraph(events));
+		// wasi.* is open-ended; it renders as the generic circle marker.
+		expect(out).toMatch(WASI_MARKER_CIRCLE_RE);
+	});
+
+	it("renders timer.set / timer.clear markers alongside wasi.* markers", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0 }),
+			req({
+				kind: "timer.set",
+				seq: 1,
+				ref: 0,
+				ts: 50,
+				name: "setTimeout",
+				input: { timerId: 2 },
+			}),
+			reqOpen({
+				kind: "wasi.fd_write",
+				seq: 2,
+				ref: 0,
+				ts: 100,
+				name: "wasi.fd_write",
+			}),
+			req({
+				kind: "timer.clear",
+				seq: 3,
+				ref: 0,
+				ts: 150,
+				name: "clearTimeout",
+				input: { timerId: 2 },
+			}),
+			req({ kind: "trigger.response", seq: 4, ref: 0, ts: 500 }),
+		];
+		const out = await html(renderFlamegraph(events));
+		expect(out).toContain("marker-set");
+		expect(out).toContain("marker-clear-bg");
+		expect(out).toContain("marker-call");
 	});
 });
 

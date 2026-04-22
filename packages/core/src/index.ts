@@ -52,20 +52,29 @@ interface InvocationEventError {
 	issues?: unknown;
 }
 
-interface InvocationEvent {
+// The subset of event fields the sandbox owns. Sandbox code (worker + main-
+// thread factory) emits `SandboxEvent` — it has no knowledge of tenant or
+// invocation identity. The runtime widens each `SandboxEvent` to a full
+// `InvocationEvent` by stamping runtime metadata (`id`, `tenant`, `workflow`,
+// `workflowSha`) at the `sb.onEvent` boundary in the executor, before
+// forwarding to the bus. See SECURITY.md §2 R-8.
+interface SandboxEvent {
 	readonly kind: EventKind;
-	readonly id: string;
 	readonly seq: number;
 	readonly ref: number | null;
 	readonly at: string;
 	readonly ts: number;
-	readonly tenant: string;
-	readonly workflow: string;
-	readonly workflowSha: string;
 	readonly name: string;
 	readonly input?: unknown;
 	readonly output?: unknown;
 	readonly error?: InvocationEventError;
+}
+
+interface InvocationEvent extends SandboxEvent {
+	readonly id: string;
+	readonly tenant: string;
+	readonly workflow: string;
+	readonly workflowSha: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +240,9 @@ export type {
 	InvocationEvent,
 	InvocationEventError,
 	Manifest,
+	SandboxEvent,
 	TriggerManifest,
 	WorkflowManifest,
 };
+
 export { dispatchAction, IIFE_NAMESPACE, ManifestSchema, z };

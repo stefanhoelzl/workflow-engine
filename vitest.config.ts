@@ -1,8 +1,10 @@
 import { defineConfig } from "vitest/config";
-import { wptPreamble } from "./packages/sandbox/test/wpt/harness/preamble/vite-plugin.js";
+import { sandboxPlugins } from "./packages/sandbox/src/vite/sandbox-plugins.js";
+import { sandboxPolyfills } from "./packages/sandbox-stdlib/src/web-platform/vite-plugin.js";
+import { wptPreamble } from "./packages/sandbox-stdlib/test/wpt/harness/preamble/vite-plugin.js";
 
 export default defineConfig({
-	plugins: [wptPreamble()],
+	plugins: [wptPreamble(), sandboxPlugins(), sandboxPolyfills()],
 	test: {
 		include: [
 			"packages/*/src/**/*.{test,spec}.ts",
@@ -10,8 +12,11 @@ export default defineConfig({
 			// limited-all helpers. Fast and deterministic, safe to run in the
 			// default pnpm test. The heavy WPT suite itself (wpt.test.ts) is
 			// excluded below and runs only via pnpm test:wpt.
-			"packages/sandbox/test/wpt/harness/**/*.{test,spec}.ts",
+			"packages/sandbox-stdlib/test/wpt/harness/**/*.{test,spec}.ts",
 		],
-		exclude: ["**/node_modules/**", "packages/sandbox/test/wpt/wpt.test.ts"],
+		exclude: [
+			"**/node_modules/**",
+			"packages/sandbox-stdlib/test/wpt/wpt.test.ts",
+		],
 	},
 });

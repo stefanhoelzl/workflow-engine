@@ -1,12 +1,13 @@
-// Sandbox vite build — compiles src/worker.ts into dist/src/worker.js with
-// the sandbox polyfills virtual module resolved into an IIFE string.
+// Sandbox vite build — compiles src/worker.ts into dist/src/worker.js.
 //
 // Worker is loaded at runtime via
 //   `new Worker(pathToFileURL(dist/src/worker.js))` (see src/index.ts:
 //   resolveWorkerUrl()). Node's native ESM loader processes the file
-//   and cannot resolve virtual: schemes, so the polyfill IIFE MUST be
-//   inlined at build time. This config makes vite the authoritative
-//   emitter for worker.js (tsc's emit of worker.js is overwritten).
+//   directly. The polyfill IIFE (`virtual:sandbox-polyfills`) is now
+//   resolved at the runtime's vite build (via `@workflow-engine/sandbox
+//   -stdlib/vite`) and passed into the web-platform plugin descriptor's
+//   `bundleSource` config — the sandbox worker itself no longer imports
+//   the virtual module directly.
 //
 // All other sandbox source files (index.ts, bridge.ts, globals.ts, etc.)
 // are published as raw TS via `exports: { ".": "./src/index.ts" }` and
@@ -14,10 +15,8 @@
 // its own build because it's filesystem-loaded, not imported.
 
 import { defineConfig } from "vite";
-import { sandboxPolyfills } from "./src/polyfills/vite-plugin.js";
 
 export default defineConfig({
-	plugins: [sandboxPolyfills()],
 	build: {
 		ssr: "src/worker.ts",
 		outDir: "dist/src",

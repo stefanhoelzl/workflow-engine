@@ -235,23 +235,44 @@ Where the computed `width` in visual pixels would fall below a minimum-width flo
 
 ### Requirement: Bar visual treatment by kind and status
 
-Each paired-event bar SHALL carry a CSS class identifying its kind, from the set `kind-trigger`, `kind-action`, `kind-system`, `kind-timer`. Kind colors SHALL be distinct from each other and distinct from the error-red used for failure indicators; kind colors SHALL NOT use green or red.
+The flamegraph SHALL render bars with visual treatment determined by their kind, with the following kind union:
 
-A bar whose terminal event is `*.error` SHALL additionally carry the `bar-error` class and SHALL include a child element carrying an error indicator recognizable to operators (an error icon or glyph). The kind class (and therefore the kind color) SHALL remain applied to errored bars.
+```ts
+type BarKind = "trigger" | "action" | "rest";
+```
 
-A bar whose duration exceeds a width threshold SHALL include a child `<text>` element whose content begins with the event's `name`; a sub-caption `<text>` with the duration in smart-unit format MAY additionally appear when space permits. Bars narrower than the threshold SHALL omit the text elements but SHALL still render the `<rect>`.
+The kind discriminator from event kinds SHALL be:
 
-#### Scenario: Kind classes are applied
+- `kind.startsWith("trigger.")` → `"trigger"`
+- `kind.startsWith("action.")` → `"action"`
+- `kind.endsWith(".request") || kind.endsWith(".response") || kind.endsWith(".error")` (and not matching the above) → `"rest"`
+- Otherwise: not a bar (the event may be a marker, see the marker requirement)
 
-- **WHEN** a trigger, action, host-bridge, and timer-callback bar are rendered in the same flamegraph
-- **THEN** the trigger bar SHALL carry `kind-trigger`, the action bar `kind-action`, the host-bridge bar `kind-system`, and the timer-callback bar `kind-timer`
+The `trigger` bar SHALL use the outermost visual styling. The `action` bar SHALL use nested action styling. Any other request/response/error pair (fetch, timer, custom plugin-emitted pairs) SHALL render with the uniform `rest` styling. Per-prefix color coding MAY be layered on top as a presentation choice, but the layout logic treats all non-trigger, non-action request/response bars uniformly.
 
-#### Scenario: Failed action bar carries error treatment
+Bars SHALL use a red "errored" visual treatment when the terminal event (closing the span) has kind ending in `.error`. Otherwise they SHALL use the success treatment.
 
-- **GIVEN** an `action.request` at `seq: 1` and a matching `action.error` at `seq: 2`
+#### Scenario: fetch.request/response bars render as rest
+
+- **GIVEN** a flamegraph layout for a run that emitted `fetch.request` and `fetch.response` events
 - **WHEN** the flamegraph is rendered
-- **THEN** the action bar SHALL carry both `kind-action` and `bar-error` classes
-- **AND** the bar SHALL contain a child element signaling an error to operators
+- **THEN** a single bar SHALL appear for the fetch span
+- **AND** the bar's kind SHALL be `"rest"`
+- **AND** the bar SHALL use the standard rest styling (not trigger-styled, not action-styled)
+
+#### Scenario: timer.request/response bars render as rest
+
+- **GIVEN** a timer callback that fired and returned successfully
+- **WHEN** the flamegraph renders its `timer.request`/`timer.response` pair
+- **THEN** a bar SHALL be produced with kind `"rest"`
+
+#### Scenario: trigger and action bars retain distinct styling
+
+- **GIVEN** a flamegraph with `trigger.*`, `action.*`, and `fetch.*` events
+- **WHEN** rendered
+- **THEN** the trigger bar SHALL use trigger styling
+- **AND** the action bar(s) SHALL use action styling
+- **AND** the fetch bar(s) SHALL use rest styling
 
 ### Requirement: Orphan bar treatment for engine-crashed invocations
 
@@ -266,24 +287,13 @@ A paired request event whose matching response/error is missing from the event l
 
 ### Requirement: Timer callbacks render in a separate track
 
-`timer.request` events (whose `ref` is `null`) SHALL NOT render in the main tree. The rendered SVG SHALL contain a distinct `<g>` group representing the timer-callback track, separated from the main tree by a divider and a textual `TIMER CALLBACKS` label. The label SHALL render in the text layer so that no bar or marker occludes it.
+Timer callback bars (kinds `timer.request` / `timer.response` / `timer.error`) SHALL be classified as `"rest"` kind for styling purposes but MAY be laid out on a separate track from main-tree bars depending on their temporal relationship to the main tree (callbacks firing outside the trigger span are track-only; callbacks firing inside it may nest with the main tree). This is a layout concern, not a kind-discriminator concern.
 
-Within the timer track, each `timer.request` bar SHALL be placed on a track row. Events with `ref` equal to a `timer.request.seq` SHALL be laid out in sub-rows below their parent firing using the same overlap-stacking rule as the main tree. Timer bars whose `[ts, ts+duration)` windows overlap SHALL push to new track rows.
+#### Scenario: Callback nested under trigger remains in main tree
 
-If no `timer.request` events exist for the invocation, the track area SHALL still render its divider and label (with content indicating the track is empty).
-
-#### Scenario: timer.request renders inside the timer-callback group
-
-- **GIVEN** an invocation with one `timer.request` at `seq: 3` (`ref: null`)
-- **WHEN** the flamegraph is rendered
-- **THEN** the `<rect>` for that timer bar SHALL be a descendant of an SVG group carrying a `timer-track` class
-- **AND** it SHALL NOT be a descendant of a main-tree group
-
-#### Scenario: Empty track still renders divider and label
-
-- **GIVEN** an invocation with no `timer.request` events
-- **WHEN** the flamegraph is rendered
-- **THEN** the fragment SHALL still contain the timer-track divider element and the `TIMER CALLBACKS` label text
+- **GIVEN** a setTimeout whose callback fires before trigger.response
+- **WHEN** the flamegraph lays out the timer bar
+- **THEN** the bar MAY be placed in the main tree if its `ref` points to an event still inside the trigger span
 
 ### Requirement: Timer connectors
 
@@ -311,32 +321,31 @@ A `timer.set` event with no matching `timer.request` in the event stream (cleare
 
 ### Requirement: Instant markers for single-record events
 
-Events with `kind` in the set `{timer.set, timer.clear, system.call}` SHALL render as instant markers on the row identified by their `ref`. A `ref` of `null` on a `timer.clear` SHALL place the marker on the main-tree trigger row (row 0).
+Markers SHALL be rendered for leaf events (events not belonging to a request/response/error triple). The set of marker kinds is open-ended; the rendering SHALL accept any string kind and render as a small dot. Known marker kinds include at minimum:
 
-- `timer.set` SHALL render as a `<rect>` carrying class `marker-set`, fill = kind-timer color, full row height, and a small fixed horizontal extent (narrower than a typical bar).
-- `timer.clear` SHALL render as a `<rect>` carrying class `marker-clear-bg` (same dimensions as `marker-set`) PLUS two `<line>` elements carrying class `marker-x` drawn as diagonals forming a `×` inside the rect.
-- `system.call` SHALL render as a small marker (e.g. a `<circle>` or short `<rect>`) distinct from the timer markers, on the ref's row at the event's `ts`.
-- A `timer.clear` event whose `ref` is `null` SHALL additionally carry class `marker-auto` so it renders with reduced opacity, visually distinguishing auto-cleanup at run-end from explicit operator-initiated clears.
+- `timer.set` — timer was scheduled
+- `timer.clear` — timer was cancelled
+- `console.log` / `console.info` / `console.warn` / `console.error` / `console.debug` — guest console call
+- `uncaught-error` — uncaught exception routed through reportError
+- `wasi.clock_time_get` — WASI clock read (when the wasi plugin registers this telemetry)
+- `wasi.random_get` — WASI random read
+- `wasi.fd_write` — QuickJS engine diagnostic line (when wasi plugin forwards)
 
-#### Scenario: timer.set marker anchors to its ref's row
+The previous marker kind `system.call` SHALL NOT be produced by any core plugin; consumers rendering historical data containing `system.call` markers SHALL treat them as legacy.
 
-- **GIVEN** an `action.request` at `seq: 1` (`ref: 0`) and a `timer.set` at `seq: 2` with `ref: 1`
-- **WHEN** the flamegraph is rendered
-- **THEN** the rendered `marker-set` element SHALL have its `y` coordinate match the y of the action bar (depth 1)
+#### Scenario: Open-ended marker kinds
 
-#### Scenario: timer.clear renders with × glyph
+- **GIVEN** a flamegraph receiving a leaf event with kind `custom.emit` (from a hypothetical plugin)
+- **WHEN** the flamegraph renders
+- **THEN** a marker dot SHALL be placed at the event's timestamp
+- **AND** the marker's label SHALL include the full kind string
 
-- **GIVEN** a `timer.clear` with `input.timerId = 7` and `ref != null`
-- **WHEN** the flamegraph is rendered
-- **THEN** the fragment SHALL contain a `<rect class="marker-clear-bg" data-timer-id="7">` element
-- **AND** at least two `<line class="marker-x" data-timer-id="7">` elements positioned to form diagonals across the rect
+#### Scenario: wasi.* markers replace system.call
 
-#### Scenario: Auto-clear renders on row 0 with marker-auto
-
-- **GIVEN** a `timer.clear` with `ref: null` (auto-cleanup at run-end) and `input.timerId = 7`
-- **WHEN** the flamegraph is rendered
-- **THEN** the marker's rect SHALL carry both `marker-clear-bg` and `marker-auto` classes
-- **AND** its `y` coordinate SHALL equal the y of the trigger row (row 0)
+- **GIVEN** a run producing WASI telemetry via the runtime wasi plugin
+- **WHEN** the flamegraph renders
+- **THEN** markers SHALL be labeled `wasi.clock_time_get` or `wasi.random_get` (or `wasi.fd_write`)
+- **AND** no `system.call` markers SHALL be produced by current plugin code
 
 ### Requirement: Timer-id cross-highlight wiring
 

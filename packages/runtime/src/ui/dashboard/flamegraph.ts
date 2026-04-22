@@ -34,7 +34,7 @@ const MARKER_CALL_RADIUS = 3;
 // ---------------------------------------------------------------------------
 
 type Location = "main" | "track";
-type BarKind = "trigger" | "action" | "system" | "timer";
+type BarKind = "trigger" | "action" | "rest";
 
 interface LaidOutBar {
 	readonly kind: BarKind;
@@ -50,7 +50,10 @@ interface LaidOutBar {
 	readonly timerId: string | null;
 }
 
-type MarkerKind = "timer.set" | "timer.clear" | "system.call";
+// Markers are open-ended leaf events (e.g. timer.set, timer.clear, wasi.*,
+// console.log, uncaught-error). The flamegraph only renders bespoke glyphs
+// for a small known set and falls back to a neutral circle otherwise.
+type MarkerKind = string;
 
 interface LaidOutMarker {
 	readonly kind: MarkerKind;
@@ -99,19 +102,14 @@ function barKindFromEventKind(kind: string): BarKind | null {
 	if (kind.startsWith("action.")) {
 		return "action";
 	}
+	// Any other <prefix>.request/.response/.error (fetch.*, timer.*, legacy
+	// system.*, future plugin prefixes) groups into the generic "rest" lane.
 	if (
-		kind === "system.request" ||
-		kind === "system.response" ||
-		kind === "system.error"
+		kind.endsWith(".request") ||
+		kind.endsWith(".response") ||
+		kind.endsWith(".error")
 	) {
-		return "system";
-	}
-	if (
-		kind === "timer.request" ||
-		kind === "timer.response" ||
-		kind === "timer.error"
-	) {
-		return "timer";
+		return "rest";
 	}
 	return null;
 }
@@ -317,7 +315,9 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		const subRow = greedyAssignSubRow(bucket, startTs, endTs);
 		subRowByRequestSeq.set(req.seq, subRow);
 		const errored = Boolean(terminal && isErrorKind(terminal.kind));
-		const timerId = kind === "timer" ? timerIdFromEvent(req) : null;
+		const timerId = req.kind.startsWith("timer.")
+			? timerIdFromEvent(req)
+			: null;
 		bars.push({
 			kind,
 			name: req.name,
@@ -386,10 +386,13 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 
 	const markers: LaidOutMarker[] = [];
 	for (const e of events) {
+		// Leaf events are anything that isn't a paired request/response/error.
+		// This includes timer.set/timer.clear plus open-ended plugin leaves
+		// (wasi.*, console.log, uncaught-error, legacy system.call, etc.).
 		if (
-			e.kind !== "timer.set" &&
-			e.kind !== "timer.clear" &&
-			e.kind !== "system.call"
+			isRequestKind(e.kind) ||
+			isResponseKind(e.kind) ||
+			isErrorKind(e.kind)
 		) {
 			continue;
 		}
@@ -406,7 +409,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 				loc = parent.location;
 			}
 		}
-		const timerId = e.kind === "system.call" ? null : timerIdFromEvent(e);
+		const timerId = e.kind.startsWith("timer.") ? timerIdFromEvent(e) : null;
 		markers.push({
 			kind: e.kind,
 			name: e.name,
@@ -426,7 +429,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		const originX = pct(setM.ts - triggerEvent.ts, totalDurationTs);
 		const originY = yForRow(setM.row, setM.location, mainRows) + BAR_HEIGHT_PX;
 		for (const bar of laidOutBars) {
-			if (bar.kind !== "timer" || bar.timerId !== setM.timerId) {
+			if (bar.timerId === null || bar.timerId !== setM.timerId) {
 				continue;
 			}
 			const targetX = pct(bar.startTs - triggerEvent.ts, totalDurationTs);
@@ -540,10 +543,9 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 		if (bar.orphan) {
 			classes.push("orphan");
 		}
-		const dataTimerId =
-			bar.kind === "timer" && bar.timerId
-				? ` data-timer-id="${escapeHtml(bar.timerId)}"`
-				: "";
+		const dataTimerId = bar.timerId
+			? ` data-timer-id="${escapeHtml(bar.timerId)}"`
+			: "";
 		const terminal = bar.terminalSeq === null ? "" : String(bar.terminalSeq);
 		const dataEventPair = ` data-event-pair="${bar.requestSeq}-${escapeHtml(terminal)}"`;
 		shapes.push(
@@ -585,7 +587,9 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 				`<line class="marker-x${autoClass}" x1="${(xRight - MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y1="${yTop}" x2="${(xLeft + MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y2="${yBot}"${dataTimerId}${dataEventSeq}/>`,
 			);
 		} else {
-			// system.call: a small filled circle centered on the row.
+			// Generic leaf marker (wasi.*, legacy system.call, console.log,
+			// uncaught-error, future plugin leaves): a small filled circle
+			// centered on the row.
 			const cxPct = x + markerWidthPct / HALF;
 			const cy = y + BAR_HEIGHT_PX / HALF;
 			shapes.push(

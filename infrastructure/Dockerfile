@@ -10,6 +10,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/core/package.json packages/core/
 COPY packages/runtime/package.json packages/runtime/
 COPY packages/sandbox/package.json packages/sandbox/
+COPY packages/sandbox-stdlib/package.json packages/sandbox-stdlib/
 COPY packages/sdk/package.json packages/sdk/
 RUN pnpm install --frozen-lockfile
 
@@ -20,6 +21,8 @@ COPY packages/runtime/tsconfig.json packages/runtime/vite.config.ts packages/run
 COPY packages/runtime/src/ packages/runtime/src/
 COPY packages/sandbox/tsconfig.json packages/sandbox/vite.config.ts packages/sandbox/
 COPY packages/sandbox/src/ packages/sandbox/src/
+COPY packages/sandbox-stdlib/tsconfig.json packages/sandbox-stdlib/
+COPY packages/sandbox-stdlib/src/ packages/sandbox-stdlib/src/
 # Build sandbox so its dist/src/worker.js is emitted — the runtime bundles
 # sandbox's index.ts but the worker is loaded from disk at runtime via
 # `new Worker(pathToFileURL(.../dist/src/worker.js))` (see

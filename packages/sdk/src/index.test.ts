@@ -178,29 +178,30 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 	const globalRef = globalThis as Record<string, unknown>;
 
 	beforeEach(() => {
-		// The SDK delegates to globalThis.__dispatchAction (installed by the
-		// runtime). Install the same dispatch shape used in production so the
-		// SDK callable runs the host bridge → handler → output-parse pipeline.
+		// The SDK delegates to globalThis.__sdk.dispatchAction (installed by the
+		// sdk-support plugin). Install the same dispatch shape used in
+		// production so the SDK callable runs the host bridge → handler →
+		// completer pipeline.
 		hostCallMock = vi.fn();
-		globalRef.__hostCallAction = hostCallMock;
-		globalRef.__dispatchAction = async (
-			name: string,
-			input: unknown,
-			handler: (input: unknown) => Promise<unknown>,
-			outputSchema: { parse(data: unknown): unknown },
-		) => {
-			await (hostCallMock as (n: string, i: unknown) => Promise<unknown>)(
-				name,
-				input,
-			);
-			const raw = await handler(input);
-			return outputSchema.parse(raw);
-		};
+		globalRef.__sdk = Object.freeze({
+			dispatchAction: async (
+				name: string,
+				input: unknown,
+				handler: (input: unknown) => Promise<unknown>,
+				completer: (raw: unknown) => unknown,
+			) => {
+				await (hostCallMock as (n: string, i: unknown) => Promise<unknown>)(
+					name,
+					input,
+				);
+				const raw = await handler(input);
+				return completer(raw);
+			},
+		});
 	});
 
 	afterEach(() => {
-		globalRef.__hostCallAction = undefined;
-		globalRef.__dispatchAction = undefined;
+		globalRef.__sdk = undefined;
 	});
 
 	it("notifies the host, then runs the handler, then returns the validated output", async () => {
@@ -273,6 +274,40 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 		expect(handler).not.toHaveBeenCalled();
 	});
 
+	it("invokes __sdk.dispatchAction with (name, input, handler, completer) — completer is (raw) => outputSchema.parse(raw)", async () => {
+		const dispatchSpy = vi.fn(
+			async (
+				_name: string,
+				_input: unknown,
+				handler: (input: unknown) => Promise<unknown>,
+				completer: (raw: unknown) => unknown,
+			) => {
+				const raw = await handler(_input);
+				return completer(raw);
+			},
+		);
+		globalRef.__sdk = Object.freeze({ dispatchAction: dispatchSpy });
+		const handler = vi.fn(async ({ x }: { x: number }) => x * 2);
+		const a = action({
+			input: z.object({ x: z.number() }),
+			output: z.number(),
+			handler,
+			name: "double",
+		});
+		const result = await a({ x: 21 });
+		expect(result).toBe(42);
+		expect(dispatchSpy).toHaveBeenCalledTimes(1);
+		const call = dispatchSpy.mock.calls[0];
+		expect(call?.[0]).toBe("double");
+		expect(call?.[1]).toEqual({ x: 21 });
+		expect(typeof call?.[2]).toBe("function");
+		expect(typeof call?.[3]).toBe("function");
+		// completer runs outputSchema.parse — passing a mismatching raw value
+		// should throw.
+		const completer = call?.[3] as (raw: unknown) => unknown;
+		expect(() => completer("not-a-number")).toThrow();
+	});
+
 	it("dispatches with the configured name", async () => {
 		hostCallMock.mockResolvedValue(undefined);
 		const handler = vi.fn(async () => "ok");
@@ -291,8 +326,7 @@ describe("action callable without sandbox globals", () => {
 	const globalRef = globalThis as Record<string, unknown>;
 
 	beforeEach(() => {
-		globalRef.__hostCallAction = undefined;
-		globalRef.__dispatchAction = undefined;
+		globalRef.__sdk = undefined;
 	});
 
 	it("throws when invoked outside the sandbox (no dispatcher) — handler MUST NOT run", async () => {

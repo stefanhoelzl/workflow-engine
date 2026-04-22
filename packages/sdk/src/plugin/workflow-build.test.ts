@@ -376,6 +376,16 @@ describe("workflowPlugin: brand-based discovery", () => {
 		const { createHash } = await import("node:crypto");
 		const expectedSha = createHash("sha256").update(bundleSrc).digest("hex");
 		expect(manifest.sha).toBe(expectedSha);
+
+		// Post-PR 2 (sandbox-plugin-architecture §2.2/2.6): the emitted bundle
+		// must route action dispatch through `globalThis.__sdk.dispatchAction`
+		// (installed as a locked global by the sandbox-store's dispatcher
+		// IIFE). Legacy `__dispatchAction` / `__hostCallAction` / `__emitEvent`
+		// references must NOT appear in tenant bundles.
+		expect(bundleSrc).toContain("globalThis.__sdk");
+		expect(bundleSrc).not.toContain("__dispatchAction");
+		expect(bundleSrc).not.toContain("__hostCallAction");
+		expect(bundleSrc).not.toContain("__emitEvent");
 	});
 
 	it("generates JSON Schema for input, output, and trigger body", async () => {

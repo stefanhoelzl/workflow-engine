@@ -13,7 +13,7 @@
 		"lint": "biome check --error-on-warnings .",
 		"format": "biome check --write . && tofu fmt -recursive infrastructure/",
 		"test": "tsc --build && pnpm --filter @workflow-engine/sandbox build && vitest run",
-		"test:wpt": "tsc --build && pnpm --filter @workflow-engine/sandbox build && vitest run --config packages/sandbox/test/wpt/vitest.config.ts",
+		"test:wpt": "tsc --build && pnpm --filter @workflow-engine/sandbox build && vitest run --config packages/sandbox-stdlib/test/wpt/vitest.config.ts",
 		"test:wpt:refresh": "tsx scripts/wpt-refresh.ts",
 		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val-local,tofu-val-persistence,tofu-val-cluster,tofu-val-prod,tofu-val-staging \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/envs/local validate\" \"tofu -chdir=infrastructure/envs/persistence validate\" \"tofu -chdir=infrastructure/envs/cluster validate\" \"tofu -chdir=infrastructure/envs/prod validate\" \"tofu -chdir=infrastructure/envs/staging validate\"",
 		"dev": "tsx scripts/dev.ts",

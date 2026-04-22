@@ -1,12 +1,11 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { InvocationEvent } from "@workflow-engine/core";
-import { FetchBlockedError, hardenedFetch } from "./hardened-fetch.js";
-import type { MethodMap } from "./install-host-methods.js";
+import type { SandboxEvent } from "@workflow-engine/core";
 import { dispatchLog } from "./log-dispatch.js";
+import type { PluginDescriptor } from "./plugin.js";
+import { serializePluginDescriptors } from "./plugin-compose.js";
 import type {
-	HostFetchForwardContext,
 	MainToWorker,
 	RunResultPayload,
 	SerializedError,
@@ -25,13 +24,6 @@ type RunResult =
 	| { ok: true; result: unknown }
 	| { ok: false; error: { message: string; stack: string } };
 
-interface RunOptions {
-	readonly invocationId: string;
-	readonly tenant: string;
-	readonly workflow: string;
-	readonly workflowSha: string;
-}
-
 interface Logger {
 	info(message: string, meta?: Record<string, unknown>): void;
 	warn(message: string, meta?: Record<string, unknown>): void;
@@ -40,44 +32,32 @@ interface Logger {
 }
 
 interface SandboxOptions {
-	filename?: string;
-	fetch?: typeof globalThis.fetch;
-	// Optional event-name overrides for construction-time methods. The bridge
-	// uses these to label `system.*` events (e.g. `__hostCallAction` →
-	// `host.validateAction`). Without an entry, the method name itself is used.
-	methodEventNames?: Record<string, string>;
+	readonly source: string;
+	readonly plugins: readonly PluginDescriptor[];
+	readonly filename?: string;
 	// Maximum memory (in bytes) the QuickJS runtime is allowed to allocate.
 	// Exceeding it triggers an OOM error inside the guest. Passed directly
 	// to QuickJS.create({ memoryLimit }).
-	memoryLimit?: number;
+	readonly memoryLimit?: number;
 	// Optional sink for WorkerToMain log messages (quickjs engine diagnostics
-	// from fd_write). Omit to silently drop engine log lines.
-	logger?: Logger;
+	// from fd_write + plugin dangling-frame warnings). Omit to silently drop
+	// engine log lines.
+	readonly logger?: Logger;
 }
 
 interface Sandbox {
-	run(name: string, ctx: unknown, options?: RunOptions): Promise<RunResult>;
-	onEvent(cb: (event: InvocationEvent) => void): void;
+	// `run()` rejects if another run is still in flight on this sandbox — the
+	// sandbox serves one run at a time. Callers (the runtime executor) are
+	// expected to serialize; a second call while one is active is a caller
+	// bug.
+	run(name: string, ctx: unknown): Promise<RunResult>;
+	// Subscriber receives `SandboxEvent` — the subset of event fields the
+	// sandbox owns (no tenant/workflow/workflowSha/id). The runtime widens
+	// to `InvocationEvent` by stamping invocation metadata in its own
+	// `sb.onEvent` handler before forwarding to the bus (SECURITY.md §2 R-8).
+	onEvent(cb: (event: SandboxEvent) => void): void;
 	dispose(): void;
 	onDied(cb: (err: Error) => void): void;
-}
-
-const DEFAULT_RUN_OPTIONS: RunOptions = {
-	invocationId: "evt_test",
-	tenant: "t0",
-	workflow: "test",
-	workflowSha: "",
-};
-
-const RESERVED_ERROR_KEYS = new Set(["name", "message", "stack", "issues"]);
-
-function isJsonSafe(value: unknown): boolean {
-	try {
-		JSON.stringify(value);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 function errorFromSerialized(err: SerializedError): Error {
@@ -95,54 +75,25 @@ function errorFromSerialized(err: SerializedError): Error {
 	return e;
 }
 
-function serializeError(err: unknown): SerializedError {
-	if (err instanceof Error) {
-		const base: SerializedError = {
-			name: err.name,
-			message: err.message,
-			stack: err.stack ?? "",
-		};
-		const source = err as unknown as Record<string, unknown>;
-		if ("issues" in source && isJsonSafe(source.issues)) {
-			base.issues = source.issues;
-		}
-		const extras: Record<string, unknown> = {};
-		let hasExtras = false;
-		for (const key of Object.keys(source)) {
-			if (RESERVED_ERROR_KEYS.has(key)) {
-				continue;
-			}
-			const value = source[key];
-			if (!isJsonSafe(value)) {
-				continue;
-			}
-			extras[key] = value;
-			hasExtras = true;
-		}
-		if (hasExtras) {
-			base.data = extras;
-		}
-		return base;
-	}
-	const msg = String(err);
-	return { name: "Error", message: msg, stack: "" };
-}
-
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, run/dispose, event subscription
-async function sandbox(
-	source: string,
-	methods: MethodMap,
-	options?: SandboxOptions,
-): Promise<Sandbox> {
-	const filename = options?.filename ?? "action.js";
-	const methodNames = Object.keys(methods);
+async function sandbox(options: SandboxOptions): Promise<Sandbox> {
+	const {
+		source,
+		plugins,
+		filename = "action.js",
+		memoryLimit,
+		logger,
+	} = options;
 
 	const worker = new Worker(resolveWorkerUrl());
 
-	let onEventCb: ((event: InvocationEvent) => void) | null = null;
-	const logger = options?.logger;
+	let onEventCb: ((event: SandboxEvent) => void) | null = null;
 
-	function dispatchEvent(event: InvocationEvent): void {
+	// Events from the worker arrive as `SandboxEvent` (no tenant/workflow/
+	// workflowSha/id). They flow straight to the subscriber — the runtime
+	// widens by stamping invocation metadata in its `sb.onEvent` handler,
+	// so the sandbox package stays ignorant of runtime identity.
+	function dispatchEvent(event: SandboxEvent): void {
 		if (!onEventCb) {
 			return;
 		}
@@ -150,72 +101,6 @@ async function sandbox(
 			onEventCb(event);
 		} catch {
 			// Swallow callback errors so they don't kill the worker listener.
-		}
-	}
-
-	// Persistent listener: forwards events from worker to onEvent callback
-	// AND forwards __hostFetchForward requests.
-	//
-	// Default fetch is `hardenedFetch` (secure-by-default per D2 in the
-	// codify-sandbox-guest-surface change): any caller omitting `options.fetch`
-	// gets the IANA private-range block + DNS validation + redirect re-check
-	// + 30s timeout. Test callers and the WPT harness pass a custom `fetch`
-	// to bypass the hardening.
-	const usingHardenedDefault = options?.fetch === undefined;
-	const forwardFetch: typeof globalThis.fetch = options?.fetch ?? hardenedFetch;
-
-	async function handleFetchForward(
-		msg: Extract<WorkerToMain, { type: "request" }>,
-	): Promise<void> {
-		const [method, url, headers, body, context] = msg.args as [
-			string,
-			string,
-			Record<string, string>,
-			string | null,
-			HostFetchForwardContext | undefined,
-		];
-		try {
-			const response = await forwardFetch(url, { method, headers, body });
-			const respHeaders: Record<string, string> = {};
-			response.headers.forEach((v, k) => {
-				respHeaders[k] = v;
-			});
-			worker.postMessage({
-				type: "response",
-				requestId: msg.requestId,
-				ok: true,
-				result: {
-					status: response.status,
-					statusText: response.statusText,
-					headers: respHeaders,
-					body: await response.text(),
-				},
-			} satisfies MainToWorker);
-		} catch (err) {
-			const reason =
-				err instanceof FetchBlockedError ? err.reason : "network-error";
-			logger?.warn("sandbox.fetch.blocked", {
-				invocationId: context?.invocationId ?? "",
-				tenant: context?.tenant ?? "",
-				workflow: context?.workflow ?? "",
-				workflowSha: context?.workflowSha ?? "",
-				url,
-				reason,
-			});
-			// Sanitize when the hardened default path fails so the guest
-			// cannot distinguish a policy block from a real network error
-			// (preventing fetch-as-probe attacks). Custom `options.fetch`
-			// overrides pass the raw error through so tests can assert on
-			// specific error shapes.
-			const sanitized: SerializedError = usingHardenedDefault
-				? { name: "TypeError", message: "fetch failed", stack: "" }
-				: serializeError(err);
-			worker.postMessage({
-				type: "response",
-				requestId: msg.requestId,
-				ok: false,
-				error: sanitized,
-			} satisfies MainToWorker);
 		}
 	}
 
@@ -227,14 +112,6 @@ async function sandbox(
 		if (msg.type === "log") {
 			dispatchLog(logger, msg);
 			return;
-		}
-		if (msg.type === "request" && msg.method === "__hostFetchForward") {
-			handleFetchForward(msg).catch(() => {
-				// handleFetchForward catches its own errors and posts a
-				// sanitized reply; this .catch guards against unexpected
-				// programmer errors inside the helper (e.g. serialization
-				// bugs) so the worker message listener stays alive.
-			});
 		}
 	};
 	worker.on("message", onPersistentMessage);
@@ -297,18 +174,18 @@ async function sandbox(
 		worker.on("message", onMessage);
 		worker.on("error", onInitError);
 		worker.on("exit", onInitExit);
+		// Validate + freeze plugin descriptors before handing them to the
+		// worker. `serializePluginDescriptors` enforces JSON-serializable
+		// config, name uniqueness, dependsOn resolution — a bad descriptor
+		// array rejects init here (before the worker is even spawned)
+		// rather than inside the Phase-1a loader.
+		const validatedPlugins = serializePluginDescriptors(plugins);
 		const initMsg: MainToWorker = {
 			type: "init",
 			source,
-			methodNames,
-			...(options?.methodEventNames
-				? { methodEventNames: options.methodEventNames }
-				: {}),
 			filename,
-			forwardFetch: forwardFetch !== undefined,
-			...(options?.memoryLimit === undefined
-				? {}
-				: { memoryLimit: options.memoryLimit }),
+			pluginDescriptors: validatedPlugins,
+			...(memoryLimit === undefined ? {} : { memoryLimit }),
 		};
 		worker.postMessage(initMsg);
 	});
@@ -316,13 +193,12 @@ async function sandbox(
 	// --- Run dispatch ---
 
 	const pendingRunRejects = new Set<(err: Error) => void>();
+	// Concurrent-run guard. The sandbox serves one run at a time; the
+	// executor is expected to queue per-(tenant, sha). A second `run()`
+	// while one is active rejects loudly rather than silently interleaving.
+	let runActive = false;
 
-	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run validates args then sets up message/error/exit listeners and their cleanup inline
-	function run(
-		name: string,
-		ctx: unknown,
-		runOptions: RunOptions = DEFAULT_RUN_OPTIONS,
-	): Promise<RunResult> {
+	function run(name: string, ctx: unknown): Promise<RunResult> {
 		if (disposed) {
 			return Promise.reject(new Error("Sandbox is disposed"));
 		}
@@ -331,51 +207,20 @@ async function sandbox(
 				new Error(`Sandbox worker has died: ${deathRecorded.message}`),
 			);
 		}
+		if (runActive) {
+			return Promise.reject(
+				new Error(
+					"sandbox.run: concurrent run not permitted; a previous run is still in flight",
+				),
+			);
+		}
 
-		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Promise executor sets up message/error/exit listeners and their shared cleanup as one unit
 		return new Promise<RunResult>((resolve, reject) => {
 			pendingRunRejects.add(reject);
+			runActive = true;
 
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: branches handle request, done, error, exit paths
-			const onMessage = async (msg: WorkerToMain) => {
-				if (msg.type === "request") {
-					if (msg.method === "__hostFetchForward") {
-						return;
-					}
-					const fn = methods[msg.method];
-					if (!fn) {
-						const errMsg: MainToWorker = {
-							type: "response",
-							requestId: msg.requestId,
-							ok: false,
-							error: {
-								name: "TypeError",
-								message: `unknown host method: ${msg.method}`,
-								stack: "",
-							},
-						};
-						worker.postMessage(errMsg);
-						return;
-					}
-					try {
-						const result = await fn(...msg.args);
-						const okMsg: MainToWorker = {
-							type: "response",
-							requestId: msg.requestId,
-							ok: true,
-							result,
-						};
-						worker.postMessage(okMsg);
-					} catch (err) {
-						const failMsg: MainToWorker = {
-							type: "response",
-							requestId: msg.requestId,
-							ok: false,
-							error: serializeError(err),
-						};
-						worker.postMessage(failMsg);
-					}
-				} else if (msg.type === "done") {
+			const onMessage = (msg: WorkerToMain) => {
+				if (msg.type === "done") {
 					cleanup();
 					const payload: RunResultPayload = msg.payload;
 					resolve(payload);
@@ -397,6 +242,7 @@ async function sandbox(
 				worker.off("message", onMessage);
 				worker.off("error", onError);
 				worker.off("exit", onExit);
+				runActive = false;
 			};
 
 			worker.on("message", onMessage);
@@ -407,10 +253,6 @@ async function sandbox(
 				type: "run",
 				exportName: name,
 				ctx,
-				invocationId: runOptions.invocationId,
-				tenant: runOptions.tenant,
-				workflow: runOptions.workflow,
-				workflowSha: runOptions.workflowSha,
 			};
 			worker.postMessage(runMsg);
 		});
@@ -437,7 +279,7 @@ async function sandbox(
 		}
 	}
 
-	function onEvent(cb: (event: InvocationEvent) => void): void {
+	function onEvent(cb: (event: SandboxEvent) => void): void {
 		onEventCb = cb;
 	}
 
@@ -447,6 +289,39 @@ async function sandbox(
 export type { FactoryCreateOptions, SandboxFactory } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
-export type { MethodMap } from "./install-host-methods.js";
-export type { Logger, RunOptions, RunResult, Sandbox, SandboxOptions };
+export type {
+	Callable,
+	DepsMap,
+	EmitOptions,
+	EventExtra,
+	EventKind,
+	GuestFunctionDescription,
+	GuestFunctionHandler,
+	LogConfig,
+	Plugin,
+	PluginDescriptor,
+	PluginSetup,
+	RunInput,
+	RunResult as PluginRunResult,
+	SandboxContext,
+	SerializableConfig,
+	WasiClockArgs,
+	WasiClockResult,
+	WasiFdWriteArgs,
+	WasiHooks,
+	WasiRandomArgs,
+	WasiRandomResult,
+} from "./plugin.js";
+export type {
+	ArgSpec,
+	ArgTypes,
+	GuestValue,
+	ResultSpec,
+	ResultType,
+} from "./plugin-types.js";
+export { Guest } from "./plugin-types.js";
+export { name as WASI_PLUGIN_NAME } from "./plugins/wasi-plugin.js";
+export type { LifecycleError } from "./sandbox-context.js";
+export { serializeLifecycleError } from "./sandbox-context.js";
+export type { Logger, RunResult, Sandbox, SandboxOptions };
 export { sandbox };

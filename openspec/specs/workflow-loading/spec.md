@@ -3,46 +3,37 @@
 ## Purpose
 
 Load workflow manifests + per-workflow bundles from storage and expose them to the executor via the WorkflowRegistry with one sandbox per workflow.
-
 ## Requirements
-
 ### Requirement: Workflow loading instantiates one sandbox per workflow
 
-The runtime SHALL load each workflow's manifest, read the per-workflow bundle file path from `manifest.module`, and instantiate exactly one `Sandbox` per workflow with that bundle source. The sandbox SHALL be created via `sandbox(source, methods)` where `methods` includes the `__hostCallAction` bridge implementation scoped to the workflow's actions. The runtime SHALL append JS source to the bundle that, after the bundle IIFE has evaluated, captures `__hostCallAction` and `__emitEvent` into an IIFE closure, installs a locked `__dispatchAction` global via `Object.defineProperty({writable: false, configurable: false})`, and deletes the captured names from `globalThis`.
+Workflow loading SHALL instantiate exactly one cached sandbox per `(tenant, sha)` via the SandboxStore. The sandbox source SHALL be the workflow bundle produced by the vite plugin without any runtime-side source appending. The runtime SHALL NOT concatenate `action-dispatcher.js` or any other dispatcher shim to the source before passing it to `sandbox({ source, plugins })`. The dispatcher logic lives in `createSdkSupportPlugin` (SDK package), which the runtime composes into the plugin list.
 
-The runtime SHALL NOT append any additional source for action-name binding (action names are baked into each `action({...})` call at build time by the vite-plugin) or for trigger-handler shimming (trigger values are themselves callable per the `http-trigger` capability; `Sandbox.run(triggerExportName, payload, ctx)` invokes them directly).
+After sandbox initialization completes, the plugin-installed globals SHALL be present on `globalThis` per their `public: true` descriptors (fetch, setTimeout, console.*, etc.). The `__sdk` global SHALL be present (locked, frozen) for action dispatch. Private bindings (`__sdkDispatchAction`, `__reportErrorHost`, `$fetch/do`, `__wptReport` in tests) SHALL have been auto-deleted by the sandbox after phase 2.
 
-After sandbox initialization completes, the `__hostCallAction` and `__emitEvent` names SHALL NOT be present on `globalThis` from guest code's perspective; the dispatcher holds its own captured references for the life of the VM.
+User source — including SDK-bundled `action()` callables — SHALL run in phase 4 and see only the public globals and `__sdk`. The SDK's `action()` callable invokes `globalThis.__sdk.dispatchAction(name, input, handler, completer)`, which routes through the sdk-support plugin's host handler.
 
-#### Scenario: One sandbox created per loaded workflow
+#### Scenario: No source appending
 
-- **GIVEN** two workflows `cronitor` and `notify` discovered at startup
-- **WHEN** workflow loading completes
-- **THEN** exactly two `Sandbox` instances SHALL exist, one per workflow
-- **AND** each sandbox SHALL have the workflow's bundle evaluated
+- **GIVEN** a tenant workflow bundle loaded by the runtime
+- **WHEN** the runtime constructs the sandbox
+- **THEN** `sandbox({ source: <bundle>, plugins: [...] })` SHALL be invoked with `source` exactly equal to the bundled workflow source
+- **AND** no runtime source SHALL be concatenated, prepended, or appended
 
-#### Scenario: __hostCallAction bound to workflow's manifest
+#### Scenario: Tenant bundles require re-upload post-deploy
 
-- **GIVEN** a workflow with actions `a` and `b` in its manifest
-- **WHEN** the sandbox is created
-- **THEN** the host-side `__hostCallAction(name, input)` implementation passed via `methods` SHALL look up `name` in the workflow's manifest action list
-- **AND** SHALL throw if `name` is not declared
+- **GIVEN** a pre-existing tenant bundle produced by an older SDK (that called `globalThis.__dispatchAction`)
+- **WHEN** loaded by the new runtime
+- **THEN** the bundle SHALL fail because `globalThis.__dispatchAction` no longer exists
+- **AND** operators SHALL re-upload every tenant via `wfe upload --tenant <name>`
+- **AND** newly-built bundles SHALL call `globalThis.__sdk.dispatchAction` and succeed
 
-#### Scenario: Post-init surface hides host-bridge names
+#### Scenario: Private bindings invisible in phase 4
 
-- **GIVEN** a loaded workflow whose sandbox initialization has completed
-- **WHEN** guest code in the workflow evaluates `typeof globalThis.__hostCallAction` and `typeof globalThis.__emitEvent`
-- **THEN** both expressions SHALL evaluate to `"undefined"`
-- **AND** `typeof globalThis.__dispatchAction` SHALL evaluate to `"function"`
-- **AND** `Object.getOwnPropertyDescriptor(globalThis, "__dispatchAction").writable` SHALL be `false`
-- **AND** `Object.getOwnPropertyDescriptor(globalThis, "__dispatchAction").configurable` SHALL be `false`
-
-#### Scenario: Trigger invocation uses the export name directly
-
-- **GIVEN** a workflow with a trigger exported as `myTrigger`
-- **WHEN** the runtime invokes the trigger via `WorkflowRunner.invokeHandler`
-- **THEN** the runtime SHALL call `Sandbox.run("myTrigger", payload, ctx)` (the user's export name, no shim prefix)
-- **AND** `Sandbox.run` SHALL invoke `globalThis[IIFE_NAMESPACE].myTrigger(payload)` since the trigger value is itself callable
+- **GIVEN** a sandbox post-init for any tenant workflow
+- **WHEN** user source evaluates any of `typeof __sdkDispatchAction, typeof __reportErrorHost, typeof $fetch/do`
+- **THEN** each SHALL be `"undefined"`
+- **AND** `typeof __sdk` SHALL be `"object"`
+- **AND** `typeof fetch, typeof setTimeout, typeof console` SHALL all be `"function"` (or `"object"` for console)
 
 ### Requirement: Workflow loading resolves env at load time
 
@@ -53,3 +44,4 @@ The runtime SHALL apply the workflow's manifest `env` map to the loaded workflow
 - **GIVEN** a manifest with `env: { URL: "https://..." }`
 - **WHEN** the workflow is loaded
 - **THEN** the workflow's `env.URL` (referenced by handlers as `workflow.env.URL`) SHALL equal `"https://..."`
+

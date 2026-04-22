@@ -4,6 +4,7 @@
 		{ "path": "packages/core" },
 		{ "path": "packages/sdk" },
 		{ "path": "packages/sandbox" },
+		{ "path": "packages/sandbox-stdlib" },
 		{ "path": "packages/runtime" },
 		{ "path": "workflows" }
 	]

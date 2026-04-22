@@ -11,7 +11,7 @@
 			"!packages/sdk/src/plugin/sandbox-globals-setup.js",
 			"!packages/sdk/src/plugin/sandbox-globals.js",
 			"!packages/sandbox/dist",
-			"!packages/sandbox/test/wpt/vendor"
+			"!packages/sandbox-stdlib/test/wpt/vendor"
 		]
 	},
 	"linter": {
@@ -117,9 +117,21 @@
 			}
 		},
 		{
+			"includes": ["**/virtual.d.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off"
+					}
+				}
+			}
+		},
+		{
 			"includes": [
-				"packages/sandbox/src/polyfills/**/*.ts",
-				"packages/sandbox/test/wpt/harness/preamble/**/*.ts"
+				"packages/sandbox-stdlib/src/web-platform/source/**/*.ts",
+				"packages/sandbox-stdlib/src/web-platform/vite-plugin.ts",
+				"packages/sandbox/src/vite/**/*.ts",
+				"packages/sandbox-stdlib/test/wpt/harness/preamble/**/*.ts"
 			],
 			"linter": {
 				"rules": {
@@ -139,7 +151,7 @@
 			}
 		},
 		{
-			"includes": ["packages/sandbox/test/wpt/**/*.ts"],
+			"includes": ["packages/sandbox-stdlib/test/wpt/**/*.ts"],
 			"linter": {
 				"rules": {
 					"complexity": {

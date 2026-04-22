@@ -24,12 +24,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import skip from "../packages/sandbox/test/wpt/skip.js";
+import skip from "../packages/sandbox-stdlib/test/wpt/skip.js";
 
 // --- Config ---
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..");
-const VENDOR_DIR = resolve(ROOT, "packages/sandbox/test/wpt/vendor");
+const VENDOR_DIR = resolve(ROOT, "packages/sandbox-stdlib/test/wpt/vendor");
 const WPT_REPO = "https://github.com/web-platform-tests/wpt.git";
 const TEST_SUFFIXES = [
 	".any.js",
@@ -89,7 +89,7 @@ function printUsage(): void {
 	console.log(
 		`usage: pnpm test:wpt:refresh [--sha <commit>]
 
-Regenerates packages/sandbox/test/wpt/vendor/ from upstream WPT.
+Regenerates packages/sandbox-stdlib/test/wpt/vendor/ from upstream WPT.
 
 Options:
   --sha <commit>   Pin to a specific upstream commit (default: latest main).
