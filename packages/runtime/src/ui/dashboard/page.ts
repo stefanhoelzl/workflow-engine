@@ -1,5 +1,6 @@
-import { html } from "hono/html";
+import { html, raw } from "hono/html";
 import { renderLayout } from "../layout.js";
+import { triggerKindIcon } from "../triggers.js";
 
 const US_PER_MS = 1000;
 const US_PER_SECOND = 1_000_000;
@@ -16,29 +17,23 @@ interface InvocationRow {
 	readonly completedAt: string | Date | null;
 	readonly startedTs: number;
 	readonly completedTs: number | null;
-	// Optional trigger kind ("http" for HTTP triggers). Resolved from the
-	// workflow registry at render time. May be undefined if the trigger was
-	// unloaded since the invocation was recorded.
+	// Optional trigger kind ("http" | "cron"). Resolved from the workflow
+	// registry at render time. May be undefined if the trigger was unloaded
+	// since the invocation was recorded.
 	readonly triggerKind?: string;
 }
 
-// Kind → glyph mapping — shared in concept with the trigger-ui's KIND_ICONS
-// map (adding a new kind requires a line in each).
-const KIND_ICONS: Record<string, string> = {
-	http: "\u{1F310}", // globe
-};
-
-function renderKindIcon(kind: string | undefined) {
-	if (!kind) {
-		return "";
-	}
-	const glyph = KIND_ICONS[kind] ?? "\u{25CF}";
-	return html`<span class="entry-kind-icon" title="${kind}" aria-label="${kind}">${glyph}</span>`;
-}
-
-function formatTimestamp(ts: string | Date): string {
+function toIsoString(ts: string | Date): string {
 	const d = ts instanceof Date ? ts : new Date(ts);
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
+}
+
+// SSR emits ISO in both the `datetime` attribute (machine-readable, stable)
+// and the initial text content (legible fallback for JS-disabled clients).
+// `/static/local-time.js` rewrites textContent to the viewer's locale.
+function renderTime(ts: string | Date, className: string) {
+	const iso = toIsoString(ts);
+	return html`<time class="${className}" datetime="${iso}">${iso}</time>`;
 }
 
 function formatDurationUs(us: number): string {
@@ -55,15 +50,32 @@ function formatDurationUs(us: number): string {
 	return `${(d / US_PER_MINUTE).toFixed(DURATION_FRACTION_DIGITS)} min`;
 }
 
-function renderCardSummary(row: InvocationRow, duration: string) {
+const chevronIconSvg = raw(
+	// biome-ignore lint/security/noSecrets: inline SVG markup, not a secret
+	'<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
+);
+
+function renderCardSummary(
+	row: InvocationRow,
+	duration: string,
+	expandable: boolean,
+) {
+	const kindIcon = row.triggerKind ? triggerKindIcon(row.triggerKind) : "";
+	const chevron = expandable
+		? html`<span class="entry-expand-chevron" aria-hidden="true">${chevronIconSvg}</span>`
+		: html`<span class="entry-expand-chevron entry-expand-chevron--placeholder" aria-hidden="true"></span>`;
 	return html`<div class="entry-header">
-      ${renderKindIcon(row.triggerKind)}
-      <span class="entry-workflow">${row.workflow}</span>
-      <span class="entry-trigger">${row.trigger}</span>
+      ${chevron}
+      <div class="entry-identity">
+        ${kindIcon}
+        <span class="entry-workflow">${row.workflow}</span>
+        <span class="entry-identity-sep">›</span>
+        <span class="entry-trigger">${row.trigger}</span>
+      </div>
       <span class="badge ${row.status}">${row.status}</span>
     </div>
     <div class="entry-meta">
-      <span class="entry-started">${formatTimestamp(row.startedAt)}</span>
+      ${renderTime(row.startedAt, "entry-started")}
       <span class="entry-sep">·</span>
       <span class="entry-duration">${duration}</span>
     </div>`;
@@ -74,14 +86,14 @@ function renderCard(row: InvocationRow) {
 		row.completedTs === null
 			? "—"
 			: formatDurationUs(row.completedTs - row.startedTs);
-	const summary = renderCardSummary(row, duration);
 
 	if (row.status === "pending") {
 		return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
-    ${summary}
+    ${renderCardSummary(row, duration, false)}
   </div>`;
 	}
 
+	const summary = renderCardSummary(row, duration, true);
 	const flamegraphUrl = `/dashboard/invocations/${row.id}/flamegraph`;
 	return html`<details class="entry entry-expandable"
     id="inv-${row.id}"
@@ -89,7 +101,7 @@ function renderCard(row: InvocationRow) {
     hx-trigger="toggle once"
     hx-target="find .flame-slot"
     hx-swap="innerHTML">
-    <summary class="entry-summary">
+    <summary class="entry-summary" aria-label="Expand invocation details">
       ${summary}
     </summary>
     <div class="flame-slot"></div>
@@ -98,9 +110,21 @@ function renderCard(row: InvocationRow) {
 
 function renderInvocationList(invocations: readonly InvocationRow[]) {
 	if (invocations.length === 0) {
-		return html`<div class="empty-state">No invocations yet</div>`;
+		return html`<div class="empty-state" data-count="0">No invocations yet</div>`;
 	}
-	return html`${invocations.map(renderCard)}`;
+	const nowIso = new Date().toISOString();
+	const count = invocations.length;
+	const header = html`<div class="list-header" aria-label="Invocation list summary">
+      <span class="list-header-count">${count} invocation${count === 1 ? "" : "s"}</span>
+      <span class="entry-sep">·</span>
+      <span>newest first</span>
+      <span class="entry-sep">·</span>
+      <span>updated ${renderTime(nowIso, "list-header-updated")}</span>
+    </div>`;
+	return html`<div data-count="${String(count)}">
+    ${header}
+    ${invocations.map(renderCard)}
+  </div>`;
 }
 
 function renderSkeletonCards() {
@@ -130,6 +154,7 @@ function renderDashboardPage(options: DashboardPageOptions) {
 
   <div class="list">
     <div id="invocation-list"
+         aria-busy="true"
          hx-get="${invocationsUrl}"
          hx-trigger="load"
          hx-swap="innerHTML">

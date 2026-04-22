@@ -211,7 +211,7 @@ function addDeleteButtons(container, jedison) {
 		btn.type = "button";
 		btn.classList.add("jedi-delete-property-btn");
 		btn.setAttribute("aria-label", "Delete property");
-		btn.textContent = "\u00d7";
+		btn.textContent = "×";
 		btn.addEventListener("click", () => {
 			deletePropertyAt(jedison, path);
 		});
@@ -223,9 +223,14 @@ function initForm(details) {
 	if (!details.open || details._jedison) {
 		return;
 	}
+	// Cards for triggers with no user-settable inputs render without a
+	// form-container; nothing to initialize. Submit will post `{}`.
+	const container = details.querySelector(".form-container");
+	if (!container) {
+		return;
+	}
 	const script = details.querySelector('script[type="application/json"]');
 	const schema = JSON.parse(script.textContent);
-	const container = details.querySelector(".form-container");
 	const jedison = new Jedison.Create({
 		container,
 		theme: new InlineTheme(),
@@ -268,23 +273,38 @@ function buildResult(response, bodyText) {
 	return { status: response.status, headers, body };
 }
 
+function setLoading(btn, loading) {
+	const label = btn.querySelector(".submit-btn-label");
+	if (loading) {
+		btn.disabled = true;
+		btn.classList.add("submit-btn--loading");
+		if (label) {
+			btn.dataset.previousLabel = label.textContent;
+			label.textContent = "Submitting…";
+		}
+	} else {
+		btn.disabled = false;
+		btn.classList.remove("submit-btn--loading");
+		if (label && btn.dataset.previousLabel) {
+			label.textContent = btn.dataset.previousLabel;
+			delete btn.dataset.previousLabel;
+		}
+	}
+}
+
 function submitTrigger(btn) {
 	const details = btn.closest(".trigger-details");
-	const jedison = details._jedison;
-	if (!jedison) {
-		return;
-	}
+	const jedison = details?._jedison;
 	const url = btn.dataset.triggerUrl;
 	const method = btn.dataset.triggerMethod || "POST";
 
-	// The form's JSON Schema is the wire-format for the submission:
-	//   - For HTTP kind (posts to /webhooks/<tenant>/<workflow>/<path>),
-	//     the schema is the body JSON Schema — the HTTP source fills in
-	//     headers/url/method/params/query from the real HTTP request.
-	//   - For non-HTTP kinds (posts to /trigger/<tenant>/<workflow>/<name>),
-	//     the schema is the full inputSchema.
-	// Either way, jedison.getValue() is exactly what we POST.
-	const formValue = jedison.getValue();
+	// The form's JSON Schema is the wire-format for the submission. When
+	// the trigger's schema has no user-settable fields the card is rendered
+	// without a form container and no Jedison instance exists — we still
+	// POST an empty object so the dispatch path is identical.
+	const formValue = jedison ? jedison.getValue() : {};
+
+	setLoading(btn, true);
 
 	fetch(url, {
 		method,
@@ -293,10 +313,12 @@ function submitTrigger(btn) {
 	})
 		.then(async (r) => {
 			const text = await r.text();
-			window.showResult(buildResult(r, text), r.ok);
+			setLoading(btn, false);
+			window.showResult(buildResult(r, text));
 		})
 		.catch((err) => {
-			window.showResult({ error: err.message || String(err) }, false);
+			setLoading(btn, false);
+			window.showResultNetworkError(err.message || String(err));
 		});
 }
 

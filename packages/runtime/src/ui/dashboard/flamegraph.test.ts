@@ -128,12 +128,12 @@ describe("renderFlamegraph — canonical tree", () => {
 		expect(out).toContain("kind-trigger");
 		expect(out).toContain("kind-action");
 		expect(out).toContain("kind-rest");
-		// Summary line content
-		expect(out).toContain("webhook");
+		// The invocation card wrapping this fragment already surfaces
+		// workflow/trigger/duration/status — the flamegraph header only
+		// adds per-kind counts (zero counts are suppressed).
 		expect(out).toContain("sendEmail"); // action name inside bar label
-		expect(out).toContain("1 action");
-		expect(out).toContain("1 host call");
-		expect(out).toContain("succeeded");
+		expect(out).toContain("1</strong> action");
+		expect(out).toContain("1</strong> host call");
 	});
 
 	it("bar x% and width% reflect monotonic ts proportions", async () => {
@@ -258,8 +258,8 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 		expect(matches?.length).toBe(1);
 		expect(out).toContain('data-timer-id="7"');
 		expect(out).toContain("kind-rest");
-		// Summary includes timer count
-		expect(out).toContain("1 timer");
+		// Compact header metrics include a timer count when nonzero.
+		expect(out).toContain("1</strong> timer");
 	});
 });
 
