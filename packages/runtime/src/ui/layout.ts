@@ -1,22 +1,43 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 
+// Inline-SVG icon set (lucide-style). `.icon` sizes + inherits currentColor.
+const iconPaths = {
+	// activity — dashboard
+	dashboard: raw('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>') as HtmlEscapedString,
+	// zap — trigger
+	trigger: raw(
+		'<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+	) as HtmlEscapedString,
+	// workflow — brand mark (a small rounded-square "W"-ish glyph)
+	brand: raw(
+		'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>',
+	) as HtmlEscapedString,
+	// chevron-right — shared expand affordance
+	chevron: raw('<path d="m9 18 6-6-6-6"/>') as HtmlEscapedString,
+};
+
+function icon(name: keyof typeof iconPaths, extraClass?: string) {
+	const cls = extraClass ? `icon ${extraClass}` : "icon";
+	return html`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]}</svg>`;
+}
+
 interface NavItem {
 	href: string;
 	label: string;
-	icon: string;
+	iconName: keyof typeof iconPaths;
 }
 
 const NAV_ITEMS: NavItem[] = [
-	{ href: "/dashboard", label: "Dashboard", icon: "D" },
-	{ href: "/trigger", label: "Trigger", icon: "T" },
+	{ href: "/dashboard", label: "Dashboard", iconName: "dashboard" },
+	{ href: "/trigger", label: "Trigger", iconName: "trigger" },
 ];
 
 function renderNav(activePath: string) {
 	return NAV_ITEMS.map(
 		(item) =>
 			html`<a class="nav-item${activePath === item.href ? " active" : ""}" href="${item.href}">
-        <span class="nav-icon">${item.icon}</span>
+        <span class="nav-icon">${icon(item.iconName)}</span>
         <span class="nav-label">${item.label}</span>
       </a>`,
 	);
@@ -79,16 +100,19 @@ function renderLayout(
 		: "";
 
 	const displayName = user || "anonymous";
-	const userSection = html`<div class="topbar-user">
+	const userSection = user
+		? html`<div class="topbar-user" role="group" aria-label="Signed in as ${displayName}">
       <div class="topbar-user-line">
         <span class="topbar-username">${displayName}</span>
-        ${
-					user
-						? html`<form class="topbar-signout-form" method="post" action="/auth/logout">
-      <button class="topbar-signout" type="submit">Sign out</button>
-    </form>`
-						: ""
-				}
+        <form class="topbar-signout-form" method="post" action="/auth/logout">
+          <button class="topbar-signout" type="submit">Sign out</button>
+        </form>
+      </div>
+      ${email ? html`<div class="topbar-email">${email}</div>` : ""}
+    </div>`
+		: html`<div class="topbar-user">
+      <div class="topbar-user-line">
+        <span class="topbar-username">${displayName}</span>
       </div>
       ${email ? html`<div class="topbar-email">${email}</div>` : ""}
     </div>`;
@@ -104,13 +128,14 @@ function renderLayout(
   <script src="/static/htmx.js"></script>
   <script defer src="/static/result-dialog.js"></script>
   <script defer src="/static/tenant-selector.js"></script>
+  <script defer src="/static/local-time.js"></script>
 ${head ?? ""}
 </head>
 <body${bodyAttrs ? raw(` ${bodyAttrs}`) : ""}>
 
   <div class="topbar">
     <div class="topbar-brand">
-      <span class="icon">W</span>
+      <span class="brand-mark">${icon("brand")}</span>
       Workflow Engine
     </div>
     <div class="topbar-right">

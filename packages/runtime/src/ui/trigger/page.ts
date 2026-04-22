@@ -6,18 +6,19 @@ import type {
 } from "../../executor/types.js";
 import type { WorkflowEntry } from "../../workflow-registry.js";
 import { renderLayout } from "../layout.js";
+import { triggerCardMeta, triggerKindIcon } from "../triggers.js";
 
 // ---------------------------------------------------------------------------
 // Trigger UI — manual-fire form for registered triggers (any kind)
 // ---------------------------------------------------------------------------
 //
-// One collapsible card per registered trigger. For HTTP kind the form is
-// built from `descriptor.body` (the body JSON Schema) and the Submit button
-// POSTs to the public webhook URL — the HTTP source fills in
-// headers/url/method from the real HTTP request. For non-HTTP
-// kinds (future cron/mail) the form is built from the full
-// `descriptor.inputSchema` and POSTs to the kind-agnostic
-// `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint.
+// One collapsible card per registered trigger. Cards are grouped into
+// per-workflow sections. For HTTP kind the form is built from
+// `descriptor.body` (the body JSON Schema) and the Submit button POSTs to
+// the public webhook URL — the HTTP source fills in headers/url/method from
+// the real HTTP request. For non-HTTP kinds (cron, future mail) the form is
+// built from the full `descriptor.inputSchema` and POSTs to the
+// kind-agnostic `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint.
 
 function prepareSchema(schema: unknown): unknown {
 	if (schema === null || typeof schema !== "object") {
@@ -55,16 +56,20 @@ function prepareSchema(schema: unknown): unknown {
 	return result;
 }
 
-// Kind → glyph mapping. Add a new line per new trigger kind. The `title`
-// attribute surfaces the kind on hover.
-const KIND_ICONS: Record<string, string> = {
-	http: "\u{1F310}", // globe
-	cron: "\u{23F0}", // alarm clock
-};
-
-function kindIcon(kind: string) {
-	const glyph = KIND_ICONS[kind] ?? "\u{25CF}";
-	return html`<span class="trigger-kind-icon" title="${kind}" aria-label="${kind}">${glyph}</span>`;
+// A schema with no `properties` and no `additionalProperties` has no
+// user-settable fields — the card omits the form entirely and ships a bare
+// Submit that posts `{}`.
+function schemaHasNoInputs(schema: object): boolean {
+	const obj = schema as Record<string, unknown>;
+	const properties = obj.properties;
+	const hasProperties =
+		properties !== undefined &&
+		typeof properties === "object" &&
+		properties !== null &&
+		Object.keys(properties as Record<string, unknown>).length > 0;
+	const additional = obj.additionalProperties;
+	const hasAdditional = additional !== undefined && additional !== false;
+	return !(hasProperties || hasAdditional);
 }
 
 interface TriggerCardData {
@@ -75,28 +80,35 @@ interface TriggerCardData {
 	readonly schema: object;
 	readonly submitUrl: string;
 	readonly submitMethod: string;
-	readonly meta?: string;
+	readonly meta: string;
 }
+
+const chevronIconSvg = raw(
+	// biome-ignore lint/security/noSecrets: inline SVG markup, not a secret
+	'<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
+);
 
 function renderTriggerCard(data: TriggerCardData) {
 	const schemaJson = JSON.stringify(prepareSchema(data.schema));
 	const cardId = `trigger-${data.tenant}-${data.workflow}-${data.trigger}`
 		.replace(/[^a-zA-Z0-9_-]/g, "-")
 		.toLowerCase();
+	const empty = schemaHasNoInputs(data.schema);
 	return html`<details class="trigger-details" id="${cardId}">
       <summary class="trigger-summary">
-        ${kindIcon(data.kind)}
-        <span class="trigger-name">${data.workflow} / ${data.trigger}</span>
-        ${data.meta ? html`<span class="trigger-meta">${data.meta}</span>` : ""}
+        <span class="trigger-summary-chevron">${chevronIconSvg}</span>
+        ${triggerKindIcon(data.kind)}
+        <span class="trigger-name">${data.trigger}</span>
+        <span class="trigger-meta"><span class="trigger-meta-text">${data.meta}</span></span>
       </summary>
       <div class="trigger-body">
-        <div class="form-container"></div>
+        ${empty ? "" : html`<div class="form-container"></div>`}
         <button
           type="button"
           class="submit-btn"
           data-trigger-url="${data.submitUrl}"
           data-trigger-method="${data.submitMethod}"
-        >Submit</button>
+        ><span class="submit-btn-label">Submit</span></button>
         <div class="trigger-result"></div>
       </div>
       <script type="application/json">${raw(schemaJson)}</script>
@@ -114,6 +126,7 @@ function descriptorToCardData(
 	workflow: string,
 	descriptor: TriggerDescriptor,
 ): TriggerCardData {
+	const meta = triggerCardMeta(descriptor, tenant, workflow);
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
 		const webhookUrl = `/webhooks/${tenant}/${workflow}/${http.name}`;
@@ -125,7 +138,7 @@ function descriptorToCardData(
 			schema: (http.body ?? { type: "object" }) as object,
 			submitUrl: webhookUrl,
 			submitMethod: http.method,
-			meta: `${http.method} ${webhookUrl}`,
+			meta,
 		};
 	}
 	const cron = descriptor as CronTriggerDescriptor;
@@ -137,7 +150,7 @@ function descriptorToCardData(
 		schema: (cron.inputSchema ?? { type: "object" }) as object,
 		submitUrl: `/trigger/${tenant}/${workflow}/${cron.name}`,
 		submitMethod: "POST",
-		meta: `${cron.schedule} (${cron.tz})`,
+		meta,
 	};
 }
 
@@ -151,12 +164,25 @@ interface TriggerPageOptions {
 
 function renderTriggerPage(options: TriggerPageOptions) {
 	const { entries, user, email, tenants, activeTenant } = options;
-	const cards = entries
-		.flatMap(entryToCardDataList)
-		.sort((a, b) =>
-			`${a.workflow}/${a.trigger}`.localeCompare(`${b.workflow}/${b.trigger}`),
-		)
-		.map(renderTriggerCard);
+
+	// Group cards by workflow, alpha-sort groups and triggers within groups.
+	const byWorkflow = new Map<string, TriggerCardData[]>();
+	for (const entry of entries) {
+		const cards = entryToCardDataList(entry);
+		const existing = byWorkflow.get(entry.workflow.name) ?? [];
+		byWorkflow.set(entry.workflow.name, existing.concat(cards));
+	}
+	const groupNames = [...byWorkflow.keys()].sort((a, b) => a.localeCompare(b));
+	const groups = groupNames.map((name) => {
+		const cards = (byWorkflow.get(name) ?? [])
+			.slice()
+			.sort((a, b) => a.trigger.localeCompare(b.trigger))
+			.map(renderTriggerCard);
+		return html`<section class="trigger-group" aria-label="${name}">
+      <h2 class="trigger-group-title">${name}</h2>
+      ${cards}
+    </section>`;
+	});
 
 	const head = html`  <link rel="stylesheet" href="/static/trigger.css">
   <script src="/static/jedison.js"></script>
@@ -168,7 +194,7 @@ function renderTriggerPage(options: TriggerPageOptions) {
   </div>
 
   <div class="trigger-content">
-    ${cards.length > 0 ? cards : html`<div class="empty-state">No triggers registered</div>`}
+    ${groups.length > 0 ? groups : html`<div class="empty-state">No triggers registered</div>`}
   </div>`;
 
 	return renderLayout(
@@ -186,4 +212,4 @@ function renderTriggerPage(options: TriggerPageOptions) {
 }
 
 export type { TriggerCardData };
-export { prepareSchema, renderTriggerPage };
+export { prepareSchema, renderTriggerPage, schemaHasNoInputs };

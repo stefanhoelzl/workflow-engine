@@ -1,14 +1,28 @@
 .trigger-content {
 	max-width: 960px;
 	margin: 0 auto;
-	padding: 24px;
+	padding: var(--sp-5);
+}
+
+/* Per-workflow sections */
+.trigger-group {
+	margin-bottom: var(--sp-5);
+}
+
+.trigger-group-title {
+	font-size: var(--fs-md);
+	font-weight: 600;
+	color: var(--text-secondary);
+	margin: 0 0 var(--sp-2);
+	padding: 0 var(--sp-1);
+	letter-spacing: 0.01em;
 }
 
 .trigger-details {
 	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	margin-bottom: 8px;
+	margin-bottom: var(--sp-2);
 	overflow: hidden;
 	transition: box-shadow 0.15s ease;
 }
@@ -22,44 +36,106 @@
 }
 
 .trigger-summary {
-	padding: 14px 16px;
+	padding: var(--sp-3) var(--sp-4);
 	cursor: pointer;
 	user-select: none;
 	list-style: none;
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: var(--sp-3);
 }
 
 .trigger-summary::-webkit-details-marker {
 	display: none;
 }
 
-.trigger-summary::before {
-	content: "\25B6";
-	font-size: 10px;
+.trigger-summary-chevron {
 	color: var(--text-muted);
 	transition: transform 0.2s ease;
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
 }
 
-.trigger-details[open] > .trigger-summary::before {
+.trigger-details[open] > .trigger-summary .trigger-summary-chevron {
 	transform: rotate(90deg);
+}
+
+.trigger-kind-icon {
+	display: inline-flex;
+	align-items: center;
+	font-size: var(--fs-md);
+	line-height: 1;
+	flex-shrink: 0;
 }
 
 .trigger-name {
 	font-weight: 600;
-	font-size: 14px;
+	font-size: var(--fs-md);
 	font-family: var(--font-mono);
+	flex-shrink: 0;
+}
+
+.trigger-meta {
+	margin-left: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--sp-1);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	color: var(--text-muted);
+	min-width: 0;
+	overflow: hidden;
+}
+
+.trigger-meta-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Copy button on the HTTP trigger meta — reuses .trigger-result-copy visuals
+   but smaller and inline. */
+.trigger-meta-copy {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	background: transparent;
+	color: var(--text-muted);
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition:
+		background 0.15s ease,
+		color 0.15s ease,
+		border-color 0.15s ease;
+	flex-shrink: 0;
+}
+.trigger-meta-copy:hover {
+	background: var(--bg-surface);
+	color: var(--text);
+	border-color: var(--border);
+}
+.trigger-meta-copy--copied {
+	color: var(--green);
+	border-color: var(--green-border);
 }
 
 .trigger-body {
 	border-top: 1px solid var(--border);
-	padding: 16px;
+	padding: var(--sp-4);
 	background: var(--bg-surface);
 }
 
+.trigger-body-noinputs {
+	display: none;
+}
+
 .form-container {
-	margin-bottom: 12px;
+	margin-bottom: var(--sp-3);
 }
 
 /* Jedison base theme overrides */
@@ -71,13 +147,13 @@
 .form-container select,
 .form-container textarea {
 	width: 100%;
-	padding: 8px 10px;
+	padding: var(--sp-2) var(--sp-2);
 	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
 	color: var(--text);
 	font-family: var(--font-mono);
-	font-size: 13px;
+	font-size: var(--fs-base);
 	line-height: 1.5;
 	outline: none;
 	transition: border-color 0.15s ease;
@@ -91,10 +167,10 @@
 
 .form-container label {
 	display: block;
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--text-secondary);
-	margin-bottom: 4px;
+	margin-bottom: var(--sp-1);
 	font-family: var(--font-mono);
 }
 
@@ -106,19 +182,19 @@
 .form-container fieldset {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	padding: 12px;
-	margin-bottom: 8px;
+	padding: var(--sp-3);
+	margin-bottom: var(--sp-2);
 }
 
 .form-container legend {
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--text-secondary);
-	padding: 0 4px;
+	padding: 0 var(--sp-1);
 }
 
 .form-container .jedi-editor-container {
-	margin-bottom: 8px;
+	margin-bottom: var(--sp-2);
 }
 
 .form-container input[type="checkbox"] {
@@ -128,7 +204,7 @@
 /* Inline anyOf/oneOf editor (EditorInlineMultiple) */
 .jedi-inline-multiple__header {
 	display: flex;
-	gap: 8px;
+	gap: var(--sp-2);
 	align-items: flex-start;
 }
 
@@ -151,12 +227,12 @@
 
 /* Add-property toggle: secondary outlined button */
 .jedi-quick-add-property-toggle {
-	padding: 6px 12px;
+	padding: 6px var(--sp-3);
 	background: transparent;
 	color: var(--text-secondary);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	font-family: var(--font);
 	cursor: pointer;
@@ -173,9 +249,9 @@
 /* Inline add-property slot (replaces the native <dialog>) */
 .jedi-quick-add-property-slot {
 	display: flex;
-	gap: 8px;
+	gap: var(--sp-2);
 	align-items: center;
-	margin-top: 8px;
+	margin-top: var(--sp-2);
 }
 
 .jedi-quick-add-property-slot[hidden] {
@@ -194,12 +270,12 @@
 
 /* Confirm button inside the slot: primary, matches .submit-btn */
 .jedi-add-property-btn {
-	padding: 8px 16px;
+	padding: var(--sp-2) var(--sp-4);
 	background: var(--accent);
-	color: white;
+	color: var(--on-accent);
 	border: none;
 	border-radius: var(--radius-sm);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	font-family: var(--font);
 	cursor: pointer;
@@ -227,12 +303,12 @@
 
 .jedi-delete-property-btn {
 	flex: 0 0 auto;
-	padding: 0 10px;
+	padding: 0 var(--sp-2);
 	background: transparent;
 	color: var(--text-muted);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	font-size: 16px;
+	font-size: var(--fs-lg);
 	line-height: 1;
 	font-family: var(--font);
 	cursor: pointer;

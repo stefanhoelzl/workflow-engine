@@ -209,7 +209,9 @@ describe("triggerMiddleware: page rendering", () => {
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
-		expect(body).toContain("cronitor / onCronitorEvent");
+		// Workflow name surfaces as a group heading, not inside the card label.
+		expect(body).toContain('class="trigger-group-title">cronitor</h2>');
+		expect(body).toContain('<span class="trigger-name">onCronitorEvent</span>');
 		expect(body).toContain(
 			'data-trigger-url="/webhooks/t0/cronitor/onCronitorEvent"',
 		);
@@ -227,7 +229,59 @@ describe("triggerMiddleware: page rendering", () => {
 		expect(body).toContain("No triggers registered");
 	});
 
-	it("sorts cards by workflow/trigger name (stable output)", async () => {
+	it("omits the form container when the trigger schema has no inputs", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "noinput", {
+				name: "ping",
+				method: "POST",
+				body: { type: "object", properties: {}, additionalProperties: false },
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const body = await res.text();
+		// The card must carry the Submit button but no form container.
+		expect(body).toContain('data-trigger-url="/webhooks/t0/noinput/ping"');
+		// The formless card MUST NOT emit a .form-container div.
+		const cardStart = body.indexOf('id="trigger-t0-noinput-ping"');
+		const cardEnd = body.indexOf("</details>", cardStart);
+		const card = body.slice(cardStart, cardEnd);
+		expect(card).not.toContain('class="form-container"');
+	});
+
+	it("renders the form container when the trigger schema has properties", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "withinput", {
+				name: "ping",
+				method: "POST",
+				body: {
+					type: "object",
+					properties: { x: { type: "string" } },
+					required: ["x"],
+				},
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const body = await res.text();
+		const cardStart = body.indexOf('id="trigger-t0-withinput-ping"');
+		const cardEnd = body.indexOf("</details>", cardStart);
+		const card = body.slice(cardStart, cardEnd);
+		expect(card).toContain('class="form-container"');
+	});
+
+	it("renders the HTTP trigger meta line as a plain span (no copy button)", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "wf", { name: "post", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const body = await res.text();
+		expect(body).toContain("POST /webhooks/t0/wf/post");
+		expect(body).not.toContain("trigger-meta-copy");
+	});
+
+	it("groups triggers by workflow with alpha-sorted sections", async () => {
 		const registry = makeStubRegistry([
 			makeHttpStub("t0", "zeta", { name: "z", method: "POST" }),
 			makeHttpStub("t0", "alpha", { name: "a", method: "GET" }),
@@ -235,10 +289,12 @@ describe("triggerMiddleware: page rendering", () => {
 		const app = mount(registry);
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		const body = await res.text();
-		const alphaIdx = body.indexOf("alpha / a");
-		const zetaIdx = body.indexOf("zeta / z");
-		expect(alphaIdx).toBeGreaterThan(-1);
-		expect(zetaIdx).toBeGreaterThan(alphaIdx);
+		const alphaGroupIdx = body.indexOf(
+			'class="trigger-group-title">alpha</h2>',
+		);
+		const zetaGroupIdx = body.indexOf('class="trigger-group-title">zeta</h2>');
+		expect(alphaGroupIdx).toBeGreaterThan(-1);
+		expect(zetaGroupIdx).toBeGreaterThan(alphaGroupIdx);
 	});
 });
 
@@ -361,7 +417,8 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
-		expect(body).toContain("billing / daily");
+		expect(body).toContain('class="trigger-group-title">billing</h2>');
+		expect(body).toContain('<span class="trigger-name">daily</span>');
 		expect(body).toContain('title="cron"');
 		expect(body).toContain('data-trigger-url="/trigger/t0/billing/daily"');
 		expect(body).toContain('data-trigger-method="POST"');

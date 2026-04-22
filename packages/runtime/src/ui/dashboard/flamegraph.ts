@@ -11,7 +11,7 @@ const BAR_HEIGHT_PX = 18;
 const BAR_Y_OFFSET_PX = 2;
 const TRACK_DIVIDER_GAP_PX = 12;
 const TRACK_LABEL_HEIGHT_PX = 14;
-const MARKER_WIDTH_VIEWBOX = 10;
+const MARKER_WIDTH_VIEWBOX = 16;
 const MIN_BAR_WIDTH_VIEWBOX = 4;
 const VIEWBOX_WIDTH = 1000;
 const RULER_HEIGHT_PX = 18;
@@ -27,7 +27,11 @@ const BAR_LABEL_Y_OFFSET = 1;
 const BAR_LABEL_MIN_PCT_FOR_NAME = 6;
 const BAR_LABEL_MIN_PCT_FOR_DURATION = 12;
 const ERROR_ICON_X_INSET = 2;
-const MARKER_CALL_RADIUS = 3;
+// Horizontal space (in percent of the flamegraph width) reserved to the
+// right of a bar's duration label so the ⚠ icon can sit next to it without
+// overlapping. Tuned so the glyph at var(--fs-xs) clears a one-digit duration.
+const ERROR_ICON_RESERVE_PCT = 3;
+const MARKER_CALL_RADIUS = 5;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -548,8 +552,11 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			: "";
 		const terminal = bar.terminalSeq === null ? "" : String(bar.terminalSeq);
 		const dataEventPair = ` data-event-pair="${bar.requestSeq}-${escapeHtml(terminal)}"`;
+		const barTitle = bar.orphan
+			? "<title>No terminal event recorded</title>"
+			: "";
 		shapes.push(
-			`<rect class="${classes.join(" ")}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(width)}" height="${BAR_HEIGHT_PX}" rx="2"${dataTimerId}${dataEventPair}/>`,
+			`<rect class="${classes.join(" ")}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(width)}" height="${BAR_HEIGHT_PX}" rx="2"${dataTimerId}${dataEventPair}>${barTitle}</rect>`,
 		);
 	}
 
@@ -563,14 +570,15 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			? ` data-timer-id="${escapeHtml(m.timerId)}"`
 			: "";
 		const dataEventSeq = ` data-event-seq="${m.seq}"`;
+		const markerTitle = `<title>${escapeHtml(m.kind)}</title>`;
 		if (m.kind === "timer.set") {
 			shapes.push(
-				`<rect class="marker-set" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}/>`,
+				`<rect class="marker-set" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
 			);
 		} else if (m.kind === "timer.clear") {
 			const autoClass = m.auto ? " marker-auto" : "";
 			shapes.push(
-				`<rect class="marker-clear-bg${autoClass}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}/>`,
+				`<rect class="marker-clear-bg${autoClass}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
 			);
 			// Two diagonal lines forming an ×.
 			// Compute endpoints in viewBox units:
@@ -593,7 +601,7 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			const cxPct = x + markerWidthPct / HALF;
 			const cy = y + BAR_HEIGHT_PX / HALF;
 			shapes.push(
-				`<circle class="marker-call" cx="${fmtPct(cxPct)}" cy="${cy}" r="${MARKER_CALL_RADIUS}"${dataEventSeq}/>`,
+				`<circle class="marker-call" cx="${fmtPct(cxPct)}" cy="${cy}" r="${MARKER_CALL_RADIUS}"${dataEventSeq}>${markerTitle}</circle>`,
 			);
 		}
 	}
@@ -621,7 +629,8 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			);
 			if (width >= BAR_LABEL_MIN_PCT_FOR_DURATION) {
 				const duration = formatDurationUs(bar.endTs - bar.startTs);
-				const durationX = x + width - BAR_LABEL_X_INSET_PCT;
+				const reserve = bar.errored ? ERROR_ICON_RESERVE_PCT : 0;
+				const durationX = x + width - BAR_LABEL_X_INSET_PCT - reserve;
 				texts.push(
 					`<text class="bar-label-dim" x="${fmtPct(durationX)}" y="${y + BAR_LABEL_Y_OFFSET}" text-anchor="end">${escapeHtml(duration)}</text>`,
 				);
@@ -631,6 +640,12 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			const iconX = x + width - ERROR_ICON_X_INSET;
 			texts.push(
 				`<text class="bar-error-icon" x="${fmtPct(Math.max(iconX, x + BAR_LABEL_X_INSET_PCT))}" y="${y + BAR_LABEL_Y_OFFSET}">⚠</text>`,
+			);
+		}
+		if (bar.orphan) {
+			const glyphX = x + width - BAR_LABEL_X_INSET_PCT;
+			texts.push(
+				`<text class="bar-orphan-glyph" x="${fmtPct(glyphX)}" y="${y + BAR_LABEL_Y_OFFSET}">⇥</text>`,
 			);
 		}
 	}
@@ -702,6 +717,89 @@ function renderRuler(totalDurationTs: number): string {
 	return `<svg class="flame-ruler" width="100%" height="${RULER_HEIGHT_PX}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"><line class="flame-ruler-tick" x1="0" y1="15" x2="100%" y2="15"/>${segments.join("")}</svg>`;
 }
 
+interface LegendPresence {
+	readonly hasTrigger: boolean;
+	readonly hasAction: boolean;
+	readonly hasRest: boolean;
+	readonly hasOrphan: boolean;
+	readonly hasClearMarker: boolean;
+	readonly hasCallMarker: boolean;
+}
+
+function detectLegendPresence(layout: Layout): LegendPresence {
+	let hasTrigger = false;
+	let hasAction = false;
+	let hasRest = false;
+	let hasOrphan = false;
+	for (const bar of layout.bars) {
+		if (bar.orphan) {
+			hasOrphan = true;
+		}
+		if (bar.kind === "trigger") {
+			hasTrigger = true;
+		} else if (bar.kind === "action") {
+			hasAction = true;
+		} else {
+			hasRest = true;
+		}
+	}
+	let hasClearMarker = false;
+	let hasCallMarker = false;
+	for (const m of layout.markers) {
+		if (m.kind === "timer.clear") {
+			hasClearMarker = true;
+		} else if (m.kind !== "timer.set") {
+			hasCallMarker = true;
+		}
+	}
+	return {
+		hasTrigger,
+		hasAction,
+		hasRest,
+		hasOrphan,
+		hasClearMarker,
+		hasCallMarker,
+	};
+}
+
+function renderLegend(presence: LegendPresence) {
+	const items: ReturnType<typeof html>[] = [];
+	if (presence.hasTrigger) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--trigger"></span>trigger</span>`,
+		);
+	}
+	if (presence.hasAction) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--action"></span>action</span>`,
+		);
+	}
+	if (presence.hasRest) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--rest"></span>fetch / timer / other</span>`,
+		);
+	}
+	if (presence.hasOrphan) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--orphan"></span>orphan (no terminal)</span>`,
+		);
+	}
+	if (presence.hasClearMarker) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-glyph">×</span>timer cleared</span>`,
+		);
+	}
+	if (presence.hasCallMarker) {
+		items.push(
+			html`<span class="flame-legend-item"><span class="flame-legend-glyph">●</span>host call</span>`,
+		);
+	}
+	if (items.length === 0) {
+		return "";
+	}
+	return html`<div class="flame-legend" aria-label="Legend">${items}</div>`;
+}
+
 function renderFlamegraph(events: readonly InvocationEvent[]) {
 	if (events.length === 0) {
 		return renderEmpty();
@@ -714,15 +812,34 @@ function renderFlamegraph(events: readonly InvocationEvent[]) {
 	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(layout);
 	const ruler = renderRuler(layout.totalDurationTs);
 
-	const summaryText = [
-		layout.triggerEvent.workflow,
-		layout.triggerEvent.name,
-		formatDurationUs(layout.totalDurationTs),
-		`${layout.actionCount} action${layout.actionCount === 1 ? "" : "s"}`,
-		`${layout.systemCount} host call${layout.systemCount === 1 ? "" : "s"}`,
-		`${layout.timerCount} timer${layout.timerCount === 1 ? "" : "s"}`,
-		layout.status,
-	].join(" · ");
+	// The invocation card that wraps this flamegraph already surfaces the
+	// workflow/trigger identity, started timestamp, duration and status
+	// badge. The flamegraph header only adds what the card does not:
+	// per-kind counts (actions, host calls, timers). Counts of zero are
+	// suppressed entirely to avoid noise.
+	const metrics: ReturnType<typeof html>[] = [];
+	if (layout.actionCount > 0) {
+		metrics.push(
+			html`<span><strong>${String(layout.actionCount)}</strong> action${layout.actionCount === 1 ? "" : "s"}</span>`,
+		);
+	}
+	if (layout.systemCount > 0) {
+		metrics.push(
+			html`<span><strong>${String(layout.systemCount)}</strong> host call${layout.systemCount === 1 ? "" : "s"}</span>`,
+		);
+	}
+	if (layout.timerCount > 0) {
+		metrics.push(
+			html`<span><strong>${String(layout.timerCount)}</strong> timer${layout.timerCount === 1 ? "" : "s"}</span>`,
+		);
+	}
+
+	const header =
+		metrics.length > 0
+			? html`<div class="flame-header-metrics">${metrics}</div>`
+			: "";
+
+	const legend = renderLegend(detectLegendPresence(layout));
 
 	const svg =
 		`<svg class="flame-graph" width="100%" height="${svgHeight}" viewBox="0 0 ${VIEWBOX_WIDTH} ${svgHeight}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">` +
@@ -736,7 +853,8 @@ function renderFlamegraph(events: readonly InvocationEvent[]) {
 	);
 
 	return html`<div class="flame-fragment">
-  <div class="flame-summary">${summaryText}</div>
+  ${header}
+  ${legend}
   ${raw(ruler)}
   <div class="flame-container">
     ${raw(svg)}
