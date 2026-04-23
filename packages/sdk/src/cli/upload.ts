@@ -9,6 +9,8 @@ interface UploadOptions {
 	cwd: string;
 	url: string;
 	tenant: string;
+	user?: string;
+	token?: string;
 }
 
 interface UploadResult {
@@ -111,14 +113,18 @@ async function uploadBundle(
 	url: string,
 	tenant: string,
 	path: string,
-	token: string | undefined,
+	auth: { user?: string | undefined; token?: string | undefined },
 ): Promise<UploadFailure | null> {
 	const body = await readFile(path);
 	const headers: Record<string, string> = {
 		"Content-Type": "application/gzip",
 	};
-	if (token) {
-		headers.Authorization = `Bearer ${token}`;
+	if (auth.user) {
+		headers["X-Auth-Provider"] = "local";
+		headers.Authorization = `User ${auth.user}`;
+	} else if (auth.token) {
+		headers["X-Auth-Provider"] = "github";
+		headers.Authorization = `Bearer ${auth.token}`;
 	}
 	let response: Response;
 	try {
@@ -147,6 +153,12 @@ async function uploadBundle(
 }
 
 async function upload(options: UploadOptions): Promise<UploadResult> {
+	if (options.user !== undefined && options.token !== undefined) {
+		throw new Error(
+			"user and token are mutually exclusive: pass only one of --user or --token",
+		);
+	}
+
 	if (!TENANT_RE.test(options.tenant)) {
 		throw new Error(
 			`tenant "${options.tenant}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
@@ -159,16 +171,17 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 	// Throws if absent — build() above should have produced it.
 	await readFile(bundlePath);
 
-	// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
-	const token = process.env.GITHUB_TOKEN?.trim();
-	const tokenOrUndefined = token && token.length > 0 ? token : undefined;
+	let resolvedToken = options.token;
+	if (resolvedToken === undefined && options.user === undefined) {
+		// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
+		const envToken = process.env.GITHUB_TOKEN?.trim();
+		resolvedToken = envToken && envToken.length > 0 ? envToken : undefined;
+	}
 
-	const failure = await uploadBundle(
-		options.url,
-		options.tenant,
-		bundlePath,
-		tokenOrUndefined,
-	);
+	const failure = await uploadBundle(options.url, options.tenant, bundlePath, {
+		user: options.user,
+		token: resolvedToken,
+	});
 	if (failure === null) {
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
 		console.error(`✓ ${options.tenant}`);

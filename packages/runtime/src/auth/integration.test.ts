@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { Auth } from "./allowlist.js";
+import { githubProviderFactory } from "./providers/github.js";
+import { buildRegistry } from "./providers/index.js";
+import { localProviderFactory } from "./providers/local.js";
 import { authMiddleware, loginPageMiddleware } from "./routes.js";
 import { sessionMiddleware } from "./session-mw.js";
 
@@ -30,18 +32,25 @@ function fakeGitHub(opts: FakeGitHubOpts = {}) {
 	});
 }
 
-function spinApp(opts: { auth: Auth; fetchFn: typeof globalThis.fetch }) {
-	const middlewareOpts = {
-		auth: opts.auth,
-		clientId: "cid",
-		clientSecret: "csecret",
-		baseUrl: "https://example.test",
-		secureCookies: false,
-		fetchFn: opts.fetchFn,
-	};
-	const loginMw = loginPageMiddleware(middlewareOpts);
-	const authMw = authMiddleware(middlewareOpts);
-	const sessionMw = sessionMiddleware(middlewareOpts);
+function spinApp(opts: {
+	authAllow: string;
+	fetchFn: typeof globalThis.fetch;
+}) {
+	const registry = buildRegistry(
+		opts.authAllow,
+		[githubProviderFactory, localProviderFactory],
+		{
+			secureCookies: false,
+			nowFn: () => Date.now(),
+			fetchFn: opts.fetchFn,
+			clientId: "cid",
+			clientSecret: "csecret",
+			baseUrl: "https://example.test",
+		},
+	);
+	const loginMw = loginPageMiddleware({ secureCookies: false, registry });
+	const authMw = authMiddleware({ secureCookies: false, registry });
+	const sessionMw = sessionMiddleware({ registry, secureCookies: false });
 
 	const app = new Hono();
 	app.all(loginMw.match, loginMw.handler);
@@ -64,52 +73,42 @@ function cookieHeaderValue(
 	return entry.split(";")[0];
 }
 
-const ALICE_ALLOW: Auth = {
-	mode: "restricted",
-	users: new Set(["alice"]),
-	orgs: new Set(),
-};
+const ALICE_ALLOW = "github:user:alice";
 
-describe("integration: sign-in flow", () => {
+describe("integration: github sign-in flow", () => {
 	it("unauth → /login → signin → callback → session", async () => {
 		const fetchFn = fakeGitHub({ user: { login: "alice", email: null } });
-		const app = spinApp({ auth: ALICE_ALLOW, fetchFn });
+		const app = spinApp({ authAllow: ALICE_ALLOW, fetchFn });
 
-		// 1. Unauthenticated /trigger → 302 /login?returnTo=/trigger
 		const r1 = await app.request("/trigger");
 		expect(r1.status).toBe(302);
 		const loginUrl = r1.headers.get("location");
 		expect(loginUrl).toBe("/login?returnTo=%2Ftrigger");
 
-		// 2. Follow to /login → 200 renders sign-in page with the GH button
-		const r2 = await app.request(loginUrl!);
+		const r2 = await app.request(loginUrl ?? "");
 		expect(r2.status).toBe(200);
 		const html = await r2.text();
 		expect(html).toContain("Sign in with GitHub");
 		expect(html).toContain("/auth/github/signin?returnTo=%2Ftrigger");
-		expect(html).not.toContain("topbar");
 
-		// 3. Click "Sign in with GitHub" → GET /auth/github/signin → 302 GitHub
 		const r3 = await app.request("/auth/github/signin?returnTo=/trigger");
 		expect(r3.status).toBe(302);
-		const authorizeUrl = r3.headers.get("location");
+		const authorizeUrl = r3.headers.get("location") ?? "";
 		expect(authorizeUrl).toMatch(
 			/^https:\/\/github\.com\/login\/oauth\/authorize\?/,
 		);
-		const stateMatch = authorizeUrl!.match(/state=([^&]+)/);
+		const stateMatch = authorizeUrl.match(/state=([^&]+)/);
 		expect(stateMatch).not.toBeNull();
-		const state = decodeURIComponent(stateMatch![1]!);
+		const state = decodeURIComponent(stateMatch?.[1] ?? "");
 		const stateCookie = cookieHeaderValue(
 			r3.headers.getSetCookie(),
 			"auth_state",
 		);
 		expect(stateCookie).toBeDefined();
 
-		// 4. Fake GitHub redirects back → GET /auth/github/callback
-		//    → 302 returnTo with session cookie
 		const r4 = await app.request(
 			`/auth/github/callback?code=fake&state=${encodeURIComponent(state)}`,
-			{ headers: { cookie: stateCookie! } },
+			{ headers: { cookie: stateCookie ?? "" } },
 		);
 		expect(r4.status).toBe(302);
 		expect(r4.headers.get("location")).toBe("/trigger");
@@ -119,33 +118,30 @@ describe("integration: sign-in flow", () => {
 		);
 		expect(sessionCookie).toBeDefined();
 
-		// 5. Hit /trigger with the session cookie → 200 handler body
 		const r5 = await app.request("/trigger", {
-			headers: { cookie: sessionCookie! },
+			headers: { cookie: sessionCookie ?? "" },
 		});
 		expect(r5.status).toBe(200);
 		expect(await r5.text()).toBe("TRIGGER OK");
 	});
 
-	it("denied user: callback → flash + 302 /login → signed-out deny banner", async () => {
-		// Allowlist excludes the GitHub login we'll be logged in as.
+	it("denied user: callback → flash + 302 /login → deny banner", async () => {
 		const fetchFn = fakeGitHub({ user: { login: "eve", email: null } });
-		const app = spinApp({ auth: ALICE_ALLOW, fetchFn });
+		const app = spinApp({ authAllow: ALICE_ALLOW, fetchFn });
 
-		// Kick off the flow from /auth/github/signin to get a state cookie.
 		const signin = await app.request("/auth/github/signin?returnTo=/trigger");
 		const stateCookie = cookieHeaderValue(
 			signin.headers.getSetCookie(),
 			"auth_state",
 		);
-		const authorizeUrl = signin.headers.get("location");
-		const state = decodeURIComponent(authorizeUrl!.match(/state=([^&]+)/)![1]!);
+		const authorizeUrl = signin.headers.get("location") ?? "";
+		const state = decodeURIComponent(
+			authorizeUrl.match(/state=([^&]+)/)?.[1] ?? "",
+		);
 
-		// Callback: user is "eve", allowlist has "alice" → reject, 302 /login
-		// with a flash cookie.
 		const cb = await app.request(
 			`/auth/github/callback?code=fake&state=${encodeURIComponent(state)}`,
-			{ headers: { cookie: stateCookie! } },
+			{ headers: { cookie: stateCookie ?? "" } },
 		);
 		expect(cb.status).toBe(302);
 		expect(cb.headers.get("location")).toBe("/login");
@@ -155,28 +151,63 @@ describe("integration: sign-in flow", () => {
 		);
 		expect(flashCookie).toBeDefined();
 
-		// Follow to /login with the flash cookie → banner page shows "eve"
 		const login = await app.request("/login", {
-			headers: { cookie: flashCookie! },
+			headers: { cookie: flashCookie ?? "" },
 		});
 		expect(login.status).toBe(200);
 		const html = await login.text();
 		expect(html).toContain("Not authorized");
 		expect(html).toContain("eve");
-		// Secondary action is available to let the user switch accounts.
 		expect(html).toContain("github.com/logout");
+	});
+});
+
+describe("integration: local sign-in flow", () => {
+	it("unauth → /login → POST signin → session → /trigger", async () => {
+		const fetchFn = fakeGitHub();
+		const app = spinApp({
+			authAllow: "local:dev,local:alice:acme",
+			fetchFn,
+		});
+
+		const r1 = await app.request("/trigger");
+		expect(r1.status).toBe(302);
+		expect(r1.headers.get("location")).toBe("/login?returnTo=%2Ftrigger");
+
+		const r2 = await app.request("/login?returnTo=/trigger");
+		const html = await r2.text();
+		expect(html).toContain("/auth/local/signin");
+		expect(html).toContain('value="dev"');
+		expect(html).toContain('value="alice"');
+
+		const signin = await app.request("/auth/local/signin", {
+			method: "POST",
+			body: new URLSearchParams({ user: "dev", returnTo: "/trigger" }),
+		});
+		expect(signin.status).toBe(302);
+		expect(signin.headers.get("location")).toBe("/trigger");
+		const sessionCookie = cookieHeaderValue(
+			signin.headers.getSetCookie(),
+			"session",
+		);
+		expect(sessionCookie).toBeDefined();
+
+		const protected_ = await app.request("/trigger", {
+			headers: { cookie: sessionCookie ?? "" },
+		});
+		expect(protected_.status).toBe(200);
+		expect(await protected_.text()).toBe("TRIGGER OK");
 	});
 });
 
 describe("integration: logout flow", () => {
 	it("POST /auth/logout → 302 /login with flash → banner renders", async () => {
 		const fetchFn = fakeGitHub({ user: { login: "alice", email: null } });
-		const app = spinApp({ auth: ALICE_ALLOW, fetchFn });
+		const app = spinApp({ authAllow: ALICE_ALLOW, fetchFn });
 
-		// Complete the sign-in flow to get a valid session cookie.
 		const signin = await app.request("/auth/github/signin?returnTo=/trigger");
 		const state = decodeURIComponent(
-			signin.headers.get("location")!.match(/state=([^&]+)/)![1]!,
+			signin.headers.get("location")?.match(/state=([^&]+)/)?.[1] ?? "",
 		);
 		const stateCookie = cookieHeaderValue(
 			signin.headers.getSetCookie(),
@@ -184,7 +215,7 @@ describe("integration: logout flow", () => {
 		);
 		const cb = await app.request(
 			`/auth/github/callback?code=fake&state=${encodeURIComponent(state)}`,
-			{ headers: { cookie: stateCookie! } },
+			{ headers: { cookie: stateCookie ?? "" } },
 		);
 		const sessionCookie = cookieHeaderValue(
 			cb.headers.getSetCookie(),
@@ -192,36 +223,30 @@ describe("integration: logout flow", () => {
 		);
 		expect(sessionCookie).toBeDefined();
 
-		// Confirm we're signed in on /trigger.
 		const pre = await app.request("/trigger", {
-			headers: { cookie: sessionCookie! },
+			headers: { cookie: sessionCookie ?? "" },
 		});
 		expect(pre.status).toBe(200);
 
-		// Sign out.
 		const logout = await app.request("/auth/logout", {
 			method: "POST",
-			headers: { cookie: sessionCookie! },
+			headers: { cookie: sessionCookie ?? "" },
 		});
 		expect(logout.status).toBe(302);
 		expect(logout.headers.get("location")).toBe("/login");
 		const setCookies = logout.headers.getSetCookie();
-		// session cleared
 		const clearedSession = setCookies.find((c) => c.startsWith("session=;"));
 		expect(clearedSession).toBeDefined();
-		// flash set
 		const flash = cookieHeaderValue(setCookies, "auth_flash");
 		expect(flash).toBeDefined();
 
-		// /login with the logout flash → "Signed out" banner.
 		const loginPage = await app.request("/login", {
-			headers: { cookie: flash! },
+			headers: { cookie: flash ?? "" },
 		});
 		expect(loginPage.status).toBe(200);
 		const html = await loginPage.text();
 		expect(html).toContain("Signed out");
 
-		// Hitting /trigger after logout (no session) → 302 back to /login.
 		const postLogoutTrigger = await app.request("/trigger");
 		expect(postLogoutTrigger.status).toBe(302);
 		expect(postLogoutTrigger.headers.get("location")).toMatch(
@@ -239,11 +264,11 @@ describe("integration: callback failure modes", () => {
 			}
 			return new Response("{}", { status: 404 });
 		});
-		const app = spinApp({ auth: ALICE_ALLOW, fetchFn });
+		const app = spinApp({ authAllow: ALICE_ALLOW, fetchFn });
 
 		const signin = await app.request("/auth/github/signin?returnTo=/trigger");
 		const state = decodeURIComponent(
-			signin.headers.get("location")!.match(/state=([^&]+)/)![1]!,
+			signin.headers.get("location")?.match(/state=([^&]+)/)?.[1] ?? "",
 		);
 		const stateCookie = cookieHeaderValue(
 			signin.headers.getSetCookie(),
@@ -252,7 +277,7 @@ describe("integration: callback failure modes", () => {
 
 		const cb = await app.request(
 			`/auth/github/callback?code=fake&state=${encodeURIComponent(state)}`,
-			{ headers: { cookie: stateCookie! } },
+			{ headers: { cookie: stateCookie ?? "" } },
 		);
 		expect(cb.status).toBe(502);
 		expect(
@@ -262,7 +287,7 @@ describe("integration: callback failure modes", () => {
 
 	it("state mismatch → 400", async () => {
 		const fetchFn = fakeGitHub();
-		const app = spinApp({ auth: ALICE_ALLOW, fetchFn });
+		const app = spinApp({ authAllow: ALICE_ALLOW, fetchFn });
 
 		const signin = await app.request("/auth/github/signin?returnTo=/trigger");
 		const stateCookie = cookieHeaderValue(
@@ -272,7 +297,7 @@ describe("integration: callback failure modes", () => {
 
 		const cb = await app.request(
 			"/auth/github/callback?code=fake&state=WRONG",
-			{ headers: { cookie: stateCookie! } },
+			{ headers: { cookie: stateCookie ?? "" } },
 		);
 		expect(cb.status).toBe(400);
 	});

@@ -92,19 +92,38 @@ The CLI SHALL NOT read any environment variable for the URL.
 - **WHEN** `wfe upload --url http://localhost:8080` is invoked
 - **THEN** the CLI SHALL POST to `http://localhost:8080/api/workflows`
 
-### Requirement: Authentication via GITHUB_TOKEN
+### Requirement: Authentication via GITHUB_TOKEN or --user
 
-The CLI SHALL read the `GITHUB_TOKEN` environment variable. When it is set and non-empty, the CLI SHALL include `Authorization: Bearer <token>` on every upload request. When unset or empty, the CLI SHALL send no `Authorization` header and let the server decide.
+The CLI SHALL support two mutually-exclusive authentication modes for upload requests:
 
-#### Scenario: GITHUB_TOKEN present
+1. **GitHub** (production): when `GITHUB_TOKEN` is set and non-empty, the CLI SHALL include `X-Auth-Provider: github` and `Authorization: Bearer <token>` on every upload request.
+2. **Local** (dev only): when `--user <name>` is passed (or the programmatic `upload({ user })` option is set) and non-empty, the CLI SHALL include `X-Auth-Provider: local` and `Authorization: User <name>` on every upload request.
 
-- **WHEN** `GITHUB_TOKEN=ghp_xxx` is set and `wfe upload` is invoked
-- **THEN** every upload request SHALL carry `Authorization: Bearer ghp_xxx`
+The two modes SHALL be mutually exclusive. If both `GITHUB_TOKEN` and `--user` are supplied, the CLI SHALL exit with status `1` and print an error to stderr identifying the conflict; no upload SHALL be attempted.
 
-#### Scenario: GITHUB_TOKEN absent
+When neither mode is supplied, the CLI SHALL omit both headers and let the server decide (today's server SHALL respond `401 Unauthorized`).
 
-- **WHEN** `GITHUB_TOKEN` is unset and `wfe upload` is invoked
-- **THEN** upload requests SHALL omit the `Authorization` header
+#### Scenario: GITHUB_TOKEN present sends github headers
+
+- **WHEN** `GITHUB_TOKEN=ghp_xxx` is set and `wfe upload` is invoked without `--user`
+- **THEN** every upload request SHALL carry `X-Auth-Provider: github` and `Authorization: Bearer ghp_xxx`
+
+#### Scenario: --user sends local headers
+
+- **WHEN** `wfe upload --tenant dev --user dev` is invoked without `GITHUB_TOKEN`
+- **THEN** every upload request SHALL carry `X-Auth-Provider: local` and `Authorization: User dev`
+
+#### Scenario: Both modes supplied is rejected
+
+- **WHEN** `GITHUB_TOKEN=ghp_xxx` is set AND `wfe upload --user dev` is invoked
+- **THEN** the CLI SHALL exit with status `1`
+- **AND** print an error to stderr identifying that the two modes are mutually exclusive
+- **AND** SHALL NOT send any upload request
+
+#### Scenario: Neither mode omits both headers
+
+- **WHEN** `GITHUB_TOKEN` is unset and `--user` is not passed
+- **THEN** upload requests SHALL omit both `Authorization` and `X-Auth-Provider`
 
 #### Scenario: 401 surfaced to the user
 
@@ -172,16 +191,34 @@ After all bundles have been attempted, the CLI SHALL print a summary to stderr: 
 
 ### Requirement: Programmatic API
 
-The SDK SHALL export `build`, `upload`, `NoWorkflowsFoundError`, `UploadOptions`, and `UploadResult` from the `./cli` subpath export. The `scripts/dev.ts` and any other programmatic consumers SHALL import from `@workflow-engine/sdk/cli`.
+The SDK SHALL export an `upload(options)` programmatic API. The `options` shape SHALL be:
 
-The programmatic `upload(options)` function has a signature equivalent to the `wfe upload` command. The function SHALL accept at least `{ cwd: string, url: string }` and return a promise that resolves to the same exit-code-equivalent status the CLI would produce. The `scripts/dev.ts` orchestrator SHALL consume this exported function directly, without spawning the `wfe` binary as a subprocess.
+```ts
+interface UploadOptions {
+  cwd: string;       // workflows directory
+  url: string;       // base URL of the runtime
+  tenant: string;    // tenant id
+  user?: string;     // local-provider login (mutually exclusive with token)
+  token?: string;    // GitHub Bearer token (mutually exclusive with user)
+}
+```
 
-#### Scenario: Importing programmatic API
+If both `user` and `token` are supplied, the function SHALL reject with an error identifying the conflict; no HTTP request SHALL be made. If neither is supplied, no `Authorization` or `X-Auth-Provider` header SHALL be sent.
 
-- **WHEN** a script imports `{ upload } from "@workflow-engine/sdk/cli"`
-- **THEN** it receives the same `upload` function as the previous `@workflow-engine/cli` package
+The `user` option SHALL drive the same headers as the CLI's `--user` flag (`X-Auth-Provider: local` + `Authorization: User <name>`). The `token` option SHALL drive `X-Auth-Provider: github` + `Authorization: Bearer <token>`.
 
-#### Scenario: Programmatic call matches CLI behavior
+#### Scenario: upload() with user sets local headers
 
-- **WHEN** `upload({ cwd: '/path/to/project', url: 'http://localhost:8080' })` is invoked
-- **THEN** the function SHALL perform the same discovery, build, and upload steps as `wfe upload --url http://localhost:8080` run in `/path/to/project`
+- **WHEN** `await upload({ cwd, url, tenant: "dev", user: "dev" })` is invoked
+- **THEN** every upload request SHALL carry `X-Auth-Provider: local` and `Authorization: User dev`
+
+#### Scenario: upload() with token sets github headers
+
+- **WHEN** `await upload({ cwd, url, tenant: "dev", token: "ghp_xxx" })` is invoked
+- **THEN** every upload request SHALL carry `X-Auth-Provider: github` and `Authorization: Bearer ghp_xxx`
+
+#### Scenario: upload() with both user and token rejects
+
+- **WHEN** `await upload({ cwd, url, tenant: "dev", user: "dev", token: "ghp_xxx" })` is invoked
+- **THEN** the promise SHALL reject with an error identifying the mutual-exclusion violation
+- **AND** SHALL NOT send any HTTP request

@@ -1,130 +1,127 @@
 import { Hono } from "hono";
+import { html } from "hono/html";
 import { describe, expect, it } from "vitest";
-import type { Auth } from "../auth/allowlist.js";
+import type {
+	AuthProvider,
+	ProviderRegistry,
+} from "../auth/providers/index.js";
 import type { UserContext } from "../auth/user-context.js";
-import { authorizeMiddleware, rejectAllMiddleware } from "./auth.js";
+import { apiAuthMiddleware } from "./auth.js";
 
-function createApp(auth: Extract<Auth, { mode: "restricted" }>) {
-	const app = new Hono();
-	app.use("*", authorizeMiddleware({ auth }));
-	app.post("/api/workflows", (c) => c.text("ok"));
-	return app;
-}
-
-function withUser(user: UserContext) {
-	return async (c: any, next: () => Promise<void>) => {
-		c.set("user", user);
-		await next();
+function stubProvider(
+	id: string,
+	resolve: (req: Request) => Promise<UserContext | undefined>,
+): AuthProvider {
+	return {
+		id,
+		renderLoginSection: () => html``,
+		mountAuthRoutes: () => {},
+		resolveApiIdentity: resolve,
+		refreshSession: () => Promise.resolve(undefined),
 	};
 }
 
-describe("authorizeMiddleware", () => {
-	it("allows when login matches users allow-list", async () => {
-		const app = new Hono();
-		app.use("*", withUser({ name: "stefan", mail: "", orgs: [] }));
-		app.use(
-			"*",
-			authorizeMiddleware({
-				auth: {
-					mode: "restricted",
-					users: new Set(["stefan"]),
-					orgs: new Set(),
-				},
-			}),
-		);
-		app.post("/api/workflows", (c) => c.text("ok"));
+function registry(...providers: AuthProvider[]): ProviderRegistry {
+	const byId = new Map(providers.map((p) => [p.id, p]));
+	return {
+		providers,
+		byId: (id) => byId.get(id),
+	};
+}
 
-		const res = await app.request("/api/workflows", { method: "POST" });
-		expect(res.status).toBe(200);
-		expect(await res.text()).toBe("ok");
-	});
+function createApp(reg: ProviderRegistry): Hono {
+	const app = new Hono();
+	app.use("*", apiAuthMiddleware({ registry: reg }));
+	app.post("/workflows", (c) => c.text("ok"));
+	return app;
+}
 
-	it("allows when any org matches orgs allow-list", async () => {
-		const app = new Hono();
-		app.use("*", withUser({ name: "bob", mail: "", orgs: ["acme"] }));
-		app.use(
-			"*",
-			authorizeMiddleware({
-				auth: {
-					mode: "restricted",
-					users: new Set(),
-					orgs: new Set(["acme"]),
-				},
-			}),
-		);
-		app.post("/api/workflows", (c) => c.text("ok"));
+const ALICE: UserContext = { name: "alice", mail: "a@x", orgs: ["acme"] };
 
-		const res = await app.request("/api/workflows", { method: "POST" });
-		expect(res.status).toBe(200);
-	});
-
-	it("returns 401 when user context is absent", async () => {
-		const app = createApp({
-			mode: "restricted",
-			users: new Set(["stefan"]),
-			orgs: new Set(),
-		});
-		const res = await app.request("/api/workflows", { method: "POST" });
+describe("apiAuthMiddleware", () => {
+	it("returns 401 when X-Auth-Provider header is missing", async () => {
+		const reg = registry(stubProvider("github", () => Promise.resolve(ALICE)));
+		const app = createApp(reg);
+		const res = await app.request("/workflows", { method: "POST" });
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: "Unauthorized" });
 	});
 
-	it("returns 401 when login not on allow-list and no org match", async () => {
-		const app = new Hono();
-		app.use("*", withUser({ name: "eve", mail: "", orgs: ["elsewhere"] }));
-		app.use(
-			"*",
-			authorizeMiddleware({
-				auth: {
-					mode: "restricted",
-					users: new Set(["stefan"]),
-					orgs: new Set(["acme"]),
-				},
-			}),
-		);
-		app.post("/api/workflows", (c) => c.text("ok"));
-
-		const res = await app.request("/api/workflows", { method: "POST" });
-		expect(res.status).toBe(401);
-		expect(await res.json()).toEqual({ error: "Unauthorized" });
-	});
-
-	it("returns identical 401 responses for absent user vs allow-list miss", async () => {
-		const absentApp = createApp({
-			mode: "restricted",
-			users: new Set(["stefan"]),
-			orgs: new Set(),
-		});
-		const missApp = new Hono();
-		missApp.use("*", withUser({ name: "other", mail: "", orgs: [] }));
-		missApp.use(
-			"*",
-			authorizeMiddleware({
-				auth: {
-					mode: "restricted",
-					users: new Set(["stefan"]),
-					orgs: new Set(),
-				},
-			}),
-		);
-		missApp.post("/api/workflows", (c) => c.text("ok"));
-
-		const absent = await absentApp.request("/api/workflows", {
+	it("returns 401 when X-Auth-Provider names an unknown provider", async () => {
+		const reg = registry(stubProvider("github", () => Promise.resolve(ALICE)));
+		const app = createApp(reg);
+		const res = await app.request("/workflows", {
 			method: "POST",
+			headers: { "x-auth-provider": "oidc" },
 		});
-		const miss = await missApp.request("/api/workflows", { method: "POST" });
-		expect(absent.status).toBe(miss.status);
-		expect(await absent.text()).toBe(await miss.text());
-	});
-});
-
-describe("rejectAllMiddleware", () => {
-	it("responds 401 to every request", async () => {
-		const app = new Hono();
-		app.use("*", rejectAllMiddleware());
-		app.post("/api/anything", (c) => c.text("never"));
-		const res = await app.request("/api/anything", { method: "POST" });
 		expect(res.status).toBe(401);
-		expect(await res.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("dispatches to the named provider and sets user on success", async () => {
+		const reg = registry(stubProvider("github", () => Promise.resolve(ALICE)));
+		const app = new Hono();
+		app.use("*", apiAuthMiddleware({ registry: reg }));
+		app.post("/workflows", (c) => c.json({ user: c.get("user") }));
+		const res = await app.request("/workflows", {
+			method: "POST",
+			headers: {
+				"x-auth-provider": "github",
+				authorization: "Bearer xyz",
+			},
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ user: ALICE });
+	});
+
+	it("returns 401 when provider returns undefined", async () => {
+		const reg = registry(
+			stubProvider("github", () => Promise.resolve(undefined)),
+		);
+		const app = createApp(reg);
+		const res = await app.request("/workflows", {
+			method: "POST",
+			headers: { "x-auth-provider": "github" },
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it("returns identical 401 body across failure modes", async () => {
+		const reg = registry(
+			stubProvider("github", () => Promise.resolve(undefined)),
+		);
+		const app = createApp(reg);
+		const a = await app.request("/workflows", { method: "POST" });
+		const b = await app.request("/workflows", {
+			method: "POST",
+			headers: { "x-auth-provider": "oidc" },
+		});
+		const c = await app.request("/workflows", {
+			method: "POST",
+			headers: { "x-auth-provider": "github" },
+		});
+		expect(a.status).toBe(401);
+		expect(b.status).toBe(401);
+		expect(c.status).toBe(401);
+		expect(await a.json()).toEqual({ error: "Unauthorized" });
+		expect(await b.json()).toEqual({ error: "Unauthorized" });
+		expect(await c.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("does not consult other providers when the named one returns undefined", async () => {
+		let secondCalled = false;
+		const reg = registry(
+			stubProvider("github", () => Promise.resolve(undefined)),
+			stubProvider("local", () => {
+				secondCalled = true;
+				return Promise.resolve(ALICE);
+			}),
+		);
+		const app = createApp(reg);
+		const res = await app.request("/workflows", {
+			method: "POST",
+			headers: { "x-auth-provider": "github" },
+		});
+		expect(res.status).toBe(401);
+		expect(secondCalled).toBe(false);
 	});
 });

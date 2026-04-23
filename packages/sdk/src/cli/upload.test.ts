@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { upload } from "./upload.js";
 
 const MUST_MATCH_RE = /must match/;
+const MUTUALLY_EXCLUSIVE_RE = /mutually exclusive/;
 
 interface CapturedRequest {
 	path: string;
@@ -138,9 +139,10 @@ describe("upload", () => {
 			"application/gzip",
 		);
 		expect(runtime.requests[0]?.headers.authorization).toBeUndefined();
+		expect(runtime.requests[0]?.headers["x-auth-provider"]).toBeUndefined();
 	});
 
-	it("sends Authorization header when GITHUB_TOKEN is set", async () => {
+	it("sends github provider + Bearer Authorization when GITHUB_TOKEN is set", async () => {
 		const { cwd } = await createProjectWithTenantBundle();
 		// biome-ignore lint/style/noProcessEnv: test needs to manipulate the CLI's documented env var
 		process.env.GITHUB_TOKEN = "ghp_test";
@@ -149,6 +151,52 @@ describe("upload", () => {
 		await upload({ cwd, url: runtime.url, tenant: "acme" });
 
 		expect(runtime.requests[0]?.headers.authorization).toBe("Bearer ghp_test");
+		expect(runtime.requests[0]?.headers["x-auth-provider"]).toBe("github");
+	});
+
+	it("sends github provider + Bearer Authorization when token option is set", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
+		runtime.setResponder(() => ({ status: 204 }));
+
+		await upload({
+			cwd,
+			url: runtime.url,
+			tenant: "acme",
+			token: "ghp_opt",
+		});
+
+		expect(runtime.requests[0]?.headers.authorization).toBe("Bearer ghp_opt");
+		expect(runtime.requests[0]?.headers["x-auth-provider"]).toBe("github");
+	});
+
+	it("sends local provider + User Authorization when user option is set", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
+		runtime.setResponder(() => ({ status: 204 }));
+
+		await upload({
+			cwd,
+			url: runtime.url,
+			tenant: "acme",
+			user: "dev",
+		});
+
+		expect(runtime.requests[0]?.headers.authorization).toBe("User dev");
+		expect(runtime.requests[0]?.headers["x-auth-provider"]).toBe("local");
+	});
+
+	it("rejects when both user and token are supplied without making any request", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
+
+		await expect(
+			upload({
+				cwd,
+				url: runtime.url,
+				tenant: "acme",
+				user: "dev",
+				token: "ghp_both",
+			}),
+		).rejects.toThrow(MUTUALLY_EXCLUSIVE_RE);
+		expect(runtime.requests).toHaveLength(0);
 	});
 
 	it("surfaces 401 as a failure", async () => {

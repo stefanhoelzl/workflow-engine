@@ -1,12 +1,13 @@
 import { html } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { FlashPayload } from "../../auth/flash-cookie.js";
+import type { LoginSection } from "../../auth/providers/index.js";
 
 interface BannerContent {
 	readonly title: string;
 	readonly role: "alert" | "status";
 	readonly heading: string;
-	readonly body: HtmlEscapedString | Promise<HtmlEscapedString>;
+	readonly bodyBase: HtmlEscapedString | Promise<HtmlEscapedString>;
 }
 
 function bannerFor(flash: FlashPayload): BannerContent {
@@ -15,7 +16,7 @@ function bannerFor(flash: FlashPayload): BannerContent {
 			title: "Not authorized",
 			role: "alert",
 			heading: "Not authorized.",
-			body: html`You signed in to GitHub as <code>${flash.login}</code>, but
+			bodyBase: html`You signed in as <code>${flash.login}</code>, but
       this instance does not grant you access. Contact the administrator
       if you believe this is an error.`,
 		};
@@ -24,16 +25,16 @@ function bannerFor(flash: FlashPayload): BannerContent {
 		title: "Signed out",
 		role: "status",
 		heading: "Signed out.",
-		body: html`You have been signed out of this instance. GitHub may
-    still consider this browser signed in to your GitHub account —
-    sign out of GitHub too if you want to fully end the session or
-    switch accounts.`,
+		bodyBase: html`You have been signed out of this instance.`,
 	};
 }
 
 interface LoginPageProps {
 	readonly flash: FlashPayload | undefined;
 	readonly returnTo: string;
+	readonly sections: readonly LoginSection[];
+	readonly flashBody: LoginSection | undefined;
+	readonly flashAction: LoginSection | undefined;
 }
 
 function renderLoginPage(
@@ -41,7 +42,6 @@ function renderLoginPage(
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
 	const banner = props.flash ? bannerFor(props.flash) : undefined;
 	const title = banner?.title ?? "Sign in";
-	const signinHref = `/auth/github/signin?returnTo=${encodeURIComponent(props.returnTo)}`;
 	return html`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -60,18 +60,14 @@ function renderLoginPage(
 			banner
 				? html`<div class="auth-card__banner" role="${banner.role}">
       <strong>${banner.heading}</strong>
-      ${banner.body}
+      ${banner.bodyBase}
+      ${props.flashBody ?? ""}
     </div>`
 				: ""
 		}
     <div class="auth-card__actions">
-      <a href="${signinHref}" class="btn btn--primary">Sign in with GitHub</a>
-      ${
-				banner
-					? html`<a href="https://github.com/logout" class="btn btn--secondary"
-         rel="noopener noreferrer" target="_blank">Sign out of GitHub</a>`
-					: ""
-			}
+      ${props.sections}
+      ${props.flashAction ?? ""}
     </div>
   </main>
 </body>

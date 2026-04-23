@@ -1,5 +1,10 @@
 import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { apiMiddleware } from "./api/index.js";
+import {
+	buildProviderFactories,
+	buildRegistry,
+	type ProviderRegistry,
+} from "./auth/providers/index.js";
 import { authMiddleware, loginPageMiddleware } from "./auth/routes.js";
 import { sessionMiddleware } from "./auth/session-mw.js";
 import { createConfig } from "./config.js";
@@ -64,6 +69,21 @@ function initPersistence(
 	return createPersistence(backend, { logger });
 }
 
+function logRegistry(
+	logger: ReturnType<typeof createLogger>,
+	registry: ProviderRegistry,
+) {
+	if (registry.providers.length === 0) {
+		logger.warn("auth.no-providers");
+		return;
+	}
+	const counts = registry.providers.map((p) => ({ id: p.id }));
+	logger.info("auth.providers-registered", {
+		count: registry.providers.length,
+		providers: counts,
+	});
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: entry-point initialization wires all components
 async function init() {
 	// biome-ignore lint/style/noProcessEnv: entry-point config
@@ -75,16 +95,23 @@ async function init() {
 
 	runtimeLogger.info("initialize", { config });
 
-	if (config.auth.mode === "disabled") {
-		runtimeLogger.warn("auth.disabled");
-	} else if (config.auth.mode === "open") {
-		runtimeLogger.warn("auth.open");
-	} else {
-		runtimeLogger.info("auth.restricted", {
-			users: config.auth.users.size,
-			orgs: config.auth.orgs.size,
-		});
-	}
+	const localDeployment = config.localDeployment === "1";
+	const secureCookies = !localDeployment;
+
+	// biome-ignore lint/style/noProcessEnv: provider factory list reads LOCAL_DEPLOYMENT
+	const factories = buildProviderFactories(process.env);
+	const authRegistry = buildRegistry(config.authAllow, factories, {
+		secureCookies,
+		nowFn: () => Date.now(),
+		...(config.githubOauthClientId === undefined
+			? {}
+			: { clientId: config.githubOauthClientId }),
+		...(config.githubOauthClientSecret === undefined
+			? {}
+			: { clientSecret: config.githubOauthClientSecret.reveal() }),
+		...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+	});
+	logRegistry(runtimeLogger, authRegistry);
 
 	// 1. Init storage backend.
 	const storageBackend = createStorageBackend(config, runtimeLogger);
@@ -134,12 +161,7 @@ async function init() {
 	//    the bus).
 	const executor = createExecutor({ bus: eventBus, sandboxStore });
 
-	// 5a. Construct trigger backends. Each backend is a protocol adapter for
-	//     one trigger kind; backends plug into WorkflowRegistry which pushes
-	//     `reconfigure(tenant, entries)` per upload. Backends never touch
-	//     the executor directly — the registry builds `fire` closures via
-	//     `buildFire` and attaches them to each `TriggerEntry`.
-	//     main.ts owns start/stop lifecycle.
+	// 5a. Construct trigger backends.
 	const httpSource = createHttpTriggerSource();
 	const cronSource = createCronTriggerSource({
 		logger: runtimeLogger,
@@ -149,8 +171,7 @@ async function init() {
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 6. Workflow registry. Boots from the storage backend by LISTing
-	//    `workflows/*.tar.gz` tenant bundles. Calls `reconfigure(tenant,
-	//    entries)` on every registered backend for every successful upload.
+	//    `workflows/*.tar.gz` tenant bundles.
 	const registry = createWorkflowRegistry({
 		logger: runtimeLogger,
 		executor,
@@ -170,44 +191,28 @@ async function init() {
 		);
 	}
 
-	// Auth wiring. sessionMw gates `/dashboard/*` and `/trigger/*`; `/auth/*`
-	// is only mounted in restricted mode (login/callback/logout). In open or
-	// disabled mode there is no login flow to host.
-	// biome-ignore lint/style/noProcessEnv: entry-point config read
-	const localDeployment = Boolean(process.env.LOCAL_DEPLOYMENT);
-	const secureCookies = !localDeployment;
+	// Auth wiring. sessionMw gates `/dashboard/*` and `/trigger/*`;
+	// loginPageMiddleware renders the login card; authMiddleware mounts
+	// per-provider routes under /auth/<id>/* and /auth/logout.
 	const sessionMw = sessionMiddleware({
-		auth: config.auth,
+		registry: authRegistry,
 		secureCookies,
 	});
-	const authRoutes: Middleware[] =
-		config.auth.mode === "restricted" &&
-		config.githubOauthClientId !== undefined &&
-		config.githubOauthClientSecret !== undefined &&
-		config.baseUrl !== undefined
-			? (() => {
-					const opts = {
-						auth: config.auth,
-						clientId: config.githubOauthClientId,
-						clientSecret: config.githubOauthClientSecret.reveal(),
-						baseUrl: config.baseUrl,
-						secureCookies,
-					};
-					return [loginPageMiddleware(opts), authMiddleware(opts)];
-				})()
-			: [];
+	const authRoutes: Middleware[] = [
+		loginPageMiddleware({ secureCookies, registry: authRegistry }),
+		authMiddleware({ secureCookies, registry: authRegistry }),
+	];
 
 	// 6. Wire the HTTP server. Order matters: secure-headers → logger →
-	//    health → static → webhooks (httpTrigger) → /auth (OAuth routes,
-	//    unprotected) → /dashboard (UI, session-guarded) → /trigger (UI,
-	//    session-guarded) → /api. The session middleware is mounted
+	//    health → static → webhooks (httpTrigger) → /auth (login + per-provider
+	//    routes, unprotected) → /dashboard (UI, session-guarded) → /trigger
+	//    (UI, session-guarded) → /api. The session middleware is mounted
 	//    inside the dashboard/trigger middleware factories.
 	const server = createServer(
 		config.port,
 		{ logger: runtimeLogger },
 		secureHeadersMiddleware({
-			// biome-ignore lint/style/noProcessEnv: entry-point config read
-			localDeployment: process.env.LOCAL_DEPLOYMENT,
+			localDeployment: config.localDeployment,
 		}),
 		httpLogger,
 		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
@@ -217,7 +222,7 @@ async function init() {
 		dashboardMiddleware({ eventStore, registry, sessionMw }),
 		triggerMiddleware({ registry, sessionMw }),
 		apiMiddleware({
-			auth: config.auth,
+			authRegistry,
 			registry,
 			logger: runtimeLogger,
 		}),

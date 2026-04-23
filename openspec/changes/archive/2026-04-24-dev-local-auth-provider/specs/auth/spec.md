@@ -1,30 +1,4 @@
-# auth Specification
-
-## Purpose
-
-Unified in-app authentication for the workflow-engine runtime. Resolves the authenticated caller into a `UserContext` from either a sealed session cookie (UI routes) or a GitHub Bearer token (API routes), enforces the `AUTH_ALLOW` allow-list, and owns the GitHub OAuth login flow (`/login`, `/auth/github/signin`, `/auth/github/callback`, `/auth/logout`). Replaces the former oauth2-proxy sidecar and the parallel `github-auth`/`dashboard-auth` capabilities.
-
-## Requirements
-### Requirement: UserContext shape
-
-The runtime SHALL resolve authenticated callers into a `UserContext` object with the following shape, independent of transport (session cookie vs. Bearer header):
-
-```
-UserContext = {
-  name:  string   // GitHub login, from GET /user
-  mail:  string   // GitHub email, from GET /user (may be "")
-  orgs:  string[] // GitHub org logins, from GET /user/orgs
-}
-```
-
-`UserContext.teams` SHALL NOT exist. No capability consumes teams; `GET /user/teams` SHALL NOT be called on any auth code path. The field names `name`/`mail` are retained from the pre-existing runtime convention (where `UserContext.name` has always held the GitHub login string and `UserContext.mail` the verified email).
-
-#### Scenario: UserContext carries name, mail, orgs only
-
-- **GIVEN** a user whose GitHub profile is `{ login: "alice", email: "alice@acme.test" }` and whose `/user/orgs` returns `[{ login: "acme" }]`
-- **WHEN** the runtime resolves their `UserContext`
-- **THEN** it SHALL be `{ name: "alice", mail: "alice@acme.test", orgs: ["acme"] }`
-- **AND** the object SHALL NOT have a `teams` property
+## ADDED Requirements
 
 ### Requirement: AuthProvider interface
 
@@ -231,6 +205,8 @@ The 401 response body SHALL be `{ "error": "Unauthorized" }`, identical for ever
 - **WHEN** comparing the responses for: (a) no `X-Auth-Provider`, (b) `X-Auth-Provider: oidc`, (c) `X-Auth-Provider: github` with malformed `Authorization`
 - **THEN** all three responses SHALL be `401 Unauthorized` with body `{ "error": "Unauthorized" }`
 
+## MODIFIED Requirements
+
 ### Requirement: AUTH_ALLOW grammar
 
 The runtime SHALL accept an `AUTH_ALLOW` environment variable with the grammar:
@@ -292,112 +268,6 @@ The grammar SHALL NOT contain a sentinel for "auth disabled". Empty/unset `AUTH_
 - **GIVEN** `LOCAL_DEPLOYMENT = "1"`
 - **WHEN** `createConfig` is called with `AUTH_ALLOW = "local:alice:acme,foo"`
 - **THEN** `createConfig` SHALL throw an error containing `orgs use '|' separator`
-
-### Requirement: isMember tenant predicate
-
-The runtime SHALL expose an `isMember(user, tenant)` predicate that returns true if and only if the `tenant` string passes `validateTenant(tenant)` AND `tenant` is either `user.name` or an element of `user.orgs`. The tenant identifier regex is `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`.
-
-This predicate scopes *which tenants an already-allowed user can act as*. It is orthogonal to `allow(user)` — both MUST pass for tenant-scoped write operations. Teams are NOT consulted.
-
-#### Scenario: Personal namespace grants membership
-
-- **GIVEN** `user = { login: "alice", email: "", orgs: [] }`
-- **WHEN** `isMember(user, "alice")` is called
-- **THEN** it SHALL return true
-
-#### Scenario: Org namespace grants membership
-
-- **GIVEN** `user = { login: "alice", email: "", orgs: ["acme"] }`
-- **WHEN** `isMember(user, "acme")` is called
-- **THEN** it SHALL return true
-
-#### Scenario: Non-member denied
-
-- **GIVEN** `user = { login: "alice", email: "", orgs: ["acme"] }`
-- **WHEN** `isMember(user, "victim")` is called
-- **THEN** it SHALL return false
-
-#### Scenario: Invalid tenant identifier denied regardless of membership
-
-- **GIVEN** `user = { login: "../etc/passwd", email: "", orgs: [] }`
-- **WHEN** `isMember(user, "../etc/passwd")` is called
-- **THEN** it SHALL return false
-
-### Requirement: Tenant-authorization middleware
-
-The runtime SHALL expose a `requireTenantMember()` Hono middleware factory in the `auth` capability. The middleware SHALL enforce the tenant-isolation invariant (SECURITY.md §4) for any route that accepts a `:tenant` path parameter, returning `404 Not Found` fail-closed on any failure mode (invalid identifier, non-member, or missing user).
-
-Evaluation order inside the middleware:
-
-1. Read `c.req.param("tenant")`. If the value does not satisfy `validateTenant` (regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), respond with `c.notFound()`. This check SHALL run before any other check, because the regex is a path-safety guarantee, not an authorization check.
-2. If `user = c.get("user")` is set and `isMember(user, tenant)` returns true, call `next()`.
-3. Otherwise, respond with `c.notFound()`.
-
-The middleware SHALL NOT branch on any open-mode flag; the `authOpen` `ContextVariableMap` field SHALL NOT exist. Authentication is now binary: either a `UserContext` is set (by some provider) or it is not.
-
-The middleware SHALL NOT hardcode a response body. Each Hono sub-app that mounts the middleware SHALL register an `app.notFound(c => c.json({error:"Not Found"}, 404))` handler so that 404 responses carry a uniform JSON body across `/api/*` and `/trigger/*`.
-
-The middleware SHALL read only the path parameter named `tenant`. It SHALL NOT accept configuration for a different parameter name or a custom accessor — all tenant-scoped routes SHALL use the path parameter name `tenant`.
-
-The following routes SHALL enforce tenant membership by mounting `requireTenantMember()` and SHALL NOT perform the `validateTenant` + `isMember` check inline in their handlers:
-
-- `POST /api/workflows/:tenant` (mounted in `api/index.ts`).
-- `POST /trigger/:tenant/:workflow/:trigger` (mounted in `ui/trigger/middleware.ts` on the `/trigger`-basePath sub-app at `/:tenant/*`).
-
-Any future route that accepts a `:tenant` path parameter SHALL mount `requireTenantMember()` on the corresponding subpath. Inline tenant-authorization checks in individual route handlers SHALL be treated as a defect.
-
-#### Scenario: Invalid tenant identifier returns 404
-
-- **GIVEN** `requireTenantMember()` is mounted on `/workflows/:tenant` in the `/api` sub-app
-- **WHEN** a request arrives at `POST /api/workflows/../etc/passwd`
-- **THEN** the middleware SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
-- **AND** the handler SHALL NOT be invoked
-- **AND** the response SHALL be indistinguishable from the response for a non-existent tenant
-
-#### Scenario: Non-member returns 404
-
-- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
-- **WHEN** a request to `POST /api/workflows/victim` arrives from alice (who is not a member of victim)
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
-- **AND** the response SHALL be indistinguishable from the response for a tenant that does not exist
-
-#### Scenario: Member passes to handler
-
-- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
-- **WHEN** a request to `POST /api/workflows/acme` arrives from alice
-- **THEN** `requireTenantMember()` SHALL call `next()` without modifying the response
-- **AND** the upload handler SHALL receive the request
-
-#### Scenario: Missing user returns 404
-
-- **WHEN** a request to `POST /api/workflows/acme` arrives with no `user` on the context (e.g., authn middleware failed to populate it)
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
-- **AND** the middleware SHALL NOT fall through to the handler
-
-#### Scenario: Trigger POST uses same middleware
-
-- **GIVEN** `requireTenantMember()` is mounted on `/:tenant/*` of the `/trigger`-basePath sub-app
-- **AND** `user = { name: "alice", mail: "", orgs: [] }` is set
-- **WHEN** a request to `POST /trigger/victim/wf/tr` arrives from alice
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found`
-- **AND** the body SHALL be `{"error":"Not Found"}`
-
-### Requirement: GitHub OAuth scope
-
-The runtime SHALL request GitHub OAuth scope `user:email read:org` when constructing the authorize URL. This scope set SHALL be sufficient to populate `UserContext.login`, `UserContext.email`, and `UserContext.orgs` including private-org memberships.
-
-The runtime SHALL NOT request additional scopes (in particular, SHALL NOT request `repo`, `admin:*`, or `user` unqualified).
-
-#### Scenario: Authorize URL carries required scopes
-
-- **WHEN** the runtime constructs the authorize URL
-- **THEN** the URL query SHALL include `scope=user%3Aemail%20read%3Aorg` (URL-encoded)
-
-#### Scenario: Private org membership is visible to orgs fetch
-
-- **GIVEN** a user whose only membership is in a private org `priv-org`
-- **WHEN** the callback handler calls `GET /user/orgs` with the access token
-- **THEN** the response SHALL include `priv-org` (because `read:org` is granted)
 
 ### Requirement: Bearer middleware on /api/*
 
@@ -467,33 +337,64 @@ The local provider's `resolveApiIdentity` SHALL parse `Authorization: User <name
 - **THEN** the dispatcher SHALL respond `401 Unauthorized`
 - **AND** no outbound call to `api.github.com` SHALL be made
 
-### Requirement: Session cookie sealing
+### Requirement: Tenant-authorization middleware
 
-The runtime SHALL use `iron-webcrypto` (via the `seal` and `unseal` functions) to encrypt and authenticate all three auth cookies (`session`, `auth_state`, `auth_flash`). All three SHALL share a single 32-byte password generated via `crypto.getRandomValues` at process startup and held in module-level state for the life of the process.
+The runtime SHALL expose a `requireTenantMember()` Hono middleware factory in the `auth` capability. The middleware SHALL enforce the tenant-isolation invariant (SECURITY.md §4) for any route that accepts a `:tenant` path parameter, returning `404 Not Found` fail-closed on any failure mode (invalid identifier, non-member, or missing user).
 
-The password SHALL NOT be written to disk, to any Kubernetes Secret, to any log record, or to any telemetry output. The password SHALL NOT be recoverable after process termination.
+Evaluation order inside the middleware:
 
-Each cookie type SHALL pass a type-specific `ttl` parameter to `seal`; `unseal` SHALL validate TTL and reject expired blobs. A cookie whose `unseal` fails (wrong password, tampered ciphertext, expired TTL) SHALL be treated as absent.
+1. Read `c.req.param("tenant")`. If the value does not satisfy `validateTenant` (regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), respond with `c.notFound()`. This check SHALL run before any other check, because the regex is a path-safety guarantee, not an authorization check.
+2. If `user = c.get("user")` is set and `isMember(user, tenant)` returns true, call `next()`.
+3. Otherwise, respond with `c.notFound()`.
 
-#### Scenario: Password regenerated at process start
+The middleware SHALL NOT branch on any open-mode flag; the `authOpen` `ContextVariableMap` field SHALL NOT exist. Authentication is now binary: either a `UserContext` is set (by some provider) or it is not.
 
-- **WHEN** the runtime starts
-- **THEN** it SHALL generate a 32-byte random password via `crypto.getRandomValues`
-- **AND** the password SHALL differ from any previous process's password with overwhelming probability
+The middleware SHALL NOT hardcode a response body. Each Hono sub-app that mounts the middleware SHALL register an `app.notFound(c => c.json({error:"Not Found"}, 404))` handler so that 404 responses carry a uniform JSON body across `/api/*` and `/trigger/*`.
 
-#### Scenario: Tampered session cookie is rejected
+The middleware SHALL read only the path parameter named `tenant`. It SHALL NOT accept configuration for a different parameter name or a custom accessor — all tenant-scoped routes SHALL use the path parameter name `tenant`.
 
-- **GIVEN** a valid sealed session cookie
-- **WHEN** any byte of the cookie value is flipped and the cookie is presented to `sessionMw`
-- **THEN** `unseal` SHALL throw
-- **AND** `sessionMw` SHALL treat the request as unauthenticated and 302 to `/login`
+The following routes SHALL enforce tenant membership by mounting `requireTenantMember()` and SHALL NOT perform the `validateTenant` + `isMember` check inline in their handlers:
 
-#### Scenario: Expired session cookie is rejected
+- `POST /api/workflows/:tenant` (mounted in `api/index.ts`).
+- `POST /trigger/:tenant/:workflow/:trigger` (mounted in `ui/trigger/middleware.ts` on the `/trigger`-basePath sub-app at `/:tenant/*`).
 
-- **GIVEN** a sealed session cookie whose `ttl` has elapsed
-- **WHEN** the cookie is presented to `sessionMw`
-- **THEN** `unseal` SHALL throw due to TTL expiry
-- **AND** `sessionMw` SHALL 302 to `/login`
+Any future route that accepts a `:tenant` path parameter SHALL mount `requireTenantMember()` on the corresponding subpath. Inline tenant-authorization checks in individual route handlers SHALL be treated as a defect.
+
+#### Scenario: Invalid tenant identifier returns 404
+
+- **GIVEN** `requireTenantMember()` is mounted on `/workflows/:tenant` in the `/api` sub-app
+- **WHEN** a request arrives at `POST /api/workflows/../etc/passwd`
+- **THEN** the middleware SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
+- **AND** the handler SHALL NOT be invoked
+- **AND** the response SHALL be indistinguishable from the response for a non-existent tenant
+
+#### Scenario: Non-member returns 404
+
+- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
+- **WHEN** a request to `POST /api/workflows/victim` arrives from alice (who is not a member of victim)
+- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
+- **AND** the response SHALL be indistinguishable from the response for a tenant that does not exist
+
+#### Scenario: Member passes to handler
+
+- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
+- **WHEN** a request to `POST /api/workflows/acme` arrives from alice
+- **THEN** `requireTenantMember()` SHALL call `next()` without modifying the response
+- **AND** the upload handler SHALL receive the request
+
+#### Scenario: Missing user returns 404
+
+- **WHEN** a request to `POST /api/workflows/acme` arrives with no `user` on the context (e.g., authn middleware failed to populate it)
+- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
+- **AND** the middleware SHALL NOT fall through to the handler
+
+#### Scenario: Trigger POST uses same middleware
+
+- **GIVEN** `requireTenantMember()` is mounted on `/:tenant/*` of the `/trigger`-basePath sub-app
+- **AND** `user = { name: "alice", mail: "", orgs: [] }` is set
+- **WHEN** a request to `POST /trigger/victim/wf/tr` arrives from alice
+- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found`
+- **AND** the body SHALL be `{"error":"Not Found"}`
 
 ### Requirement: Session cookie contract
 
@@ -540,86 +441,6 @@ The sealed cookie SHALL be no larger than 4096 bytes; if the payload would excee
 - **THEN** unsealing SHALL fail and the request SHALL be treated as unauthenticated
 - **AND** the session cookie SHALL be cleared
 - **AND** the response SHALL be `302 Found` with `Location: /login?returnTo=...`
-
-### Requirement: State cookie contract
-
-The `auth_state` cookie carries CSRF protection and post-login redirect target for the OAuth handshake. It SHALL have:
-- **Name**: `auth_state`
-- **Path**: `/auth`
-- **HttpOnly**: true
-- **Secure**: true (except `LOCAL_DEPLOYMENT=1`)
-- **SameSite**: `Lax`
-- **Max-Age**: 300 (5 minutes)
-- **Payload (sealed)**:
-  ```
-  {
-    state:    string   // opaque CSRF token, 32 random bytes base64url
-    returnTo: string   // same-origin path, starts with "/", no "//", no ":", no scheme
-  }
-  ```
-
-The callback handler SHALL validate that `state` in the unsealed cookie equals the `state` query parameter from GitHub; on mismatch or missing cookie, the handler SHALL respond `400 Bad Request`. The callback handler SHALL clear the `auth_state` cookie before processing the rest of the request (single-use).
-
-The callback handler SHALL validate `returnTo` is a same-origin relative path; any value that does not start with `/` or contains `//` or `:` SHALL be rejected and the handler SHALL redirect to `/` instead of the attacker-chosen URL.
-
-#### Scenario: State mismatch returns 400
-
-- **GIVEN** an `auth_state` cookie sealing `{ state: "A", returnTo: "/" }`
-- **WHEN** `/auth/github/callback?code=...&state=B` is requested
-- **THEN** the handler SHALL respond `400 Bad Request`
-- **AND** the handler SHALL NOT exchange the code for a token
-
-#### Scenario: Missing state cookie returns 400
-
-- **WHEN** `/auth/github/callback?code=...&state=X` is requested without an `auth_state` cookie
-- **THEN** the handler SHALL respond `400 Bad Request`
-
-#### Scenario: Malformed returnTo rejected
-
-- **GIVEN** an `auth_state` cookie sealing `{ state: "A", returnTo: "//evil.example/foo" }` that passes state match
-- **WHEN** the callback completes successfully
-- **THEN** the handler SHALL redirect to `/` instead of the malformed `returnTo`
-
-#### Scenario: State cookie is single-use
-
-- **GIVEN** a successful callback
-- **WHEN** the handler redirects to `returnTo`
-- **THEN** the response SHALL include `Set-Cookie: auth_state=; Max-Age=0` to delete the state cookie
-
-### Requirement: Flash cookie contract
-
-The `auth_flash` cookie is set by the callback handler, by the session refresh path when `allow()` rejects a resolved user, and by `POST /auth/logout`. It SHALL have:
-- **Name**: `auth_flash`
-- **Path**: `/` (the cookie must reach `/login`, which is not under `/auth`)
-- **HttpOnly**: true
-- **Secure**: true (except `LOCAL_DEPLOYMENT=1`)
-- **SameSite**: `Lax`
-- **Max-Age**: 60 (60 seconds)
-- **Payload (sealed, discriminated union)**:
-  ```
-  { kind: "denied"; login: string }   // set on allowlist rejection
-  | { kind: "logged-out" }            // set on successful logout
-  ```
-
-`GET /login` SHALL read and clear the flash cookie on every request. When the flash cookie is present and valid, the handler SHALL render the login page with the banner variant indicated by the `kind` field. When absent, the handler SHALL still render the same page (without a banner) — the login page is stable and NEVER auto-redirects to the IdP.
-
-#### Scenario: Denied flash drives the deny banner
-
-- **GIVEN** a user whose allowlist check fails at callback time for login `foo`
-- **WHEN** the callback handler sets the flash cookie with `{ kind: "denied", login: "foo" }` and 302s to `/login`
-- **THEN** the login route SHALL render the page with a "Not authorized" banner naming `foo`
-
-#### Scenario: Logged-out flash drives the signed-out banner
-
-- **GIVEN** a successful `POST /auth/logout`
-- **WHEN** the logout handler sets the flash cookie with `{ kind: "logged-out" }` and 302s to `/login`
-- **THEN** the login route SHALL render the page with a "Signed out" banner and a "Sign in again" action
-
-#### Scenario: Flash cookie is single-use
-
-- **GIVEN** a render of the login page from a flash cookie
-- **WHEN** the response is sent
-- **THEN** it SHALL include `Set-Cookie: auth_flash=; Max-Age=0`
 
 ### Requirement: Login page route
 
@@ -691,74 +512,6 @@ When the registry is empty, the rendered card SHALL contain the brand and any fl
 
 - **WHEN** `GET /login?returnTo=//evil.example` is requested with a github-only registry
 - **THEN** the github section in the rendered page SHALL link to `/auth/github/signin?returnTo=%2F`
-
-### Requirement: GitHub signin route
-
-`GET /auth/github/signin` starts the GitHub OAuth handshake. It is reached only by explicit user action (clicking the "Sign in with GitHub" button on `/login`) or by another provider-specific signin route (for future providers). `sessionMw` MUST NOT redirect to this route directly; it MUST redirect to `/login` and let the user initiate the flow.
-
-Behaviour:
-1. Read the `returnTo` query parameter; sanitise to a same-origin relative path (default `/`).
-2. Generate `state` as 32 random bytes, base64url-encoded.
-3. Seal `{ state, returnTo }` into the `auth_state` cookie (5 min TTL).
-4. Construct the authorize URL:
-   ```
-   https://github.com/login/oauth/authorize?
-     client_id=<GITHUB_OAUTH_CLIENT_ID>&
-     redirect_uri=<BASE_URL>/auth/github/callback&
-     scope=user:email%20read:org&
-     state=<state>
-   ```
-5. Respond `302 Found` with `Location` set to the authorize URL and `Set-Cookie: auth_state=<sealed>`.
-
-#### Scenario: Redirects to GitHub with a state cookie
-
-- **WHEN** `GET /auth/github/signin?returnTo=/dashboard` is requested
-- **THEN** the handler SHALL respond `302 Found`
-- **AND** the `Location` header SHALL start with `https://github.com/login/oauth/authorize?`
-- **AND** the response SHALL include `Set-Cookie: auth_state=...`
-
-#### Scenario: Unsafe returnTo is sanitised before sealing
-
-- **WHEN** `GET /auth/github/signin?returnTo=//evil.example` is requested
-- **THEN** the sealed `auth_state` cookie SHALL carry `returnTo = "/"`
-- **AND** the `Location` header SHALL NOT contain `evil.example`
-
-### Requirement: Callback route
-
-`GET /auth/github/callback` SHALL:
-1. Read `code` and `state` query parameters.
-2. Unseal the `auth_state` cookie; respond `400 Bad Request` if missing, unsealing fails, or `state` does not match.
-3. Clear the `auth_state` cookie.
-4. POST to `https://github.com/login/oauth/access_token` with `client_id`, `client_secret`, `code`, `redirect_uri`. On any non-OK response, respond `502 Bad Gateway`.
-5. Fetch `GET /user` and `GET /user/orgs` from `api.github.com` in parallel with the access token. On any non-OK response, respond `502 Bad Gateway`.
-6. Build `UserContext = { login, email, orgs }`.
-7. Evaluate `allow(UserContext)`. If false, set `auth_flash` to the rejected login, clear the `session` cookie, and 302 to `/login`.
-8. On success, seal the session payload and set the `session` cookie, then 302 to the unsealed `returnTo`.
-
-The handler SHALL NOT read any cookie other than `auth_state`. The handler SHALL NOT be registered under any path prefix that carries `sessionMw`.
-
-#### Scenario: Happy path sets session cookie and redirects
-
-- **GIVEN** a valid `auth_state` cookie, a successful code-exchange, and an allowed user
-- **WHEN** `/auth/github/callback?code=c&state=s` is requested with matching state
-- **THEN** the handler SHALL respond `302 Found`
-- **AND** `Location` SHALL equal the `returnTo` from the state cookie
-- **AND** the response SHALL include `Set-Cookie: session=<sealed>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`
-
-#### Scenario: Allowlist rejection sets flash and redirects to login
-
-- **GIVEN** `auth.mode === "restricted"`, `allow(user)` returns false for the resolved `UserContext`
-- **WHEN** `/auth/github/callback?code=c&state=s` completes the code exchange and profile fetch
-- **THEN** the handler SHALL respond `302 Found` with `Location: /login`
-- **AND** the response SHALL include `Set-Cookie: auth_flash=<sealed>; Path=/auth; Max-Age=60`
-- **AND** the response SHALL include `Set-Cookie: session=; Max-Age=0`
-
-#### Scenario: Token exchange failure returns 502
-
-- **GIVEN** GitHub returns 500 for the token exchange
-- **WHEN** `/auth/github/callback?code=c&state=s` runs
-- **THEN** the handler SHALL respond `502 Bad Gateway`
-- **AND** no session cookie SHALL be set
 
 ### Requirement: Session middleware on /dashboard/* and /trigger/*
 
@@ -837,40 +590,6 @@ For the local provider, `refreshSession` SHALL return immediately with the paylo
 - **WHEN** any request reaches `/dashboard/*`
 - **THEN** `sessionMw` SHALL clear the session cookie and 302 to `/login`
 
-### Requirement: Logout route
-
-`POST /auth/logout` SHALL clear the `session` cookie by emitting `Set-Cookie: session=; Path=/; Max-Age=0`, set an `auth_flash` cookie with payload `{ kind: "logged-out" }`, and respond `302 Found` with `Location: /login`.
-
-The route SHALL accept only the POST method. Any other method (GET, HEAD, PUT, DELETE, PATCH) SHALL respond `405 Method Not Allowed`.
-
-The route SHALL NOT require a valid session to operate — posting to `/auth/logout` with no cookie SHALL still clear the session, set the flash, and redirect.
-
-The route SHALL NOT attempt to revoke the access token at GitHub (GitHub OAuth Apps do not support server-side revocation that matches our model); logout is purely local cookie deletion plus an IdP-logout link rendered on the signed-out banner.
-
-Redirecting to `/login` with the `logged-out` flash (rather than to `/`) is load-bearing for the UX: `/` triggers `redirect-root` → `/trigger` → `sessionMw` → `/login` → GitHub, which silently re-authenticates using the existing OAuth grant and re-issues a session cookie, making sign-out appear to have no effect. The flash cookie puts the login route into its banner-render branch, which breaks the chain at a route that does not require authentication.
-
-#### Scenario: POST clears cookie, sets logged-out flash, redirects to login
-
-- **WHEN** `POST /auth/logout` is requested with any cookie state
-- **THEN** the handler SHALL respond `302 Found` with `Location: /login`
-- **AND** the response SHALL include `Set-Cookie: session=; Path=/; Max-Age=0`
-- **AND** the response SHALL include an `auth_flash` Set-Cookie whose sealed payload unseals to `{ kind: "logged-out" }`
-
-#### Scenario: Login page renders signed-out banner when reached via the logout flash
-
-- **GIVEN** `POST /auth/logout` just completed and set the `logged-out` flash cookie
-- **WHEN** the browser follows the 302 to `/login`
-- **THEN** the login route SHALL respond `200 OK`
-- **AND** the body SHALL contain a "Signed out" confirmation
-- **AND** the body SHALL contain a "Sign in with GitHub" link to `/login`
-- **AND** the body SHALL contain a link to `https://github.com/logout` so a user who wants a complete sign-out can end the GitHub IdP session (without it, clicking "Sign in with GitHub" or navigating to any authenticated route silently re-authenticates via the live OAuth grant)
-
-#### Scenario: GET is rejected
-
-- **WHEN** `GET /auth/logout` is requested
-- **THEN** the handler SHALL respond `405 Method Not Allowed`
-- **AND** SHALL NOT clear any cookie
-
 ### Requirement: Startup logging of auth mode
 
 The runtime SHALL emit a log record during initialization that records the registered providers and per-provider entry counts.
@@ -899,36 +618,16 @@ The log record SHALL NOT include the entry contents themselves (no logins, no or
 - **THEN** the log record SHALL list both `github` and `local` with their respective entry counts
 - **AND** the record SHALL NOT contain the strings `"alice"`, `"dev"`, or `"bob"`
 
-### Requirement: Single-replica invariant
+## REMOVED Requirements
 
-The app runtime SHALL NOT be operated with more than one replica while the session cookie sealing password is generated in-memory. A second replica would sign cookies with a different password, causing deterministic decryption failures on every request that lands on a pod other than the one that sealed the cookie.
+### Requirement: AUTH_ALLOW mode resolution
 
-This requirement SHALL be enforced at the infrastructure layer (see the `infrastructure` capability's `App Deployment` requirement) and SHALL be referenced in `SECURITY.md §5` as an invariant that must be resolved (by moving the password to a shared mechanism) before `replicas > 1` is permitted.
+**Reason**: The `Auth = { mode: "disabled" | "open" | "restricted" }` discriminated union is removed in favor of a provider registry. Three modes collapse into a single concept ("which providers are registered, with which entries"). The `__DISABLE_AUTH__` sentinel is removed; "open mode" no longer exists.
 
-#### Scenario: App Deployment runs with replicas=1
+**Migration**: Any operator value `AUTH_ALLOW=__DISABLE_AUTH__` SHALL be replaced with one or more `local:<name>` entries plus `LOCAL_DEPLOYMENT=1`. Empty/unset `AUTH_ALLOW` continues to mean "nothing can authenticate" (formerly `mode: "disabled"`); the new behavior is identical except `/login` renders an empty card instead of returning 401 directly.
 
-- **WHEN** the app Deployment is rendered via Tofu
-- **THEN** `spec.replicas` SHALL equal 1
+### Requirement: Allow predicate
 
-### Requirement: Security context
+**Reason**: The central `allow(user)` predicate is removed. Allowance is now a property each provider asserts internally — github checks its users/orgs allowlist inside `resolveApiIdentity` and `refreshSession`; local checks the entry list inside `resolveApiIdentity`. There is no shared predicate exposed at the auth-capability boundary.
 
-The implementation SHALL conform to the threat model documented at `/SECURITY.md §4 Authentication`, which enumerates the trust level, entry points, threats, current mitigations, residual risks, and rules governing this capability. This capability owns the entire authentication surface: the session cookie transport for UI routes, the Bearer transport for `/api/*`, the OAuth handshake routes, the allowlist predicate, and the `isMember` tenant predicate.
-
-The implementation SHALL additionally conform to the tenant isolation invariant documented at `/SECURITY.md §1 "Tenant isolation invariants"` (I-T2). The `/api/workflows/:tenant` route and every `/dashboard/*` or `/trigger/*` handler that reads workflow or invocation-event data SHALL constrain reads to the caller's active tenant. Identifier-based lookups (by invocation id, workflow name, event id) SHALL NOT substitute for a tenant scope.
-
-Changes to this capability that introduce new threats, weaken or remove a documented mitigation, alter the transport surface (add cookie auth to `/api/*`, remove the Bearer path, add new authenticated route prefixes, change sealing parameters or TTLs), alter the tenant-membership check, or conflict with the rules listed in `/SECURITY.md §4` or `/SECURITY.md §1` MUST update the corresponding sections of `/SECURITY.md` in the same change proposal.
-
-#### Scenario: Change alters behaviors covered by the threat model
-
-- **GIVEN** a change proposal that modifies this capability
-- **WHEN** the change affects a threat, mitigation, residual risk, or rule enumerated in `/SECURITY.md §4`, or the tenant-isolation invariant in `/SECURITY.md §1`
-- **THEN** the proposal SHALL include the corresponding updates to `/SECURITY.md §4` and/or `/SECURITY.md §1`
-- **AND** the updates SHALL be reviewed before the change is archived
-
-#### Scenario: Change is orthogonal to the threat model
-
-- **GIVEN** a change proposal that modifies this capability
-- **WHEN** the change does not affect any item enumerated in `/SECURITY.md §4` or `/SECURITY.md §1`
-- **THEN** no update to `/SECURITY.md` is required
-- **AND** the proposal SHALL note that threat-model alignment was checked
-
+**Migration**: Code that called `allow(user)` directly is removed. Callers either dispatch through a provider's `resolveApiIdentity` or `refreshSession`, or run their own scope-specific check (e.g., the tenant-membership predicate `isMember(user, tenant)`, which remains).

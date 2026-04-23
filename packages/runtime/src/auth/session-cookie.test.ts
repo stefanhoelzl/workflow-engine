@@ -12,6 +12,7 @@ import {
 function makePayload(over: Partial<SessionPayload> = {}): SessionPayload {
 	const now = 1_700_000_000_000;
 	return {
+		provider: "github",
 		name: "alice",
 		mail: "alice@example.test",
 		orgs: ["acme"],

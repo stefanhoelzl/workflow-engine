@@ -139,6 +139,7 @@ async function runUpload(port: number): Promise<void> {
 			cwd: workflowsDir,
 			url: `http://localhost:${String(port)}`,
 			tenant: DEV_TENANT,
+			user: DEV_TENANT,
 		});
 	} catch (error) {
 		console.error(
@@ -153,7 +154,8 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		PORT: String(port),
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
 		BASE_URL: `http://localhost:${String(port)}`,
-		AUTH_ALLOW: "__DISABLE_AUTH__",
+		AUTH_ALLOW: "local:dev,local:alice:acme,local:bob",
+		LOCAL_DEPLOYMENT: "1",
 	};
 }
 

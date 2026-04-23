@@ -1,6 +1,11 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { Auth } from "../auth/allowlist.js";
+import { githubProviderFactory } from "../auth/providers/github.js";
+import {
+	buildRegistry,
+	type ProviderRegistry,
+} from "../auth/providers/index.js";
+import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
@@ -18,13 +23,30 @@ const stubExecutor: Executor = {
 	invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
 };
 
-function mountApi(auth: Auth, fetchFn?: typeof globalThis.fetch) {
+interface MountOpts {
+	authAllow: string;
+	fetchFn?: typeof globalThis.fetch;
+}
+
+function mountApi(opts: MountOpts) {
+	const factories = [githubProviderFactory, localProviderFactory];
+	const authRegistry: ProviderRegistry = buildRegistry(
+		opts.authAllow,
+		factories,
+		{
+			secureCookies: false,
+			nowFn: () => Date.now(),
+			...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+			clientId: "id",
+			clientSecret: "secret",
+			baseUrl: "http://test",
+		},
+	);
 	const registry = createWorkflowRegistry({ logger, executor: stubExecutor });
 	const middleware = apiMiddleware({
-		auth,
+		authRegistry,
 		registry,
 		logger,
-		...(fetchFn ? { fetchFn } : {}),
 	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
@@ -55,13 +77,16 @@ function githubFetch(
 }
 
 describe("apiMiddleware", () => {
-	describe("mode: disabled", () => {
-		it("returns 401 for every /api/* request, even with a valid Bearer header", async () => {
-			const app = mountApi({ mode: "disabled" });
+	describe("empty registry", () => {
+		it("returns 401 for every /api/* request", async () => {
+			const app = mountApi({ authAllow: "" });
 
 			const res = await app.request("/api/anything", {
 				method: "POST",
-				headers: { authorization: "Bearer some-token" },
+				headers: {
+					"x-auth-provider": "github",
+					authorization: "Bearer some-token",
+				},
 			});
 
 			expect(res.status).toBe(401);
@@ -69,79 +94,55 @@ describe("apiMiddleware", () => {
 		});
 
 		it("returns 401 for GET paths too", async () => {
-			const app = mountApi({ mode: "disabled" });
-
+			const app = mountApi({ authAllow: "" });
 			const res = await app.request("/api/does-not-exist", { method: "GET" });
-
 			expect(res.status).toBe(401);
 		});
 	});
 
-	describe("mode: open", () => {
-		it("reaches the Hono /api/* router without authentication", async () => {
-			const app = mountApi({ mode: "open" });
-
-			const res = await app.request("/api/does-not-exist", { method: "GET" });
-
-			expect(res.status).toBe(404);
-		});
-	});
-
-	describe("mode: restricted", () => {
-		const restrictedAuth = (
-			users: string[] = [],
-			orgs: string[] = [],
-		): Auth => ({
-			mode: "restricted",
-			users: new Set(users),
-			orgs: new Set(orgs),
-		});
-
-		it("rejects requests without an Authorization header with 401", async () => {
-			const app = mountApi(restrictedAuth(["stefan"]));
-
+	describe("github provider", () => {
+		it("rejects requests without X-Auth-Provider with 401", async () => {
+			const app = mountApi({ authAllow: "github:user:stefan" });
 			const res = await app.request("/api/anything", { method: "POST" });
-
 			expect(res.status).toBe(401);
 			expect(await res.json()).toEqual({ error: "Unauthorized" });
 		});
 
-		it("rejects an unauthenticated upload with 401 — body never reaches the registry", async () => {
-			const app = mountApi(restrictedAuth(["stefan"]));
-
-			const res = await app.request("/api/workflows", {
+		it("rejects unauthenticated upload with 401 — body never reaches the registry", async () => {
+			const app = mountApi({ authAllow: "github:user:stefan" });
+			const res = await app.request("/api/workflows/stefan", {
 				method: "POST",
 				body: "not-a-tarball",
 			});
-
 			expect(res.status).toBe(401);
 		});
 
-		it("allows an org member via AUTH_ALLOW=github:org:acme", async () => {
+		it("allows an org member via github:org:acme", async () => {
 			const fetchFn = githubFetch({ login: "bob", email: null }, [
 				{ login: "acme" },
 			]);
-			const app = mountApi(restrictedAuth([], ["acme"]), fetchFn);
+			const app = mountApi({ authAllow: "github:org:acme", fetchFn });
 
 			const res = await app.request("/api/workflows/acme", {
 				method: "POST",
-				headers: { authorization: "Bearer valid-token" },
+				headers: {
+					"x-auth-provider": "github",
+					authorization: "Bearer valid-token",
+				},
 				body: new Uint8Array(),
 			});
 
-			// Unauthorized path would return 401; reaching the upload handler with
-			// empty body yields 415 (unsupported media) or 422. Here we just
-			// verify it gets past auth (not 401).
 			expect(res.status).not.toBe(401);
 		});
 
 		it("forged X-Auth-Request-Groups cannot grant cross-tenant upload", async () => {
 			const fetchFn = githubFetch({ login: "stefan", email: null }, []);
-			const app = mountApi(restrictedAuth(["stefan"]), fetchFn);
+			const app = mountApi({ authAllow: "github:user:stefan", fetchFn });
 
 			const res = await app.request("/api/workflows/victim-tenant", {
 				method: "POST",
 				headers: {
+					"x-auth-provider": "github",
 					authorization: "Bearer valid-token",
 					"X-Auth-Request-User": "stefan",
 					"X-Auth-Request-Groups": "victim-tenant",
@@ -151,6 +152,47 @@ describe("apiMiddleware", () => {
 
 			expect(res.status).toBe(404);
 			expect(await res.json()).toEqual({ error: "Not Found" });
+		});
+	});
+
+	describe("local provider", () => {
+		it("authorizes via Authorization: User <name>", async () => {
+			const app = mountApi({ authAllow: "local:dev" });
+			const res = await app.request("/api/workflows/dev", {
+				method: "POST",
+				headers: {
+					"x-auth-provider": "local",
+					authorization: "User dev",
+				},
+				body: new Uint8Array(),
+			});
+			expect(res.status).not.toBe(401);
+		});
+
+		it("rejects unknown local user with 401", async () => {
+			const app = mountApi({ authAllow: "local:dev" });
+			const res = await app.request("/api/workflows/dev", {
+				method: "POST",
+				headers: {
+					"x-auth-provider": "local",
+					authorization: "User mallory",
+				},
+				body: new Uint8Array(),
+			});
+			expect(res.status).toBe(401);
+		});
+
+		it("local user denied access to another tenant with 404", async () => {
+			const app = mountApi({ authAllow: "local:dev" });
+			const res = await app.request("/api/workflows/other", {
+				method: "POST",
+				headers: {
+					"x-auth-provider": "local",
+					authorization: "User dev",
+				},
+				body: new Uint8Array(),
+			});
+			expect(res.status).toBe(404);
 		});
 	});
 });
