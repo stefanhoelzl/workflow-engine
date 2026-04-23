@@ -206,13 +206,16 @@ async function buildOneWorkflow(
 ): Promise<BuiltWorkflow> {
 	const { workflowPath, filestem, root, ctx } = args;
 
-	const bundleSource = await bundleWorkflow(workflowPath, root);
+	// Pass 1 — manifest build, zod inlined. The VM reads the branded
+	// exports' zod-bearing config properties so the plugin can emit JSON
+	// Schemas into the manifest. This bundle is discarded.
+	const manifestSource = await bundleWorkflowForManifest(workflowPath, root);
+	const mod = runIifeInVmContext(manifestSource, filestem, ctx);
 
-	// Evaluate the IIFE bundle in a Node vm context to discover branded
-	// exports. The bundle assigns its exports to `globalThis[IIFE_NAMESPACE]`
-	// of the sandbox context, so we read that global from the context after
-	// script execution — no temp file needed.
-	const mod = runIifeInVmContext(bundleSource, filestem, ctx);
+	// Pass 2 — runtime build, factory configs stripped of `input`/`output`/
+	// `body`/`responseBody`. Zod tree-shakes out. This bundle is what ships
+	// to the sandbox, and its sha goes into the manifest.
+	const bundleSource = await bundleWorkflowForRuntime(workflowPath, root);
 	const sha = createHash("sha256").update(bundleSource).digest("hex");
 	const manifest = buildManifest(mod, filestem, sha, ctx);
 
@@ -404,6 +407,112 @@ function buildActionEntries(
 	return actions;
 }
 
+// Host-side JSON Schema composition — replaces the zod composition the SDK
+// used to do at bundle-load. Produces the same envelope shape toJSONSchema()
+// emitted previously, as literals, so the runtime bundle never needs zod at
+// its own module-init time.
+
+const JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema";
+
+function headersJsonSchema(): Record<string, unknown> {
+	return {
+		type: "object",
+		propertyNames: { type: "string" },
+		additionalProperties: { type: "string" },
+	};
+}
+
+function stripDraftMarker(
+	schema: Record<string, unknown>,
+): Record<string, unknown> {
+	// The envelope carries "$schema" at the top level; children inherit it.
+	// Produce a copy without the marker to match zod's prior composite output.
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(schema)) {
+		if (k === "$schema") {
+			continue;
+		}
+		out[k] = v;
+	}
+	return out;
+}
+
+function composeHttpInputSchema(
+	bodyJsonSchema: Record<string, unknown>,
+	method: string,
+): Record<string, unknown> {
+	return {
+		$schema: JSON_SCHEMA_DRAFT,
+		type: "object",
+		properties: {
+			body: stripDraftMarker(bodyJsonSchema),
+			headers: headersJsonSchema(),
+			url: { type: "string" },
+			method: { default: method, type: "string" },
+		},
+		required: ["body", "headers", "url", "method"],
+		additionalProperties: false,
+	};
+}
+
+function composeHttpOutputSchema(
+	responseBodyJsonSchema: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+	if (responseBodyJsonSchema === undefined) {
+		return {
+			$schema: JSON_SCHEMA_DRAFT,
+			type: "object",
+			properties: {
+				status: { type: "number" },
+				body: {},
+				headers: headersJsonSchema(),
+			},
+			additionalProperties: false,
+		};
+	}
+	return {
+		$schema: JSON_SCHEMA_DRAFT,
+		type: "object",
+		properties: {
+			status: { type: "number" },
+			body: stripDraftMarker(responseBodyJsonSchema),
+			headers: headersJsonSchema(),
+		},
+		required: ["body"],
+		additionalProperties: false,
+	};
+}
+
+function cronInputJsonSchema(): Record<string, unknown> {
+	return {
+		$schema: JSON_SCHEMA_DRAFT,
+		type: "object",
+		properties: {},
+		additionalProperties: false,
+	};
+}
+
+function cronOutputJsonSchema(): Record<string, unknown> {
+	return { $schema: JSON_SCHEMA_DRAFT };
+}
+
+// Zod emits `{type: "unknown"}` for z.unknown() in some configurations; mirror
+// the historical "body:{}" form for the unbodied HTTP case.
+function bodyJsonSchemaOrEmpty(
+	body: unknown,
+	label: string,
+	workflowName: string,
+	ctx: PluginContext,
+): Record<string, unknown> {
+	if (body === undefined) {
+		// Default `body?: B = z.ZodUnknown` with nothing declared means
+		// "accept anything" — matches zod's z.unknown().toJSONSchema().
+		return {};
+	}
+	assertZodSchema(body, label, workflowName, ctx);
+	return toJsonSchema(body, label, workflowName, ctx);
+}
+
 function buildTriggerEntry(
 	exportName: string,
 	trigger: HttpTrigger,
@@ -421,28 +530,30 @@ function buildTriggerEntry(
 		);
 	}
 	const bodyLabel = `trigger "${exportName}".body`;
-	assertZodSchema(trigger.body, bodyLabel, workflowName, ctx);
-	const inputSchemaLabel = `trigger "${exportName}".inputSchema`;
-	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
-	const outputSchemaLabel = `trigger "${exportName}".outputSchema`;
-	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
+	const bodyJson = bodyJsonSchemaOrEmpty(
+		trigger.body,
+		bodyLabel,
+		workflowName,
+		ctx,
+	);
+	const responseBodyLabel = `trigger "${exportName}".responseBody`;
+	let responseBodyJson: Record<string, unknown> | undefined;
+	if (trigger.responseBody !== undefined) {
+		assertZodSchema(trigger.responseBody, responseBodyLabel, workflowName, ctx);
+		responseBodyJson = toJsonSchema(
+			trigger.responseBody,
+			responseBodyLabel,
+			workflowName,
+			ctx,
+		);
+	}
 	return {
 		name: exportName,
 		type: "http",
 		method: trigger.method,
-		body: toJsonSchema(trigger.body, bodyLabel, workflowName, ctx),
-		inputSchema: toJsonSchema(
-			trigger.inputSchema,
-			inputSchemaLabel,
-			workflowName,
-			ctx,
-		),
-		outputSchema: toJsonSchema(
-			trigger.outputSchema,
-			outputSchemaLabel,
-			workflowName,
-			ctx,
-		),
+		body: bodyJson,
+		inputSchema: composeHttpInputSchema(bodyJson, trigger.method),
+		outputSchema: composeHttpOutputSchema(responseBodyJson),
 	};
 }
 
@@ -467,27 +578,13 @@ function buildCronTriggerEntry(
 			`Workflow "${workflowName}": cron trigger "${exportName}" has no tz (factory default resolution failed)`,
 		);
 	}
-	const inputSchemaLabel = `cron trigger "${exportName}".inputSchema`;
-	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
-	const outputSchemaLabel = `cron trigger "${exportName}".outputSchema`;
-	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
 	return {
 		name: exportName,
 		type: "cron",
 		schedule: trigger.schedule,
 		tz: trigger.tz,
-		inputSchema: toJsonSchema(
-			trigger.inputSchema,
-			inputSchemaLabel,
-			workflowName,
-			ctx,
-		),
-		outputSchema: toJsonSchema(
-			trigger.outputSchema,
-			outputSchemaLabel,
-			workflowName,
-			ctx,
-		),
+		inputSchema: cronInputJsonSchema(),
+		outputSchema: cronOutputJsonSchema(),
 	};
 }
 
@@ -664,9 +761,16 @@ interface ExportNamedDeclarationNode extends AstNodeBase {
 	declaration: AstNodeBase | null;
 }
 
-// Fast-path gate: only parse files that plausibly contain `action(...)` calls.
+// Fast-path gate: only parse files that plausibly contain factory calls.
 function sourceMightContainActionCall(code: string): boolean {
 	return code.includes("action(");
+}
+function sourceMightContainFactoryCall(code: string): boolean {
+	return (
+		code.includes("action(") ||
+		code.includes("httpTrigger(") ||
+		code.includes("cronTrigger(")
+	);
 }
 
 interface InjectResult {
@@ -674,12 +778,21 @@ interface InjectResult {
 	map: ReturnType<InstanceType<typeof MagicString>["generateMap"]>;
 }
 
-// Return the `action({...})` call expression and the exported identifier
-// for a single top-level statement, or null if it doesn't match the
-// canonical `export const X = action({...})` shape the transform supports.
-function matchActionExport(
+interface PropertyNode extends AstNodeBase {
+	type: "Property";
+	key: AstNodeBase;
+	value: AstNodeBase;
+	shorthand?: boolean;
+	computed?: boolean;
+}
+
+// Return the `<factory>({...})` call expression and the exported identifier
+// for a single top-level statement, when the factory callee matches
+// `factoryName` and the export is the canonical `export const X = f({...})`.
+function matchFactoryExport(
 	top: AstNodeBase,
-): { id: IdentifierNode; call: CallExpressionNode } | null {
+	factoryNames: readonly string[],
+): { id: IdentifierNode; call: CallExpressionNode; factory: string } | null {
 	if (top.type !== "ExportNamedDeclaration") {
 		return null;
 	}
@@ -700,17 +813,29 @@ function matchActionExport(
 		return null;
 	}
 	const call = init as CallExpressionNode;
-	if (
-		call.callee.type !== "Identifier" ||
-		(call.callee as IdentifierNode).name !== "action"
-	) {
+	if (call.callee.type !== "Identifier") {
+		return null;
+	}
+	const name = (call.callee as IdentifierNode).name;
+	if (!factoryNames.includes(name)) {
 		return null;
 	}
 	const arg0 = call.arguments[0];
 	if (!arg0 || arg0.type !== "ObjectExpression") {
 		return null;
 	}
-	return { id: declarator.id as IdentifierNode, call };
+	return {
+		id: declarator.id as IdentifierNode,
+		call,
+		factory: name,
+	};
+}
+
+function matchActionExport(
+	top: AstNodeBase,
+): { id: IdentifierNode; call: CallExpressionNode } | null {
+	const match = matchFactoryExport(top, ["action"]);
+	return match ? { id: match.id, call: match.call } : null;
 }
 
 function injectNameIntoCall(
@@ -772,18 +897,156 @@ function actionNameInjectionPlugin(workflowPath: string): Plugin {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow bundling (one Vite build per workflow)
+// Runtime-only AST transform: strip zod-bearing factory-config properties
 // ---------------------------------------------------------------------------
 
-async function bundleWorkflow(
+// Properties that are harvested at manifest-build time and don't need to
+// survive into the runtime bundle. All three are zod schemas today, so
+// stripping them is what lets vite tree-shake the zod package out of the
+// tenant bundle. The vite plugin composes the full JSON Schemas for the
+// manifest host-side.
+const ZOD_PROPERTY_NAMES: readonly string[] = [
+	"input",
+	"output",
+	"body",
+	"responseBody",
+];
+
+function propertyKeyName(prop: PropertyNode): string | null {
+	if (prop.type !== "Property") {
+		return null;
+	}
+	const key = prop.key as IdentifierNode & { value?: string; name?: string };
+	if (key.type === "Identifier") {
+		return key.name ?? null;
+	}
+	if (key.type === "Literal") {
+		return typeof key.value === "string" ? key.value : null;
+	}
+	return null;
+}
+
+const TRAILING_WS_OR_COMMA = /[\s,]/;
+
+function stripZodPropertiesFromCall(
+	magic: MagicString,
+	call: CallExpressionNode,
+	code: string,
+): boolean {
+	const obj = call.arguments[0] as ObjectExpressionNode;
+	let changed = false;
+	const props = obj.properties as PropertyNode[];
+	for (let i = 0; i < props.length; i++) {
+		const prop = props[i];
+		if (!prop) {
+			continue;
+		}
+		const name = propertyKeyName(prop);
+		if (name === null) {
+			continue;
+		}
+		if (!ZOD_PROPERTY_NAMES.includes(name)) {
+			continue;
+		}
+		// Remove from start of this property to start of next property (or
+		// to the end of the last property, trimming the trailing comma if any).
+		let removeEnd = prop.end;
+		const next = props[i + 1];
+		if (next) {
+			removeEnd = next.start;
+		} else {
+			// Last property — also swallow any trailing comma before the `}`.
+			let scan = prop.end;
+			while (
+				scan < obj.end - 1 &&
+				TRAILING_WS_OR_COMMA.test(code[scan] ?? "")
+			) {
+				scan++;
+			}
+			removeEnd = scan;
+		}
+		magic.remove(prop.start, removeEnd);
+		changed = true;
+	}
+	return changed;
+}
+
+function stripZodFactoryProperties(
+	code: string,
+	parse: (src: string) => unknown,
+): InjectResult | null {
+	if (!sourceMightContainFactoryCall(code)) {
+		return null;
+	}
+	const ast = parse(code) as { body: AstNodeBase[] };
+	const magic = new MagicString(code);
+	let changed = false;
+	for (const top of ast.body) {
+		const match = matchFactoryExport(top, [
+			"action",
+			"httpTrigger",
+			"cronTrigger",
+		]);
+		if (!match) {
+			continue;
+		}
+		if (stripZodPropertiesFromCall(magic, match.call, code)) {
+			changed = true;
+		}
+	}
+	if (!changed) {
+		return null;
+	}
+	return {
+		code: magic.toString(),
+		map: magic.generateMap({ hires: true }),
+	};
+}
+
+function zodStripTransformPlugin(workflowPath: string): Plugin {
+	return {
+		name: "workflow-engine:strip-zod-factory-properties",
+		enforce: "post",
+		transform(code, id) {
+			if (id !== workflowPath) {
+				return null;
+			}
+			return stripZodFactoryProperties(code, (src) => this.parse(src));
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Workflow bundling
+// ---------------------------------------------------------------------------
+//
+// Two Vite sub-builds per workflow file:
+//   1. "manifest" — keeps the original factory config properties so zod
+//      schemas are constructed at bundle load. The plugin VM-evaluates the
+//      bundle, reads `.input`/`.output`/`.body`/`.responseBody` off the
+//      branded exports, and converts them via `.toJSONSchema()` for the
+//      manifest. This bundle is discarded after extraction; it never ships.
+//   2. "runtime" — applies `zodStripTransformPlugin` to remove the zod-
+//      bearing properties from factory calls. Nothing in the resulting IIFE
+//      references zod (not from factory args, not from SDK internals since
+//      httpTrigger/cronTrigger no longer compose zod schemas at bundle
+//      load), so vite tree-shakes the zod package out. This is the bundle
+//      shipped to the sandbox.
+
+interface BuildOptions {
+	plugins: Plugin[];
+}
+
+async function buildWorkflowIife(
 	workflowPath: string,
 	root: string,
+	options: BuildOptions,
 ): Promise<string> {
 	const result = await build({
 		configFile: false,
 		logLevel: "silent",
 		root,
-		plugins: [actionNameInjectionPlugin(workflowPath)],
+		plugins: options.plugins,
 		build: {
 			write: false,
 			minify: false,
@@ -815,6 +1078,27 @@ async function bundleWorkflow(
 		);
 	}
 	return chunk.code;
+}
+
+function bundleWorkflowForManifest(
+	workflowPath: string,
+	root: string,
+): Promise<string> {
+	return buildWorkflowIife(workflowPath, root, {
+		plugins: [actionNameInjectionPlugin(workflowPath)],
+	});
+}
+
+function bundleWorkflowForRuntime(
+	workflowPath: string,
+	root: string,
+): Promise<string> {
+	return buildWorkflowIife(workflowPath, root, {
+		plugins: [
+			actionNameInjectionPlugin(workflowPath),
+			zodStripTransformPlugin(workflowPath),
+		],
+	});
 }
 
 export type { WorkflowPluginOptions };

@@ -104,7 +104,7 @@ describe("brands and type guards", () => {
 		expect((t as unknown as Record<string, unknown>).handler).toBeUndefined();
 	});
 
-	it("cronTrigger exposes schedule, tz, inputSchema, outputSchema as readonly properties", () => {
+	it("cronTrigger exposes schedule and tz as readonly properties", () => {
 		const t = cronTrigger({
 			schedule: "*/5 * * * *",
 			tz: "Europe/Berlin",
@@ -112,8 +112,6 @@ describe("brands and type guards", () => {
 		});
 		expect(t.schedule).toBe("*/5 * * * *");
 		expect(t.tz).toBe("Europe/Berlin");
-		expect(t.inputSchema).toBeDefined();
-		expect(t.outputSchema).toBeDefined();
 		expect(() => {
 			(t as unknown as { schedule: string }).schedule = "hacked";
 		}).toThrow();
@@ -526,16 +524,18 @@ describe("httpTrigger defaults", () => {
 		expect(t.method).toBe("GET");
 	});
 
-	it("defaults body to z.unknown() when omitted", () => {
+	it("leaves body undefined when the author doesn't declare it", () => {
+		// The SDK stores body verbatim; envelope composition happens at
+		// build time in the plugin (tested in workflow-build.test.ts), so
+		// an omitted body here means the plugin will emit `{}` in the
+		// manifest for that field.
 		const t = httpTrigger({
 			handler: async () => ({}),
 		});
-		// z.unknown() accepts anything, including undefined.
-		expect(t.body.safeParse(undefined).success).toBe(true);
-		expect(t.body.safeParse("arbitrary").success).toBe(true);
+		expect(t.body).toBeUndefined();
 	});
 
-	it("uses the provided body schema", () => {
+	it("stores the provided body schema verbatim", () => {
 		const body = z.object({ orderId: z.string() });
 		const t = httpTrigger({
 			body,
@@ -568,36 +568,18 @@ describe("httpTrigger defaults", () => {
 		expect((t as unknown as Record<string, unknown>).query).toBeUndefined();
 	});
 
-	it("default outputSchema is strict (envelope-only, additionalProperties: false, all optional)", () => {
-		const t = httpTrigger({ handler: async () => ({}) });
-		const json = z.toJSONSchema(t.outputSchema) as Record<string, unknown>;
-		expect(json.additionalProperties).toBe(false);
-		expect(json.required).toBeUndefined();
-		const props = json.properties as Record<string, unknown>;
-		expect(props.status).toBeDefined();
-		expect(props.body).toBeDefined();
-		expect(props.headers).toBeDefined();
-	});
-
-	it("declaring responseBody makes body required and strict at the envelope", () => {
+	it("stores responseBody verbatim for plugin-side envelope composition", () => {
 		const responseBody = z.object({ orderId: z.string() });
 		const t = httpTrigger({
 			responseBody,
 			handler: async () => ({ body: { orderId: "x" } }),
 		});
-		const json = z.toJSONSchema(t.outputSchema) as Record<string, unknown>;
-		expect(json.additionalProperties).toBe(false);
-		expect(json.required).toEqual(["body"]);
-		const bodyProp = (json.properties as Record<string, unknown>).body as
-			| Record<string, unknown>
-			| undefined;
-		expect(bodyProp?.type).toBe("object");
-		expect((bodyProp?.properties as Record<string, unknown>)?.orderId).toEqual({
-			type: "string",
-		});
-		expect(bodyProp?.required).toEqual(["orderId"]);
-		// body of the declared schema inherits Zod's strict default.
-		expect(bodyProp?.additionalProperties).toBe(false);
+		expect(t.responseBody).toBe(responseBody);
+	});
+
+	it("leaves responseBody undefined when omitted", () => {
+		const t = httpTrigger({ handler: async () => ({}) });
+		expect(t.responseBody).toBeUndefined();
 	});
 
 	it("TypeScript narrows the handler return type when responseBody is declared", () => {
