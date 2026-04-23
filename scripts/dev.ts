@@ -217,31 +217,40 @@ function watchRuntime(
 ): void {
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let restarting = false;
+	let pendingRestart = false;
 	let sandboxDirty = false;
 
 	const restart = async () => {
 		if (restarting) {
+			// Another edit arrived while we're still restarting. Remember to
+			// run one more cycle after this one finishes; otherwise the edit
+			// would be silently dropped because the debounce timer has
+			// already fired.
+			pendingRestart = true;
 			return;
 		}
 		restarting = true;
 		try {
-			console.log("Runtime source changed, restarting...");
-			const current = getRuntime();
-			const exited = new Promise<void>((res) => {
-				current.once("exit", () => res());
-			});
-			killProcessTree(current, "SIGTERM");
-			await exited;
-			await waitForPortFree(port, PORT_POLL_TIMEOUT_MS);
-			if (sandboxDirty) {
-				sandboxDirty = false;
-				console.log("Rebuilding sandbox worker...");
-				buildSandbox();
-			}
-			const next = spawnRuntime(port);
-			setRuntime(next);
-			await waitForPort(port, PORT_POLL_TIMEOUT_MS);
-			await runUpload(port);
+			do {
+				pendingRestart = false;
+				console.log("Runtime source changed, restarting...");
+				const current = getRuntime();
+				const exited = new Promise<void>((res) => {
+					current.once("exit", () => res());
+				});
+				killProcessTree(current, "SIGTERM");
+				await exited;
+				await waitForPortFree(port, PORT_POLL_TIMEOUT_MS);
+				if (sandboxDirty) {
+					sandboxDirty = false;
+					console.log("Rebuilding sandbox worker...");
+					buildSandbox();
+				}
+				const next = spawnRuntime(port);
+				setRuntime(next);
+				await waitForPort(port, PORT_POLL_TIMEOUT_MS);
+				await runUpload(port);
+			} while (pendingRestart);
 		} catch (error) {
 			console.error(
 				`Runtime restart failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -251,15 +260,17 @@ function watchRuntime(
 		}
 	};
 
-	const runtimeWatchExtensions = [".ts", ".css", ".js", ".html"];
+	// The watched dirs are `packages/*/src` — source trees only, no build
+	// output or editor detritus — so every event is a real code change
+	// and no per-filename filter is needed. This also sidesteps a libuv
+	// recursive-watch quirk on Linux where, after an atomic-rename replace
+	// (the pattern Claude Code's Edit tool and many other editors use),
+	// libuv loses the per-file watch on the target and only surfaces
+	// events on the intermediate `.tmp.<pid>.<ts>` name; accepting every
+	// event keeps us in sync regardless.
 	for (const dir of runtimeWatchDirs) {
 		const isSandboxDir = dir === sandboxSrcDir;
-		watch(dir, { recursive: true }, (_event, filename) => {
-			if (
-				!(filename && runtimeWatchExtensions.some((e) => filename.endsWith(e)))
-			) {
-				return;
-			}
+		watch(dir, { recursive: true }, () => {
 			if (isSandboxDir) {
 				sandboxDirty = true;
 			}
