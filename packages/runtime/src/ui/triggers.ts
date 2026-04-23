@@ -12,11 +12,13 @@ import type {
 const KIND_ICONS: Record<string, string> = {
 	http: "\u{1F310}", // globe
 	cron: "\u{23F0}", // alarm clock
+	manual: "\u{1F464}", // bust in silhouette
 };
 
 const KIND_LABELS: Record<string, string> = {
 	http: "HTTP",
 	cron: "Cron",
+	manual: "Manual",
 };
 
 function triggerKindIcon(kind: string) {
@@ -37,8 +39,12 @@ function triggerCardMeta(
 		const http = descriptor as HttpTriggerDescriptor;
 		return `${http.method} /webhooks/${tenant}/${workflow}/${http.name}`;
 	}
-	const cron = descriptor as CronTriggerDescriptor;
-	return `${cron.schedule} (${cron.tz})`;
+	if (descriptor.kind === "cron") {
+		const cron = descriptor as CronTriggerDescriptor;
+		return `${cron.schedule} (${cron.tz})`;
+	}
+	// manual — no meta line (UI-only fire path, nothing schedule/URL-like to show)
+	return "";
 }
 
 export { triggerCardMeta, triggerKindIcon, triggerKindLabel };

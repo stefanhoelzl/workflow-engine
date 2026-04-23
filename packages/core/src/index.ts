@@ -176,13 +176,22 @@ const cronTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
+const manualTriggerManifestSchema = z.object({
+	name: z.string().regex(TRIGGER_NAME_RE),
+	type: z.literal("manual"),
+	inputSchema: jsonSchemaValidator,
+	outputSchema: jsonSchemaValidator,
+});
+
 const triggerManifestSchema = z.discriminatedUnion("type", [
 	httpTriggerManifestSchema,
 	cronTriggerManifestSchema,
+	manualTriggerManifestSchema,
 ]);
 
 type HttpTriggerManifest = z.infer<typeof httpTriggerManifestSchema>;
 type CronTriggerManifest = z.infer<typeof cronTriggerManifestSchema>;
+type ManualTriggerManifest = z.infer<typeof manualTriggerManifestSchema>;
 type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 
 const workflowManifestSchema = z.object({
@@ -240,6 +249,7 @@ export type {
 	InvocationEvent,
 	InvocationEventError,
 	Manifest,
+	ManualTriggerManifest,
 	SandboxEvent,
 	TriggerManifest,
 	WorkflowManifest,

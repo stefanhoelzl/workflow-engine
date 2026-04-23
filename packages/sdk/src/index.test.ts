@@ -11,8 +11,11 @@ import {
 	isAction,
 	isCronTrigger,
 	isHttpTrigger,
+	isManualTrigger,
 	isWorkflow,
+	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
+	manualTrigger,
 	WORKFLOW_BRAND,
 	z,
 } from "./index.js";
@@ -166,6 +169,74 @@ describe("brands and type guards", () => {
 			handler: async () => {},
 		});
 		expect(isHttpTrigger(cron)).toBe(false);
+	});
+
+	it("manualTrigger() returns a callable branded with MANUAL_TRIGGER_BRAND", () => {
+		const t = manualTrigger({ handler: async () => "ok" });
+		expect(typeof t).toBe("function");
+		expect(
+			(t as unknown as Record<symbol, unknown>)[MANUAL_TRIGGER_BRAND],
+		).toBe(true);
+		expect(isManualTrigger(t)).toBe(true);
+	});
+
+	it("manualTrigger exposes inputSchema and outputSchema as readonly properties", () => {
+		const input = z.object({ id: z.string() });
+		const output = z.object({ ok: z.boolean() });
+		const t = manualTrigger({
+			input,
+			output,
+			handler: async () => ({ ok: true }),
+		});
+		expect(t.inputSchema).toBe(input);
+		expect(t.outputSchema).toBe(output);
+		// No public `.handler` slot — guest/build code cannot read it.
+		expect((t as unknown as Record<string, unknown>).handler).toBeUndefined();
+	});
+
+	it("manualTrigger defaults inputSchema to z.object({}) and outputSchema to z.unknown()", () => {
+		const t = manualTrigger({ handler: async () => {} });
+		// Defaults should parse the corresponding shapes without throwing.
+		expect(() => t.inputSchema.parse({})).not.toThrow();
+		expect(() => t.outputSchema.parse(42)).not.toThrow();
+	});
+
+	it("manualTrigger callable invokes the handler with the input", async () => {
+		const calls: unknown[] = [];
+		const t = manualTrigger({
+			input: z.object({ id: z.string() }),
+			handler: async (input) => {
+				calls.push(input);
+				return input.id;
+			},
+		});
+		const out = await t({ id: "abc" });
+		expect(out).toBe("abc");
+		expect(calls).toEqual([{ id: "abc" }]);
+	});
+
+	it("isManualTrigger rejects plain values and distinguishes from http/cron", () => {
+		expect(isManualTrigger(() => 1)).toBe(false);
+		expect(isManualTrigger(null)).toBe(false);
+		expect(isManualTrigger({})).toBe(false);
+		const http = httpTrigger({ handler: async () => ({}) });
+		const cron = cronTrigger({
+			schedule: "0 0 * * *",
+			tz: "UTC",
+			handler: async () => {},
+		});
+		const manual = manualTrigger({ handler: async () => {} });
+		expect(isManualTrigger(http)).toBe(false);
+		expect(isManualTrigger(cron)).toBe(false);
+		expect(isHttpTrigger(manual)).toBe(false);
+		expect(isCronTrigger(manual)).toBe(false);
+	});
+
+	it("manualTrigger throws when handler is omitted", () => {
+		expect(() =>
+			// @ts-expect-error — missing handler
+			manualTrigger({}),
+		).toThrow(/missing a handler/);
 	});
 });
 

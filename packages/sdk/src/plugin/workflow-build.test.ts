@@ -318,6 +318,37 @@ export const nightly = cronTrigger({
 });
 `;
 
+const MANUAL_WORKFLOW_DEFAULT_SCHEMAS = `
+import { defineWorkflow, manualTrigger } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const rerun = manualTrigger({
+	handler: async () => "done",
+});
+`;
+
+const MANUAL_WORKFLOW_AUTHOR_SCHEMAS = `
+import { defineWorkflow, manualTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const reprocessOrder = manualTrigger({
+	input: z.object({ id: z.string() }),
+	output: z.object({ ok: z.boolean() }),
+	handler: async ({ id }) => ({ ok: id !== "" }),
+});
+`;
+
+const MANUAL_WORKFLOW_INVALID_NAME = `
+import { defineWorkflow, manualTrigger } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+const inner = manualTrigger({ handler: async () => {} });
+export { inner as $weird };
+`;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -531,6 +562,68 @@ describe("workflowPlugin: cron trigger entry", () => {
 		const types = new Set(manifest.triggers.map((t) => t.type));
 		expect(types.has("http")).toBe(true);
 		expect(types.has("cron")).toBe(true);
+	});
+});
+
+describe("workflowPlugin: manual trigger entry", () => {
+	it("emits manual descriptor with default input/output schemas", async () => {
+		const { outDir } = await buildFixture({
+			files: { "mt.ts": MANUAL_WORKFLOW_DEFAULT_SCHEMAS },
+			workflows: ["./mt.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "mt")) as {
+			triggers: Array<{
+				name: string;
+				type: string;
+				inputSchema?: Record<string, unknown>;
+				outputSchema?: Record<string, unknown>;
+				method?: string;
+				schedule?: string;
+				tz?: string;
+			}>;
+		};
+		expect(manifest.triggers).toHaveLength(1);
+		const t = manifest.triggers[0];
+		expect(t?.name).toBe("rerun");
+		expect(t?.type).toBe("manual");
+		expect(t?.inputSchema).toBeDefined();
+		expect(t?.outputSchema).toBeDefined();
+		// No http- or cron-specific fields leak into a manual descriptor.
+		expect(t?.method).toBeUndefined();
+		expect(t?.schedule).toBeUndefined();
+		expect(t?.tz).toBeUndefined();
+	});
+
+	it("emits manual descriptor with author-provided input/output schemas", async () => {
+		const { outDir } = await buildFixture({
+			files: { "mt2.ts": MANUAL_WORKFLOW_AUTHOR_SCHEMAS },
+			workflows: ["./mt2.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "mt2")) as {
+			triggers: Array<{
+				name: string;
+				type: string;
+				inputSchema: Record<string, unknown>;
+				outputSchema: Record<string, unknown>;
+			}>;
+		};
+		expect(manifest.triggers).toHaveLength(1);
+		const t = manifest.triggers[0];
+		expect(t?.name).toBe("reprocessOrder");
+		expect(t?.type).toBe("manual");
+		const props = (t?.inputSchema as { properties?: Record<string, unknown> })
+			.properties;
+		expect(props).toBeDefined();
+		expect(props?.id).toBeDefined();
+	});
+
+	it("fails the build when a manual trigger export name is not URL-safe", async () => {
+		await expect(
+			buildFixture({
+				files: { "bad.ts": MANUAL_WORKFLOW_INVALID_NAME },
+				workflows: ["./bad.ts"],
+			}),
+		).rejects.toThrow(/\$weird/);
 	});
 });
 

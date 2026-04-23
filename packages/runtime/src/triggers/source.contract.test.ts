@@ -3,10 +3,12 @@ import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	InvokeResult,
+	ManualTriggerDescriptor,
 } from "../executor/types.js";
 import { createLogger } from "../logger.js";
 import { createCronTriggerSource } from "./cron.js";
 import { createHttpTriggerSource } from "./http.js";
+import { createManualTriggerSource } from "./manual.js";
 import type { TriggerEntry, TriggerSource } from "./source.js";
 
 // ---------------------------------------------------------------------------
@@ -74,7 +76,33 @@ const cronKind: KindFactory<"cron"> = {
 	},
 };
 
-const KIND_FACTORIES: readonly KindFactory<string>[] = [httpKind, cronKind];
+const manualKind: KindFactory<"manual"> = {
+	kind: "manual",
+	makeEntry(name) {
+		const descriptor: ManualTriggerDescriptor = {
+			kind: "manual",
+			type: "manual",
+			name,
+			workflowName: "w",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		};
+		return { descriptor, fire: vi.fn<Fire>(stubFire) };
+	},
+	createSource() {
+		return createManualTriggerSource() as unknown as TriggerSource;
+	},
+};
+
+const KIND_FACTORIES: readonly KindFactory<string>[] = [
+	httpKind,
+	cronKind,
+	manualKind,
+];
 
 for (const factory of KIND_FACTORIES) {
 	describe(`TriggerSource contract: ${factory.kind}`, () => {

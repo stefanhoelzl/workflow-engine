@@ -25,6 +25,7 @@ import { createS3Storage } from "./storage/s3.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
+import { createManualTriggerSource } from "./triggers/manual.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
@@ -143,7 +144,8 @@ async function init() {
 	const cronSource = createCronTriggerSource({
 		logger: runtimeLogger,
 	});
-	const triggerBackends = [httpSource, cronSource];
+	const manualSource = createManualTriggerSource();
+	const triggerBackends = [httpSource, cronSource, manualSource];
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 6. Workflow registry. Boots from the storage backend by LISTing
