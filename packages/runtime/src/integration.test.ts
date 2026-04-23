@@ -14,6 +14,8 @@ import { recover } from "./recovery.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import { createFsStorage } from "./storage/fs.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
+import { createHttpTriggerSource } from "./triggers/http.js";
+import { createManualTriggerSource } from "./triggers/manual.js";
 import {
 	createWorkflowRegistry,
 	type WorkflowRegistry,
@@ -496,5 +498,201 @@ describe("cron trigger integration", () => {
 		expect(invoke).not.toHaveBeenCalled();
 
 		await cronSource.stop();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Manual-specific integration: registry -> manual source -> getEntry -> fire
+// ---------------------------------------------------------------------------
+
+const MANUAL_WORKFLOW = {
+	name: "manual-demo",
+	module: "manual-demo.js",
+	sha: "m".repeat(64),
+	env: {},
+	actions: [],
+	triggers: [
+		{
+			name: "rerun",
+			type: "manual",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		},
+		{
+			name: "reprocessOrder",
+			type: "manual",
+			inputSchema: {
+				type: "object",
+				properties: { id: { type: "string" } },
+				required: ["id"],
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		},
+	],
+};
+const MANUAL_TENANT_MANIFEST = { workflows: [MANUAL_WORKFLOW] };
+
+const MANUAL_BUNDLE = `
+var __wfe_exports__ = (function(exports) {
+  exports.rerun = async () => "rerun-ok";
+  exports.reprocessOrder = async (input) => ({ processed: input.id });
+  return exports;
+})({});
+`;
+
+describe("manual trigger integration", () => {
+	let registry: WorkflowRegistry;
+
+	afterEach(() => {
+		registry?.dispose();
+	});
+
+	it("registry.getEntry returns a manual entry whose fire dispatches through the executor", async () => {
+		const logger = makeLogger();
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: "rerun-ok",
+		}));
+		const manualSource = createManualTriggerSource();
+		await manualSource.start();
+
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [manualSource],
+		});
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manual-demo.js", MANUAL_BUNDLE],
+			]),
+		);
+
+		const entry = registry.getEntry("acme", "manual-demo", "rerun");
+		expect(entry).toBeDefined();
+		expect(entry?.descriptor.kind).toBe("manual");
+
+		const result = await entry?.fire({});
+		expect(result?.ok).toBe(true);
+		if (result?.ok === true) {
+			expect(result.output).toBe("rerun-ok");
+		}
+		expect(invoke).toHaveBeenCalledTimes(1);
+		const call = invoke.mock.calls[0];
+		expect(call?.[0]).toBe("acme"); // tenant
+		expect(call?.[1].name).toBe("manual-demo"); // workflow manifest
+		expect(call?.[2].name).toBe("rerun"); // descriptor
+		expect(call?.[2].kind).toBe("manual");
+		expect(call?.[3]).toEqual({}); // validated payload
+
+		await manualSource.stop();
+	});
+
+	it("rejects a fire whose body fails inputSchema validation", async () => {
+		const logger = makeLogger();
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const manualSource = createManualTriggerSource();
+		await manualSource.start();
+
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [manualSource],
+		});
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manual-demo.js", MANUAL_BUNDLE],
+			]),
+		);
+
+		const entry = registry.getEntry("acme", "manual-demo", "reprocessOrder");
+		expect(entry).toBeDefined();
+		const result = await entry?.fire({ id: 42 });
+		expect(result?.ok).toBe(false);
+		if (result?.ok === false) {
+			expect(result.error.issues).toBeDefined();
+		}
+		expect(invoke).not.toHaveBeenCalled();
+
+		await manualSource.stop();
+	});
+
+	it("manual-only tenant is not addressable via /webhooks/*", async () => {
+		const logger = makeLogger();
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const httpSource = createHttpTriggerSource();
+		const manualSource = createManualTriggerSource();
+		await httpSource.start();
+		await manualSource.start();
+
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [httpSource, manualSource],
+		});
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manual-demo.js", MANUAL_BUNDLE],
+			]),
+		);
+
+		// The HTTP source must have no installed entry for the manual trigger —
+		// the registry partitions by kind and routes manual entries only to the
+		// manual backend. Webhook ingress therefore 404s for manual names.
+		expect(httpSource.getEntry("acme", "manual-demo", "rerun")).toBeUndefined();
+		expect(
+			httpSource.getEntry("acme", "manual-demo", "reprocessOrder"),
+		).toBeUndefined();
+
+		await httpSource.stop();
+		await manualSource.stop();
+	});
+
+	it("re-uploading the tenant continues resolving manual entries from the new view", async () => {
+		const logger = makeLogger();
+		const invoke = vi.fn<Executor["invoke"]>(async () => ({
+			ok: true as const,
+			output: undefined,
+		}));
+		const manualSource = createManualTriggerSource();
+		await manualSource.start();
+
+		registry = createWorkflowRegistry({
+			logger,
+			executor: { invoke },
+			backends: [manualSource],
+		});
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manual-demo.js", MANUAL_BUNDLE],
+			]),
+		);
+		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeDefined();
+
+		await registry.registerTenant(
+			"acme",
+			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
+		);
+		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeUndefined();
+
+		await manualSource.stop();
 	});
 });

@@ -43,6 +43,9 @@ const HTTP_TRIGGER_BRAND: unique symbol = Symbol.for(
 const CRON_TRIGGER_BRAND: unique symbol = Symbol.for(
 	"@workflow-engine/cron-trigger",
 );
+const MANUAL_TRIGGER_BRAND: unique symbol = Symbol.for(
+	"@workflow-engine/manual-trigger",
+);
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
 
@@ -466,10 +469,73 @@ function isCronTrigger(value: unknown): value is CronTrigger {
 }
 
 // ---------------------------------------------------------------------------
+// Manual trigger
+// ---------------------------------------------------------------------------
+
+interface ManualTrigger<I extends z.ZodType = z.ZodType> {
+	(input: z.infer<I>): Promise<unknown>;
+	readonly [MANUAL_TRIGGER_BRAND]: true;
+	readonly inputSchema: I;
+	readonly outputSchema: z.ZodType;
+}
+
+const manualTriggerDefaultInputSchema = z.object({});
+const manualTriggerDefaultOutputSchema = z.unknown();
+
+function manualTrigger<
+	I extends z.ZodType = typeof manualTriggerDefaultInputSchema,
+>(config: {
+	input?: I;
+	output?: z.ZodType;
+	handler: (input: z.infer<I>) => Promise<unknown>;
+}): ManualTrigger<I> {
+	if (typeof config.handler !== "function") {
+		throw new Error("manualTrigger(...) is missing a handler function");
+	}
+	const inputSchema = (config.input ?? manualTriggerDefaultInputSchema) as I;
+	const outputSchema = config.output ?? manualTriggerDefaultOutputSchema;
+	const handler = config.handler;
+	const callable = function callManualTrigger(
+		input: z.infer<I>,
+	): Promise<unknown> {
+		return handler(input);
+	};
+	Object.defineProperty(callable, MANUAL_TRIGGER_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "inputSchema", {
+		value: inputSchema,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "outputSchema", {
+		value: outputSchema,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	return callable as unknown as ManualTrigger<I>;
+}
+
+function isManualTrigger(value: unknown): value is ManualTrigger {
+	if (value === null || value === undefined) {
+		return false;
+	}
+	if (typeof value !== "object" && typeof value !== "function") {
+		return false;
+	}
+	return (value as Record<symbol, unknown>)[MANUAL_TRIGGER_BRAND] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Trigger union
 // ---------------------------------------------------------------------------
 
-type Trigger = HttpTrigger | CronTrigger;
+type Trigger = HttpTrigger | CronTrigger | ManualTrigger;
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -480,7 +546,15 @@ export type {
 	HttpTriggerResult,
 	Manifest,
 } from "@workflow-engine/core";
-export type { Action, CronTrigger, EnvRef, HttpTrigger, Trigger, Workflow };
+export type {
+	Action,
+	CronTrigger,
+	EnvRef,
+	HttpTrigger,
+	ManualTrigger,
+	Trigger,
+	Workflow,
+};
 export {
 	ACTION_BRAND,
 	action,
@@ -493,8 +567,11 @@ export {
 	isAction,
 	isCronTrigger,
 	isHttpTrigger,
+	isManualTrigger,
 	isWorkflow,
+	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
+	manualTrigger,
 	WORKFLOW_BRAND,
 	z,
 };

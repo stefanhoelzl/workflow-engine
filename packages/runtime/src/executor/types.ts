@@ -39,7 +39,14 @@ interface CronTriggerDescriptor extends BaseTriggerDescriptor<"cron"> {
 	readonly tz: string;
 }
 
-type TriggerDescriptor = HttpTriggerDescriptor | CronTriggerDescriptor;
+interface ManualTriggerDescriptor extends BaseTriggerDescriptor<"manual"> {
+	readonly type: "manual";
+}
+
+type TriggerDescriptor =
+	| HttpTriggerDescriptor
+	| CronTriggerDescriptor
+	| ManualTriggerDescriptor;
 
 interface ValidationIssue {
 	readonly path: readonly (string | number)[];
@@ -69,6 +76,7 @@ export type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
 	InvokeResult,
+	ManualTriggerDescriptor,
 	TriggerDescriptor,
 	ValidationIssue,
 };

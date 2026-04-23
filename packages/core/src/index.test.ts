@@ -151,3 +151,74 @@ describe("ManifestSchema cron trigger", () => {
 		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
 	});
 });
+
+describe("ManifestSchema manual trigger", () => {
+	const base = (triggers: unknown[]) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: {},
+				actions: [],
+				triggers,
+			},
+		],
+	});
+	const validManual = {
+		name: "rerun",
+		type: "manual" as const,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
+
+	it("accepts a valid manual descriptor", () => {
+		const parsed = ManifestSchema.parse(base([validManual]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "manual") {
+			throw new Error("expected manual");
+		}
+		expect(trigger.name).toBe("rerun");
+	});
+
+	it("strips http-only fields from a manual entry", () => {
+		const bad = { ...validManual, method: "POST", body: {} };
+		const parsed = ManifestSchema.parse(base([bad]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "manual") {
+			throw new Error("expected manual");
+		}
+		expect("method" in trigger).toBe(false);
+		expect("body" in trigger).toBe(false);
+	});
+
+	it("strips cron-only fields from a manual entry", () => {
+		const bad = { ...validManual, schedule: "0 9 * * *", tz: "UTC" };
+		const parsed = ManifestSchema.parse(base([bad]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "manual") {
+			throw new Error("expected manual");
+		}
+		expect("schedule" in trigger).toBe(false);
+		expect("tz" in trigger).toBe(false);
+	});
+
+	it("rejects a manual entry missing inputSchema", () => {
+		const { inputSchema: _i, ...rest } = validManual;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects a manual entry missing outputSchema", () => {
+		const { outputSchema: _o, ...rest } = validManual;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects a manual entry with a non-URL-safe name", () => {
+		const bad = { ...validManual, name: "$weird" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+});

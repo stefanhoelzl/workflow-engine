@@ -17,7 +17,9 @@ import {
 	isAction,
 	isCronTrigger,
 	isHttpTrigger,
+	isManualTrigger,
 	isWorkflow,
+	type ManualTrigger,
 	type Workflow,
 } from "../index.js";
 
@@ -284,7 +286,17 @@ interface ManifestCronTriggerEntry {
 	outputSchema: Record<string, unknown>;
 }
 
-type ManifestTriggerEntry = ManifestHttpTriggerEntry | ManifestCronTriggerEntry;
+interface ManifestManualTriggerEntry {
+	name: string;
+	type: "manual";
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown>;
+}
+
+type ManifestTriggerEntry =
+	| ManifestHttpTriggerEntry
+	| ManifestCronTriggerEntry
+	| ManifestManualTriggerEntry;
 
 interface BuiltManifest {
 	name: string;
@@ -300,6 +312,7 @@ interface DiscoveredExports {
 	actionEntries: [string, Action][];
 	httpTriggerEntries: [string, HttpTrigger][];
 	cronTriggerEntries: [string, CronTrigger][];
+	manualTriggerEntries: [string, ManualTrigger][];
 }
 
 function discoverExports(
@@ -311,6 +324,7 @@ function discoverExports(
 	const actionEntries: [string, Action][] = [];
 	const httpTriggerEntries: [string, HttpTrigger][] = [];
 	const cronTriggerEntries: [string, CronTrigger][] = [];
+	const manualTriggerEntries: [string, ManualTrigger][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
 		if (exportName === "default" && isAction(value)) {
 			ctx.error(
@@ -325,6 +339,8 @@ function discoverExports(
 			httpTriggerEntries.push([exportName, value]);
 		} else if (isCronTrigger(value)) {
 			cronTriggerEntries.push([exportName, value]);
+		} else if (isManualTrigger(value)) {
+			manualTriggerEntries.push([exportName, value]);
 		}
 	}
 	return {
@@ -332,6 +348,7 @@ function discoverExports(
 		actionEntries,
 		httpTriggerEntries,
 		cronTriggerEntries,
+		manualTriggerEntries,
 	};
 }
 
@@ -474,6 +491,44 @@ function buildCronTriggerEntry(
 	};
 }
 
+function buildManualTriggerEntry(
+	exportName: string,
+	trigger: ManualTrigger,
+	workflowName: string,
+	ctx: PluginContext,
+): ManifestManualTriggerEntry {
+	if (typeof trigger !== "function") {
+		ctx.error(
+			`Workflow "${workflowName}": manual trigger "${exportName}" is missing a handler function`,
+		);
+	}
+	if (!TRIGGER_NAME_RE.test(exportName)) {
+		ctx.error(
+			`Workflow "${workflowName}": manual trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
+		);
+	}
+	const inputSchemaLabel = `manual trigger "${exportName}".inputSchema`;
+	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName, ctx);
+	const outputSchemaLabel = `manual trigger "${exportName}".outputSchema`;
+	assertZodSchema(trigger.outputSchema, outputSchemaLabel, workflowName, ctx);
+	return {
+		name: exportName,
+		type: "manual",
+		inputSchema: toJsonSchema(
+			trigger.inputSchema,
+			inputSchemaLabel,
+			workflowName,
+			ctx,
+		),
+		outputSchema: toJsonSchema(
+			trigger.outputSchema,
+			outputSchemaLabel,
+			workflowName,
+			ctx,
+		),
+	};
+}
+
 function buildManifest(
 	mod: Record<string, unknown>,
 	filestem: string,
@@ -485,6 +540,7 @@ function buildManifest(
 		actionEntries,
 		httpTriggerEntries,
 		cronTriggerEntries,
+		manualTriggerEntries,
 	} = discoverExports(mod, filestem, ctx);
 
 	if (workflowEntries.length > 1) {
@@ -502,6 +558,9 @@ function buildManifest(
 		...httpTriggerEntries.map(([k, v]) => buildTriggerEntry(k, v, name, ctx)),
 		...cronTriggerEntries.map(([k, v]) =>
 			buildCronTriggerEntry(k, v, name, ctx),
+		),
+		...manualTriggerEntries.map(([k, v]) =>
+			buildManualTriggerEntry(k, v, name, ctx),
 		),
 	];
 

@@ -2,6 +2,7 @@ import { html, raw } from "hono/html";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ManualTriggerDescriptor,
 	TriggerDescriptor,
 } from "../../executor/types.js";
 import type { WorkflowEntry } from "../../workflow-registry.js";
@@ -141,14 +142,27 @@ function descriptorToCardData(
 			meta,
 		};
 	}
-	const cron = descriptor as CronTriggerDescriptor;
+	if (descriptor.kind === "cron") {
+		const cron = descriptor as CronTriggerDescriptor;
+		return {
+			tenant,
+			workflow,
+			trigger: cron.name,
+			kind: "cron",
+			schema: (cron.inputSchema ?? { type: "object" }) as object,
+			submitUrl: `/trigger/${tenant}/${workflow}/${cron.name}`,
+			submitMethod: "POST",
+			meta,
+		};
+	}
+	const manual = descriptor as ManualTriggerDescriptor;
 	return {
 		tenant,
 		workflow,
-		trigger: cron.name,
-		kind: "cron",
-		schema: (cron.inputSchema ?? { type: "object" }) as object,
-		submitUrl: `/trigger/${tenant}/${workflow}/${cron.name}`,
+		trigger: manual.name,
+		kind: "manual",
+		schema: (manual.inputSchema ?? { type: "object" }) as object,
+		submitUrl: `/trigger/${tenant}/${workflow}/${manual.name}`,
 		submitMethod: "POST",
 		meta,
 	};

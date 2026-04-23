@@ -6,6 +6,7 @@ import {
 	type HttpTriggerManifest,
 	type Manifest,
 	ManifestSchema,
+	type ManualTriggerManifest,
 	type WorkflowManifest,
 } from "@workflow-engine/core";
 import { extract as tarExtract } from "tar-stream";
@@ -13,6 +14,7 @@ import type { Executor } from "./executor/index.js";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ManualTriggerDescriptor,
 	TriggerDescriptor,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
@@ -122,6 +124,20 @@ function buildCronDescriptor(
 	};
 }
 
+function buildManualDescriptor(
+	workflowName: string,
+	entry: ManualTriggerManifest,
+): ManualTriggerDescriptor {
+	return {
+		kind: "manual",
+		type: "manual",
+		name: entry.name,
+		workflowName,
+		inputSchema: entry.inputSchema as Record<string, unknown>,
+		outputSchema: entry.outputSchema as Record<string, unknown>,
+	};
+}
+
 function buildDescriptors(
 	workflow: WorkflowManifest,
 	allowedKinds: ReadonlySet<string> | undefined,
@@ -147,6 +163,8 @@ function buildDescriptors(
 			descriptors.push(buildHttpDescriptor(workflow.name, entry));
 		} else if (entry.type === "cron") {
 			descriptors.push(buildCronDescriptor(workflow.name, entry));
+		} else if (entry.type === "manual") {
+			descriptors.push(buildManualDescriptor(workflow.name, entry));
 		} else {
 			// Shouldn't happen — allowedKinds is derived from registered backends
 			// and the parser's union covers every registered kind. Guard anyway.
