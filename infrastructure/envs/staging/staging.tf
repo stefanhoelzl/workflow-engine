@@ -190,8 +190,6 @@ module "app" {
     https_port = 443
   }
 
-  error_page_5xx_html = file("${path.module}/../../templates/error-5xx.html")
-
   tls = {
     secretName = "staging-workflow-engine-tls"
   }

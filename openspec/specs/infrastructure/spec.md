@@ -423,43 +423,38 @@ The module SHALL create a `kubernetes_service_v1` exposing the app on port 8080.
 
 The routing module SHALL create a `helm_release` installing the `traefik/traefik` chart version `39.0.7`. The Helm release SHALL use `traefik_helm_sets` for environment-specific Helm `set` values, `traefik_extra_objects` for CRD objects deployed via the chart's `extraObjects` feature, and an optional `wait` variable (bool, default `false`) controlling whether Helm waits for all resources to be ready.
 
-The Traefik plugin `traefik_inline_response` SHALL be loaded from a vendored local source tree rather than fetched from GitHub at pod startup. The Helm values SHALL declare `experimental.localPlugins.inline-response` with `moduleName = "github.com/tuxgal/traefik_inline_response"` (no `version` field — `localPlugins` reads from disk). An init container declared via Helm `deployment.initContainers` SHALL extract the plugin tarball (mounted from a ConfigMap as `binary_data`) into an `emptyDir` volume, which is in turn mounted into the main Traefik container at `/plugins-local`. The main container SHALL read the plugin source from the extracted tree.
+The Helm release SHALL NOT declare any `experimental.plugins` or `experimental.localPlugins` entry, SHALL NOT mount any init container for plugin extraction, SHALL NOT create a ConfigMap carrying a plugin tarball as `binary_data`, and SHALL NOT mount a `plugins-local` or `plugin-src` volume. The module's `error_page_5xx_html` input variable SHALL be removed. Rendering of 5xx HTML bodies is performed inside the app, not inside Traefik.
 
 #### Scenario: Traefik installed via Helm with parameterized config
-
 - **WHEN** `tofu apply` completes
 - **THEN** Traefik SHALL be running in the cluster
 - **AND** the Helm `set` values SHALL match the provided `traefik_helm_sets`
 - **AND** the Helm `extraObjects` SHALL contain the provided `traefik_extra_objects`
 
 #### Scenario: Wait disabled (default)
-
 - **WHEN** `tofu apply` is run with `wait` not set
 - **THEN** Helm SHALL not wait for resources to be ready before marking the release as successful
 
 #### Scenario: Wait enabled
-
 - **WHEN** `tofu apply` is run with `wait = true`
 - **THEN** Helm SHALL wait for all pods to be ready and LoadBalancer services to receive an external IP before marking the release as successful
 
 #### Scenario: Web entrypoint enabled internally
-
 - **WHEN** the Traefik pod is running
 - **THEN** the web entrypoint SHALL listen on port 80 inside the pod
 - **AND** the Traefik K8s Service SHALL include port 80
 - **AND** no NodePort SHALL be mapped to port 80
 
-#### Scenario: Plugin loaded from vendored source
+#### Scenario: No plugin scaffolding on the Traefik pod
+- **WHEN** the Traefik pod is inspected
+- **THEN** it SHALL have no init container
+- **AND** it SHALL have no `plugins-local` `emptyDir` volume mount
+- **AND** it SHALL have no `plugin-src` ConfigMap volume mount
+- **AND** the rendered Helm values SHALL contain no `experimental.plugins` or `experimental.localPlugins` entries
 
-- **WHEN** the Traefik pod starts
-- **THEN** the init container SHALL extract the plugin tarball to the shared `emptyDir`
-- **AND** the main Traefik container SHALL load the `traefik_inline_response` plugin from `/plugins-local/src/github.com/tuxgal/traefik_inline_response/`
-- **AND** the plugin SHALL be available for middleware configuration
-- **AND** no runtime HTTPS request to `github.com` SHALL be made by the Traefik container for plugin loading
-
-<!-- Removed: Traefik inline-response plugin source fetched and vendored at apply time — see archive/2026-04-16-infra-refactor -->
-
-<!-- Removed: Namespace default-deny NetworkPolicy — see archive/2026-04-16-infra-refactor -->
+#### Scenario: Module input contract
+- **WHEN** the `modules/traefik/` module's input variables are inspected
+- **THEN** there SHALL be no variable named `error_page_5xx_html`
 
 ### Requirement: App workload network allow-rules
 
@@ -548,112 +543,40 @@ The policy SHALL select pods with label `app.kubernetes.io/name=traefik` and set
 - **WHEN** another pod attempts to connect to Traefik on any port other than `:80` or `:443`
 - **THEN** the default-deny SHALL cause the connection to be dropped
 
-### Requirement: Root redirect
-
-The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `redirectRegex` that redirects requests matching the root path (`/`) to `/trigger`.
-
-#### Scenario: Root path redirects to trigger
-
-- **WHEN** a request matches `Path('/')`
-- **THEN** the user SHALL be redirected to `/trigger` with a 302 status
-
 ### Requirement: IngressRoute for routing
 
-The routes-chart Helm release's `extraObjects` SHALL include Traefik `IngressRoute` CRDs on the `websecure` entrypoint organized into three categories:
+The routes-chart Helm release's `extraObjects` SHALL include exactly one `IngressRoute` CRD on the `websecure` entrypoint: a single catch-all rule matching `Host(var.domain) && PathPrefix('/')` that routes to the app service on the app port, with no attached Middleware references, and carrying TLS via `tls.secretName = var.tlsSecretName`. All URL dispatch — `/dashboard`, `/trigger`, `/auth`, `/login`, `/static`, `/webhooks`, `/api`, `/livez`, `/`, and the unknown-path fallback — is performed by the app's Hono router. The routes-chart SHALL NOT define any `Middleware` CRD named `not-found`, `server-error`, `inline-error`, or `redirect-root`, and SHALL NOT define any IngressRoute that references those middlewares or the `traefik_inline_response` plugin. The routes-chart SHALL continue to define the `redirect-to-https` `Middleware` and the `web`-entrypoint IngressRoute that applies it — HTTP→HTTPS redirection remains at Traefik because TLS terminates there.
 
-**UI routes** (session-authenticated by the app, no Traefik-level auth middleware):
-- `PathPrefix('/dashboard')` routes to app service (with `not-found` and `server-error` middlewares). No forward-auth, no strip-auth-headers.
-- `PathPrefix('/trigger')` routes to app service (with `not-found` and `server-error` middlewares). No forward-auth, no strip-auth-headers.
-- `PathPrefix('/auth')` routes to app service (with `not-found` and `server-error` middlewares). Covers `/auth/github/login`, `/auth/github/callback`, and `/auth/logout`.
+#### Scenario: Single catch-all routes all prefixes to the app
+- **WHEN** a request arrives at `https://<domain>/dashboard` with any trailing path
+- **THEN** the catch-all IngressRoute SHALL match
+- **AND** the request SHALL be routed to `app_service:app_port`
+- **AND** no Middleware SHALL be applied
 
-**No-auth whitelist** (public):
-- `Path('/')` redirects to `/trigger` (with `redirect-root` middleware).
-- `PathPrefix('/static')` routes to app service (no middleware).
-- `PathPrefix('/webhooks')` routes to app service (with `server-error` middleware).
-- `Path('/livez')` routes to app service (no middleware).
+#### Scenario: Webhook prefix routes through the catch-all
+- **WHEN** a POST to `https://<domain>/webhooks/<tenant>/<workflow>/<trigger>` arrives
+- **THEN** the catch-all IngressRoute SHALL match
+- **AND** the request SHALL reach the app on `:8080`
 
-**App-auth** (app validates tokens internally):
-- `PathPrefix('/api')` routes to app service (with `server-error` middleware).
+#### Scenario: API prefix routes through the catch-all
+- **WHEN** a request to `https://<domain>/api/workflows/<tenant>` arrives
+- **THEN** the catch-all IngressRoute SHALL match
+- **AND** the request SHALL reach the app on `:8080` with no Traefik-level auth middleware interposed
 
-**Catch-all** (deny by default):
-- `PathPrefix('/')` with low priority routes to app service (with `not-found` middleware).
+#### Scenario: Unknown path reaches the app
+- **WHEN** a request to `https://<domain>/absolutely-nothing` arrives
+- **THEN** the catch-all IngressRoute SHALL match
+- **AND** the app's global `notFound` handler SHALL produce the response (content-negotiated per `http-server` spec)
 
-The `/oauth2/*` IngressRoute SHALL NOT be present. The `oauth2-forward-auth`, `oauth2-errors`, and `strip-auth-headers` Middleware CRDs SHALL NOT be defined or attached to any route.
+#### Scenario: HTTP-to-HTTPS redirect preserved on web entrypoint
+- **WHEN** a request arrives at `http://<domain>/anything` on the `web` entrypoint
+- **THEN** the `redirect-to-https` Middleware SHALL fire
+- **AND** the client SHALL receive a `301` redirect to the `https://` equivalent
 
-#### Scenario: Dashboard route has no forward-auth
-
-- **WHEN** a request matches `PathPrefix('/dashboard')`
-- **THEN** it SHALL be routed to `app_service:app_port` with only the `not-found` and `server-error` middlewares
-- **AND** no `forwardAuth` Middleware SHALL be applied
-- **AND** no `X-Auth-Request-*` headers SHALL be set by any middleware
-
-#### Scenario: /auth routes reach the app
-
-- **WHEN** a request matches `PathPrefix('/auth')`
-- **THEN** it SHALL be routed to `app_service:app_port`
-- **AND** no auth middleware SHALL interpose
-
-#### Scenario: /oauth2 path is not routed
-
-- **WHEN** a request matches `PathPrefix('/oauth2')`
-- **THEN** no IngressRoute SHALL match it
-- **AND** the catch-all IngressRoute SHALL handle the request with a 404
-
-#### Scenario: API routes without auth middleware
-
-- **WHEN** a request matches `PathPrefix('/api')`
-- **THEN** it SHALL be routed to `app_service:app_port` without any auth middleware applied
-- **AND** the app's Bearer middleware SHALL perform authentication
-
-#### Scenario: Webhook routes remain public
-
-- **WHEN** a POST to `PathPrefix('/webhooks')` arrives
-- **THEN** it SHALL be routed to `app_service:app_port` with only the `server-error` middleware
-
-#### Scenario: Root redirect unchanged
-
-- **WHEN** a request matches `Path('/')`
-- **THEN** the user SHALL be redirected to `/trigger` with a 302 status
-
-#### Scenario: Unknown path returns 404
-
-- **WHEN** a request matches no specific route and falls through to the catch-all
-- **THEN** the `not-found` middleware SHALL intercept the 404 from the app
-- **AND** the response SHALL be the styled 404 page
-
-### Requirement: Not-found errors middleware
-
-The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `errors` named `not-found`. The middleware SHALL intercept HTTP 404 responses and fetch the replacement content from the app service at `/static/404.html`.
-
-#### Scenario: 404 intercepted and replaced
-
-- **WHEN** the app returns HTTP 404 on a route with the `not-found` middleware
-- **THEN** the middleware SHALL fetch `/static/404.html` from the app service
-- **AND** the response body SHALL be replaced with the fetched content
-
-### Requirement: Server-error errors middleware
-
-The Helm release `extraObjects` SHALL include a Traefik `Middleware` CRD of type `errors` named `server-error`. The middleware SHALL intercept HTTP 500-599 responses and fetch the replacement content from the Traefik K8s Service on port 80 (web entrypoint) at the `/error` path.
-
-#### Scenario: 5xx intercepted and replaced via loopback
-
-- **WHEN** the app returns HTTP 500 on a route with the `server-error` middleware
-- **THEN** the middleware SHALL fetch `/error` from the Traefik service on port 80
-- **AND** the response body SHALL be replaced with the inline 5xx error page
-
-### Requirement: Inline error page route on web entrypoint
-
-The Helm release `extraObjects` SHALL include a Traefik `IngressRoute` CRD on the `web` entrypoint with a route matching `Path('/error')`. The route SHALL use the `traefik_inline_response` plugin middleware to serve self-contained 5xx HTML. The backend service SHALL be `noop@internal`.
-
-#### Scenario: Loopback serves inline HTML
-
-- **WHEN** an HTTP request is made to Traefik port 80 at `/error`
-- **THEN** the `traefik_inline_response` middleware SHALL return the inline 5xx HTML page
-- **AND** the response content type SHALL be detected as `text/html`
-
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- Production Stack (infrastructure/upcloud/)             -->
-<!-- ═══════════════════════════════════════════════════════ -->
+#### Scenario: No deleted middlewares remain in the rendered chart
+- **WHEN** the rendered `routes-chart` Kubernetes manifests are inspected
+- **THEN** no resource of kind `Middleware` SHALL be named `not-found`, `server-error`, `inline-error`, or `redirect-root`
+- **AND** no resource of kind `IngressRoute` SHALL be named `error-pages`
 
 ### Requirement: Persistence project
 

@@ -169,6 +169,7 @@ describe("secureHeadersMiddleware: per-route integration", () => {
 
 	function buildTestApp(localDeployment?: string) {
 		return createApp(
+			{},
 			secureHeadersMiddleware(
 				localDeployment === undefined ? {} : { localDeployment },
 			),

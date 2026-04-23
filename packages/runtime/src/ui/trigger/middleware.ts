@@ -7,6 +7,7 @@ import type {
 	BaseTriggerDescriptor,
 	HttpTriggerDescriptor,
 } from "../../executor/types.js";
+import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderTriggerPage } from "./page.js";
@@ -38,7 +39,6 @@ interface TriggerMiddlewareDeps {
 
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 const HTTP_INTERNAL_ERROR = 500;
-const HTTP_NOT_FOUND = 404;
 
 function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
@@ -124,7 +124,7 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 		app.use("*", deps.sessionMw);
 	}
 	app.use("/:tenant/*", requireTenantMember());
-	app.notFound((c) => c.json({ error: "Not Found" }, HTTP_NOT_FOUND));
+	app.notFound(createNotFoundHandler());
 
 	const render = (c: Context) => {
 		const user = c.get("user");

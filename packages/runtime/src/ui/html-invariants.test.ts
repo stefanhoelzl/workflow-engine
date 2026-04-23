@@ -8,6 +8,8 @@ import {
 	renderDashboardPage,
 	renderInvocationList,
 } from "./dashboard/page.js";
+import notFoundHtml from "./static/404.html?raw";
+import errorHtml from "./static/error.html?raw";
 import { renderTriggerPage } from "./trigger/page.js";
 
 // ---------------------------------------------------------------------------
@@ -145,6 +147,25 @@ describe("HTML CSP invariants", () => {
 		expect(html).not.toMatch(EVENT_HANDLER_RE);
 		expect(html).not.toMatch(INLINE_STYLE_RE);
 		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+	});
+
+	it("404.html has no forbidden inline patterns", () => {
+		expect(notFoundHtml).not.toMatch(INLINE_SCRIPT_RE);
+		expect(notFoundHtml).not.toMatch(EVENT_HANDLER_RE);
+		expect(notFoundHtml).not.toMatch(INLINE_STYLE_RE);
+		expect(notFoundHtml).not.toMatch(JAVASCRIPT_URL_RE);
+		expect(notFoundHtml).not.toMatch(/<style\b/i);
+		expect(notFoundHtml).toContain('href="/static/workflow-engine.css"');
+		expect(notFoundHtml).not.toContain("/static/error.css");
+	});
+
+	it("error.html has no forbidden inline patterns", () => {
+		expect(errorHtml).not.toMatch(INLINE_SCRIPT_RE);
+		expect(errorHtml).not.toMatch(EVENT_HANDLER_RE);
+		expect(errorHtml).not.toMatch(INLINE_STYLE_RE);
+		expect(errorHtml).not.toMatch(JAVASCRIPT_URL_RE);
+		expect(errorHtml).not.toMatch(/<style\b/i);
+		expect(errorHtml).toContain('href="/static/workflow-engine.css"');
 	});
 
 	it("renderFlamegraph (populated) output has no forbidden inline patterns", async () => {
