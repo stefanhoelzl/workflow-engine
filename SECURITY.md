@@ -532,6 +532,13 @@ plugin, and every change that adds a guest-visible surface.
    `sb.onEvent` receiver before forwarding events to the bus. A plugin
    that needs to attach a tenant or workflow label is doing something
    wrong — that labelling belongs on the runtime side.
+9. **R-9 Runtime-only dispatch provenance.** `InvocationEvent.meta` and
+   every field nested under it (including `meta.dispatch`, which carries
+   `{ source: "trigger" | "manual", user? }` on `trigger.request`) are
+   stamped exclusively by the runtime in its `sb.onEvent` widener. The
+   sandbox and plugin code MUST NOT emit, read, or construct `meta` — it
+   has no guest-side entry point by design. Parallels R-8; the dispatch
+   source and dispatching user are runtime concerns, never guest-visible.
 
 Additional standing rules that predate the plugin rewrite:
 
@@ -798,6 +805,21 @@ and the same `UserContext` shape:
 Both transports produce `UserContext = { name, mail, orgs }` (no
 `teams`; no consumer reads them). Tenant scope for writes runs through
 `isMember(user, tenant)`, unchanged from prior revisions.
+
+**Manual-fire dispatch through `/trigger/*`.** The operator "fire this
+trigger now" UI submits every kind (HTTP, cron, future kinds) to the
+authenticated endpoint `POST /trigger/<tenant>/<workflow>/<name>`, which
+sits behind `sessionMiddleware` + `requireTenantMember`. HTTP descriptors
+are server-wrapped into the `HttpTriggerPayload` shape before dispatch
+(`{ body, headers: {}, url: "/webhooks/<tenant>/<workflow>/<name>",
+method }`). The session user (`{ name, mail }`) is captured as dispatch
+provenance (`meta.dispatch.user`, see `invocations` spec and R-9) so
+operator-initiated fires are attributable. External (non-UI) callers
+continue to hit the public `/webhooks/*` ingress (§3) unchanged and
+produce `meta.dispatch = { source: "trigger" }` with no `user`. Adding
+authentication to `/webhooks/*` is still forbidden (see below); the
+authenticated dispatch path is `/trigger/*`, and a UI form posting to
+`/webhooks/*` would bypass attribution.
 
 ### Entry points
 

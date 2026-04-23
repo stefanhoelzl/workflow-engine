@@ -24,6 +24,11 @@ interface EventsTable {
 	input: unknown;
 	output: unknown;
 	error: unknown;
+	// Runtime-only metadata stamped by the executor's onEvent widener.
+	// Populated on `trigger.request` rows with `{ dispatch: { source, user? } }`;
+	// NULL for every other event kind and for legacy archive records that
+	// predate this column.
+	meta: unknown;
 }
 
 interface Database {
@@ -67,6 +72,7 @@ CREATE TABLE IF NOT EXISTS events (
 	input JSON,
 	output JSON,
 	error JSON,
+	meta JSON,
 	PRIMARY KEY (id, seq)
 )`;
 
@@ -104,6 +110,7 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		input: event.input === undefined ? null : JSON.stringify(event.input),
 		output: event.output === undefined ? null : JSON.stringify(event.output),
 		error: event.error === undefined ? null : JSON.stringify(event.error),
+		meta: event.meta === undefined ? null : JSON.stringify(event.meta),
 	};
 }
 

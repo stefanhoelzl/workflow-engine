@@ -21,6 +21,14 @@ interface InvocationRow {
 	// registry at render time. May be undefined if the trigger was unloaded
 	// since the invocation was recorded.
 	readonly triggerKind?: string;
+	// Dispatch provenance parsed from the invocation's trigger.request event's
+	// meta.dispatch. Absent for legacy invocations archived before this
+	// feature. Only `user.name` is materialized on the list (mail stays in
+	// the flamegraph tooltip to keep list rows compact).
+	readonly dispatch?: {
+		readonly source: "manual" | "trigger";
+		readonly user?: { readonly name: string };
+	};
 }
 
 function toIsoString(ts: string | Date): string {
@@ -55,6 +63,17 @@ const chevronIconSvg = raw(
 	'<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
 );
 
+function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
+	if (!dispatch || dispatch.source !== "manual") {
+		return "";
+	}
+	// Label stays compact ("manual"); the tooltip surfaces just the user
+	// name when present, so hover attributes the fire without re-stating
+	// what the chip already shows.
+	const tooltip = dispatch.user?.name ?? "";
+	return html`<span class="entry-dispatch" title="${tooltip}">manual</span>`;
+}
+
 function renderCardSummary(
 	row: InvocationRow,
 	duration: string,
@@ -72,6 +91,7 @@ function renderCardSummary(
         <span class="entry-identity-sep">›</span>
         <span class="entry-trigger">${row.trigger}</span>
       </div>
+      ${renderDispatchChip(row.dispatch)}
       <span class="badge ${row.status}">${row.status}</span>
     </div>
     <div class="entry-meta">

@@ -106,7 +106,7 @@ describe("executor", () => {
 			makeManifest("wf"),
 			makeDescriptor("trig"),
 			{ hello: "world" },
-			"source",
+			{ bundleSource: "source" },
 		);
 
 		expect(runSpy).toHaveBeenCalledTimes(1);
@@ -161,8 +161,12 @@ describe("executor", () => {
 			return { ok: true, result: { status: 200 } };
 		});
 
-		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
-		await executor.invoke("t0", wf, makeDescriptor("t"), null, "source");
+		await executor.invoke("t0", wf, makeDescriptor("t"), null, {
+			bundleSource: "source",
+		});
+		await executor.invoke("t0", wf, makeDescriptor("t"), null, {
+			bundleSource: "source",
+		});
 
 		// onEvent should be wired exactly once across multiple invocations.
 		expect(capture.eventCallbacks).toHaveLength(1);
@@ -184,7 +188,7 @@ describe("executor", () => {
 			makeManifest("wf"),
 			makeDescriptor("t"),
 			null,
-			"source",
+			{ bundleSource: "source" },
 		);
 		expect(result.ok).toBe(true);
 		if (result.ok) {
@@ -211,7 +215,7 @@ describe("executor", () => {
 			makeManifest("wf"),
 			makeDescriptor("t"),
 			null,
-			"source",
+			{ bundleSource: "source" },
 		);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
@@ -243,12 +247,115 @@ describe("executor", () => {
 		const wf = makeManifest("wf");
 
 		await Promise.all([
-			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
-			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
-			executor.invoke("t0", wf, makeDescriptor("t"), null, "source"),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+				bundleSource: "source",
+			}),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+				bundleSource: "source",
+			}),
+			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+				bundleSource: "source",
+			}),
 		]);
 
 		expect(maxActive).toBe(1);
 		expect(callOrder.length).toBe(6);
+	});
+
+	it("stamps meta.dispatch only onto trigger.request events", async () => {
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
+		const sandbox = makeSandbox({ capture });
+		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
+			},
+		};
+		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+
+		// Emit four sandbox events across kinds mid-run so the widener sees
+		// all of them under the same active invocation.
+		runSpy.mockImplementation(async () => {
+			const cb = capture.eventCallbacks[0];
+			if (!cb) {
+				throw new Error("expected onEvent wired before run");
+			}
+			const base = {
+				seq: 0,
+				ref: null,
+				at: "2026-01-01T00:00:00.000Z",
+				ts: 1,
+				name: "t",
+			} as const;
+			cb({ ...base, kind: "trigger.request" });
+			cb({ ...base, seq: 1, kind: "action.request", name: "doThing" });
+			cb({ ...base, seq: 2, kind: "action.response", name: "doThing" });
+			cb({ ...base, seq: 3, kind: "trigger.response" });
+			return { ok: true, result: { status: 200 } };
+		});
+
+		await executor.invoke("t0", makeManifest("wf"), makeDescriptor("t"), null, {
+			bundleSource: "source",
+			dispatch: {
+				source: "manual",
+				user: { name: "Jane", mail: "jane@example.com" },
+			},
+		});
+
+		expect(seen).toHaveLength(4);
+		const [req, act, actResp, resp] = seen;
+		expect(req?.kind).toBe("trigger.request");
+		expect(req?.meta).toEqual({
+			dispatch: {
+				source: "manual",
+				user: { name: "Jane", mail: "jane@example.com" },
+			},
+		});
+		expect(act?.kind).toBe("action.request");
+		expect(act?.meta).toBeUndefined();
+		expect(actResp?.kind).toBe("action.response");
+		expect(actResp?.meta).toBeUndefined();
+		expect(resp?.kind).toBe("trigger.response");
+		expect(resp?.meta).toBeUndefined();
+	});
+
+	it("defaults dispatch to {source:'trigger'} when options omits it", async () => {
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
+		const sandbox = makeSandbox({ capture });
+		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
+			},
+		};
+		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+
+		runSpy.mockImplementation(async () => {
+			const cb = capture.eventCallbacks[0];
+			if (!cb) {
+				throw new Error("expected onEvent wired before run");
+			}
+			cb({
+				kind: "trigger.request",
+				seq: 0,
+				ref: null,
+				at: "2026-01-01T00:00:00.000Z",
+				ts: 1,
+				name: "t",
+			});
+			return { ok: true, result: { status: 200 } };
+		});
+
+		await executor.invoke("t0", makeManifest("wf"), makeDescriptor("t"), null, {
+			bundleSource: "source",
+		});
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.meta).toEqual({ dispatch: { source: "trigger" } });
+		expect(
+			(seen[0]?.meta?.dispatch as { user?: unknown } | undefined)?.user,
+		).toBeUndefined();
 	});
 });

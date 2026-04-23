@@ -1,4 +1,8 @@
-import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
+import type {
+	DispatchMeta,
+	InvocationEvent,
+	WorkflowManifest,
+} from "@workflow-engine/core";
 import type { Sandbox } from "@workflow-engine/sandbox";
 import type { EventBus } from "../event-bus/index.js";
 import type { SandboxStore } from "../sandbox-store.js";
@@ -10,6 +14,14 @@ interface InvocationMeta {
 	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
+	// Dispatch provenance. Forwarded from fire()'s optional `dispatch` arg;
+	// defaults to `{ source: "trigger" }` when the caller omits it.
+	readonly dispatch: DispatchMeta;
+}
+
+interface InvokeOptions {
+	readonly bundleSource: string;
+	readonly dispatch?: DispatchMeta;
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +49,7 @@ interface Executor {
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
-		bundleSource: string,
+		options: InvokeOptions,
 	): Promise<InvokeResult<unknown>>;
 }
 
@@ -92,6 +104,13 @@ function createExecutor(options: ExecutorOptions): Executor {
 				tenant: meta.tenant,
 				workflow: meta.workflow,
 				workflowSha: meta.workflowSha,
+				// Dispatch provenance is stamped only onto the single
+				// `trigger.request` event of each invocation (see
+				// openspec/specs/invocations/spec.md). Other kinds join back
+				// via the shared invocation `id`.
+				...(event.kind === "trigger.request"
+					? { meta: { dispatch: meta.dispatch } }
+					: {}),
 			};
 			const prev = emitTails.get(sb) ?? Promise.resolve();
 			const next = prev.then(() =>
@@ -104,15 +123,15 @@ function createExecutor(options: ExecutorOptions): Executor {
 		wired.add(sb);
 	}
 
-	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — tenant + workflow + descriptor + input + bundleSource are orthogonal and already packaged by the caller
+	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — tenant + workflow + descriptor + input + options are orthogonal and already packaged by the caller
 	async function runInvocation(
 		tenant: string,
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
-		bundleSource: string,
+		options: InvokeOptions,
 	): Promise<InvokeResult<unknown>> {
-		const sb = await sandboxStore.get(tenant, workflow, bundleSource);
+		const sb = await sandboxStore.get(tenant, workflow, options.bundleSource);
 		ensureWired(sb);
 		const invocationId = newInvocationId();
 		activeMeta.set(sb, {
@@ -120,6 +139,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 			tenant,
 			workflow: workflow.name,
 			workflowSha: workflow.sha,
+			dispatch: options.dispatch ?? { source: "trigger" },
 		});
 		let result: InvokeResult<unknown>;
 		try {
@@ -154,9 +174,9 @@ function createExecutor(options: ExecutorOptions): Executor {
 
 	return {
 		// biome-ignore lint/complexity/useMaxParams: matches Executor.invoke contract
-		invoke(tenant, workflow, descriptor, input, bundleSource) {
+		invoke(tenant, workflow, descriptor, input, options) {
 			return queueFor(`${tenant}/${workflow.sha}`).run(() =>
-				runInvocation(tenant, workflow, descriptor, input, bundleSource),
+				runInvocation(tenant, workflow, descriptor, input, options),
 			);
 		},
 	};
@@ -173,5 +193,5 @@ export type {
 	InvokeResult,
 	TriggerDescriptor,
 } from "./types.js";
-export type { Executor, ExecutorOptions };
+export type { Executor, ExecutorOptions, InvokeOptions };
 export { createExecutor };

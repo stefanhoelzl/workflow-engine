@@ -113,7 +113,7 @@ describe("buildFire", () => {
 		expect(call[1]).toBe(workflow);
 		expect(call[2]).toBe(descriptor);
 		expect(call[3]).toEqual(input);
-		expect(call[4]).toBe("bundle-src");
+		expect(call[4]).toEqual({ bundleSource: "bundle-src" });
 	});
 
 	it("returns {ok:false} without calling executor on validation failure", async () => {
@@ -305,5 +305,79 @@ describe("buildFire", () => {
 
 		expect(result).toEqual({ ok: true, output: undefined });
 		expect(logger.warnings).toEqual([]);
+	});
+
+	it("forwards dispatch arg to executor.invoke via the options bag", async () => {
+		const invoke = vi
+			.fn<Executor["invoke"]>()
+			.mockResolvedValue({ ok: true, output: { status: 200 } });
+		const executor: Executor = { invoke };
+		const fire = buildFire(
+			executor,
+			"acme",
+			makeWorkflow(),
+			makeDescriptor(),
+			"bundle-src",
+		);
+
+		await fire(
+			{ body: { name: "alice" } },
+			{ source: "manual", user: { name: "Jane", mail: "jane@ex.com" } },
+		);
+
+		expect(invoke).toHaveBeenCalledTimes(1);
+		const call = invoke.mock.calls[0];
+		if (!call) {
+			throw new Error("invoke was not called");
+		}
+		expect(call[4]).toEqual({
+			bundleSource: "bundle-src",
+			dispatch: {
+				source: "manual",
+				user: { name: "Jane", mail: "jane@ex.com" },
+			},
+		});
+	});
+
+	it("omits dispatch from options when fire is called without it", async () => {
+		const invoke = vi
+			.fn<Executor["invoke"]>()
+			.mockResolvedValue({ ok: true, output: { status: 200 } });
+		const executor: Executor = { invoke };
+		const fire = buildFire(
+			executor,
+			"acme",
+			makeWorkflow(),
+			makeDescriptor(),
+			"bundle-src",
+		);
+
+		await fire({ body: { name: "alice" } });
+
+		const call = invoke.mock.calls[0];
+		if (!call) {
+			throw new Error("invoke was not called");
+		}
+		expect(call[4]).toEqual({ bundleSource: "bundle-src" });
+	});
+
+	it("does not call executor (and thus does not stamp dispatch) on validation failure", async () => {
+		const invoke = vi.fn<Executor["invoke"]>();
+		const executor: Executor = { invoke };
+		const fire = buildFire(
+			executor,
+			"acme",
+			makeWorkflow(),
+			makeDescriptor(),
+			"bundle-src",
+		);
+
+		const result = await fire(
+			{ body: {} }, // missing required `name`
+			{ source: "manual", user: { name: "Jane", mail: "jane@ex.com" } },
+		);
+
+		expect(result.ok).toBe(false);
+		expect(invoke).not.toHaveBeenCalled();
 	});
 });

@@ -130,15 +130,18 @@ function descriptorToCardData(
 	const meta = triggerCardMeta(descriptor, tenant, workflow);
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
-		const webhookUrl = `/webhooks/${tenant}/${workflow}/${http.name}`;
+		// UI fires route through the authenticated /trigger/* endpoint so
+		// the session user can be captured as dispatch provenance; the meta
+		// chip still surfaces the public /webhooks/... URL documenting the
+		// endpoint external callers use.
 		return {
 			tenant,
 			workflow,
 			trigger: http.name,
 			kind: "http",
 			schema: (http.body ?? { type: "object" }) as object,
-			submitUrl: webhookUrl,
-			submitMethod: http.method,
+			submitUrl: `/trigger/${tenant}/${workflow}/${http.name}`,
+			submitMethod: "POST",
 			meta,
 		};
 	}

@@ -6,7 +6,9 @@ Provide a simple invocation list view for the dashboard, showing recent trigger 
 ## Requirements
 ### Requirement: Dashboard lists invocations
 
-The dashboard SHALL render invocations from the EventStore, ordered by `startedAt` descending with `id` descending as tiebreak. Each rendered invocation SHALL display: workflow, trigger, status (`pending` / `succeeded` / `failed`), `startedAt` (formatted from the ISO string), and duration.
+The dashboard SHALL render invocations from the EventStore, ordered by `startedAt` descending with `id` descending as tiebreak. Each rendered invocation SHALL display: workflow, trigger, status (`pending` / `succeeded` / `failed`), `startedAt` (formatted from the ISO string), duration, and a dispatch indicator sourced from the invocation's `trigger.request` event.
+
+The dispatch indicator SHALL render as a text chip whose visible label is always `"manual"` when `meta.dispatch.source === "manual"`. The chip's `title` attribute (shown on hover) SHALL carry the dispatching user's name (`meta.dispatch.user.name`) when present, and SHALL be empty when no `user` is present (open-mode dev). The chip SHALL NOT be rendered when `source === "trigger"` or when the `trigger.request` event carries no `meta.dispatch` (legacy invocations persisted before this change).
 
 Duration SHALL be computed as `completedTs - startedTs` (monotonic microseconds) when both values are available, and rendered using a smart-unit formatter:
 
@@ -73,6 +75,32 @@ Duration SHALL NOT be derived from the wall-clock ISO strings (`startedAt` / `co
 - **GIVEN** a recovered invocation where `trigger.request.ts = 0` and the synthetic `trigger.error.ts = 4_200` (copied from the last pending event)
 - **WHEN** the list is rendered
 - **THEN** the duration field SHALL contain `"4.2 ms"` (i.e. the smart-unit rendering of 4 200 µs)
+
+#### Scenario: Manual dispatch renders chip with user name in tooltip
+
+- **GIVEN** an invocation whose `trigger.request` event carries `meta.dispatch = { source: "manual", user: { name: "Jane Doe", mail: "jane@example.com" } }`
+- **WHEN** the list is rendered
+- **THEN** the row for that invocation SHALL render a chip whose visible label is `"manual"`
+- **AND** the chip SHALL carry `title="Jane Doe"` for on-hover attribution
+
+#### Scenario: Manual dispatch without user has an empty tooltip
+
+- **GIVEN** an invocation whose `trigger.request` event carries `meta.dispatch = { source: "manual" }` with no `user`
+- **WHEN** the list is rendered
+- **THEN** the row for that invocation SHALL render a chip whose visible label is `"manual"`
+- **AND** the chip's `title` attribute SHALL be empty
+
+#### Scenario: Trigger-source dispatch renders no chip
+
+- **GIVEN** an invocation whose `trigger.request` event carries `meta.dispatch = { source: "trigger" }`
+- **WHEN** the list is rendered
+- **THEN** the row for that invocation SHALL NOT render a dispatch chip
+
+#### Scenario: Legacy invocation without meta renders no chip
+
+- **GIVEN** a legacy invocation archived before this change whose `trigger.request` event has no `meta` field
+- **WHEN** the list is rendered
+- **THEN** the row for that invocation SHALL NOT render a dispatch chip
 
 ### Requirement: Deferred list loading
 

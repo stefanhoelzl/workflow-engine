@@ -130,7 +130,7 @@ describe("end-to-end event flow", () => {
 			entry.workflow,
 			descriptor,
 			{ body: { msg: "hello" } },
-			entry.bundleSource,
+			{ bundleSource: entry.bundleSource },
 		);
 		expect(result.ok).toBe(true);
 		if (!result.ok) {
@@ -186,6 +186,83 @@ describe("end-to-end event flow", () => {
 		expect(archived.length).toBe(rows.length);
 		expect(archived[0].kind).toBe("trigger.request");
 		expect(archived.at(-1).kind).toBe("trigger.response");
+		// External-webhook-equivalent dispatch path: no dispatch passed →
+		// archived trigger.request carries meta.dispatch = { source: "trigger" }.
+		expect(archived[0].meta).toEqual({ dispatch: { source: "trigger" } });
+		// Non-trigger events MUST NOT carry meta.dispatch.
+		for (const e of archived.slice(1)) {
+			expect(e.meta).toBeUndefined();
+		}
+	});
+
+	it("manual UI dispatch path: archive contains meta.dispatch with source=manual and user", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		store = await createEventStore({ persistence: { backend }, logger });
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		const sandboxFactory = createSandboxFactory({ logger });
+		sandboxStore = createSandboxStore({ sandboxFactory, logger });
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({ logger, executor });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(TENANT_MANIFEST)],
+				["demo.js", BUNDLE],
+			]),
+		);
+
+		const entry = registry.list("acme")[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "ping");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a ping trigger descriptor");
+		}
+		const result = await executor.invoke(
+			"acme",
+			entry.workflow,
+			descriptor,
+			{ body: { msg: "hi" } },
+			{
+				bundleSource: entry.bundleSource,
+				dispatch: {
+					source: "manual",
+					user: { name: "Jane Doe", mail: "jane@example.com" },
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+
+		await new Promise((r) => setImmediate(r));
+
+		const rows = await store
+			.query("acme")
+			.where("kind", "=", "trigger.request")
+			.selectAll()
+			.execute();
+		expect(rows).toHaveLength(1);
+		const id = rows[0]?.id as string;
+
+		const archived = JSON.parse(
+			await backend.read(`archive/${id}.json`),
+		) as Array<{ kind: string; meta?: unknown }>;
+		const req = archived.find((e) => e.kind === "trigger.request");
+		expect(req?.meta).toEqual({
+			dispatch: {
+				source: "manual",
+				user: { name: "Jane Doe", mail: "jane@example.com" },
+			},
+		});
+		// Meta is stamped only on trigger.request; action/response events do not carry it.
+		for (const e of archived) {
+			if (e.kind !== "trigger.request") {
+				expect(e.meta).toBeUndefined();
+			}
+		}
 	});
 
 	it("recovery synthesizes a trigger.error and archives orphaned events", async () => {

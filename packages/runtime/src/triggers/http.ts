@@ -179,6 +179,11 @@ function createHttpTriggerSource(): HttpTriggerSource {
 				url: c.req.url,
 				method: c.req.method,
 			};
+			// No dispatch argument — public /webhooks/* ingress is
+			// intentionally unauthenticated (SECURITY.md §3) so we cannot
+			// attribute this to a user. The executor defaults to
+			// `{ source: "trigger" }`, which is the correct provenance for
+			// every external webhook call.
 			const result = await entry.fire(rawInput);
 			if (!result.ok) {
 				if (result.error.issues) {

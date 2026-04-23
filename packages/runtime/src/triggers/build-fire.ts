@@ -1,4 +1,4 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
+import type { DispatchMeta, WorkflowManifest } from "@workflow-engine/core";
 import type { Executor } from "../executor/index.js";
 import type {
 	InvokeResult,
@@ -66,8 +66,8 @@ function buildFire(
 	logger?: Logger,
 	validate: Validate = defaultValidate,
 	validateOutput: ValidateOutput = defaultValidateOutput,
-): (input: unknown) => Promise<InvokeResult<unknown>> {
-	return (input) => {
+): (input: unknown, dispatch?: DispatchMeta) => Promise<InvokeResult<unknown>> {
+	return (input, dispatch) => {
 		const v = validate(descriptor, input);
 		if (!v.ok) {
 			return Promise.resolve({
@@ -79,7 +79,10 @@ function buildFire(
 			});
 		}
 		return executor
-			.invoke(tenant, workflow, descriptor, v.input, bundleSource)
+			.invoke(tenant, workflow, descriptor, v.input, {
+				bundleSource,
+				...(dispatch === undefined ? {} : { dispatch }),
+			})
 			.then((result) => {
 				if (!result.ok) {
 					return result;

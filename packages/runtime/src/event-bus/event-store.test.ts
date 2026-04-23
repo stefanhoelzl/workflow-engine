@@ -176,6 +176,77 @@ describe("event store", () => {
 		await expect(store.ping()).resolves.toBeUndefined();
 	});
 
+	it("persists meta on trigger.request rows and NULL on other kinds", async () => {
+		await store.handle(
+			event({
+				kind: "trigger.request",
+				seq: 0,
+				meta: {
+					dispatch: {
+						source: "manual",
+						user: { name: "Jane", mail: "jane@ex.com" },
+					},
+				},
+			}),
+		);
+		await store.handle(event({ kind: "trigger.response", seq: 1, ref: 0 }));
+		const rows = (await store
+			.query("t0")
+			.select(["kind", "meta"])
+			.orderBy("seq", "asc")
+			.execute()) as { kind: string; meta: unknown }[];
+		expect(rows).toHaveLength(2);
+		expect(rows[0]?.kind).toBe("trigger.request");
+		const metaRaw = rows[0]?.meta;
+		const parsed = typeof metaRaw === "string" ? JSON.parse(metaRaw) : metaRaw;
+		expect(parsed).toEqual({
+			dispatch: {
+				source: "manual",
+				user: { name: "Jane", mail: "jane@ex.com" },
+			},
+		});
+		expect(rows[1]?.kind).toBe("trigger.response");
+		expect(rows[1]?.meta).toBeNull();
+	});
+
+	it("archive bootstrap tolerates legacy events without meta", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "event-store-legacy-"));
+		try {
+			const backend: StorageBackend = createFsStorage(dir);
+			await backend.init();
+			const legacy: InvocationEvent[] = [
+				event({ kind: "trigger.request", seq: 0, input: { hi: "there" } }),
+				event({ kind: "trigger.response", seq: 1, ref: 0, output: "ok" }),
+			];
+			// Intentionally serialize with meta stripped to simulate pre-change archives.
+			const stripped = legacy.map((e) => {
+				const { meta: _meta, ...rest } = e as InvocationEvent & {
+					meta?: unknown;
+				};
+				return rest;
+			});
+			await backend.write(
+				`archive/${legacy[0]?.id}.json`,
+				JSON.stringify(stripped),
+			);
+
+			const s = await createEventStore({ persistence: { backend } });
+			await s.initialized;
+
+			const rows = (await s
+				.query("t0")
+				.select(["seq", "meta"])
+				.orderBy("seq", "asc")
+				.execute()) as { seq: number; meta: unknown }[];
+			expect(rows).toHaveLength(2);
+			for (const r of rows) {
+				expect(r.meta).toBeNull();
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	afterEach(() => {
 		// in-memory DuckDB instance is GC'd with the store
 	});

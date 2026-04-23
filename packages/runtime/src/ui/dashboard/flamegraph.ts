@@ -800,23 +800,7 @@ function renderLegend(presence: LegendPresence) {
 	return html`<div class="flame-legend" aria-label="Legend">${items}</div>`;
 }
 
-function renderFlamegraph(events: readonly InvocationEvent[]) {
-	if (events.length === 0) {
-		return renderEmpty();
-	}
-	const layout = computeLayout(events);
-	if (!layout) {
-		return renderEmpty();
-	}
-
-	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(layout);
-	const ruler = renderRuler(layout.totalDurationTs);
-
-	// The invocation card that wraps this flamegraph already surfaces the
-	// workflow/trigger identity, started timestamp, duration and status
-	// badge. The flamegraph header only adds what the card does not:
-	// per-kind counts (actions, host calls, timers). Counts of zero are
-	// suppressed entirely to avoid noise.
+function buildMetrics(layout: Layout): ReturnType<typeof html>[] {
 	const metrics: ReturnType<typeof html>[] = [];
 	if (layout.actionCount > 0) {
 		metrics.push(
@@ -833,10 +817,48 @@ function renderFlamegraph(events: readonly InvocationEvent[]) {
 			html`<span><strong>${String(layout.timerCount)}</strong> timer${layout.timerCount === 1 ? "" : "s"}</span>`,
 		);
 	}
+	return metrics;
+}
 
+// Pulls the dispatching user's name out of the invocation's `trigger.request`
+// event (`meta.dispatch.user.name`, stamped by the executor's widener).
+// Returns an empty fragment when no name is present so the flamegraph header
+// stays unadorned for trigger-source-backed invocations.
+function buildTriggeredBy(events: readonly InvocationEvent[]) {
+	const triggerReq = events.find((e) => e.kind === "trigger.request");
+	const dispatchMeta = (triggerReq?.meta as { dispatch?: unknown } | undefined)
+		?.dispatch as { user?: { name?: unknown } } | undefined;
+	const name =
+		typeof dispatchMeta?.user?.name === "string"
+			? dispatchMeta.user.name
+			: undefined;
+	return name
+		? html`<span class="flame-header-triggered-by">triggered by <strong>${name}</strong></span>`
+		: "";
+}
+
+function renderFlamegraph(events: readonly InvocationEvent[]) {
+	if (events.length === 0) {
+		return renderEmpty();
+	}
+	const layout = computeLayout(events);
+	if (!layout) {
+		return renderEmpty();
+	}
+
+	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(layout);
+	const ruler = renderRuler(layout.totalDurationTs);
+
+	// The invocation card that wraps this flamegraph already surfaces the
+	// workflow/trigger identity, started timestamp, duration and status
+	// badge. The flamegraph header only adds what the card does not:
+	// per-kind counts (actions/host calls/timers, suppressed when zero) and
+	// the dispatching user's name when the fire was manual.
+	const metrics = buildMetrics(layout);
+	const triggeredBy = buildTriggeredBy(events);
 	const header =
-		metrics.length > 0
-			? html`<div class="flame-header-metrics">${metrics}</div>`
+		metrics.length > 0 || triggeredBy !== ""
+			? html`<div class="flame-header-metrics">${metrics}${triggeredBy}</div>`
 			: "";
 
 	const legend = renderLegend(detectLegendPresence(layout));
