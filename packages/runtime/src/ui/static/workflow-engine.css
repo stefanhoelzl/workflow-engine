@@ -27,6 +27,9 @@
 	--grey: #94a3b8;
 	--grey-bg: #f1f5f9;
 	--grey-border: #cbd5e1;
+	--blue: #3b82f6;
+	--blue-bg: #eff6ff;
+	--blue-border: #bfdbfe;
 	--accent: #6366f1;
 
 	/* Foreground-on-accent / on-coloured-bar */
@@ -99,6 +102,8 @@
 		--yellow-border: #92400e;
 		--grey-bg: #1e293b;
 		--grey-border: #475569;
+		--blue-bg: #0b2447;
+		--blue-border: #1d4ed8;
 		--overlay-weak: rgba(255, 255, 255, 0.06);
 		--btn-bg: #30363d;
 		--btn-bg-hover: #3e444c;
@@ -603,6 +608,24 @@ body {
 
 .entry-header .badge {
 	margin-left: auto;
+}
+
+/* Dispatch provenance chip — rendered on invocation rows whose trigger.request
+ * carries meta.dispatch.source === "manual". Sits between the identity block
+ * and the status badge. Blue/info styling distinguishes manual fires from
+ * the success/warn/error status badges without competing with them. */
+.entry-dispatch {
+	padding: 2px var(--sp-2);
+	border-radius: var(--radius-pill);
+	font-size: var(--fs-xs);
+	font-weight: 500;
+	color: var(--blue);
+	background: var(--blue-bg);
+	border: 1px solid var(--blue-border);
+	white-space: nowrap;
+	max-width: 14em;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* Tooltip */
@@ -1132,6 +1155,14 @@ body {
 	font-size: var(--fs-xs);
 	color: var(--text-muted);
 	font-family: var(--font-mono);
+}
+.flame-header-triggered-by {
+	margin-left: auto;
+	color: var(--text-secondary);
+}
+.flame-header-triggered-by strong {
+	color: var(--text);
+	font-weight: 600;
 }
 .flame-header-duration {
 	font-size: var(--fs-md);

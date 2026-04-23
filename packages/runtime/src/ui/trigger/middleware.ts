@@ -1,7 +1,12 @@
+import type { DispatchMeta } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
 import { requireTenantMember } from "../../auth/tenant-mw.js";
+import type {
+	BaseTriggerDescriptor,
+	HttpTriggerDescriptor,
+} from "../../executor/types.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderTriggerPage } from "./page.js";
@@ -50,6 +55,52 @@ function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 		}
 	}
 	return Array.from(fromRegistry).sort();
+}
+
+// biome-ignore lint/complexity/useMaxParams: wraps posted body into the kind-specific input shape; parts are already available at the call site
+function wrapInputForDescriptor(
+	descriptor: BaseTriggerDescriptor<string>,
+	body: unknown,
+	tenant: string,
+	workflowName: string,
+	triggerName: string,
+): unknown {
+	if (descriptor.kind === "http") {
+		const http = descriptor as HttpTriggerDescriptor;
+		// Server-side synthesis: build the full HttpTriggerPayload the HTTP
+		// trigger backend would normally construct from a real webhook
+		// request. Headers are intentionally empty (leaking dispatch-path
+		// specifics into guest-visible headers would be wrong); url is the
+		// canonical relative webhook path; method comes from the descriptor.
+		return {
+			body,
+			headers: {},
+			url: `/webhooks/${tenant}/${workflowName}/${triggerName}`,
+			method: http.method,
+		};
+	}
+	return body;
+}
+
+function buildDispatch(c: Context): DispatchMeta {
+	const user = c.get("user");
+	if (user && typeof user.name === "string" && typeof user.mail === "string") {
+		return {
+			source: "manual",
+			user: { name: user.name, mail: user.mail },
+		};
+	}
+	// Open-mode dev (`authOpen` set, no session user). Fires still go
+	// through `/trigger/*` authenticated by the middleware, but there is
+	// no real identity to attribute to. Attach a sentinel so the
+	// dashboard chip has a non-empty tooltip on hover.
+	if (c.get("authOpen")) {
+		return {
+			source: "manual",
+			user: { name: "local", mail: "" },
+		};
+	}
+	return { source: "manual" };
 }
 
 function resolveActiveTenant(
@@ -120,7 +171,15 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 			);
 		}
 
-		const result = await entry.fire(body);
+		const input = wrapInputForDescriptor(
+			entry.descriptor,
+			body,
+			tenant,
+			workflowName,
+			triggerName,
+		);
+		const dispatch = buildDispatch(c);
+		const result = await entry.fire(input, dispatch);
 		if (!result.ok) {
 			if (result.error.issues) {
 				return c.json(

@@ -52,6 +52,16 @@ interface InvocationEventError {
 	issues?: unknown;
 }
 
+/**
+ * Dispatch provenance stamped onto `trigger.request` events by the runtime.
+ * `source` is always populated; `user` is populated only for manual fires
+ * that carried an authenticated session.
+ */
+interface DispatchMeta {
+	readonly source: "trigger" | "manual";
+	readonly user?: { readonly name: string; readonly mail: string };
+}
+
 // The subset of event fields the sandbox owns. Sandbox code (worker + main-
 // thread factory) emits `SandboxEvent` — it has no knowledge of tenant or
 // invocation identity. The runtime widens each `SandboxEvent` to a full
@@ -75,6 +85,10 @@ interface InvocationEvent extends SandboxEvent {
 	readonly tenant: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
+	// Runtime-only metadata stamped by the executor's onEvent widener.
+	// Populated on `trigger.request` with `{ dispatch }`; absent on every
+	// other event kind. Sandbox and plugin code MUST NOT emit or read `meta`.
+	readonly meta?: { readonly dispatch?: DispatchMeta };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +256,7 @@ const IIFE_NAMESPACE = "__wfe_exports__";
 export type {
 	ActionDispatcher,
 	CronTriggerManifest,
+	DispatchMeta,
 	EventKind,
 	HttpTriggerManifest,
 	HttpTriggerPayload,

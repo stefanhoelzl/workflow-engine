@@ -1,3 +1,4 @@
+import type { DispatchMeta } from "@workflow-engine/core";
 import { Hono, type MiddlewareHandler } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -15,7 +16,10 @@ import type {
 import { triggerMiddleware } from "./middleware.js";
 import { prepareSchema } from "./page.js";
 
-type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;
+type Fire = (
+	input: unknown,
+	dispatch?: DispatchMeta,
+) => Promise<InvokeResult<unknown>>;
 
 interface StubEntry {
 	readonly tenant: string;
@@ -274,7 +278,7 @@ describe("triggerMiddleware: page rendering", () => {
 		expect(body).toContain('class="trigger-group-title">cronitor</h2>');
 		expect(body).toContain('<span class="trigger-name">onCronitorEvent</span>');
 		expect(body).toContain(
-			'data-trigger-url="/webhooks/t0/cronitor/onCronitorEvent"',
+			'data-trigger-url="/trigger/t0/cronitor/onCronitorEvent"',
 		);
 		expect(body).toContain('data-trigger-method="POST"');
 		expect(body).toContain('{"type":"object"');
@@ -302,7 +306,7 @@ describe("triggerMiddleware: page rendering", () => {
 		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
 		const body = await res.text();
 		// The card must carry the Submit button but no form container.
-		expect(body).toContain('data-trigger-url="/webhooks/t0/noinput/ping"');
+		expect(body).toContain('data-trigger-url="/trigger/t0/noinput/ping"');
 		// The formless card MUST NOT emit a .form-container div.
 		const cardStart = body.indexOf('id="trigger-t0-noinput-ping"');
 		const cardEnd = body.indexOf("</details>", cardStart);
@@ -396,7 +400,19 @@ describe("triggerMiddleware: POST dispatch", () => {
 		expect(json.ok).toBe(true);
 		expect(json.output).toEqual({ status: 202, body: { echoed: true } });
 		expect(fire).toHaveBeenCalledTimes(1);
-		expect(fire.mock.calls[0]?.[0]).toEqual({ x: 42 });
+		// HTTP descriptor: UI endpoint server-wraps the posted body into the
+		// full HttpTriggerPayload before firing.
+		expect(fire.mock.calls[0]?.[0]).toEqual({
+			body: { x: 42 },
+			headers: {},
+			url: "/webhooks/t0/demo/onPing",
+			method: "POST",
+		});
+		// Authenticated session → dispatch.source = "manual" with user.
+		expect(fire.mock.calls[0]?.[1]).toEqual({
+			source: "manual",
+			user: { name: "user", mail: "user@example.test" },
+		});
 	});
 
 	it("returns 422 when fire reports a validation failure", async () => {
@@ -509,6 +525,99 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 		expect(res.status).toBe(200);
 		expect(fire).toHaveBeenCalledTimes(1);
 		expect(fire.mock.calls[0]?.[0]).toEqual({});
+	});
+
+	it("authenticated cron fire sends dispatch with source=manual and session user", async () => {
+		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
+		const registry = makeStubRegistry([
+			makeCronStub(
+				"t0",
+				"billing",
+				{ name: "daily", schedule: "0 9 * * *", tz: "UTC" },
+				fire,
+			),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/billing/daily", {
+			method: "POST",
+			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(res.status).toBe(200);
+		expect(fire.mock.calls[0]?.[1]).toEqual({
+			source: "manual",
+			user: { name: "user", mail: "user@example.test" },
+		});
+	});
+});
+
+describe("triggerMiddleware: dispatch in open-mode dev", () => {
+	function mountOpen(registry: WorkflowRegistry) {
+		// Open-mode dev: the session middleware flags authOpen so
+		// requireTenantMember short-circuits its membership check. No user
+		// is attached, so /trigger/* should still dispatch and emit
+		// source=manual with the user field omitted.
+		const openMw: MiddlewareHandler = async (c, next) => {
+			c.set("authOpen", true);
+			await next();
+		};
+		const m = triggerMiddleware({ registry, sessionMw: openMw });
+		const app = new Hono();
+		app.all(m.match, m.handler);
+		if (m.match.endsWith("/*")) {
+			app.all(m.match.slice(0, -2), m.handler);
+		}
+		return app;
+	}
+
+	it("open-mode fire emits source=manual with a 'local' sentinel user", async () => {
+		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
+		const registry = makeStubRegistry([
+			makeCronStub(
+				"t0",
+				"billing",
+				{ name: "daily", schedule: "0 9 * * *", tz: "UTC" },
+				fire,
+			),
+		]);
+		const app = mountOpen(registry);
+		const res = await app.request("/trigger/t0/billing/daily", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(res.status).toBe(200);
+		// Sentinel attribution keeps the dashboard chip's tooltip
+		// non-empty on open-mode fires; `mail` is "" to signal no real
+		// identity without having to add a third discriminator value.
+		expect(fire.mock.calls[0]?.[1]).toEqual({
+			source: "manual",
+			user: { name: "local", mail: "" },
+		});
+	});
+});
+
+describe("triggerMiddleware: cross-tenant authorization", () => {
+	it("returns 404 without calling fire when user is not a member of the target tenant", async () => {
+		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
+		const registry = makeStubRegistry([
+			makeCronStub(
+				"other",
+				"billing",
+				{ name: "daily", schedule: "0 9 * * *", tz: "UTC" },
+				fire,
+			),
+		]);
+		const app = mount(registry);
+		// AUTH_HEADERS seed `orgs: ["t0"]` in the stub sessionMw; tenant
+		// "other" is not in that set so requireTenantMember must 404.
+		const res = await app.request("/trigger/other/billing/daily", {
+			method: "POST",
+			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(res.status).toBe(404);
+		expect(fire).not.toHaveBeenCalled();
 	});
 });
 

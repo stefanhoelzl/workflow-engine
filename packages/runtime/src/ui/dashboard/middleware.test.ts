@@ -475,3 +475,103 @@ describe("dashboard middleware — fragment", () => {
 		}
 	});
 });
+
+describe("dashboard middleware — dispatch chip", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	async function seedTerminal(id: string, ts = 500) {
+		await store.handle(
+			event({
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				id,
+				output: { status: 200 },
+				at: "2026-04-16T10:00:01.000Z",
+				ts,
+			}),
+		);
+	}
+
+	it("renders manual chip with user name in title tooltip on source=manual + user", async () => {
+		await store.handle(
+			event({
+				kind: "trigger.request",
+				seq: 0,
+				id: "evt_ok",
+				meta: {
+					dispatch: {
+						source: "manual",
+						user: { name: "Jane Doe", mail: "jane@example.com" },
+					},
+				},
+			}),
+		);
+		await seedTerminal("evt_ok", 1_000_000);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('class="entry-dispatch"');
+		// Visible label stays compact; tooltip carries just the user name.
+		expect(html).toContain('title="Jane Doe">manual</span>');
+	});
+
+	it("renders manual chip without user name in tooltip when dispatch has no user (open-mode dev)", async () => {
+		await store.handle(
+			event({
+				kind: "trigger.request",
+				seq: 0,
+				id: "evt_anon",
+				meta: { dispatch: { source: "manual" } },
+			}),
+		);
+		await seedTerminal("evt_anon");
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('class="entry-dispatch"');
+		expect(html).toContain(">manual<");
+		expect(html).not.toContain("manual by ");
+		// No user → empty tooltip; the chip still reads "manual".
+		expect(html).toContain('title="">manual</span>');
+	});
+
+	it("renders no chip when dispatch.source is trigger", async () => {
+		await store.handle(
+			event({
+				kind: "trigger.request",
+				seq: 0,
+				id: "evt_auto",
+				meta: { dispatch: { source: "trigger" } },
+			}),
+		);
+		await seedTerminal("evt_auto");
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).not.toContain('class="entry-dispatch"');
+	});
+
+	it("renders no chip for legacy rows without meta", async () => {
+		await store.handle(
+			event({ kind: "trigger.request", seq: 0, id: "evt_legacy" }),
+		);
+		await seedTerminal("evt_legacy");
+		const app = await mount(store);
+		const res = await app.request("/dashboard/invocations", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).not.toContain('class="entry-dispatch"');
+	});
+});

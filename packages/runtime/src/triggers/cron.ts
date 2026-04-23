@@ -144,6 +144,9 @@ function createCronTriggerSource(
 			return;
 		}
 		try {
+			// No dispatch argument — the executor defaults to
+			// `{ source: "trigger" }`, which is the correct provenance for
+			// every cron tick (scheduled backend wake, not a manual fire).
 			await srcEntry.entry.fire({});
 		} catch (err) {
 			// `fire` is built by the registry and returns `{ok, ...}` rather

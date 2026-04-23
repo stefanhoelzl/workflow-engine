@@ -29,6 +29,7 @@ interface RawRequestRow {
 	name: string;
 	at: string;
 	ts: number | bigint;
+	meta: unknown;
 }
 
 interface RawTerminalRow {
@@ -108,7 +109,7 @@ async function fetchInvocationRows(
 	const requests = (await eventStore
 		.query(tenant)
 		.where("kind", "=", "trigger.request")
-		.select(["id", "workflow", "name", "at", "ts"])
+		.select(["id", "workflow", "name", "at", "ts", "meta"])
 		.orderBy("at", "desc")
 		.orderBy("id", "desc")
 		.limit(limit)
@@ -133,6 +134,7 @@ async function fetchInvocationRows(
 	return requests.map((r) => {
 		const t = terminalById.get(r.id);
 		const kind = lookupTriggerKind(registry, tenant, r.workflow, r.name);
+		const dispatch = extractDispatch(r.meta);
 		const row: InvocationRow = {
 			id: r.id,
 			workflow: r.workflow,
@@ -143,9 +145,33 @@ async function fetchInvocationRows(
 			startedTs: toNumber(r.ts),
 			completedTs: t ? toNumber(t.ts) : null,
 			...(kind ? { triggerKind: kind } : {}),
+			...(dispatch ? { dispatch } : {}),
 		};
 		return row;
 	});
+}
+
+function extractDispatch(
+	rawMeta: unknown,
+): InvocationRow["dispatch"] | undefined {
+	const meta = parseJsonField(rawMeta);
+	if (!meta || typeof meta !== "object") {
+		return;
+	}
+	const dispatch = (meta as { dispatch?: unknown }).dispatch;
+	if (!dispatch || typeof dispatch !== "object") {
+		return;
+	}
+	const d = dispatch as { source?: unknown; user?: { name?: unknown } };
+	if (d.source !== "manual" && d.source !== "trigger") {
+		return;
+	}
+	const userName =
+		d.user && typeof d.user.name === "string" ? d.user.name : undefined;
+	return {
+		source: d.source,
+		...(userName ? { user: { name: userName } } : {}),
+	};
 }
 
 async function fetchInvocationEvents(
@@ -180,11 +206,13 @@ function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 	const error = parseJsonField(row.error) as
 		| InvocationEvent["error"]
 		| undefined;
+	const meta = parseJsonField(row.meta) as InvocationEvent["meta"] | undefined;
 	return {
 		...base,
 		...(input === undefined ? {} : { input }),
 		...(output === undefined ? {} : { output }),
 		...(error === undefined ? {} : { error }),
+		...(meta === undefined ? {} : { meta }),
 	};
 }
 

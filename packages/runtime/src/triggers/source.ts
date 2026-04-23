@@ -1,3 +1,4 @@
+import type { DispatchMeta } from "@workflow-engine/core";
 import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 
 // ---------------------------------------------------------------------------
@@ -20,7 +21,14 @@ interface TriggerEntry<
 	D extends BaseTriggerDescriptor<string> = BaseTriggerDescriptor<string>,
 > {
 	readonly descriptor: D;
-	readonly fire: (input: unknown) => Promise<InvokeResult<unknown>>;
+	// Backends call `fire(input)` with no second argument — the default
+	// dispatch `{ source: "trigger" }` is applied inside buildFire. Only the
+	// kind-agnostic UI endpoint at `/trigger/*` passes a dispatch, and only
+	// with `source: "manual"`.
+	readonly fire: (
+		input: unknown,
+		dispatch?: DispatchMeta,
+	) => Promise<InvokeResult<unknown>>;
 }
 
 // User-facing configuration error. Maps to 4xx on the upload API. Never
