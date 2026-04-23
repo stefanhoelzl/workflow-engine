@@ -243,51 +243,21 @@ function isAction(value: unknown): value is Action {
 // ---------------------------------------------------------------------------
 
 // HttpTrigger is a callable: invoking it runs the user's handler. Brand,
-// method, body, inputSchema, outputSchema are attached as readonly properties
-// on the callable. There is no public `.handler` slot; the callable IS the
-// handler invocation path. The webhook URL is mechanical — derived from the
+// method, body, and responseBody are attached as readonly properties on the
+// callable. There is no public `.handler` slot; the callable IS the handler
+// invocation path. The webhook URL is mechanical — derived from the
 // trigger's exported identifier as `/webhooks/<tenant>/<workflow>/<export-name>`
 // — so no URL-shape config exists on this type.
+//
+// The composed input/output JSON Schemas (envelope with body + headers + url
+// + method) live in the manifest only — the vite-plugin synthesises them on
+// the host at build time. No zod composition happens at bundle load.
 interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
 	(payload: HttpTriggerPayload<z.infer<Body>>): Promise<HttpTriggerResult>;
 	readonly [HTTP_TRIGGER_BRAND]: true;
 	readonly method: string;
-	readonly body: Body;
-	// Composite input schema (body + headers + url + method). Serialized to
-	// JSON Schema in the manifest for the UI + host-side shared validator.
-	readonly inputSchema: z.ZodType;
-	// Output schema (HttpTriggerResult shape). Serialized to JSON Schema in
-	// the manifest for uniform output rendering.
-	readonly outputSchema: z.ZodType;
-}
-
-// Default envelope when no `responseBody` is declared: status/body/headers
-// are all optional, Zod's strict default applies additionalProperties: false
-// at the envelope — catches typos like `statusCode` for `status`.
-const httpTriggerOutputSchema = z.object({
-	status: z.exactOptional(z.number()),
-	body: z.exactOptional(z.unknown()),
-	headers: z.exactOptional(z.record(z.string(), z.string())),
-});
-
-/**
- * Build the composed outputSchema for an HTTP trigger.
- *
- * - `responseBody` omitted → default envelope (all optional, strict).
- * - `responseBody` declared → `body` becomes required and its content
- *   follows the declared schema. The envelope stays strict; tenants opt
- *   into body-passthrough by applying `.loose()` on the declared schema
- *   themselves.
- */
-function buildHttpOutputSchema(responseBody: z.ZodType | undefined): z.ZodType {
-	if (responseBody === undefined) {
-		return httpTriggerOutputSchema;
-	}
-	return z.object({
-		status: z.exactOptional(z.number()),
-		body: responseBody,
-		headers: z.exactOptional(z.record(z.string(), z.string())),
-	});
+	readonly body: Body | undefined;
+	readonly responseBody: z.ZodType | undefined;
 }
 
 function httpTrigger<
@@ -312,20 +282,7 @@ function httpTrigger<
 	if (typeof config.handler !== "function") {
 		throw new Error("httpTrigger(...) is missing a handler function");
 	}
-	const bodySchema = (config.body ?? z.unknown()) as B extends z.ZodType
-		? B
-		: z.ZodUnknown;
 	const method = config.method ?? "POST";
-
-	const compositeSchema = z.object({
-		body: bodySchema,
-		headers: z.record(z.string(), z.string()),
-		url: z.string(),
-		method: z.string().default(method),
-	});
-
-	const outputSchema = buildHttpOutputSchema(config.responseBody);
-
 	const handler = config.handler;
 	const callable = function callTrigger(
 		payload: Parameters<typeof handler>[0],
@@ -334,9 +291,8 @@ function httpTrigger<
 	};
 	attachTriggerMetadata(callable, {
 		method,
-		body: bodySchema,
-		inputSchema: compositeSchema,
-		outputSchema,
+		body: config.body,
+		responseBody: config.responseBody,
 	});
 	return callable as unknown as HttpTrigger<
 		B extends z.ZodType ? B : z.ZodUnknown
@@ -345,9 +301,8 @@ function httpTrigger<
 
 interface TriggerMetadata {
 	method: string;
-	body: z.ZodType;
-	inputSchema: z.ZodType;
-	outputSchema: z.ZodType;
+	body: z.ZodType | undefined;
+	responseBody: z.ZodType | undefined;
 }
 
 function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {
@@ -386,12 +341,7 @@ interface CronTrigger {
 	readonly [CRON_TRIGGER_BRAND]: true;
 	readonly schedule: string;
 	readonly tz: string;
-	readonly inputSchema: z.ZodType;
-	readonly outputSchema: z.ZodType;
 }
-
-const cronTriggerInputSchema = z.object({});
-const cronTriggerOutputSchema = z.unknown();
 
 // The factory runs in two environments:
 //   - On the build host (Node), where `Intl.DateTimeFormat()` returns the
@@ -439,18 +389,6 @@ function cronTrigger<const S extends string>(config: {
 	});
 	Object.defineProperty(callable, "tz", {
 		value: resolvedTz,
-		enumerable: true,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "inputSchema", {
-		value: cronTriggerInputSchema,
-		enumerable: true,
-		writable: false,
-		configurable: false,
-	});
-	Object.defineProperty(callable, "outputSchema", {
-		value: cronTriggerOutputSchema,
 		enumerable: true,
 		writable: false,
 		configurable: false,

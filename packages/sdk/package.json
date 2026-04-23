@@ -3,6 +3,7 @@
 	"description": "SDK for authoring workflow-engine workflows: DSL, triggers, event schemas, Zod re-exports.",
 	"version": "0.1.0",
 	"type": "module",
+	"sideEffects": false,
 	"license": "MIT",
 	"repository": {
 		"type": "git",
