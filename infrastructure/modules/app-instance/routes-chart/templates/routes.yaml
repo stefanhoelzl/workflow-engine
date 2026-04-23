@@ -1,17 +1,6 @@
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: redirect-root
-  namespace: {{ .Release.Namespace }}
-spec:
-  redirectRegex:
-    regex: ^https?://[^/]+/$
-    replacement: /trigger
-    permanent: false
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
   name: redirect-to-https
   namespace: {{ .Release.Namespace }}
 spec:
@@ -19,54 +8,13 @@ spec:
     scheme: https
     permanent: true
 ---
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: not-found
-  namespace: {{ .Release.Namespace }}
-spec:
-  errors:
-    status:
-      - "404"
-    service:
-      name: {{ .Values.appServiceName }}
-      port: {{ .Values.appServicePort }}
-    query: /static/404.html
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: server-error
-  namespace: {{ .Release.Namespace }}
-spec:
-  errors:
-    status:
-      - "500-599"
-    service:
-      name: traefik
-      namespace: traefik
-      port: 80
-    query: /error
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: inline-error
-  namespace: {{ .Release.Namespace }}
-spec:
-  plugin:
-    inline-response:
-      matchers:
-        - path:
-            abs: /error
-          statusCode: 500
-          response:
-            raw: {{ .Values.errorPageHtml | quote }}
----
 # All authentication and authorization is performed by the app itself (see
 # packages/runtime/src/auth/*). Traefik terminates TLS and routes; it does
-# not gate requests on auth. The `/auth/*` prefix hosts the OAuth handshake
-# and logout endpoints served by the app.
+# not gate requests on auth. The app's Hono router owns every URL prefix —
+# /dashboard, /trigger, /auth, /login, /static, /webhooks, /livez, /api,
+# the root redirect /, and the 404/5xx responses for unknown paths. The
+# main IngressRoute is therefore a single catch-all on the `websecure`
+# entrypoint.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -76,74 +24,8 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/dashboard`)
-      kind: Rule
-      middlewares:
-        - name: not-found
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/trigger`)
-      kind: Rule
-      middlewares:
-        - name: not-found
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/auth`)
-      kind: Rule
-      middlewares:
-        - name: not-found
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && Path(`/login`)
-      kind: Rule
-      middlewares:
-        - name: not-found
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && Path(`/`)
-      kind: Rule
-      middlewares:
-        - name: redirect-root
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/static`)
-      kind: Rule
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/webhooks`)
-      kind: Rule
-      middlewares:
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && Path(`/livez`)
-      kind: Rule
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
-      kind: Rule
-      middlewares:
-        - name: server-error
-      services:
-        - name: {{ .Values.appServiceName }}
-          port: {{ .Values.appServicePort }}
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/`)
       kind: Rule
-      priority: 1
-      middlewares:
-        - name: not-found
       services:
         - name: {{ .Values.appServiceName }}
           port: {{ .Values.appServicePort }}
@@ -151,23 +33,6 @@ spec:
   tls:
     secretName: {{ .Values.tlsSecretName }}
   {{- end }}
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: error-pages
-  namespace: {{ .Release.Namespace }}
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: Path(`/error`)
-      kind: Rule
-      middlewares:
-        - name: inline-error
-      services:
-        - name: noop@internal
-          kind: TraefikService
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

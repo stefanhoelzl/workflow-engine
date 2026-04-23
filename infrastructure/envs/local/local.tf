@@ -118,10 +118,9 @@ module "s2" {
 module "traefik" {
   source = "../../modules/traefik"
 
-  service_type        = "NodePort"
-  node_port_https     = 30443
-  error_page_5xx_html = file("${path.module}/../../templates/error-5xx.html")
-  baseline            = module.baseline
+  service_type    = "NodePort"
+  node_port_https = 30443
+  baseline        = module.baseline
 }
 
 module "cert_manager" {
@@ -162,8 +161,6 @@ module "app_instance" {
     domain     = each.value.domain
     https_port = each.value.https_port
   }
-
-  error_page_5xx_html = file("${path.module}/../../templates/error-5xx.html")
 
   tls = {
     secretName = "${each.key}-workflow-engine-tls"

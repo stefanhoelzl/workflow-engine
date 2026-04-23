@@ -204,6 +204,7 @@ async function init() {
 	//    inside the dashboard/trigger middleware factories.
 	const server = createServer(
 		config.port,
+		{ logger: runtimeLogger },
 		secureHeadersMiddleware({
 			// biome-ignore lint/style/noProcessEnv: entry-point config read
 			localDeployment: process.env.LOCAL_DEPLOYMENT,

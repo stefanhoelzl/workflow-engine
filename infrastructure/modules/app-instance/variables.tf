@@ -88,11 +88,6 @@ variable "local_deployment" {
   description = "When true, sets LOCAL_DEPLOYMENT=1 on the pod so the runtime skips HSTS."
 }
 
-variable "error_page_5xx_html" {
-  type        = string
-  description = "HTML content for the 5xx error page served by the inline-response plugin"
-}
-
 variable "baseline" {
   type = object({
     rfc1918_except   = list(string)

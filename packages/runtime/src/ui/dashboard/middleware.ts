@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { tenantSet, validateTenant } from "../../auth/tenant.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
+import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderFlamegraph } from "./flamegraph.js";
@@ -235,6 +236,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	if (deps.sessionMw) {
 		app.use("*", deps.sessionMw);
 	}
+	app.notFound(createNotFoundHandler());
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 

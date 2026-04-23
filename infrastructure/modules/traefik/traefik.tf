@@ -46,11 +46,6 @@ variable "wait" {
   description = "Wait for Helm release to be ready"
 }
 
-variable "error_page_5xx_html" {
-  type        = string
-  description = "HTML content for the 5xx error page served by the inline-response plugin"
-}
-
 variable "baseline" {
   type = object({
     rfc1918_except = list(string)
@@ -134,67 +129,6 @@ resource "helm_release" "traefik" {
         allowPrivilegeEscalation = false
         readOnlyRootFilesystem   = true
         capabilities             = { drop = ["ALL"] }
-      }
-
-      experimental = {
-        localPlugins = {
-          inline-response = {
-            type       = "localPath"
-            moduleName = "github.com/tuxgal/traefik_inline_response"
-            mountPath  = "/plugins-local"
-            volumeName = "plugins-local"
-          }
-        }
-      }
-
-      # Allow IngressRoutes / Middlewares to reference services in other
-      # namespaces — required by the `server-error` middleware in
-      # `modules/app-instance/routes-chart` which targets `traefik/traefik`
-      # from the workflow-engine namespace.
-      providers = {
-        kubernetesCRD = {
-          allowCrossNamespace = true
-        }
-      }
-
-      deployment = {
-        initContainers = [{
-          name    = "load-inline-response-plugin"
-          image   = "busybox:1.36"
-          command = ["/bin/sh", "-c"]
-          args = [<<-EOT
-            set -eu
-            mkdir -p /plugins-local/src/github.com/tuxgal/traefik_inline_response
-            tar -xzf /src/plugin.tar.gz \
-              --strip-components=1 \
-              -C /plugins-local/src/github.com/tuxgal/traefik_inline_response
-          EOT
-          ]
-          securityContext = {
-            runAsUser                = 65532
-            runAsNonRoot             = true
-            allowPrivilegeEscalation = false
-            readOnlyRootFilesystem   = true
-            capabilities             = { drop = ["ALL"] }
-            seccompProfile           = { type = "RuntimeDefault" }
-          }
-          volumeMounts = [
-            { name = "plugin-src", mountPath = "/src", readOnly = true },
-            { name = "plugins-local", mountPath = "/plugins-local" },
-          ]
-        }]
-        additionalVolumes = [
-          {
-            name = "plugin-src"
-            configMap = {
-              name = kubernetes_config_map_v1.traefik_plugin.metadata[0].name
-            }
-          },
-          {
-            name     = "plugins-local"
-            emptyDir = {}
-          },
-        ]
       }
 
       service = length(var.service_annotations) > 0 ? { annotations = var.service_annotations } : {}

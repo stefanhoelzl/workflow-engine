@@ -19,7 +19,6 @@ resource "helm_release" "routes" {
     tlsSecretName  = var.tls != null ? var.tls.secretName : ""
     certIssuerName = var.active_issuer_name != null ? var.active_issuer_name : ""
     certName       = "${var.instance_name}-workflow-engine"
-    errorPageHtml  = var.error_page_5xx_html
   })]
 
   depends_on = [terraform_data.traefik_ready, terraform_data.cert_manager_ready]

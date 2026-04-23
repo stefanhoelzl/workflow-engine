@@ -1,40 +1,4 @@
-# Static Assets Specification
-
-## Purpose
-
-Provide a static file serving middleware for project CSS, JavaScript, and vendor dependencies at the `/static/*` URL prefix.
-## Requirements
-### Requirement: Static file serving middleware
-
-The system SHALL provide a static file middleware that serves project files and vendor dependencies at the `/static/*` URL prefix.
-
-#### Scenario: Serving a project CSS file
-- **WHEN** a GET request is made to `/static/workflow-engine.css`
-- **THEN** the response body contains the CSS file content, `Content-Type` is `text/css`, and `Cache-Control` is `public, max-age=31536000, immutable`
-
-#### Scenario: Serving a vendor JS file
-- **WHEN** a GET request is made to `/static/alpine.js`
-- **THEN** the response body contains the Alpine.js library content and `Content-Type` is `application/javascript`
-
-#### Scenario: Unknown file extension is not served
-- **WHEN** a `.ts` file exists in the static directory
-- **THEN** it is not served because `.ts` is not in the content type whitelist
-
-#### Scenario: Non-existent static file
-- **WHEN** a GET request is made to `/static/nonexistent.js`
-- **THEN** the response status is 404
-
-### Requirement: Build-time file discovery
-
-The static middleware SHALL discover project files in its directory at build time via `import.meta.glob` and load vendor dependencies via explicit `?raw` imports.
-
-#### Scenario: Adding a new CSS file
-- **WHEN** a new `.css` file is added to `src/ui/static/`
-- **THEN** it is automatically served at `/static/<filename>` after the next build without code changes
-
-#### Scenario: Content type whitelist
-- **WHEN** files are discovered by the glob
-- **THEN** only files with extensions matching the content type whitelist (`.css`, `.js`, `.html`) are served
+## MODIFIED Requirements
 
 ### Requirement: 404 HTML page
 
@@ -110,3 +74,8 @@ The page SHALL rely on the same design tokens (`:root` custom properties for col
 - **WHEN** the user's system is in dark mode and the error page is rendered
 - **THEN** the page SHALL render with the dark theme tokens without requiring any inline CSS
 
+## REMOVED Requirements
+
+### Requirement: Error middleware does not apply to static assets or oauth2
+**Reason**: The premise is gone. The Traefik `not-found` and `server-error` error middlewares are deleted in this change, so there is no longer any infra-level error interception that could apply to `/static/*`. The `/oauth2/*` prefix was already removed in an earlier change (oauth2-proxy was replaced by app-side GitHub auth). The new behaviour for `/static/*` misses is expressed by the `http-server` spec: they flow through the global `notFound` handler and are content-negotiated via the `Accept` header — browser-typed URLs render the styled 404, asset-loader requests (whose `Accept` never includes `text/html`) receive JSON, which asset loaders discard just as they would discard a plain-text 404.
+**Migration**: None required for deployed systems — the requirement described infra behaviour that no longer exists. Consumers of the spec should reference `http-server` §"Unmatched routes return 404" for the new content-negotiation rule.

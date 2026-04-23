@@ -116,9 +116,8 @@ module "traefik" {
       ]
     })
   }
-  wait                = true
-  error_page_5xx_html = file("${path.module}/../../templates/error-5xx.html")
-  baseline            = module.baseline
+  wait     = true
+  baseline = module.baseline
 }
 
 module "cert_manager" {
