@@ -306,11 +306,12 @@ function submitTrigger(btn) {
 
 	setLoading(btn, true);
 
-	fetch(url, {
-		method,
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(formValue),
-	})
+	const init = { method, headers: { "Content-Type": "application/json" } };
+	if (method !== "GET" && method !== "HEAD") {
+		init.body = JSON.stringify(formValue);
+	}
+
+	fetch(url, init)
 		.then(async (r) => {
 			const text = await r.text();
 			setLoading(btn, false);

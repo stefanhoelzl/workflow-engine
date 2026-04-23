@@ -150,6 +150,16 @@ Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources
 
 - `pnpm validate` must pass (runs lint, format check, type check, and tests)
 
+## Example workflows
+
+`workflows/src/demo.ts` is the canonical authoring reference. Keep it in sync with any SDK surface or sandbox-stdlib change. It showcases:
+
+- SDK: `defineWorkflow({env})`, `env()`, `action` composition (action calls action), `httpTrigger` (GET + POST, zod body, `.meta({example})`), `cronTrigger` (schedule + explicit IANA tz), `manualTrigger` (zod `input` + `output`)
+- sandbox-stdlib: `fetch`, `crypto.subtle`, `crypto.randomUUID`, `setTimeout`, `URL` / `URLSearchParams`, `console`
+- Failure path: `fail` manualTrigger invokes the `boom` action which throws, so the dashboard renders a real `action.error` / `trigger.error` pair.
+
+Every non-failure trigger dispatches the same `runDemo` orchestrator so any kind can exercise the full surface. A change that touches SDK surface or workflow-authoring ergonomics without updating `demo.ts` is incomplete.
+
 ## Code Conventions
 
 - All relative imports must use `.js` extensions (required by `verbatimModuleSyntax`)
@@ -157,6 +167,7 @@ Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources
 - Factory functions over classes. Closures for private state.
 - Named exports only. Separate `export type {}` from value exports. Exception: data-only modules whose filename already conveys identity (e.g. `skip.ts`) may use `export default`.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
+- SDK surface or sandbox-stdlib changes must land with a matching update to `workflows/src/demo.ts` — see `## Example workflows`.
 
 ## Security Invariants
 
