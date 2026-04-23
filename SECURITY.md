@@ -782,29 +782,51 @@ surface (the app). All authentication and authorization runs in-process;
 the oauth2-proxy sidecar and Traefik forward-auth chain are no longer
 part of the trust chain.
 
-Two transports share the same allow-list predicate (`allow(user, auth)`)
-and the same `UserContext` shape:
+Authentication is organized as an `AuthProvider` registry
+(`packages/runtime/src/auth/providers/{types,registry,github,local,index}.ts`).
+Each provider implements the `AuthProvider` interface in `providers/types.ts`:
+`renderLoginSection`, `mountAuthRoutes`, `resolveApiIdentity`, and
+`refreshSession`. The registry is built at startup by
+`buildProviderFactories` in `providers/index.ts` by bucketing `AUTH_ALLOW`
+entries by provider id (first colon-separated token) and handing each
+factory its entries. Two providers ship: `github` (always available) and
+`local` (only registered when `process.env.LOCAL_DEPLOYMENT === "1"`). The
+old `Auth = { mode: "disabled" | "open" | "restricted" }` discriminated
+union, the `authOpen` `ContextVariableMap` flag, and the `__DISABLE_AUTH__`
+sentinel are gone — the only state is "which providers are registered,
+with which entries."
+
+Two transports share the same registry and the same `UserContext` shape:
 
 1. **UI routes** (`/dashboard`, `/trigger`) — authenticated by
    `sessionMiddleware` (`packages/runtime/src/auth/session-mw.ts`),
-   which reads an AEAD-sealed `session` cookie (iron-webcrypto) and
-   re-evaluates `AUTH_ALLOW` on every soft-TTL refresh (10 min). The
-   OAuth handshake lives in-app at `/login` (provider-agnostic sign-in
-   page), `/auth/github/signin`,
-   `/auth/github/callback`, and `POST /auth/logout`
-   (`packages/runtime/src/auth/routes.ts`).
-2. **API** (`/api/*`) — authenticated by `bearerUserMiddleware` +
-   `authorizeMiddleware`
-   (`packages/runtime/src/auth/bearer-user.ts`,
-   `packages/runtime/src/api/auth.ts`). The Bearer token is validated
-   against `https://api.github.com/user` + `/user/orgs`; the same
-   `allow()` predicate gates access. Three modes
-   (`restricted` / `disabled` / `open`) resolved at startup from
-   `AUTH_ALLOW` — see "Mitigations" below.
+   which reads an AEAD-sealed `session` cookie (iron-webcrypto). The
+   sealed `SessionPayload` carries a required
+   `provider: "github" | "local"` field that selects which provider's
+   `refreshSession` runs on soft-TTL refresh (10 min). The login page
+   lives at `/login` and iterates the registry, rendering one section
+   per provider (GitHub button, local-user dropdown form). Per-provider
+   handshake routes (`/auth/github/signin`, `/auth/github/callback`,
+   `POST /auth/local/signin`) are mounted by each provider's
+   `mountAuthRoutes(subApp)`; `POST /auth/logout` is provider-agnostic.
+2. **API** (`/api/*`) — authenticated by `apiAuthMiddleware`
+   (`packages/runtime/src/api/auth.ts`), which reads the
+   `X-Auth-Provider: <id>` request header, looks up the provider in the
+   registry, and dispatches to `provider.resolveApiIdentity(req)`. Each
+   provider owns its own `Authorization` parsing: `github` expects a
+   Bearer token validated against
+   `https://api.github.com/user` + `/user/orgs`; `local` expects
+   `Authorization: User <name>` and validates against its bucketed
+   entries. Missing / unknown `X-Auth-Provider`, or provider returning
+   `undefined`, → 401 (identical response body).
 
 Both transports produce `UserContext = { name, mail, orgs }` (no
-`teams`; no consumer reads them). Tenant scope for writes runs through
-`isMember(user, tenant)`, unchanged from prior revisions.
+`teams`; no consumer reads them). Empty `AUTH_ALLOW` → empty registry →
+`/login` renders with no provider sections and nothing can authenticate
+(`/api/*` → 401 unconditionally; UI → redirect to an empty `/login`).
+This replaces the former "disabled mode" rejection-of-all-requests
+behaviour — same end result, different mechanism. Tenant scope for writes
+runs through `isMember(user, tenant)`, unchanged from prior revisions.
 
 **Manual-fire dispatch through `/trigger/*`.** The operator "fire this
 trigger now" UI submits every kind (HTTP, cron, future kinds) to the
@@ -827,8 +849,8 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 |---|---|---|---|
 | `/dashboard`, `/trigger` | Sealed session cookie + soft-TTL refresh | App `sessionMiddleware` (mounted inside each UI middleware factory) | Any new authenticated UI prefix must receive `sessionMw` in its factory deps |
 | `/login` | None (public page) | App `loginPageMiddleware` | Renders the sign-in page; never auto-redirects to an IdP. The "Sign in with GitHub" button links to `/auth/github/signin`. |
-| `/auth/*` (`/auth/github/signin`, `/auth/github/callback`, `POST /auth/logout`) | None; these ARE the OAuth handshake surface | App `authMiddleware` | Handlers must validate the `auth_state` cookie on callback and must sanitize `returnTo` to same-origin |
-| `/api/*` | GitHub Bearer token + `allow()` predicate; three modes | `bearerUserMiddleware` → `authorizeMiddleware`, always registered | `disabled` (fail-closed 401) when `AUTH_ALLOW` unset; `open` requires the explicit `__DISABLE_AUTH__` sentinel |
+| `/auth/*` (per-provider `mountAuthRoutes`, plus provider-agnostic `POST /auth/logout`) | None; these ARE the handshake surface | App `authMiddleware` | Providers mount their own routes under `/auth/<id>/`. GitHub handlers must validate the `auth_state` cookie on callback and must sanitize `returnTo` to same-origin; local handlers validate the submitted `name` against the provider's bucketed entries |
+| `/api/*` | `X-Auth-Provider` header + provider-specific credential | `apiAuthMiddleware` dispatches to registered provider's `resolveApiIdentity` | Empty registry / missing `X-Auth-Provider` / unknown id / provider returns `undefined` → 401 (identical body) |
 | `/webhooks/*` | **None (PUBLIC)** | Intentional | See §3 |
 | `/static/*`, `/livez`, `/` | None | Intentional | Must stay non-sensitive |
 
@@ -840,7 +862,7 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 | A2 | Attacker steals a Bearer token and accesses `/api/*` | Spoofing |
 | A3 | Attacker forges the session cookie or state cookie without the in-memory sealing password | Spoofing |
 | A4 | A new authenticated route is added but not wired through `sessionMiddleware` | EoP |
-| A5 | Deployment sets the `__DISABLE_AUTH__` sentinel in production (intended for local dev only), opting the whole app into `open` mode | EoP |
+| A5 | Deployment sets `LOCAL_DEPLOYMENT=1` in production and/or adds a `local:<name>` entry to the prod `AUTH_ALLOW` GH variable, registering the LocalProvider in production | EoP |
 | A6 | Attacker with access to the browser cookie store exfiltrates the sealed session and replays it against the app | Spoofing |
 | A7 | GitHub API is unreachable; sessions past their soft TTL fail refresh and the dashboard returns 302 → login → fails | DoS |
 | A8 | GitHub API rate-limits the application's IP (no caching of `/api/*` token validation) | DoS |
@@ -876,27 +898,41 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   §5 R-I*).
   (`packages/runtime/src/auth/key.ts`)
 - **AUTH_ALLOW grammar, provider-prefixed and fail-fast.** Env value:
-  `github:user:<login>;github:org:<org>;…`. Unknown provider prefixes
-  cause `createConfig` to throw at startup with a diagnostic
-  identifying the offending token — the runtime fails to boot rather
-  than silently ignoring the entry.
-  (`packages/runtime/src/auth/allowlist.ts`,
+  `github:user:<login>,github:org:<org>,local:<name>,local:<name>:<org>|<org>,…`.
+  Top-level separator is `,`; the local provider uses `|` as its
+  org sub-separator. Entries are bucketed by provider id (first
+  colon-separated token) and handed to that provider's factory.
+  Unknown provider ids cause `createConfig` to throw at startup with a
+  diagnostic identifying the offending token — the runtime fails to
+  boot rather than silently ignoring the entry. When
+  `process.env.LOCAL_DEPLOYMENT` is unset (prod/staging), the local
+  factory is not in the registry, so any `local:*` entry surfaces as
+  the same `unknown provider "local"` error.
+  (`packages/runtime/src/auth/providers/index.ts`,
   `packages/runtime/src/config.ts`)
-- **Unified `allow(user, auth)` predicate.** A single function, called
-  from both `authorizeMiddleware` (on `/api/*` after
-  `bearerUserMiddleware`) and `sessionMiddleware` (on `/dashboard`,
-  `/trigger` at login and on every soft-TTL refresh). Login matching
-  is case-sensitive exact equality; org matching is "any
-  `user.orgs` ∩ `auth.orgs` ≠ ∅".
-  (`packages/runtime/src/auth/allowlist.ts`)
-- **AUTH_ALLOW re-evaluated on every successful soft-TTL refresh.** The
-  stale-session branch of `sessionMiddleware` re-fetches `/user` and
-  `/user/orgs`, rebuilds `UserContext`, and re-runs `allow()`. A user
-  removed from `AUTH_ALLOW` or from an allow-listed org loses access
-  within ≤10 min (A10), bounded by the soft TTL rather than the 7 d
-  hard TTL. On rejection the cookie is cleared and an `auth_flash`
-  cookie is set so the next `/login` renders the deny
-  banner.
+- **Per-provider membership predicate, owned by each provider.** Each
+  provider's factory closes over its bucketed entries and produces a
+  provider instance whose `resolveApiIdentity` / `refreshSession`
+  return `undefined` for non-matching callers. There is no central
+  `allow(user, auth)` function. GitHub matches by case-sensitive login
+  or `user.orgs ∩ entry.orgs ≠ ∅`; local matches by name and copies
+  the entry's declared orgs into `UserContext.orgs`.
+  (`packages/runtime/src/auth/providers/github.ts`,
+  `packages/runtime/src/auth/providers/local.ts`)
+- **Session-refresh re-validation via provider.** The stale-session
+  branch of `sessionMiddleware` reads the `provider` field from the
+  sealed `SessionPayload`, looks up the provider in the registry, and
+  calls `provider.refreshSession(payload)`. The github provider
+  re-fetches `/user` and `/user/orgs`, rebuilds `UserContext`, and
+  re-checks its bucketed entries; the local provider re-matches the
+  name against its static entries (no network roundtrip). A GitHub user
+  removed from the bucketed entries loses access within ≤10 min (A10),
+  bounded by the soft TTL rather than the 7 d hard TTL. On rejection
+  the cookie is cleared and an `auth_flash` cookie is set so the next
+  `/login` renders the deny banner. Local sessions never expire due to
+  upstream changes — they only re-validate against the static
+  bucketed entries loaded at boot; removing a `local:` entry requires a
+  restart to take effect.
 - **Fail-closed refresh.** Any non-OK response from GitHub on the
   refresh path (401, 403, 5xx, timeout, DNS error) clears the session
   cookie and 302s to `/login`. No grace period; during a
@@ -906,28 +942,33 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   so private-org `AUTH_ALLOW=github:org:<priv>` entries resolve
   correctly. No broader scope is requested.
   (`packages/runtime/src/auth/github-api.ts`)
-- **Fail-closed three-mode middleware.** Unset `AUTH_ALLOW` → every
-  request is rejected 401 on `/api/*` and every `/dashboard`/`/trigger`
-  request too. Sentinel `__DISABLE_AUTH__` → open mode (warn-logged at
-  startup; dev-only). A missing config **never** silently opens the
-  app.
+- **Fail-closed empty registry.** Unset / empty `AUTH_ALLOW` → empty
+  registry → `/api/*` rejects every request 401 (the dispatcher finds
+  no provider for any `X-Auth-Provider` value, including a missing one)
+  and `/login` renders with zero provider sections (nothing can
+  authenticate, so `/dashboard` and `/trigger` are unreachable). A
+  missing config **never** silently opens the app. The `local`
+  provider factory only enters the registry when
+  `process.env.LOCAL_DEPLOYMENT === "1"`; in prod/staging it is
+  physically absent regardless of `AUTH_ALLOW` contents.
 - **Allow-list enumeration protection.** All negative outcomes on
   `/api/*` return `401 Unauthorized` with an identical body — missing
-  header, invalid token, GitHub error, and allow-list miss are
-  indistinguishable to the caller.
+  `X-Auth-Provider`, unknown provider id, missing/invalid credential,
+  upstream provider error, and allow-list miss are indistinguishable
+  to the caller.
   (`packages/runtime/src/api/auth.ts`)
 - **Tenant membership enforcement via `requireTenantMember()` middleware
   (R-A12).** A single Hono middleware factory is the sole enforcement
   point for the `:tenant` authorization invariant. It validates
   `<tenant>` against the identifier regex
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), then — unless the request-scoped
-  `authOpen` flag is set — evaluates
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), then evaluates
   `isMember(user, tenant) := user.orgs.includes(tenant) || user.name === tenant`.
   Both failures return `404 Not Found` with an identical JSON body
   (`{"error":"Not Found"}`) sourced from each sub-app's
   `app.notFound(...)` handler. Teams are not consulted (and are no
-  longer part of `UserContext`). The identifier regex check is NOT
-  skipped in open mode — only the membership check is. The middleware
+  longer part of `UserContext`). The membership check applies to every
+  authenticated caller regardless of which provider minted the
+  identity — there is no longer an "open mode" bypass. The middleware
   is mounted on `/api/workflows/:tenant` and on the `/trigger`-basePath
   sub-app's `/:tenant/*` subtree. Inline `validateTenant` +
   `isMember`/`tenantSet` checks in individual route handlers are
@@ -939,15 +980,18 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   `packages/runtime/src/ui/trigger/middleware.ts`)
 - **No code path reads `X-Auth-Request-*` (A13 eliminated).** The
   `headerUserMiddleware` reader and all references to those headers
-  were deleted. `bearerUserMiddleware` reads only `Authorization`;
+  were deleted. `apiAuthMiddleware` reads only the
+  `X-Auth-Provider` header and then delegates `Authorization` /
+  credential parsing to the selected provider's `resolveApiIdentity`;
   `sessionMiddleware` reads only the `session` cookie. Forged
   `X-Auth-Request-*` headers have no handler to trust them. The
   Traefik `strip-auth-headers` middleware is therefore removed — no
   upstream produces those headers, and no downstream consumes them.
-- **Startup-logged auth mode.** The runtime emits a log record at init
-  identifying `auth.mode`, at `warn` level for `disabled` or `open`,
-  `info` for `restricted`. Restricted mode logs user + org counts only
-  (not the entries themselves).
+- **Startup-logged registered providers.** The runtime emits a log
+  record at init listing the registered provider ids and the per-provider
+  entry counts (not the entries themselves). When `LOCAL_DEPLOYMENT=1`
+  is set, the presence of `local` in the registry is logged at `warn`
+  level to make accidental enablement visible.
   (`packages/runtime/src/main.ts`)
 - **POST-only logout.** `POST /auth/logout` clears the session cookie
   and 302s to `/`. Any other method returns 405 — prevents cross-site
@@ -964,12 +1008,12 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-A1 | The `__DISABLE_AUTH__` sentinel exists for local development; a production deployment that sets it puts the whole app into `open` mode. The `warn`-level startup log is the only guard against accidental production use. | A5 | Mitigated by operational discipline and startup logs |
+| R-A1 | The `local` provider exists for local development; a production deployment that sets both `LOCAL_DEPLOYMENT=1` AND adds a `local:<name>` entry to the prod `AUTH_ALLOW` GH variable would register it. Prod terraform never sets `LOCAL_DEPLOYMENT`, prod's `AUTH_ALLOW_PROD` is GitHub-only, and the runtime `warn`-logs the `local` provider at startup. Both gates are visible and require an explicit operator action to breach. | A5 | Mitigated by operational discipline, registry gate, and startup logs |
 | R-A2 | No caching of `/api/*` token validation — every `/api/*` request makes a live GitHub API call. UI soft-TTL refresh is 10 min; the API has no equivalent. Exposes the application to GitHub availability and rate limits (A7, A8). | Medium | Design follow-up |
 | R-A3 | Session refresh is fail-closed: during a GitHub outage, `/dashboard` and `/trigger` become unreachable for any session past its 10-minute soft TTL. Accepted tradeoff — matches `/api/*` behaviour and avoids serving stale allow-list decisions. | Medium | Accepted |
 | R-A5 | Stale-allowlist exposure is bounded by the soft TTL (≤10 min) rather than the hard TTL (7 d), because `allow()` is re-evaluated on every refresh. An attacker with a just-removed session cookie retains access for at most one soft-TTL window. | Low | Accepted |
 | R-A6 | No explicit request / response logging policy for `Authorization` headers, session cookies, or the `GITHUB_OAUTH_CLIENT_SECRET`. Nothing guarantees they are redacted from pino logs. | Medium | Verify logger config |
-| R-A7 | GitHub OAuth is the only identity provider — no local fallback, no MFA enforcement beyond what GitHub offers. | Accepted | By design |
+| R-A7 | GitHub OAuth is the only production identity provider — no MFA enforcement beyond what GitHub offers. The `local` provider is development-only and gated on `LOCAL_DEPLOYMENT=1`. | Accepted | By design |
 | R-A8 | The dashboard has state-changing forms (upload, logout). Logout is POST-only; uploads go to `/api/*` which is Bearer-only (no cookie accepted). CSRF surface on the cookie path is limited to logout; CSRF surface on `/api/*` does not exist because the cookie is never read there. | Low | Accepted |
 | R-A9 | Pod restart (deploy, eviction, OOM) invalidates every session because the sealing password is in-memory. Deploy-frequency–driven forced re-logins are the UX cost. Moving the password to a shared mechanism is required before `replicas > 1` (A15). | Low | Accepted |
 | R-A10 | The sealed session cookie carries the GitHub access token at rest in the browser. HttpOnly prevents JS access; the scope granted is `user:email read:org`, so the blast radius of a cookie exfiltration is read-only user metadata. A caller who extracts the browser cookie store can act as the user for up to 7 d (hard TTL) or until they refresh against GitHub. | Medium | Accepted |
@@ -983,10 +1027,12 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
    `dashboardMiddleware` and `triggerMiddleware` is the enforcement
    hook; a new factory that forgets to mount it leaves the prefix
    unauthenticated.
-2. **NEVER add a route under `/api/` without the Bearer middleware
-   chain (`bearerUserMiddleware` + `authorizeMiddleware`) in front of
-   it.** The `apiMiddleware` factory in `packages/runtime/src/api/index.ts`
-   mounts both for every `/api/*` path; new `/api/*` routes MUST go
+2. **NEVER add a route under `/api/` without `apiAuthMiddleware` in
+   front of it.** The `apiMiddleware` factory in
+   `packages/runtime/src/api/index.ts` mounts it for every `/api/*`
+   path; the middleware reads `X-Auth-Provider`, looks up the provider
+   in the registry, and delegates credential validation to
+   `provider.resolveApiIdentity(req)`. New `/api/*` routes MUST go
    inside that factory.
 3. **NEVER accept the session cookie on `/api/*`.** The cookie is
    UI-only by design; accepting it on the API would open a CSRF
@@ -1003,32 +1049,56 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 6. **NEVER persist the JWE sealing password** (disk, K8s Secret, log,
    telemetry, env var). It must be regenerated in-memory on every
    process start.
-7. **NEVER skip the `allow()` re-evaluation on the soft-TTL refresh
-   path.** The bound on stale-allowlist exposure (R-A5) depends on
-   that re-evaluation happening on every successful refresh.
+7. **NEVER skip the provider's `refreshSession` call on the soft-TTL
+   refresh path.** The `sessionMiddleware` reads `payload.provider`,
+   looks up the provider in the registry, and MUST call
+   `refreshSession` to re-validate. The bound on stale-allowlist
+   exposure for GitHub (R-A5) depends on that re-evaluation happening
+   on every successful refresh. (Local sessions re-validate against
+   static boot-time entries only; this is accepted dev-only behaviour.)
 8. **NEVER add an `AUTH_ALLOW` token whose `<provider>` is not one of
-   the registered providers.** Unknown prefixes MUST fail startup
-   config validation with a diagnostic identifying the token.
-9. **NEVER add a silent short-circuit for auth in development.** The
-   only supported dev bypass is the explicit `__DISABLE_AUTH__`
-   sentinel, which opts into `open` mode *visibly* (warn log at
-   startup). Do not introduce new implicit bypasses (env checks,
-   `NODE_ENV`, debug flags).
-10. **When adding a new config gate for auth enforcement**, make it
-    fail-closed by default and visible at startup (warn-level log when
-    the weaker mode is active). Document the gate and its modes in
-    this section.
-11. **Bearer tokens and session cookies live at different transports
-    of the same identity model.** Share `UserContext`, share
-    `allow()`, share `isMember()` — but never accept one where the
-    other is expected.
-12. **NEVER read or list workflow or invocation-event data without a
+    the registered providers.** Unknown prefixes MUST fail startup
+    config validation with a diagnostic identifying the token. The
+    `local` provider is only registered when
+    `process.env.LOCAL_DEPLOYMENT === "1"`, so `local:*` entries
+    outside local dev produce the same `unknown provider "local"`
+    diagnostic as a typo.
+9. **NEVER register the `LocalProvider` unless
+    `process.env.LOCAL_DEPLOYMENT === "1"`.** The gate lives in the
+    `buildProviderFactories` function in
+    `packages/runtime/src/auth/providers/index.ts`; do not bypass it
+    for tests. Tests that need an authenticated baseline MUST use the
+    `withTestUser` helper from
+    `packages/runtime/src/auth/test-helpers.ts`, which stubs
+    `c.set("user", …)` directly without touching the registry.
+10. **NEVER persist a `SessionPayload`
+    (`packages/runtime/src/auth/session-cookie.ts`) without a required
+    `provider: "github" | "local"` field.** Old payloads lacking the
+    field MUST fail to unseal so the request gets redirected to
+    `/login` and re-authenticates — this is what bounds the blast
+    radius of the schema change to a one-time forced re-login.
+11. **NEVER trust the `X-Auth-Provider` request header as identity.** It
+    only selects which provider's `resolveApiIdentity` is invoked. The
+    selected provider's `resolveApiIdentity` MUST validate the actual
+    credential (Bearer token for `github`, `User <name>` scheme for
+    `local`) before returning a `UserContext`. A request with a valid
+    `X-Auth-Provider` and no / wrong credential MUST be rejected 401.
+12. **NEVER add a silent short-circuit for auth in development.** The
+    only supported dev authentication path is the `local` provider,
+    gated on `LOCAL_DEPLOYMENT=1` and requiring an explicit
+    `local:<name>` entry in `AUTH_ALLOW`. Do not introduce new implicit
+    bypasses (env checks, `NODE_ENV`, debug flags).
+13. **Credentials and session cookies live at different transports
+    of the same identity model.** Share `UserContext`, share the
+    registry, share `isMember()` — but never accept one transport's
+    credential where the other is expected.
+14. **NEVER read or list workflow or invocation-event data without a
     tenant scope.** `EventStore.query(tenant)` is the only scoped read
     API. For workflows, route through `WorkflowRegistry`, which is
     keyed by tenant. Format validation of a tenant identifier (the
     regex) is NOT a permission check and does NOT substitute for a
     tenant-scoped query (A14, R-A14, §1 I-T2).
-13. **NEVER enforce the `:tenant` authorization invariant inline in a
+15. **NEVER enforce the `:tenant` authorization invariant inline in a
     route handler.** `requireTenantMember()` is the sole enforcement
     point and MUST be mounted on every subpath that accepts a
     `:tenant` path parameter (today: `/api/workflows/:tenant` and
@@ -1039,16 +1109,20 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 
 ### File references
 
-- Allowlist parser + predicate: `packages/runtime/src/auth/allowlist.ts`
+- AuthProvider interfaces: `packages/runtime/src/auth/providers/types.ts`
+- Provider registry: `packages/runtime/src/auth/providers/registry.ts`
+- Provider factory wiring + `LOCAL_DEPLOYMENT` gate: `packages/runtime/src/auth/providers/index.ts`
+- GitHub provider: `packages/runtime/src/auth/providers/github.ts`
+- Local provider (dev-only): `packages/runtime/src/auth/providers/local.ts`
+- Test helper (stubs `c.set("user", …)` without registry): `packages/runtime/src/auth/test-helpers.ts`
 - In-memory sealing password: `packages/runtime/src/auth/key.ts`
-- Session cookie seal/unseal + TTLs: `packages/runtime/src/auth/session-cookie.ts`
+- Session cookie seal/unseal + TTLs (payload includes `provider`): `packages/runtime/src/auth/session-cookie.ts`
 - State cookie seal/unseal + returnTo sanitiser: `packages/runtime/src/auth/state-cookie.ts`
 - Flash cookie seal/unseal: `packages/runtime/src/auth/flash-cookie.ts`
-- Session middleware (state machine): `packages/runtime/src/auth/session-mw.ts`
-- OAuth handshake routes: `packages/runtime/src/auth/routes.ts`
+- Session middleware (dispatches refresh via `payload.provider`): `packages/runtime/src/auth/session-mw.ts`
+- Provider-agnostic `/login` + `POST /auth/logout`: `packages/runtime/src/auth/routes.ts`
 - GitHub API client (typed): `packages/runtime/src/auth/github-api.ts`
-- Bearer middleware: `packages/runtime/src/auth/bearer-user.ts`
-- API authorize middleware: `packages/runtime/src/api/auth.ts`
+- API auth dispatcher (`X-Auth-Provider` → provider.resolveApiIdentity): `packages/runtime/src/api/auth.ts`
 - Tenant predicate + regex: `packages/runtime/src/auth/tenant.ts`
 - Tenant-authorization middleware: `packages/runtime/src/auth/tenant-mw.ts`
 - Deny banner template: `packages/runtime/src/ui/auth/login-page.ts`

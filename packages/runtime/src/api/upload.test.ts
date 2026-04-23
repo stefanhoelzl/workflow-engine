@@ -3,7 +3,8 @@ import { createGzip } from "node:zlib";
 import { Hono } from "hono";
 import { pack as tarPack } from "tar-stream";
 import { describe, expect, it, vi } from "vitest";
-import type { Auth } from "../auth/allowlist.js";
+import { buildRegistry } from "../auth/providers/index.js";
+import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
 import type { TriggerSource } from "../triggers/source.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
@@ -15,6 +16,9 @@ import { apiMiddleware } from "./index.js";
 // Covers 422 (manifest/unknown-kind), 400 (backend {ok:false}), 500
 // (backend throws), and 400+infra_errors (both). See openspec
 // changes/generalize-trigger-backends/specs/action-upload/spec.md.
+//
+// Auth: tests use the local provider with `local:acme`, so a user named
+// `acme` is a member of the `acme` tenant (tenant === user.name path).
 
 const logger = {
 	info: vi.fn(),
@@ -28,8 +32,6 @@ const logger = {
 const stubExecutor: Executor = {
 	invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
 };
-
-const OPEN_AUTH: Auth = { mode: "open" };
 
 const VALID_MANIFEST = {
 	workflows: [
@@ -110,16 +112,25 @@ function stubBackend(
 }
 
 function mountWithBackends(backends: readonly TriggerSource[]) {
+	const authRegistry = buildRegistry("local:acme", [localProviderFactory], {
+		secureCookies: false,
+		nowFn: () => Date.now(),
+	});
 	const registry = createWorkflowRegistry({
 		logger,
 		executor: stubExecutor,
 		backends,
 	});
-	const middleware = apiMiddleware({ auth: OPEN_AUTH, registry, logger });
+	const middleware = apiMiddleware({ authRegistry, registry, logger });
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
 	return app;
 }
+
+const AUTH_HEADERS: Record<string, string> = {
+	"x-auth-provider": "local",
+	authorization: "User acme",
+};
 
 async function postUpload(
 	app: Hono,
@@ -129,7 +140,7 @@ async function postUpload(
 	return app.request(`/api/workflows/${tenant}`, {
 		method: "POST",
 		body: body as unknown as BodyInit,
-		headers: { "Content-Type": "application/gzip" },
+		headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
 	});
 }
 
@@ -145,15 +156,13 @@ describe("POST /api/workflows/:tenant — error classification", () => {
 		const res = await app.request("/api/workflows/acme", {
 			method: "POST",
 			body: new Uint8Array([1, 2, 3]),
-			headers: { "Content-Type": "application/gzip" },
+			headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
 		});
 		// Invalid archive body -> 415
 		expect(res.status).toBe(415);
 	});
 
 	it("returns 422 when the manifest references a Zod-unknown trigger type", async () => {
-		// `type: "mail"` is not in the Zod discriminated union — this fails
-		// at manifest parse time with an invalid-union error (422).
 		const app = mountWithBackends([stubBackend("http", "ok")]);
 		const badManifest = {
 			workflows: [
@@ -181,9 +190,6 @@ describe("POST /api/workflows/:tenant — error classification", () => {
 	});
 
 	it("returns 422 when a Zod-valid kind has no registered backend (runtime allowlist)", async () => {
-		// The manifest parses fine (cron is in the discriminated union), but
-		// this deployment registers only an HTTP backend — the registry
-		// rejects the cron trigger before any backend.reconfigure is called.
 		const app = mountWithBackends([stubBackend("http", "ok")]);
 		const cronOnlyManifest = {
 			workflows: [

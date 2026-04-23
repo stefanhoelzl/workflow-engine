@@ -20,6 +20,11 @@ const uploadCommand = defineCommand({
 			type: "string",
 			description: "Target tenant (falls back to WFE_TENANT env var)",
 		},
+		user: {
+			type: "string",
+			description:
+				"Local dev provider user (mutually exclusive with GITHUB_TOKEN)",
+		},
 	},
 	async run({ args }) {
 		// biome-ignore lint/style/noProcessEnv: reading WFE_TENANT is the documented fallback
@@ -34,6 +39,7 @@ const uploadCommand = defineCommand({
 				cwd: process.cwd(),
 				url: args.url,
 				tenant,
+				...(args.user ? { user: args.user } : {}),
 			});
 			process.exit(failed === 0 ? 0 : 1);
 		} catch (error) {

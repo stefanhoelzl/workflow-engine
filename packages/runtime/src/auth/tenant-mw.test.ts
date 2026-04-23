@@ -5,7 +5,6 @@ import type { UserContext } from "./user-context.js";
 
 interface AppOptions {
 	readonly user?: UserContext;
-	readonly authOpen?: boolean;
 }
 
 function mkApp(options: AppOptions = {}) {
@@ -13,9 +12,6 @@ function mkApp(options: AppOptions = {}) {
 	app.use("/workflows/:tenant", async (c, next) => {
 		if (options.user) {
 			c.set("user", options.user);
-		}
-		if (options.authOpen) {
-			c.set("authOpen", true);
 		}
 		await next();
 	});
@@ -67,29 +63,19 @@ describe("requireTenantMember", () => {
 		expect(body).toEqual({ error: "Not Found" });
 	});
 
-	it("returns JSON 404 when user is missing and authOpen is not set", async () => {
+	it("returns JSON 404 when user is missing", async () => {
 		const app = mkApp();
 		const { status, body } = await post(app, "/workflows/acme");
 		expect(status).toBe(404);
 		expect(body).toEqual({ error: "Not Found" });
 	});
 
-	it("bypasses membership check when authOpen is set", async () => {
-		const app = mkApp({ authOpen: true });
-		const { status, body } = await post(app, "/workflows/anything-valid");
-		expect(status).toBe(200);
-		expect(body).toEqual({ ok: true, tenant: "anything-valid" });
-	});
-
-	it("still rejects invalid identifier when authOpen is set", async () => {
-		const app = mkApp({ authOpen: true });
-		const { status, body } = await post(app, "/workflows/..");
-		expect(status).toBe(404);
-		expect(body).toEqual({ error: "Not Found" });
-	});
-
 	it("rejects regex-invalid tenant even when it matches a user org literally", async () => {
-		const weird: UserContext = { name: "alice", mail: "", orgs: ["bad:group"] };
+		const weird: UserContext = {
+			name: "alice",
+			mail: "",
+			orgs: ["bad:group"],
+		};
 		const app = mkApp({ user: weird });
 		const { status } = await post(app, "/workflows/bad:group");
 		expect(status).toBe(404);

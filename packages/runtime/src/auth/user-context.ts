@@ -7,11 +7,6 @@ interface UserContext {
 declare module "hono" {
 	interface ContextVariableMap {
 		user: UserContext;
-		// Set by `/api/*` Bearer middleware and the `/dashboard` and `/trigger`
-		// session middleware when `auth.mode === "open"`. Signals that
-		// membership checks should be skipped. The regex-based tenant-
-		// identifier validation in handlers is NOT skipped.
-		authOpen: boolean;
 	}
 }
 

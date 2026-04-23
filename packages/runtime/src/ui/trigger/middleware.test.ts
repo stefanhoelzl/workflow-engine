@@ -551,52 +551,6 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 	});
 });
 
-describe("triggerMiddleware: dispatch in open-mode dev", () => {
-	function mountOpen(registry: WorkflowRegistry) {
-		// Open-mode dev: the session middleware flags authOpen so
-		// requireTenantMember short-circuits its membership check. No user
-		// is attached, so /trigger/* should still dispatch and emit
-		// source=manual with the user field omitted.
-		const openMw: MiddlewareHandler = async (c, next) => {
-			c.set("authOpen", true);
-			await next();
-		};
-		const m = triggerMiddleware({ registry, sessionMw: openMw });
-		const app = new Hono();
-		app.all(m.match, m.handler);
-		if (m.match.endsWith("/*")) {
-			app.all(m.match.slice(0, -2), m.handler);
-		}
-		return app;
-	}
-
-	it("open-mode fire emits source=manual with a 'local' sentinel user", async () => {
-		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
-		const registry = makeStubRegistry([
-			makeCronStub(
-				"t0",
-				"billing",
-				{ name: "daily", schedule: "0 9 * * *", tz: "UTC" },
-				fire,
-			),
-		]);
-		const app = mountOpen(registry);
-		const res = await app.request("/trigger/t0/billing/daily", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: "{}",
-		});
-		expect(res.status).toBe(200);
-		// Sentinel attribution keeps the dashboard chip's tooltip
-		// non-empty on open-mode fires; `mail` is "" to signal no real
-		// identity without having to add a third discriminator value.
-		expect(fire.mock.calls[0]?.[1]).toEqual({
-			source: "manual",
-			user: { name: "local", mail: "" },
-		});
-	});
-});
-
 describe("triggerMiddleware: cross-tenant authorization", () => {
 	it("returns 404 without calling fire when user is not a member of the target tenant", async () => {
 		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
