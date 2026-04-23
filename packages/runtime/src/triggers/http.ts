@@ -98,6 +98,9 @@ async function parseBody(
 ): Promise<
 	{ ok: true; value: unknown } | { ok: false; issues: ValidationIssue[] }
 > {
+	if (c.req.method === "GET" || c.req.method === "HEAD") {
+		return { ok: true, value: null };
+	}
 	try {
 		const value = await c.req.json();
 		return { ok: true, value };
