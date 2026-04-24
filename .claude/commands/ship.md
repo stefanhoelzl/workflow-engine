@@ -106,8 +106,23 @@ Resolve conflicts manually, then run `/ship` again.
 
 ### 3. Run checks
 
+Install dependencies first so validation sees packages added by commits
+that came in via the preceding rebase. Without this, a fresh `main`
+dependency (e.g. a new nodemailer import in stdlib) surfaces as a TS
+`Cannot find module` error during `pnpm validate` even though the root
+cause is just stale `node_modules`.
+
 ```bash
+pnpm install
 pnpm validate
+```
+
+If `pnpm install` fails: ABORT with:
+
+```
+Cannot ship: `pnpm install` failed.
+
+Fix the dependency issue, then run `/ship` again.
 ```
 
 If validation fails: ABORT with:
