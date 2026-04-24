@@ -112,24 +112,18 @@ resource "helm_release" "traefik" {
 
   values = [yamlencode(merge(
     {
-      # ServiceAccount token MUST remain mounted for Traefik (SECURITY.md §5
-      # R-I11 accepted residual risk). Traefik's controller watches `Ingress`
-      # / `IngressRoute` / `Middleware` CRDs via the K8s API and therefore
-      # requires a bearer token for the in-cluster API server. The RBAC
+      # Traefik's controller watches `Ingress` / `IngressRoute` / `Middleware`
+      # CRDs via the K8s API and requires a mounted ServiceAccount token. The
+      # chart defaults `serviceAccount.automountServiceAccountToken = true`
+      # (chart v39.0.7 schema rejects the key under `serviceAccount`, so we
+      # cannot set it explicitly — we rely on the chart default). The RBAC
       # granted to the chart-managed ServiceAccount is scoped by the upstream
       # Traefik chart to ingress/route/middleware resources; see chart
-      # `values.yaml` under `rbac.*`.
-      #
-      # App and s2 pods, by contrast, set `automountServiceAccountToken:
-      # false` (see modules/app-instance/workloads.tf and object-storage/s2).
-      #
-      # Setting `serviceAccount.automountServiceAccountToken = true`
-      # explicitly documents intent — do NOT flip to `false` without a plan
-      # to proxy kube-api access via a sidecar.
-      serviceAccount = {
-        automountServiceAccountToken = true
-      }
-
+      # `values.yaml` under `rbac.*`. App and s2 pods set
+      # `automountServiceAccountToken: false` at the pod spec level (see
+      # modules/app-instance/workloads.tf and object-storage/s2). Tracked as
+      # accepted residual risk SECURITY.md §5 R-I11 with a follow-up to audit
+      # the chart's ClusterRole for least privilege.
       podSecurityContext = {
         runAsGroup          = 65532
         runAsNonRoot        = true
