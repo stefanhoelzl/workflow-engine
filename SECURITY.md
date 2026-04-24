@@ -344,18 +344,25 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
 | S10 | Guest code calls a validated host function with a payload that triggers prototype pollution on the host (`__proto__`, `constructor.prototype`) | Tampering / EoP |
 | S11 | Guest code calls the locked `__sdk.dispatchAction` with `(validActionName, realInput, fakeHandler, fakeCompleter)` to emit `action.*` audit events that misrepresent which handler actually ran | Tampering (audit-log integrity) |
 | S12 | A private descriptor fails to auto-delete in phase 3 (descriptor marked `public: true` by mistake, or phase-3 iteration is skipped) and becomes reachable from guest code | Elevation of privilege (audit-log forging / bridge access) |
-| S13 | A plugin with long-lived state (timers, pending `Callable`s) fails to clean up on `onRunFinished`, leaking state across runs or firing callbacks after the run closed | Tampering (cross-run state) / DoS |
+| S13 | A plugin retains worker-side long-lived state (timers Map, pending `Callable`s, in-flight fetch handles) that is not captured by the per-run VM snapshot+restore — failing to clean up on `onRunFinished` leaks state across runs or fires callbacks after the run closed. Guest-visible state is structurally reset by snapshot-restore; S13 now covers only the host-side residue. | Tampering (cross-run state) / DoS |
 | S14 | A plugin emits events with hand-crafted `seq`/`ref`/`ts` values (via direct `bridge.*` mutation) that desync the event stream | Tampering (audit-log integrity) |
 
 ### Mitigations (current)
 
-- **Fresh VM per workflow module load.** `QuickJS.create()` is called
-  once when the workflow registry first instantiates a workflow. The VM
-  is reused across `run()` calls for that workflow; module-level state
-  persists across runs within the same workflow. Cross-workflow leakage
-  is physically impossible: separate VMs, separate WASM memory, separate
-  env records.
-  (`packages/sandbox/src/index.ts`, `packages/runtime/src/sandbox-store.ts`)
+- **Fresh VM per workflow module load, fresh guest state per run.**
+  `QuickJS.create()` is called once when the workflow registry first
+  instantiates a workflow. At end of init the worker takes one
+  `vm.snapshot()`; after each `run()` completes, the VM is disposed and
+  restored from that snapshot asynchronously, off the critical path. The
+  next `run()` awaits any in-flight restore. Guest-visible state
+  (`globalThis` writes, module-level `let`/`const` mutations, closures
+  over mutable module state) therefore SHALL NOT persist across runs.
+  Worker-side plugin state on `PluginSetup` (timers Map, compiled ajv
+  validators, etc.) is NOT in the snapshot and persists for the
+  sandbox's lifetime; plugins remain responsible for per-run cleanup
+  via R-4. Cross-workflow leakage remains physically impossible:
+  separate VMs, separate WASM memory, separate env records.
+  (`packages/sandbox/src/worker.ts`, `packages/runtime/src/sandbox-store.ts`)
 - **Private-by-default descriptors (S12).** Every
   `GuestFunctionDescription` defaults to `public: false`. After phase-2
   source evaluation, the sandbox iterates registered descriptors and

@@ -5,6 +5,7 @@ import {
 	type JSValueHandle,
 	QuickJS,
 	type QuickJSOptions,
+	type Snapshot,
 } from "quickjs-wasi";
 import { base64Extension } from "quickjs-wasi/base64";
 import { cryptoExtension } from "quickjs-wasi/crypto";
@@ -13,8 +14,15 @@ import { headersExtension } from "quickjs-wasi/headers";
 import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
 import { urlExtension } from "quickjs-wasi/url";
 import { type Bridge, createBridge } from "./bridge-factory.js";
-import { installGuestFunctions } from "./guest-function-install.js";
-import type { PluginDescriptor } from "./plugin.js";
+import {
+	buildGuestFunctionHandler,
+	installGuestFunctions,
+} from "./guest-function-install.js";
+import type {
+	GuestFunctionDescription,
+	PluginDescriptor,
+	SandboxContext,
+} from "./plugin.js";
 import {
 	collectGuestFunctions,
 	type FrameTracker,
@@ -129,14 +137,39 @@ interface PluginLifecycleState {
 	readonly order: readonly string[];
 }
 
+interface GuestFunctionEntry {
+	readonly pluginName: string;
+	readonly descriptor: GuestFunctionDescription;
+}
+
+type RunState = "ready" | "running" | "restoring" | "dead";
+
 interface SandboxState {
 	vm: QuickJS;
 	bridge: Bridge;
 	currentAbort: AbortController | null;
 	pluginLifecycle: PluginLifecycleState;
+	// Snapshot-restore bookkeeping. After init, the worker takes one
+	// `vm.snapshot()` from which every subsequent run restores — giving
+	// the guest fresh state per run. `guestFunctions` and `createOptions`
+	// are frozen at init and replayed on every restore so the rebuilt
+	// VM re-registers host callbacks and receives the same extensions.
+	readonly snapshotRef: Snapshot;
+	readonly guestFunctions: readonly GuestFunctionEntry[];
+	readonly createOptions: QuickJSOptions;
+	runState: RunState;
+	restorePromise: Promise<void> | null;
 }
 
 let state: SandboxState | null = null;
+
+// Test seam: when set, the next async restore after a run throws
+// synthetically. Used by the `Restore failure marks sandbox dead`
+// scenario — see packages/sandbox/src/sandbox.test.ts. Read once at
+// module load; adds a constant-time branch in the restore path.
+const TEST_RESTORE_FAIL =
+	// biome-ignore lint/style/noProcessEnv: scoped test-only seam
+	process.env.WFE_TEST_SANDBOX_RESTORE_FAIL === "1";
 
 // --- WASI overrides: observability for clock/random + fd_write routing ---
 
@@ -200,7 +233,7 @@ async function handleInit(
 		// Phases 1a–3: plugin-boot pipeline. Performs the full
 		// `worker() → source eval → private-delete` sequence before user-
 		// source evaluation.
-		const pluginLifecycle = await runPluginBootPipeline(
+		const bootResult = await runPluginBootPipeline(
 			vm,
 			bridge,
 			msg.pluginDescriptors,
@@ -210,11 +243,21 @@ async function handleInit(
 		const evalResult = vm.evalCode(msg.source, msg.filename);
 		evalResult.dispose();
 
+		// Capture the post-init VM snapshot. Every subsequent `handleRun`
+		// restores from this snapshot off the critical path, so guest
+		// state from one run does not leak into the next.
+		const snapshotRef = vm.snapshot();
+
 		state = {
 			vm,
 			bridge,
 			currentAbort: null,
-			pluginLifecycle,
+			pluginLifecycle: bootResult.pluginLifecycle,
+			snapshotRef,
+			guestFunctions: bootResult.guestFunctions,
+			createOptions,
+			runState: "ready",
+			restorePromise: null,
 		};
 
 		post({ type: "ready" });
@@ -233,11 +276,16 @@ async function handleInit(
 	}
 }
 
+interface BootPipelineResult {
+	readonly pluginLifecycle: PluginLifecycleState;
+	readonly guestFunctions: readonly GuestFunctionEntry[];
+}
+
 async function runPluginBootPipeline(
 	vm: QuickJS,
 	bridge: Bridge,
 	descriptors: readonly PluginDescriptor[],
-): Promise<PluginLifecycleState> {
+): Promise<BootPipelineResult> {
 	const ctx = createSandboxContext(bridge);
 	// Phase 1a — module load + plugin.worker().
 	const loaded = await loadPluginModules(descriptors, defaultPluginLoader);
@@ -284,7 +332,81 @@ async function runPluginBootPipeline(
 	};
 	runPhasePrivateDelete(phase1, binder);
 
-	return { setups: phase1.setups, order: phase1.order };
+	return {
+		pluginLifecycle: { setups: phase1.setups, order: phase1.order },
+		guestFunctions,
+	};
+}
+
+// Rebuild the host-side identities that are NOT captured in a quickjs-wasi
+// snapshot: a fresh Bridge bound to the restored VM, a fresh
+// SandboxContext, and host-callback registrations for every guest function
+// descriptor. Returns the new bridge + ctx so the caller can swap them
+// onto the shared state. `wasiState.bridge` is reassigned as a side effect
+// so the WASI factory's clock/random overrides route events through the
+// new bridge.
+function rebindRestoredVm(
+	vm: QuickJS,
+	guestFunctions: readonly GuestFunctionEntry[],
+): { bridge: Bridge; ctx: SandboxContext } {
+	const bridge = createBridge(vm, wasiState.anchor);
+	wasiState.bridge = bridge;
+	bridge.setSink((event) => post({ type: "event", event }));
+	const ctx = createSandboxContext(bridge);
+	for (const { descriptor } of guestFunctions) {
+		vm.registerHostCallback(
+			descriptor.name,
+			buildGuestFunctionHandler(vm, ctx, descriptor),
+		);
+	}
+	return { bridge, ctx };
+}
+
+// Kick off the async post-run restore. Returns the in-flight promise so
+// the next `handleRun` can await it before dispatch. Dispose order: bridge
+// first (detaches sink callbacks), then VM. Re-seed the WASI monotonic
+// anchor so the restored VM's `performance.now()` starts near zero again.
+// On failure, rethrow via queueMicrotask: the worker's `port.on("message",
+// ...)` handler doesn't observe this promise, so we route errors through
+// Node's unhandled-rejection path which terminates the worker and fires
+// `onDied` on main.
+function startRestore(currentState: SandboxState): Promise<void> {
+	if (currentState.restorePromise) {
+		return currentState.restorePromise;
+	}
+	const promise = (async () => {
+		if (TEST_RESTORE_FAIL) {
+			throw new Error(
+				"injected restore failure (WFE_TEST_SANDBOX_RESTORE_FAIL)",
+			);
+		}
+		currentState.bridge.dispose();
+		currentState.vm.dispose();
+		wasiState.anchor.ns = perfNowNs();
+		const newVm = await QuickJS.restore(
+			currentState.snapshotRef,
+			currentState.createOptions,
+		);
+		const { bridge: newBridge } = rebindRestoredVm(
+			newVm,
+			currentState.guestFunctions,
+		);
+		currentState.vm = newVm;
+		currentState.bridge = newBridge;
+		currentState.runState = "ready";
+		currentState.restorePromise = null;
+	})();
+	// Surface failures through Node's uncaught-error pathway so the worker
+	// dies and main fires onDied. The awaiting handleRun will also see the
+	// rejection, but the rethrow is what terminates the worker.
+	promise.catch((err) => {
+		currentState.runState = "dead";
+		queueMicrotask(() => {
+			throw err;
+		});
+	});
+	currentState.restorePromise = promise;
+	return promise;
 }
 
 /**
@@ -491,6 +613,16 @@ async function handleRun(
 		});
 		return;
 	}
+
+	// If a previous run's async restore is still in flight, wait for it.
+	// Errors in the restore propagate here and out through the outer
+	// try/catch in the message handler — which also rethrows via
+	// queueMicrotask, terminating the worker so main's `onDied` fires.
+	if (state.runState === "restoring" && state.restorePromise) {
+		await state.restorePromise;
+	}
+	state.runState = "running";
+
 	const { vm, bridge, pluginLifecycle } = state;
 
 	bridge.resetAnchor();
@@ -520,6 +652,12 @@ async function handleRun(
 	}
 	finalizeRun({ state, runInput, payload, tracker });
 	post({ type: "done", payload });
+
+	// Fire-and-forget async restore so the next run sees fresh guest state.
+	// Errors within `startRestore` are surfaced via queueMicrotask to
+	// terminate the worker (see rationale in startRestore's comment).
+	state.runState = "restoring";
+	startRestore(state);
 }
 
 port.on("message", (msg: MainToWorker) => {
