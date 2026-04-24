@@ -21,8 +21,11 @@ type Fire = (
 	dispatch?: DispatchMeta,
 ) => Promise<InvokeResult<unknown>>;
 
+const DEFAULT_REPO = "r0";
+
 interface StubEntry {
 	readonly owner: string;
+	readonly repo: string;
 	readonly workflowName: string;
 	readonly triggerName: string;
 	readonly triggerEntry: TriggerEntry;
@@ -32,34 +35,50 @@ interface StubEntry {
 function makeStubRegistry(entries: StubEntry[]): WorkflowRegistry {
 	const byKey = new Map<string, TriggerEntry>();
 	for (const e of entries) {
-		byKey.set(`${e.owner}/${e.workflowName}/${e.triggerName}`, e.triggerEntry);
+		byKey.set(
+			`${e.owner}/${e.repo}/${e.workflowName}/${e.triggerName}`,
+			e.triggerEntry,
+		);
 	}
 	const flatWorkflowEntries = entries.map((e) => e.workflowEntry);
-	// De-duplicate by (owner, workflow.name) so list() returns one entry
-	// per workflow even if the workflow has multiple stub triggers.
+	// De-duplicate by (owner, repo, workflow.name) so list() returns one
+	// entry per workflow even if the workflow has multiple stub triggers.
 	const deduped: WorkflowEntry[] = [];
 	const seen = new Set<string>();
 	for (const we of flatWorkflowEntries) {
-		const key = `${we.owner}/${we.workflow.name}`;
+		const key = `${we.owner}/${we.repo}/${we.workflow.name}`;
 		if (seen.has(key)) {
 			continue;
 		}
 		seen.add(key);
 		deduped.push(we);
 	}
+	const ownerSet = new Set(entries.map((e) => e.owner));
+	const pairSet = new Set(entries.map((e) => `${e.owner}/${e.repo}`));
 	return {
 		get size() {
 			return entries.length;
 		},
-		owners: () => Array.from(new Set(entries.map((e) => e.owner))),
-		list: (owner?: string) =>
-			owner === undefined
-				? deduped
-				: deduped.filter((we) => we.owner === owner),
+		owners: () => Array.from(ownerSet),
+		repos: (owner: string) =>
+			Array.from(
+				new Set(entries.filter((e) => e.owner === owner).map((e) => e.repo)),
+			),
+		pairs: () =>
+			Array.from(pairSet).map((s) => {
+				const [owner, repo] = s.split("/") as [string, string];
+				return { owner, repo };
+			}),
+		list: (owner?: string, repo?: string) =>
+			deduped.filter(
+				(we) =>
+					(owner === undefined || we.owner === owner) &&
+					(repo === undefined || we.repo === repo),
+			),
 		registerOwner: async () => ({ ok: false, error: "unused" }),
 		recover: async () => undefined,
-		getEntry: (owner, workflowName, triggerName) =>
-			byKey.get(`${owner}/${workflowName}/${triggerName}`),
+		getEntry: (owner, repo, workflowName, triggerName) =>
+			byKey.get(`${owner}/${repo}/${workflowName}/${triggerName}`),
 		dispose: () => undefined,
 	};
 }
@@ -104,11 +123,13 @@ function makeHttpStub(
 	};
 	return {
 		owner,
+		repo: DEFAULT_REPO,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
 			owner,
+			repo: DEFAULT_REPO,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -153,11 +174,13 @@ function makeCronStub(
 	};
 	return {
 		owner,
+		repo: DEFAULT_REPO,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
 			owner,
+			repo: DEFAULT_REPO,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -213,11 +236,13 @@ function makeManualStub(
 	};
 	return {
 		owner,
+		repo: DEFAULT_REPO,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
 			owner,
+			repo: DEFAULT_REPO,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -275,14 +300,14 @@ describe("triggerMiddleware: page rendering", () => {
 		]);
 
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		// Workflow name surfaces as a group heading, not inside the card label.
 		expect(body).toContain('class="trigger-group-title">cronitor</h2>');
 		expect(body).toContain('<span class="trigger-name">onCronitorEvent</span>');
 		expect(body).toContain(
-			'data-trigger-url="/trigger/t0/cronitor/onCronitorEvent"',
+			'data-trigger-url="/trigger/t0/r0/cronitor/onCronitorEvent"',
 		);
 		expect(body).toContain('data-trigger-method="POST"');
 		expect(body).toContain('{"type":"object"');
@@ -292,7 +317,7 @@ describe("triggerMiddleware: page rendering", () => {
 	it("renders an empty-state when no triggers are registered", async () => {
 		const registry = makeStubRegistry([]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain("No triggers registered");
@@ -307,12 +332,12 @@ describe("triggerMiddleware: page rendering", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
 		// The card must carry the Submit button but no form container.
-		expect(body).toContain('data-trigger-url="/trigger/t0/noinput/ping"');
+		expect(body).toContain('data-trigger-url="/trigger/t0/r0/noinput/ping"');
 		// The formless card MUST NOT emit a .form-container div.
-		const cardStart = body.indexOf('id="trigger-t0-noinput-ping"');
+		const cardStart = body.indexOf('id="trigger-t0-r0-noinput-ping"');
 		const cardEnd = body.indexOf("</details>", cardStart);
 		const card = body.slice(cardStart, cardEnd);
 		expect(card).not.toContain('class="form-container"');
@@ -331,9 +356,9 @@ describe("triggerMiddleware: page rendering", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
-		const cardStart = body.indexOf('id="trigger-t0-withinput-ping"');
+		const cardStart = body.indexOf('id="trigger-t0-r0-withinput-ping"');
 		const cardEnd = body.indexOf("</details>", cardStart);
 		const card = body.slice(cardStart, cardEnd);
 		expect(card).toContain('class="form-container"');
@@ -344,9 +369,9 @@ describe("triggerMiddleware: page rendering", () => {
 			makeHttpStub("t0", "wf", { name: "post", method: "POST" }),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
-		expect(body).toContain("POST /webhooks/t0/wf/post");
+		expect(body).toContain("POST /webhooks/t0/r0/wf/post");
 		expect(body).not.toContain("trigger-meta-copy");
 	});
 
@@ -356,7 +381,7 @@ describe("triggerMiddleware: page rendering", () => {
 			makeHttpStub("t0", "alpha", { name: "a", method: "GET" }),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
 		const alphaGroupIdx = body.indexOf(
 			'class="trigger-group-title">alpha</h2>',
@@ -391,7 +416,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 			),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/demo/onPing", {
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
 			method: "POST",
 			body: JSON.stringify({ x: 42 }),
 			headers: {
@@ -409,7 +434,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 		expect(fire.mock.calls[0]?.[0]).toEqual({
 			body: { x: 42 },
 			headers: {},
-			url: "/webhooks/t0/demo/onPing",
+			url: "/webhooks/t0/r0/demo/onPing",
 			method: "POST",
 		});
 		// Authenticated session → dispatch.source = "manual" with user.
@@ -433,7 +458,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/demo/onPing", {
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
 			method: "POST",
 			body: JSON.stringify({ x: "not-a-number" }),
 			headers: {
@@ -453,7 +478,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/demo/nonexistent", {
+		const res = await app.request("/trigger/t0/r0/demo/nonexistent", {
 			method: "POST",
 			body: "{}",
 			headers: {
@@ -473,7 +498,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 			makeHttpStub("t0", "demo", { name: "onPing", method: "POST" }, fire),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/demo/onPing", {
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
 			method: "POST",
 			body: "{}",
 			headers: {
@@ -495,13 +520,13 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain('class="trigger-group-title">billing</h2>');
 		expect(body).toContain('<span class="trigger-name">daily</span>');
 		expect(body).toContain('title="cron"');
-		expect(body).toContain('data-trigger-url="/trigger/t0/billing/daily"');
+		expect(body).toContain('data-trigger-url="/trigger/t0/r0/billing/daily"');
 		expect(body).toContain('data-trigger-method="POST"');
 		expect(body).toContain("0 9 * * *");
 		expect(body).toContain("UTC");
@@ -521,7 +546,7 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 			),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/billing/daily", {
+		const res = await app.request("/trigger/t0/r0/billing/daily", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
 			body: "{}",
@@ -542,7 +567,7 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 			),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/billing/daily", {
+		const res = await app.request("/trigger/t0/r0/billing/daily", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
 			body: "{}",
@@ -569,7 +594,7 @@ describe("triggerMiddleware: cross-owner authorization", () => {
 		const app = mount(registry);
 		// AUTH_HEADERS seed `orgs: ["t0"]` in the stub sessionMw; owner
 		// "other" is not in that set so requireOwnerMember must 404.
-		const res = await app.request("/trigger/other/billing/daily", {
+		const res = await app.request("/trigger/other/r0/billing/daily", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
 			body: "{}",
@@ -585,14 +610,14 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 			makeManualStub("t0", "ops", { name: "rerun" }),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const body = await res.text();
 		expect(body).toContain('class="trigger-group-title">ops</h2>');
 		expect(body).toContain('<span class="trigger-name">rerun</span>');
 		expect(body).toContain('title="manual"');
 		expect(body).toContain("\u{1F464}"); // bust in silhouette
-		expect(body).toContain('data-trigger-url="/trigger/t0/ops/rerun"');
+		expect(body).toContain('data-trigger-url="/trigger/t0/r0/ops/rerun"');
 		expect(body).toContain('data-trigger-method="POST"');
 	});
 
@@ -601,10 +626,10 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 			makeManualStub("t0", "ops", { name: "rerun" }),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
 		// Extract the rerun card and check it contains no form-container div.
-		const cardStart = body.indexOf('id="trigger-t0-ops-rerun"');
+		const cardStart = body.indexOf('id="trigger-t0-r0-ops-rerun"');
 		expect(cardStart).toBeGreaterThan(-1);
 		const cardEnd = body.indexOf("</details>", cardStart);
 		const card = body.slice(cardStart, cardEnd);
@@ -624,9 +649,9 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 			}),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/", { headers: AUTH_HEADERS });
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
 		const body = await res.text();
-		const cardStart = body.indexOf('id="trigger-t0-ops-reprocessorder"');
+		const cardStart = body.indexOf('id="trigger-t0-r0-ops-reprocessorder"');
 		expect(cardStart).toBeGreaterThan(-1);
 		const cardEnd = body.indexOf("</details>", cardStart);
 		const card = body.slice(cardStart, cardEnd);
@@ -651,7 +676,7 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 		const m = triggerMiddleware({ registry, sessionMw: nonMemberSessionMw });
 		const app = new Hono();
 		app.all(m.match, m.handler);
-		const res = await app.request("/trigger/t0/ops/rerun", {
+		const res = await app.request("/trigger/t0/r0/ops/rerun", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: "{}",
@@ -682,7 +707,7 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 			),
 		]);
 		const app = mount(registry);
-		const res = await app.request("/trigger/t0/ops/reprocessOrder", {
+		const res = await app.request("/trigger/t0/r0/ops/reprocessOrder", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
 			body: JSON.stringify({ id: "abc" }),

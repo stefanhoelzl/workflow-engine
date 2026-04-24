@@ -74,9 +74,9 @@ async function mount(options: MountOptions = {}) {
 	const source = createHttpTriggerSource();
 	const owner = options.owner ?? "t0";
 	if (options.entries) {
-		await source.reconfigure(owner, options.entries);
+		await source.reconfigure(owner, "r0", options.entries);
 	} else {
-		await source.reconfigure(owner, [
+		await source.reconfigure(owner, "r0", [
 			makeEntry(options.descriptor ?? makeDescriptor(), options.fire),
 		]);
 	}
@@ -111,17 +111,17 @@ describe("createHttpTriggerSource: contract", () => {
 		const d1 = makeDescriptor({ name: "a" });
 		const d2 = makeDescriptor({ name: "b" });
 		const source = createHttpTriggerSource();
-		await source.reconfigure("t0", [makeEntry(d1)]);
-		await source.reconfigure("t0", [makeEntry(d2)]);
+		await source.reconfigure("t0", "r0", [makeEntry(d1)]);
+		await source.reconfigure("t0", "r0", [makeEntry(d2)]);
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
-		const miss = await app.request("/webhooks/t0/w/a", {
+		const miss = await app.request("/webhooks/t0/r0/w/a", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
 		expect(miss.status).toBe(404);
-		const hit = await app.request("/webhooks/t0/w/b", {
+		const hit = await app.request("/webhooks/t0/r0/w/b", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -131,18 +131,22 @@ describe("createHttpTriggerSource: contract", () => {
 
 	it("reconfigure for one owner does not affect another", async () => {
 		const source = createHttpTriggerSource();
-		await source.reconfigure("t0", [makeEntry(makeDescriptor({ name: "a" }))]);
-		await source.reconfigure("t1", [makeEntry(makeDescriptor({ name: "b" }))]);
-		await source.reconfigure("t0", []);
+		await source.reconfigure("t0", "r0", [
+			makeEntry(makeDescriptor({ name: "a" })),
+		]);
+		await source.reconfigure("t1", "r0", [
+			makeEntry(makeDescriptor({ name: "b" })),
+		]);
+		await source.reconfigure("t0", "r0", []);
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
-		const t0Miss = await app.request("/webhooks/t0/w/a", {
+		const t0Miss = await app.request("/webhooks/t0/r0/w/a", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
 		});
 		expect(t0Miss.status).toBe(404);
-		const t1Hit = await app.request("/webhooks/t1/w/b", {
+		const t1Hit = await app.request("/webhooks/t1/r0/w/b", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -162,7 +166,7 @@ describe("createHttpTriggerSource: routing", () => {
 		});
 		expect(
 			(
-				await app.request("/webhooks/t0/w/webhook", {
+				await app.request("/webhooks/t0/r0/w/webhook", {
 					method: "POST",
 					body: "{}",
 					headers: { "Content-Type": "application/json" },
@@ -174,7 +178,7 @@ describe("createHttpTriggerSource: routing", () => {
 	it("URL with four segments returns 404", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t/extra", {
+		const res = await app.request("/webhooks/t0/r0/w/t/extra", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -186,7 +190,7 @@ describe("createHttpTriggerSource: routing", () => {
 	it("URL with only two segments returns 404", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w", {
+		const res = await app.request("/webhooks/t0/r0/w", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -198,7 +202,7 @@ describe("createHttpTriggerSource: routing", () => {
 	it("URL segment failing trigger-name regex returns 404", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/bad$name", {
+		const res = await app.request("/webhooks/t0/r0/w/bad$name", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -210,7 +214,7 @@ describe("createHttpTriggerSource: routing", () => {
 	it("URL with hyphen in trigger-name segment returns 404 (regex rejects -)", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/has-hyphen", {
+		const res = await app.request("/webhooks/t0/r0/w/has-hyphen", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -225,7 +229,9 @@ describe("createHttpTriggerSource: routing", () => {
 			fire,
 			descriptor: makeDescriptor({ name: "webhook", method: "POST" }),
 		});
-		const res = await app.request("/webhooks/t0/w/webhook", { method: "GET" });
+		const res = await app.request("/webhooks/t0/r0/w/webhook", {
+			method: "GET",
+		});
 		expect(res.status).toBe(404);
 		expect(fire).not.toHaveBeenCalled();
 	});
@@ -261,7 +267,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			},
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: JSON.stringify({ x: 1 }),
 			headers: { "Content-Type": "application/json" },
@@ -278,7 +284,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			output: { status: 201 },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -294,7 +300,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 				return { ok: true, output: { status: 200 } };
 			},
 		});
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: JSON.stringify({ active: true }),
 			headers: { "Content-Type": "application/json" },
@@ -308,7 +314,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 		};
 		expect(payload.body).toEqual({ active: true });
 		expect(payload.method).toBe("POST");
-		expect(payload.url).toContain("/webhooks/t0/w/t");
+		expect(payload.url).toContain("/webhooks/t0/r0/w/t");
 		expect(Object.keys(payload).sort()).toEqual(
 			["body", "headers", "method", "url"].sort(),
 		);
@@ -323,7 +329,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			},
 		});
 		const res = await app.request(
-			"/webhooks/t0/w/t?delivery=abc&tag=one&tag=two",
+			"/webhooks/t0/r0/w/t?delivery=abc&tag=one&tag=two",
 			{
 				method: "POST",
 				body: "{}",
@@ -343,7 +349,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 	it("returns 422 on non-JSON body", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: "{not json",
 			headers: { "Content-Type": "application/json" },
@@ -371,7 +377,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			descriptor,
 			fire: validatingFire(descriptor, onValid),
 		});
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: JSON.stringify({ x: "not-a-number" }),
 			headers: { "Content-Type": "application/json" },
@@ -386,7 +392,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 			error: { message: "boom" },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -399,7 +405,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 		const source = createHttpTriggerSource();
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
-		const res = await app.request("/webhooks/t0/w/webhook", {
+		const res = await app.request("/webhooks/t0/r0/w/webhook", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -441,10 +447,10 @@ describe("createHttpTriggerSource: getEntry", () => {
 		const d = makeDescriptor({ name: "a", workflowName: "w" });
 		const entry = makeEntry(d);
 		const source = createHttpTriggerSource();
-		await source.reconfigure("t0", [entry]);
-		expect(source.getEntry("t0", "w", "a")).toBe(entry);
-		expect(source.getEntry("t0", "w", "missing")).toBeUndefined();
-		expect(source.getEntry("t1", "w", "a")).toBeUndefined();
+		await source.reconfigure("t0", "r0", [entry]);
+		expect(source.getEntry("t0", "r0", "w", "a")).toBe(entry);
+		expect(source.getEntry("t0", "r0", "w", "missing")).toBeUndefined();
+		expect(source.getEntry("t1", "r0", "w", "a")).toBeUndefined();
 	});
 });
 
@@ -459,7 +465,7 @@ describe("createHttpTriggerSource: security", () => {
 			output: { status: 200 },
 		}));
 		const { app } = await mount({ fire });
-		const res = await app.request("/webhooks/t0/w/t", {
+		const res = await app.request("/webhooks/t0/r0/w/t", {
 			method: "POST",
 			body: JSON.stringify({}),
 			headers: { "Content-Type": "application/json" },
@@ -486,10 +492,10 @@ describe("createHttpTriggerSource: security", () => {
 			fire,
 			descriptor: makeDescriptor({ name: "webhook", method: "POST" }),
 		});
-		const methodMismatch = await app.request("/webhooks/t0/w/webhook", {
+		const methodMismatch = await app.request("/webhooks/t0/r0/w/webhook", {
 			method: "GET",
 		});
-		const unknown = await app.request("/webhooks/t0/w/unknownName", {
+		const unknown = await app.request("/webhooks/t0/r0/w/unknownName", {
 			method: "POST",
 			body: "{}",
 			headers: { "Content-Type": "application/json" },
@@ -507,7 +513,7 @@ describe("createHttpTriggerSource: security", () => {
 			},
 		});
 		const res = await app.request(
-			"/webhooks/t0/w/t?params=injected&userId=evil",
+			"/webhooks/t0/r0/w/t?params=injected&userId=evil",
 			{
 				method: "POST",
 				body: "{}",

@@ -9,11 +9,13 @@ import {
 
 const TRAILING_SLASHES = /\/+$/;
 const OWNER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+const REPO_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 
 interface UploadOptions {
 	cwd: string;
 	url: string;
 	owner: string;
+	repo: string;
 	user?: string;
 	token?: string;
 }
@@ -35,6 +37,7 @@ interface ErrorBody {
 
 interface UploadFailure {
 	owner: string;
+	repo: string;
 	status: number | "network-error";
 	error: string;
 	issues?: ManifestIssue[];
@@ -102,7 +105,7 @@ function formatIssuePath(path: Array<string | number>): string {
 }
 
 function formatFailure(failure: UploadFailure): string {
-	const lines = [`✗ ${failure.owner}`];
+	const lines = [`✗ ${failure.owner}/${failure.repo}`];
 	lines.push(`    status: ${String(failure.status)}`);
 	lines.push(`    error: ${failure.error}`);
 	if (failure.issues && failure.issues.length > 0) {
@@ -114,9 +117,11 @@ function formatFailure(failure: UploadFailure): string {
 	return lines.join("\n");
 }
 
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (url, owner, repo, body, auth); the call is internal to this module
 async function uploadBundleBytes(
 	url: string,
 	owner: string,
+	repo: string,
 	body: Uint8Array,
 	auth: { user?: string | undefined; token?: string | undefined },
 ): Promise<UploadFailure | null> {
@@ -130,19 +135,18 @@ async function uploadBundleBytes(
 		headers["X-Auth-Provider"] = "github";
 		headers.Authorization = `Bearer ${auth.token}`;
 	}
+	const endpoint = `${url.replace(TRAILING_SLASHES, "")}/api/workflows/${owner}/${repo}`;
 	let response: Response;
 	try {
-		response = await fetch(
-			`${url.replace(TRAILING_SLASHES, "")}/api/workflows/${owner}`,
-			{
-				method: "POST",
-				headers,
-				body: body as BodyInit,
-			},
-		);
+		response = await fetch(endpoint, {
+			method: "POST",
+			headers,
+			body: body as BodyInit,
+		});
 	} catch (error) {
 		return {
 			owner,
+			repo,
 			status: "network-error",
 			error: error instanceof Error ? error.message : String(error),
 		};
@@ -152,22 +156,24 @@ async function uploadBundleBytes(
 	}
 	const { error, issues } = await extractErrorBody(response);
 	return issues
-		? { owner, status: response.status, error, issues }
-		: { owner, status: response.status, error };
+		? { owner, repo, status: response.status, error, issues }
+		: { owner, repo, status: response.status, error };
 }
 
 function sealFailureToUploadFailure(
 	err: unknown,
 	owner: string,
+	repo: string,
 ): UploadFailure {
 	if (err instanceof MissingSecretEnvError) {
-		return { owner, status: "network-error", error: err.message };
+		return { owner, repo, status: "network-error", error: err.message };
 	}
 	if (err instanceof PublicKeyFetchError) {
-		return { owner, status: err.status, error: err.message };
+		return { owner, repo, status: err.status, error: err.message };
 	}
 	return {
 		owner,
+		repo,
 		status: "network-error",
 		error: err instanceof Error ? err.message : String(err),
 	};
@@ -207,6 +213,9 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 			`owner "${options.owner}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
 		);
 	}
+	if (!REPO_RE.test(options.repo)) {
+		throw new Error(`repo "${options.repo}" must match [a-zA-Z0-9._-]{1,100}`);
+	}
 
 	await build({ cwd: options.cwd });
 
@@ -223,7 +232,11 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 			auth,
 		});
 	} catch (err) {
-		const failure = sealFailureToUploadFailure(err, options.owner);
+		const failure = sealFailureToUploadFailure(
+			err,
+			options.owner,
+			options.repo,
+		);
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
 		console.error(formatFailure(failure));
 		return { uploaded: 0, failed: 1 };
@@ -232,12 +245,13 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 	const failure = await uploadBundleBytes(
 		options.url,
 		options.owner,
+		options.repo,
 		toUpload,
 		auth,
 	);
 	if (failure === null) {
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-		console.error(`✓ ${options.owner}`);
+		console.error(`✓ ${options.owner}/${options.repo}`);
 		return { uploaded: 1, failed: 0 };
 	}
 	// biome-ignore lint/suspicious/noConsole: user-facing CLI output

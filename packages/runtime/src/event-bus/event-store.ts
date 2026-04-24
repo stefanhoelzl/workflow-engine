@@ -18,6 +18,7 @@ interface EventsTable {
 	at: string;
 	ts: number;
 	owner: string;
+	repo: string;
 	workflow: string;
 	workflowSha: string;
 	name: string;
@@ -50,8 +51,20 @@ interface CteChain {
 	where(...args: any[]): QueryBuilder;
 }
 
+interface Scope {
+	readonly owner: string;
+	readonly repo: string;
+}
+
 interface EventStore extends BusConsumer {
-	query(owner: string): SelectQueryBuilder<Database, "events", object>;
+	// Scopes MUST be drawn from an audited allow-set (see SECURITY.md §1 I-T2).
+	// Callers route through `resolveQueryScopes(user, ...)` — never construct
+	// scopes directly from URL segments. Throws if `scopes` is empty; empty
+	// scopes would otherwise compile to a tautological `WHERE 1=1` and leak
+	// cross-owner data.
+	query(
+		scopes: readonly Scope[],
+	): SelectQueryBuilder<Database, "events", object>;
 	ping(): Promise<void>;
 	with(name: string, fn: CteCallback): CteChain;
 	readonly initialized: Promise<void>;
@@ -66,6 +79,7 @@ CREATE TABLE IF NOT EXISTS events (
 	"at" TIMESTAMPTZ NOT NULL,
 	ts BIGINT NOT NULL,
 	owner TEXT NOT NULL,
+	repo TEXT NOT NULL,
 	workflow TEXT NOT NULL,
 	workflowSha TEXT NOT NULL,
 	name TEXT NOT NULL,
@@ -75,6 +89,9 @@ CREATE TABLE IF NOT EXISTS events (
 	meta JSON,
 	PRIMARY KEY (id, seq)
 )`;
+
+const CREATE_INDEX_DDL =
+	"CREATE INDEX IF NOT EXISTS events_owner_repo ON events (owner, repo)";
 
 function createCteChain(
 	// biome-ignore lint/suspicious/noExplicitAny: Kysely's with() return type is deeply generic
@@ -104,6 +121,7 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		at: event.at,
 		ts: event.ts,
 		owner: event.owner,
+		repo: event.repo,
 		workflow: event.workflow,
 		workflowSha: event.workflowSha,
 		name: event.name,
@@ -114,6 +132,7 @@ function eventToRow(event: InvocationEvent): EventsTable {
 	};
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DuckDB setup, scope-guard query compilation, and the BusConsumer interface methods that all share the Kysely handle — splitting would leak the handle as a module-level global
 async function createEventStore(
 	options?: EventStoreOptions,
 ): Promise<EventStore> {
@@ -122,6 +141,7 @@ async function createEventStore(
 		dialect: new DuckDbDialect({ database: instance }),
 	});
 	await db.executeQuery(CompiledQuery.raw(CREATE_TABLE_DDL));
+	await db.executeQuery(CompiledQuery.raw(CREATE_INDEX_DDL));
 
 	const logger = options?.logger;
 
@@ -150,14 +170,28 @@ async function createEventStore(
 	return {
 		initialized,
 
-		query(owner: string): SelectQueryBuilder<Database, "events", object> {
+		query(
+			scopes: readonly Scope[],
+		): SelectQueryBuilder<Database, "events", object> {
+			if (scopes.length === 0) {
+				// Empty scope list would compile to `WHERE 1=0`, but caller code
+				// universally expects a non-empty result shape — fail loudly so a
+				// middleware bug (unauthenticated user, forgotten scope resolution)
+				// never silently returns zero rows under a permissive WHERE.
+				throw new Error(
+					"EventStore.query: scopes must be a non-empty (owner, repo) allow-list",
+				);
+			}
+			const tuples = scopes.map((s) => [s.owner, s.repo] as const);
 			return db
 				.selectFrom("events")
-				.where("owner", "=", owner) as SelectQueryBuilder<
-				Database,
-				"events",
-				object
-			>;
+				.where((eb) =>
+					eb.or(
+						tuples.map(([owner, repo]) =>
+							eb.and([eb("owner", "=", owner), eb("repo", "=", repo)]),
+						),
+					),
+				) as SelectQueryBuilder<Database, "events", object>;
 		},
 
 		async ping(): Promise<void> {
@@ -186,5 +220,5 @@ async function createEventStore(
 
 // biome-ignore lint/performance/noBarrelFile: intentional re-export — consumers must not import kysely directly
 export { sql } from "kysely";
-export type { CteCallback, CteChain, Database, EventStore, EventsTable };
+export type { CteCallback, CteChain, Database, EventStore, EventsTable, Scope };
 export { createEventStore };

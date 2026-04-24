@@ -120,27 +120,35 @@ sections must append (§7 and onward), not renumber.
 - **INTERNAL** — Cluster-local, reachable only by other pods. Not exposed
   externally. Not a substitute for authentication at the app level.
 
-### Owner isolation invariants
+### Owner + Repo isolation invariants
 
 **I-T2** — No caller (authenticated or not) SHALL read, modify, or execute
-another owner's workflows or invocation events.
+another (owner, repo)'s workflows or invocation events.
 
 Enforcement is distributed across several mechanisms; each is
 load-bearing and documented in its own section or capability spec. The
 table below is the navigation map:
 
-| Data path                              | Enforcement mechanism                                       | Documented in                      |
-|----------------------------------------|-------------------------------------------------------------|------------------------------------|
-| `POST /api/workflows/:owner`          | Owner regex + `isMember(user, owner)` gate; identical 404 | §4, threat A12                     |
-| Invocation event reads                 | `EventStore.query(owner)` pre-binds `.where("owner", …)`  | `event-store/spec.md`              |
-| Invocation event writes                | Runtime stamps `owner` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no owner concept) | `executor/spec.md`, §2 R-2 |
-| `POST /webhooks/:owner/:workflow/*`   | Registry lookup by `(owner, workflow)` pair                | §3, `http-trigger/spec.md`         |
-| Workflow bundle storage                | Storage key = `workflows/<owner>.tar.gz`                   | `workflow-registry/spec.md`        |
+| Data path                                                        | Enforcement mechanism                                                                                                          | Documented in                      |
+|------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|------------------------------------|
+| `POST /api/workflows/:owner/:repo`                               | Owner + repo regex + `isMember(user, owner)` gate; identical 404                                                               | §4, threat A12                     |
+| Invocation event reads                                           | `EventStore.query(scopes)` accepts a caller-supplied allow-list; callers route through `resolveQueryScopes(user, registry, …)` | `event-store/spec.md`              |
+| Invocation event writes                                          | Runtime stamps `owner` + `repo` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no identity)        | `executor/spec.md`, §2 R-2, R-8    |
+| `POST /webhooks/:owner/:repo/:workflow/:trigger`                 | Registry lookup by `(owner, repo, workflow, trigger)` tuple                                                                    | §3, `http-trigger/spec.md`         |
+| Workflow bundle storage                                          | Storage key = `workflows/<owner>/<repo>.tar.gz`                                                                                | `workflow-registry/spec.md`        |
 
-The regex-validated owner identifier is NOT a permission check — it is
-a format check. Every mechanism above is load-bearing; weakening any one
+The regex-validated owner + repo identifiers are NOT a permission check — they
+are a format check. Every mechanism above is load-bearing; weakening any one
 of them breaks I-T2. Threats that specifically target I-T2 are
 enumerated in §4 (A12, A13, A14) alongside their mitigations.
+
+The audit burden for the EventStore scoping shifted from "pre-bound by
+implementation" (old single-owner `query(owner)`) to "caller-supplied from
+an audited allow-set" — still safe, because every production call site is
+routed through `resolveQueryScopes`, which only returns pairs that satisfy
+`(owner ∈ user.orgs) ∧ ((owner, repo) ∈ registry.pairs())`. Any direct
+construction of a `Scope` from request input (e.g. URL segments) is a
+cross-owner-leak bug and forbidden by the R-A14 review checklist.
 ## §2 Sandbox Boundary
 
 ### Trust level
@@ -535,11 +543,11 @@ plugin, and every change that adds a guest-visible surface.
    `mypkg.response`) to avoid conflating with core audit categories.
 8. **R-8 No runtime metadata in the sandbox.** The sandbox stamps only
    intrinsic event fields: `kind`, `name`, `id`, `seq`, `ref`, `ts`,
-   `at`, and `input?` / `output?` / `error?`. Owner, workflow,
+   `at`, and `input?` / `output?` / `error?`. Owner, repo, workflow,
    workflowSha, and invocationId are stamped by the runtime in its
    `sb.onEvent` receiver before forwarding events to the bus. A plugin
-   that needs to attach a owner or workflow label is doing something
-   wrong — that labelling belongs on the runtime side.
+   that needs to attach an owner, repo, or workflow label is doing
+   something wrong — that labelling belongs on the runtime side.
 9. **R-9 Runtime-only dispatch provenance.** `InvocationEvent.meta` and
    every field nested under it (including `meta.dispatch`, which carries
    `{ source: "trigger" | "manual", user? }` on `trigger.request`) are
@@ -642,16 +650,18 @@ Additional standing rules that predate the plugin rewrite:
 
 ### Trust level
 
-**PUBLIC.** `POST /webhooks/{owner}/{workflow}/{trigger_path}` is reachable by
-anyone on the Internet without authentication. This is an **intentional design
-choice**: webhooks are how external systems deliver events. Do not add
-authentication here without an OpenSpec change proposal — existing
-integrations depend on unauthenticated ingress.
+**PUBLIC.** `POST /webhooks/{owner}/{repo}/{workflow}/{trigger_name}` is
+reachable by anyone on the Internet without authentication. This is an
+**intentional design choice**: webhooks are how external systems deliver
+events. Do not add authentication here without an OpenSpec change proposal —
+existing integrations depend on unauthenticated ingress.
 
-The owner and workflow-name prefixes in the URL are **identification, not
-authorization**: knowledge of a valid `(owner, workflow, path)` tuple is
-sufficient to trigger the workflow. These segments exist to disambiguate
-owners and workflows at the routing layer, not to gate access.
+The owner, repo, workflow, and trigger-name segments in the URL are
+**identification, not authorization**: knowledge of a valid
+`(owner, repo, workflow, trigger)` tuple is sufficient to trigger the
+workflow. These segments exist to disambiguate the `(owner, repo)` scope
+and the workflow/trigger identity at the routing layer, not to gate
+access.
 
 Everything received on this surface must be treated as
 attacker-controlled: body, headers, query string, URL parameters, and
@@ -669,16 +679,17 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 
 ### Entry points
 
-- `POST /webhooks/{owner}/{workflow}/{trigger_name}` (or whatever `method` the
-  trigger declares; default POST) with JSON body.
+- `POST /webhooks/{owner}/{repo}/{workflow}/{trigger_name}` (or whatever
+  `method` the trigger declares; default POST) with JSON body.
 - `{owner}` and `{workflow}` are validated against the owner identifier regex
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); `{trigger_name}` is validated against
-  the trigger-name regex (`^[A-Za-z_][A-Za-z0-9_]{0,62}$`); non-matching values
-  receive 404.
-- Trigger segment matching is **exact**: the URL MUST be exactly three
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); `{repo}` is validated against the
+  repo regex (`^[a-zA-Z0-9._-]{1,100}$`); `{trigger_name}` is validated
+  against the trigger-name regex (`^[A-Za-z_][A-Za-z0-9_]{0,62}$`);
+  non-matching values receive 404.
+- Trigger segment matching is **exact**: the URL MUST be exactly four
   regex-constrained segments after `/webhooks/`. No URLPattern, no `:param`
   named segments, no `*wildcard` tail segments. Lookup is a constant-time
-  `Map.get()` keyed by `(owner, workflow, trigger-name)`
+  `Map.get()` keyed by `(owner, repo, workflow, trigger-name)`
   (`packages/runtime/src/triggers/http.ts`). Query strings on the URL are
   tolerated for compatibility with providers that append tracking params
   (AWS signatures, delivery IDs) but are **not parsed** into any structured
@@ -1015,19 +1026,25 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   (R-A12).** A single Hono middleware factory is the sole enforcement
   point for the `:owner` authorization invariant. It validates
   `<owner>` against the identifier regex
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), then evaluates
-  `isMember(user, owner) := user.orgs.includes(owner) || user.name === owner`.
-  Both failures return `404 Not Found` with an identical JSON body
-  (`{"error":"Not Found"}`) sourced from each sub-app's
-  `app.notFound(...)` handler. Teams are not consulted (and are no
-  longer part of `UserContext`). The membership check applies to every
-  authenticated caller regardless of which provider minted the
-  identity — there is no longer an "open mode" bypass. The middleware
-  is mounted on `/api/workflows/:owner` and on the `/trigger`-basePath
-  sub-app's `/:owner/*` subtree. Inline `validateOwner` +
-  `isMember`/`ownerSet` checks in individual route handlers are
-  prohibited; any new route that accepts a `:owner` path parameter
-  MUST mount `requireOwnerMember()` on its subpath.
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`). When a `:repo` param is present on
+  the matched route, its segment is also validated against the repo regex
+  (`^[a-zA-Z0-9._-]{1,100}$`). The membership predicate then evaluates
+  `isMember(user, owner) := user.orgs.includes(owner)` — `user.orgs` is
+  seeded with `[user.login, ...githubOrgs]` at login so user-owned
+  resources satisfy membership via the same set check, without a separate
+  `user.login === owner` clause. Both format and membership failures return
+  `404 Not Found` with an identical JSON body (`{"error":"Not Found"}`)
+  sourced from each sub-app's `app.notFound(...)` handler. Teams are not
+  consulted (and are no longer part of `UserContext`). The membership check
+  applies to every authenticated caller regardless of which provider minted
+  the identity — there is no longer an "open mode" bypass. The middleware
+  is mounted on `/api/workflows/:owner/:repo` and on the
+  `/trigger`-basePath and `/dashboard`-basePath sub-apps' `/:owner`,
+  `/:owner/*`, `/:owner/:repo`, and `/:owner/:repo/*` subtrees. Inline
+  `validateOwner` / `validateRepo` + `isMember`/`ownerSet` checks in
+  individual route handlers are prohibited; any new route that accepts a
+  `:owner` (with optional `:repo`) path parameter MUST mount
+  `requireOwnerMember()` on its subpath.
   (`packages/runtime/src/auth/owner.ts`,
   `packages/runtime/src/auth/owner-mw.ts`,
   `packages/runtime/src/api/index.ts`,
@@ -1053,10 +1070,17 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 - **TLS termination at Traefik.** Session cookies, Bearer tokens, and
   the GitHub access token stored inside the sealed cookie are not in
   cleartext on the wire.
-- **Owner-scoped query API (A14).** Unchanged. `EventStore.query(owner)`
-  pre-binds `.where("owner", "=", owner)`; no unscoped read path
-  against the `events` table exists. Workflow bundles are owner-keyed
-  at the storage layer (`workflows/<owner>.tar.gz`).
+- **Scope-list query API (A14).** `EventStore.query(scopes)` accepts a
+  caller-supplied allow-list of `{owner, repo}` pairs and compiles
+  `WHERE (owner, repo) IN (…)` via Kysely. An empty scope list throws —
+  it never degrades to an unscoped read. Every production call site
+  routes through `resolveQueryScopes(user, registry, constraint?)`,
+  which intersects `user.orgs` with `registry.pairs()` (registered
+  bundles) and optionally narrows by a caller-supplied `(owner, repo)`
+  constraint. Constructing a raw `Scope` from URL segments is a
+  cross-owner-leak bug and forbidden by the R-A14 review checklist.
+  Workflow bundles are `(owner, repo)`-keyed at the storage layer
+  (`workflows/<owner>/<repo>.tar.gz`).
 
 ### CLI authentication (`wfe upload`)
 
@@ -1195,17 +1219,22 @@ HTTP status and server-reported error message only.
     of the same identity model.** Share `UserContext`, share the
     registry, share `isMember()` — but never accept one transport's
     credential where the other is expected.
-14. **NEVER read or list workflow or invocation-event data without a
-    owner scope.** `EventStore.query(owner)` is the only scoped read
-    API. For workflows, route through `WorkflowRegistry`, which is
-    keyed by owner. Format validation of a owner identifier (the
-    regex) is NOT a permission check and does NOT substitute for a
-    owner-scoped query (A14, R-A14, §1 I-T2).
-15. **NEVER enforce the `:owner` authorization invariant inline in a
-    route handler.** `requireOwnerMember()` is the sole enforcement
-    point and MUST be mounted on every subpath that accepts a
-    `:owner` path parameter (today: `/api/workflows/:owner` and
-    `/trigger/:owner/*`). Inline `validateOwner(owner)` +
+14. **NEVER read or list workflow or invocation-event data without an
+    `(owner, repo)` scope.** `EventStore.query(scopes)` is the only
+    scoped read API; every call site MUST build `scopes` via
+    `resolveQueryScopes(user, registry, constraint?)`. Passing raw URL
+    segments as a `Scope` is forbidden — middleware is the policy
+    boundary. For workflows, route through `WorkflowRegistry`, which
+    is keyed by `(owner, repo)`. Format validation of an owner or repo
+    identifier (the regexes) is NOT a permission check and does NOT
+    substitute for a scoped query (A14, R-A14, §1 I-T2).
+15. **NEVER enforce the `:owner` / `:repo` authorization invariant
+    inline in a route handler.** `requireOwnerMember()` is the sole
+    enforcement point and MUST be mounted on every subpath that accepts
+    an `:owner` (with optional `:repo`) path parameter (today:
+    `/api/workflows/:owner/:repo`, `/trigger/:owner`,
+    `/trigger/:owner/*`, `/dashboard/:owner`, `/dashboard/:owner/*`).
+    Inline `validateOwner(owner)` / `validateRepo(repo)` +
     `isMember(user, owner)` / `ownerSet(user).has(owner)` checks in
     handlers are prohibited — they are the drift source the middleware
     exists to prevent.

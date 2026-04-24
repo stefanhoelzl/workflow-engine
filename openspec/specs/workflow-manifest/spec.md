@@ -202,7 +202,9 @@ The SDK SHALL export a `Manifest` TypeScript type derived from `ManifestSchema` 
 
 ### Requirement: IANA timezone validation on upload
 
-The `ManifestSchema` Zod schema in `@workflow-engine/core` SHALL validate every cron trigger's `tz` field against the runtime host's IANA timezone set, probed once per zone via `new Intl.DateTimeFormat('en-US', { timeZone })` in a try/catch (memoized in a process-local cache), via a Zod `.refine()` predicate. The workflow upload endpoint (`POST /api/workflows/<tenant>`) already runs `ManifestSchema.parse()` on incoming manifests (see `workflow-registry.ts`); uploads with an unknown `tz` SHALL therefore be rejected with `422 Unprocessable Entity` and the Zod-reported issues.
+The `ManifestSchema` Zod schema in `@workflow-engine/core` SHALL validate every cron trigger's `tz` field against the runtime host's IANA timezone set, probed once per zone via `new Intl.DateTimeFormat('en-US', { timeZone })` in a try/catch (memoized in a process-local cache), via a Zod `.refine()` predicate. The workflow upload endpoint (`POST /api/workflows/<owner>/<repo>`) already runs `ManifestSchema.parse()` on incoming manifests (see `workflow-registry.ts`); uploads with an unknown `tz` SHALL therefore be rejected with `422 Unprocessable Entity` and the Zod-reported issues.
+
+The manifest is **repo-agnostic**: it MUST NOT declare an owner, repo, or repository field. Scope (`owner`, `repo`) is supplied exclusively by the upload URL (`POST /api/workflows/<owner>/<repo>`). The server stamps both onto stored `WorkflowEntry` records and forwards them to trigger backends via `reconfigure(owner, repo, entries)`.
 
 #### Scenario: Known IANA timezone passes
 

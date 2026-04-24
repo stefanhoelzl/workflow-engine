@@ -50,54 +50,16 @@ interface LayoutOptions {
 	email: string;
 	head?: HtmlEscapedString | Promise<HtmlEscapedString>;
 	bodyAttrs?: string;
+	// Retained for tests that supply it — the dashboard/trigger drill-down
+	// tree now surfaces owners in-page, so no topbar selector is rendered.
 	owners?: readonly string[];
-	activeOwner?: string;
-}
-
-function renderOwnerSelector(
-	owners: readonly string[],
-	activeOwner: string | undefined,
-	activePath: string,
-) {
-	if (owners.length === 0) {
-		return html`<div class="topbar-owner empty" aria-label="No owners available">
-      <span class="topbar-owner-label">Owner</span>
-      <span class="topbar-owner-empty">(none)</span>
-    </div>`;
-	}
-	const options = owners.map(
-		(t) =>
-			html`<option value="${t}"${t === activeOwner ? raw(" selected") : ""}>${t}</option>`,
-	);
-	// No inline handlers (CSP §6). The `data-owner-selector` hook in
-	// /static/owner-selector.js wires auto-submit on change.
-	return html`<form class="topbar-owner" method="get" action="${activePath}" data-owner-selector>
-      <label class="topbar-owner-label" for="owner-select">Owner</label>
-      <select id="owner-select" name="owner">
-        ${options}
-      </select>
-      <button class="topbar-owner-go" type="submit">Go</button>
-    </form>`;
 }
 
 function renderLayout(
 	options: LayoutOptions,
 	content: HtmlEscapedString | Promise<HtmlEscapedString>,
 ) {
-	const {
-		title,
-		activePath,
-		user,
-		email,
-		head,
-		bodyAttrs,
-		owners,
-		activeOwner,
-	} = options;
-
-	const ownerSection = owners
-		? renderOwnerSelector(owners, activeOwner, activePath)
-		: "";
+	const { title, activePath, user, email, head, bodyAttrs } = options;
 
 	const displayName = user || "anonymous";
 	const userSection = user
@@ -127,7 +89,6 @@ function renderLayout(
   <script defer src="/static/alpine.js"></script>
   <script src="/static/htmx.js"></script>
   <script defer src="/static/result-dialog.js"></script>
-  <script defer src="/static/owner-selector.js"></script>
   <script defer src="/static/local-time.js"></script>
 ${head ?? ""}
 </head>
@@ -139,7 +100,6 @@ ${head ?? ""}
       Workflow Engine
     </div>
     <div class="topbar-right">
-      ${ownerSection}
       ${userSection}
     </div>
   </div>

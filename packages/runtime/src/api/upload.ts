@@ -14,18 +14,21 @@ import {
 } from "../workflow-registry.js";
 
 // ---------------------------------------------------------------------------
-// POST /api/workflows/:owner — upload a owner bundle
+// POST /api/workflows/:owner/:repo — upload a repo's workflow bundle
 // ---------------------------------------------------------------------------
 //
 // Payload: gzip-compressed tarball containing the root `manifest.json`
-// (owner manifest with `workflows: [...]`) plus one `<name>.js` per
-// workflow at the tarball root.
+// (repo manifest with `workflows: [...]`) plus one `<name>.js` per workflow
+// at the tarball root. The tarball is scoped to a single (owner, repo); the
+// server stamps both from the URL path and persists under
+// `workflows/<owner>/<repo>.tar.gz`.
 //
 // Auth: the /api/* surface is gated by `bearerUserMiddleware` +
 // `authorizeMiddleware`; `requireOwnerMember()` is mounted on
-// `/workflows/:owner` and enforces identifier regex + `isMember` with a
-// JSON 404 fail-closed response (see auth spec: "Owner-authorization
-// middleware"). This handler never performs owner checks inline.
+// `/workflows/:owner/:repo` and enforces owner + repo regex validation +
+// owner-`isMember` with a JSON 404 fail-closed response (see auth spec:
+// "Owner-authorization middleware"). This handler never performs identifier
+// checks inline.
 //
 // Error classification:
 //   - 415: not a valid gzip/tar archive.
@@ -129,6 +132,7 @@ function verifySecretsIfPresent(
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
 		const owner = c.req.param("owner") ?? "";
+		const repo = c.req.param("repo") ?? "";
 
 		const body = await c.req.arrayBuffer();
 		const tarballBytes = new Uint8Array(body);
@@ -147,7 +151,7 @@ function createUploadHandler(deps: UploadDeps) {
 			return c.json(secretsVerify, HTTP_BAD_REQUEST);
 		}
 
-		const result = await deps.registry.registerOwner(owner, files, {
+		const result = await deps.registry.registerOwner(owner, repo, files, {
 			tarballBytes,
 		});
 		if (!result.ok) {

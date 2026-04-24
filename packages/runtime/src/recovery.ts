@@ -31,9 +31,10 @@ async function isArchived(
 	eventStore: EventStore,
 	id: string,
 	owner: string,
+	repo: string,
 ): Promise<boolean> {
 	const rows = await eventStore
-		.query(owner)
+		.query([{ owner, repo }])
 		.where("id", "=", id)
 		.select("id")
 		.limit(1)
@@ -61,6 +62,7 @@ function buildSyntheticTerminal(
 		at: new Date().toISOString(),
 		ts: lastEvent?.ts ?? 0,
 		owner: firstEvent.owner,
+		repo: firstEvent.repo,
 		workflow: firstEvent.workflow,
 		workflowSha: firstEvent.workflowSha,
 		name: firstEvent.name,
@@ -88,9 +90,13 @@ async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 		}
 
 		// ids are globally unique (UUID + (id, seq) PK); scoping isArchived by
-		// firstEvent.owner is correctness-equivalent to an unscoped lookup here.
-		// biome-ignore lint/performance/noAwaitInLoops: per-id decision must complete before advancing to next id so side effects (bus emits, pending cleanup) stay correctly ordered
-		if (await isArchived(deps.eventStore, id, firstEvent.owner)) {
+		// firstEvent.(owner,repo) is correctness-equivalent to an unscoped lookup
+		// here — we still pass the pair because EventStore.query requires a scope
+		// allow-list.
+		if (
+			// biome-ignore lint/performance/noAwaitInLoops: per-id decision must complete before advancing to next id so side effects (bus emits, pending cleanup) stay correctly ordered
+			await isArchived(deps.eventStore, id, firstEvent.owner, firstEvent.repo)
+		) {
 			// Archive is authoritative (crash during pending cleanup). Drop the
 			// stale pending files; do not replay.
 			deps.logger?.info("runtime.recovery.archive-cleanup", {

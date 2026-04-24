@@ -106,6 +106,7 @@ describe("executor", () => {
 
 		await executor.invoke(
 			"t0",
+			"r0",
 			makeManifest("wf"),
 			makeDescriptor("trig"),
 			{ hello: "world" },
@@ -167,10 +168,10 @@ describe("executor", () => {
 			return { ok: true, result: { status: 200 } };
 		});
 
-		await executor.invoke("t0", wf, makeDescriptor("t"), null, {
+		await executor.invoke("t0", "r0", wf, makeDescriptor("t"), null, {
 			bundleSource: "source",
 		});
-		await executor.invoke("t0", wf, makeDescriptor("t"), null, {
+		await executor.invoke("t0", "r0", wf, makeDescriptor("t"), null, {
 			bundleSource: "source",
 		});
 
@@ -191,6 +192,7 @@ describe("executor", () => {
 		});
 		const result = await executor.invoke(
 			"t0",
+			"r0",
 			makeManifest("wf"),
 			makeDescriptor("t"),
 			null,
@@ -218,6 +220,7 @@ describe("executor", () => {
 		});
 		const result = await executor.invoke(
 			"t0",
+			"r0",
 			makeManifest("wf"),
 			makeDescriptor("t"),
 			null,
@@ -253,13 +256,13 @@ describe("executor", () => {
 		const wf = makeManifest("wf");
 
 		await Promise.all([
-			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+			executor.invoke("t0", "r0", wf, makeDescriptor("t"), null, {
 				bundleSource: "source",
 			}),
-			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+			executor.invoke("t0", "r0", wf, makeDescriptor("t"), null, {
 				bundleSource: "source",
 			}),
-			executor.invoke("t0", wf, makeDescriptor("t"), null, {
+			executor.invoke("t0", "r0", wf, makeDescriptor("t"), null, {
 				bundleSource: "source",
 			}),
 		]);
@@ -301,13 +304,20 @@ describe("executor", () => {
 			return { ok: true, result: { status: 200 } };
 		});
 
-		await executor.invoke("t0", makeManifest("wf"), makeDescriptor("t"), null, {
-			bundleSource: "source",
-			dispatch: {
-				source: "manual",
-				user: { login: "Jane", mail: "jane@example.com" },
+		await executor.invoke(
+			"t0",
+			"r0",
+			makeManifest("wf"),
+			makeDescriptor("t"),
+			null,
+			{
+				bundleSource: "source",
+				dispatch: {
+					source: "manual",
+					user: { login: "Jane", mail: "jane@example.com" },
+				},
 			},
-		});
+		);
 
 		expect(seen).toHaveLength(4);
 		const [req, act, actResp, resp] = seen;
@@ -354,9 +364,16 @@ describe("executor", () => {
 			return { ok: true, result: { status: 200 } };
 		});
 
-		await executor.invoke("t0", makeManifest("wf"), makeDescriptor("t"), null, {
-			bundleSource: "source",
-		});
+		await executor.invoke(
+			"t0",
+			"r0",
+			makeManifest("wf"),
+			makeDescriptor("t"),
+			null,
+			{
+				bundleSource: "source",
+			},
+		);
 
 		expect(seen).toHaveLength(1);
 		expect(seen[0]?.meta).toEqual({ dispatch: { source: "trigger" } });

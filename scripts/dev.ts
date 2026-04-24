@@ -6,7 +6,11 @@ import { resolve } from "node:path";
 import { upload } from "@workflow-engine/sdk/cli";
 
 const DEFAULT_PORT = 8080;
-const DEV_OWNER = "dev";
+const DEV_OWNER = "local";
+// Two upload targets under the same owner so the dashboard drill-down,
+// cross-repo workflow-name collision, and trigger-backend per-(owner, repo)
+// reconfigure paths all exercise on every `pnpm start`.
+const DEV_REPOS = ["demo", "demo-advanced"] as const;
 const DEBOUNCE_MS = 300;
 const PORT_POLL_INTERVAL_MS = 100;
 const PORT_POLL_TIMEOUT_MS = 10_000;
@@ -148,17 +152,20 @@ for (const [envName, fallback] of Object.entries(DEV_SECRET_DEFAULTS)) {
 }
 
 async function runUpload(port: number): Promise<void> {
-	try {
-		await upload({
-			cwd: workflowsDir,
-			url: `http://localhost:${String(port)}`,
-			owner: DEV_OWNER,
-			user: DEV_OWNER,
-		});
-	} catch (error) {
-		console.error(
-			`Upload failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
+	for (const repo of DEV_REPOS) {
+		try {
+			await upload({
+				cwd: workflowsDir,
+				url: `http://localhost:${String(port)}`,
+				owner: DEV_OWNER,
+				repo,
+				user: DEV_OWNER,
+			});
+		} catch (error) {
+			console.error(
+				`Upload failed (${DEV_OWNER}/${repo}): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 }
 
@@ -175,7 +182,7 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		PORT: String(port),
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
 		BASE_URL: `http://localhost:${String(port)}`,
-		AUTH_ALLOW: "local:dev,local:alice:acme,local:bob",
+		AUTH_ALLOW: "local:local,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",
 		SECRETS_PRIVATE_KEYS: DEV_SECRETS_PRIVATE_KEYS,
 	};

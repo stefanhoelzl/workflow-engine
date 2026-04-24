@@ -10,7 +10,7 @@ import {
 } from "./dashboard/page.js";
 import notFoundHtml from "./static/404.html?raw";
 import errorHtml from "./static/error.html?raw";
-import { renderTriggerPage } from "./trigger/page.js";
+import { renderRepoTriggerPage } from "./trigger/page.js";
 
 // ---------------------------------------------------------------------------
 // CSP invariant assertions (SECURITY.md §6)
@@ -38,6 +38,7 @@ const DATA_EVENT_PAIR_0_6_RE = /data-event-pair="0-6"/;
 function makeWorkflowEntry(): WorkflowEntry {
 	return {
 		owner: "t0",
+		repo: "r0",
 		workflow: {
 			name: "w",
 			module: "w.js",
@@ -68,6 +69,8 @@ function makeWorkflowEntry(): WorkflowEntry {
 const sampleRows: readonly InvocationRow[] = [
 	{
 		id: "evt_1",
+		owner: "t0",
+		repo: "r0",
 		workflow: "w",
 		trigger: "t",
 		status: "succeeded",
@@ -78,6 +81,8 @@ const sampleRows: readonly InvocationRow[] = [
 	},
 	{
 		id: "evt_2",
+		owner: "t0",
+		repo: "r0",
 		workflow: "w",
 		trigger: "t",
 		status: "pending",
@@ -99,7 +104,8 @@ describe("HTML CSP invariants", () => {
 				user: "user",
 				email: "user@example.com",
 				owners: ["acme"],
-				activeOwner: "acme",
+				ownerSummaries: [{ owner: "acme", count: 0 }],
+				autoExpand: "acme",
 			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);
@@ -124,15 +130,16 @@ describe("HTML CSP invariants", () => {
 		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
 	});
 
-	it("renderTriggerPage output has no forbidden inline patterns", async () => {
+	it("renderRepoTriggerPage output has no forbidden inline patterns", async () => {
 		const entries: WorkflowEntry[] = [makeWorkflowEntry()];
 		const html = (
-			await renderTriggerPage({
+			await renderRepoTriggerPage({
 				entries,
 				user: "user",
 				email: "user@example.com",
 				owners: ["t0"],
-				activeOwner: "t0",
+				owner: "t0",
+				repo: "r0",
 			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);

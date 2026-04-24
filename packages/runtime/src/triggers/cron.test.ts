@@ -68,7 +68,7 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
-		await source.reconfigure("t0", [rec.entry]);
+		await source.reconfigure("t0", "r0", [rec.entry]);
 
 		expect(rec.fire).not.toHaveBeenCalled();
 
@@ -84,7 +84,7 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("minutely", "* * * * *", "UTC");
 
-		await source.reconfigure("t0", [rec.entry]);
+		await source.reconfigure("t0", "r0", [rec.entry]);
 
 		await vi.advanceTimersByTimeAsync(61_000);
 		expect(rec.fire).toHaveBeenCalledTimes(1);
@@ -101,8 +101,8 @@ describe("createCronTriggerSource", () => {
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 10 * * *", "UTC");
 
-		await source.reconfigure("t0", [recA.entry]);
-		await source.reconfigure("t0", [recB.entry]);
+		await source.reconfigure("t0", "r0", [recA.entry]);
+		await source.reconfigure("t0", "r0", [recB.entry]);
 
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(recA.fire).not.toHaveBeenCalled();
@@ -122,11 +122,11 @@ describe("createCronTriggerSource", () => {
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 9 * * *", "UTC");
 
-		await source.reconfigure("t0", [recA.entry]);
-		await source.reconfigure("t1", [recB.entry]);
+		await source.reconfigure("t0", "r0", [recA.entry]);
+		await source.reconfigure("t1", "r0", [recB.entry]);
 
 		// Clearing t0 must not cancel t1's timer.
-		await source.reconfigure("t0", []);
+		await source.reconfigure("t0", "r0", []);
 
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(recA.fire).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
-		const result = await source.reconfigure("t0", [rec.entry]);
+		const result = await source.reconfigure("t0", "r0", [rec.entry]);
 		expect(result).toEqual({ ok: true });
 
 		await source.stop();
@@ -151,8 +151,8 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 9 * * *", "UTC");
-		await source.reconfigure("t0", [recA.entry]);
-		await source.reconfigure("t1", [recB.entry]);
+		await source.reconfigure("t0", "r0", [recA.entry]);
+		await source.reconfigure("t1", "r0", [recB.entry]);
 
 		await source.stop();
 		await vi.advanceTimersByTimeAsync(10_000);
@@ -166,7 +166,7 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("yearly", "0 0 1 1 *", "UTC");
 
-		await source.reconfigure("t0", [rec.entry]);
+		await source.reconfigure("t0", "r0", [rec.entry]);
 
 		await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000 + 1);
 		expect(rec.fire).not.toHaveBeenCalled();
@@ -182,7 +182,7 @@ describe("createCronTriggerSource", () => {
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
-		await source.reconfigure("t0", [rec.entry]);
+		await source.reconfigure("t0", "r0", [rec.entry]);
 
 		await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
 		expect(rec.fire).not.toHaveBeenCalled();
@@ -197,12 +197,12 @@ describe("createCronTriggerSource", () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC", "w");
-		await source.reconfigure("t0", [rec.entry]);
+		await source.reconfigure("t0", "r0", [rec.entry]);
 
-		const resolved = source.getEntry("t0", "w", "daily");
+		const resolved = source.getEntry("t0", "r0", "w", "daily");
 		expect(resolved).toBe(rec.entry);
-		expect(source.getEntry("t0", "w", "missing")).toBeUndefined();
-		expect(source.getEntry("t1", "w", "daily")).toBeUndefined();
+		expect(source.getEntry("t0", "r0", "w", "missing")).toBeUndefined();
+		expect(source.getEntry("t1", "r0", "w", "daily")).toBeUndefined();
 
 		await source.stop();
 	});

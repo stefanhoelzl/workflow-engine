@@ -20,7 +20,7 @@ import {
 //      `validate()` helper).
 //   2. On validation failure: resolves to `{ok: false, error: {message,
 //      issues}}` without dispatching through the executor.
-//   3. On validation success: dispatches via `executor.invoke(owner,
+//   3. On validation success: dispatches via `executor.invoke(owner, repo,
 //      workflow, descriptor, validatedInput, bundleSource)`.
 //   4. On `{ok: true, output}`: validates `output` against
 //      `descriptor.outputSchema` (Ajv). On mismatch — the handler returned
@@ -60,6 +60,7 @@ function summariseIssues(issues: readonly ValidationIssue[]): string {
 function buildFire(
 	executor: Executor,
 	owner: string,
+	repo: string,
 	workflow: WorkflowManifest,
 	descriptor: TriggerDescriptor,
 	bundleSource: string,
@@ -79,7 +80,7 @@ function buildFire(
 			});
 		}
 		return executor
-			.invoke(owner, workflow, descriptor, v.input, {
+			.invoke(owner, repo, workflow, descriptor, v.input, {
 				bundleSource,
 				...(dispatch === undefined ? {} : { dispatch }),
 			})
@@ -100,6 +101,7 @@ function buildFire(
 				// wrong; a 422 would mislead.
 				logger?.warn("trigger.output-validation-failed", {
 					owner,
+					repo,
 					workflow: workflow.name,
 					trigger: descriptor.name,
 					kind: descriptor.kind,
