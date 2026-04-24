@@ -159,6 +159,7 @@ async function init() {
 		sandboxFactory,
 		logger: runtimeLogger,
 		keyStore,
+		maxCount: config.sandboxMaxCount,
 	});
 
 	// 5. Create the executor (serializes per-(owner, sha) invocations;
@@ -242,7 +243,7 @@ async function init() {
 		start: () => Promise.resolve(),
 		async stop() {
 			await Promise.allSettled(triggerBackends.map((s) => s.stop()));
-			sandboxStore.dispose();
+			await sandboxStore.dispose();
 			await sandboxFactory.dispose();
 		},
 	};

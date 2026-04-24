@@ -1,5 +1,9 @@
 import type { SandboxEvent, WorkflowManifest } from "@workflow-engine/core";
-import { createSandboxFactory } from "@workflow-engine/sandbox";
+import {
+	createSandboxFactory,
+	type Sandbox,
+	type SandboxFactory,
+} from "@workflow-engine/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "./logger.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
@@ -75,21 +79,22 @@ var __wfe_exports__ = (function(exports) {
 })({});
 `;
 
-function makeStore(): SandboxStore {
+function makeStore(maxCount = 100): SandboxStore {
 	const logger = makeLogger();
 	const factory = createSandboxFactory({ logger });
 	return createSandboxStore({
 		sandboxFactory: factory,
 		logger,
 		keyStore: stubKeyStore,
+		maxCount,
 	});
 }
 
 describe("sandbox-store: caching", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	it("first get constructs a new sandbox; second get returns the same instance", async () => {
@@ -132,7 +137,7 @@ describe("sandbox-store: caching", () => {
 	it("dispose tears down every cached sandbox", async () => {
 		store = makeStore();
 		const sb = await store.get("acme", WORKFLOW, BUNDLE_SOURCE);
-		store.dispose();
+		await store.dispose();
 		// Post-dispose run throws because the worker is terminated.
 		await expect(sb.run("onPing", { body: {} })).rejects.toThrow();
 	});
@@ -141,8 +146,8 @@ describe("sandbox-store: caching", () => {
 describe("sandbox-store: execution (end-to-end)", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	it("runs a trigger handler and emits trigger/action lifecycle events (intrinsic fields only — metadata added by executor)", async () => {
@@ -250,8 +255,8 @@ describe("sandbox-store: execution (end-to-end)", () => {
 describe("sandbox-store: __sdk lock semantics (SECURITY.md §2)", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	async function probeSdkLock(code: string): Promise<unknown> {
@@ -311,8 +316,8 @@ describe("sandbox-store: __sdk lock semantics (SECURITY.md §2)", () => {
 describe("sandbox-store: __mail lock semantics (SECURITY.md §2 R-2)", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	async function probeMailLock(code: string): Promise<unknown> {
@@ -390,8 +395,8 @@ describe("sandbox-store: __mail lock semantics (SECURITY.md §2 R-2)", () => {
 describe("sandbox-store: orphan survives re-upload", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	it("in-flight invocation completes on the orphaned sandbox after re-upload", async () => {
@@ -421,8 +426,8 @@ describe("sandbox-store: orphan survives re-upload", () => {
 describe("sandbox-store: secrets plugin end-to-end", () => {
 	let store: SandboxStore;
 
-	afterEach(() => {
-		store?.dispose();
+	afterEach(async () => {
+		await store?.dispose();
 	});
 
 	it("populates workflow.env from manifest.env and redacts plaintexts in outbound events", async () => {
@@ -446,6 +451,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 			sandboxFactory: factory,
 			logger,
 			keyStore: realKeyStore,
+			maxCount: 100,
 		});
 
 		const workflow = {
@@ -515,5 +521,271 @@ var __wfe_exports__ = (function(exports) {
 		const allEventJson = JSON.stringify(events);
 		expect(allEventJson).not.toContain(plaintext);
 		expect(allEventJson).toContain("[secret]");
+	});
+});
+
+// -------- Fake-sandbox eviction tests --------
+//
+// These tests exercise the LRU + sweep logic without paying per-run worker
+// spawn cost. The fake factory hands back controllable `Sandbox` stubs where
+// `isActive` is a plain writable boolean and `dispose()` is a spy. This lets
+// the tests drive the exact cache pressure that evicts, skips, and promotes
+// entries — behaviour that is orthogonal to guest execution and therefore
+// doesn't need a real QuickJS worker.
+
+interface FakeSandbox extends Sandbox {
+	disposeSpy: ReturnType<typeof vi.fn>;
+	setActive(active: boolean): void;
+}
+
+interface FakeFactory extends SandboxFactory {
+	createSpy: ReturnType<typeof vi.fn>;
+	pending: Map<string, (sb: FakeSandbox) => void>;
+	buildQueue: FakeSandbox[];
+	buildNext(make?: () => FakeSandbox): FakeSandbox;
+}
+
+function makeFakeSandbox(): FakeSandbox {
+	let active = false;
+	const dispose = vi.fn();
+	return {
+		run: () => Promise.reject(new Error("fake")),
+		onEvent: () => {},
+		dispose,
+		onDied: () => {},
+		get isActive() {
+			return active;
+		},
+		disposeSpy: dispose,
+		setActive(v: boolean) {
+			active = v;
+		},
+	};
+}
+
+function makeFakeFactory(): FakeFactory {
+	const createSpy = vi.fn<(opts: unknown) => Promise<FakeSandbox>>();
+	const buildQueue: FakeSandbox[] = [];
+	createSpy.mockImplementation(() => {
+		const sb = buildQueue.shift() ?? makeFakeSandbox();
+		return Promise.resolve(sb);
+	});
+	return {
+		create: createSpy as unknown as SandboxFactory["create"],
+		dispose: () => Promise.resolve(),
+		createSpy,
+		pending: new Map(),
+		buildQueue,
+		buildNext(make = makeFakeSandbox) {
+			const sb = make();
+			buildQueue.push(sb);
+			return sb;
+		},
+	};
+}
+
+function workflowWithSha(sha: string): WorkflowManifest {
+	return { ...WORKFLOW, sha };
+}
+
+async function flushMicrotasks(): Promise<void> {
+	// Chain a handful of microtask turns so promise-then callbacks (eviction
+	// dispose, entry.sandbox population) observably settle before assertions.
+	for (let i = 0; i < 5; i++) {
+		// biome-ignore lint/performance/noAwaitInLoops: intentional sequential await — each turn must complete before the next is scheduled
+		await Promise.resolve();
+	}
+}
+
+describe("sandbox-store: LRU eviction", () => {
+	it("evicts the least recently used idle sandbox when the cap is exceeded", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 2,
+		});
+		const a = factory.buildNext();
+		const b = factory.buildNext();
+		const c = factory.buildNext();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		// Miss for `c` → sweep evicts `a` (LRU, idle).
+		await store.get("o", workflowWithSha("c".repeat(64)), "src");
+		await flushMicrotasks();
+		expect(a.disposeSpy).toHaveBeenCalledTimes(1);
+		expect(b.disposeSpy).not.toHaveBeenCalled();
+		expect(c.disposeSpy).not.toHaveBeenCalled();
+		// Log line shape: logger.info(message, meta).
+		const calls = (logger.info as unknown as { mock: { calls: unknown[][] } })
+			.mock.calls;
+		const evictionCall = calls.find((c1) => c1[0] === "sandbox evicted");
+		expect(evictionCall).toBeDefined();
+		const payload = evictionCall?.[1] as {
+			owner: string;
+			sha: string;
+			reason: string;
+			ageMs: number;
+			runCount: number;
+		};
+		expect(payload.owner).toBe("o");
+		expect(payload.sha).toBe("a".repeat(64));
+		expect(payload.reason).toBe("lru");
+		expect(typeof payload.ageMs).toBe("number");
+		expect(typeof payload.runCount).toBe("number");
+		await store.dispose();
+	});
+
+	it("skips active sandboxes during sweep (soft cap)", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 1,
+		});
+		const a = factory.buildNext();
+		const b = factory.buildNext();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		a.setActive(true);
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		await flushMicrotasks();
+		// a is mid-run → not evicted; cache holds both (soft cap exceeded).
+		expect(a.disposeSpy).not.toHaveBeenCalled();
+		expect(b.disposeSpy).not.toHaveBeenCalled();
+		await store.dispose();
+	});
+
+	it("cache hit promotes entry to MRU so a later miss evicts the other entry", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 2,
+		});
+		const a = factory.buildNext();
+		const b = factory.buildNext();
+		const c = factory.buildNext();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		// Hit on `a` promotes it to MRU; `b` becomes LRU.
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		// Miss for `c` → sweep evicts `b`.
+		await store.get("o", workflowWithSha("c".repeat(64)), "src");
+		await flushMicrotasks();
+		expect(b.disposeSpy).toHaveBeenCalledTimes(1);
+		expect(a.disposeSpy).not.toHaveBeenCalled();
+		expect(c.disposeSpy).not.toHaveBeenCalled();
+		await store.dispose();
+	});
+
+	it("skips unresolved building entries without awaiting them", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		// Override create to make the first build never resolve.
+		let neverResolve: Promise<FakeSandbox>;
+		const b = makeFakeSandbox();
+		const c = makeFakeSandbox();
+		let call = 0;
+		factory.createSpy.mockImplementation(() => {
+			call++;
+			if (call === 1) {
+				neverResolve = new Promise<FakeSandbox>(() => {
+					/* never */
+				});
+				return neverResolve;
+			}
+			if (call === 2) {
+				return Promise.resolve(b);
+			}
+			return Promise.resolve(c);
+		});
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 1,
+		});
+		// First get: promise returned but never resolves.
+		const _ignored = store.get("o", workflowWithSha("a".repeat(64)), "src");
+		expect(_ignored).toBeInstanceOf(Promise);
+		// Second get: triggers sweep; unresolved entry is skipped; cache grows.
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		await flushMicrotasks();
+		// Neither sandbox was disposed; the unresolved entry stayed in the cache
+		// (skipped rather than awaited).
+		expect(b.disposeSpy).not.toHaveBeenCalled();
+		// Don't await store.dispose() here — the unresolved build would block it.
+	});
+
+	it("dispose awaits pending fire-and-forget dispose promises", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 1,
+		});
+		const resolvers: (() => void)[] = [];
+		const slow = makeFakeSandbox();
+		slow.disposeSpy.mockImplementation(
+			() =>
+				new Promise<void>((r) => {
+					resolvers.push(r);
+				}),
+		);
+		factory.buildQueue.push(slow);
+		factory.buildQueue.push(makeFakeSandbox());
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		// Miss evicts `slow`; its dispose() does not resolve until we say so.
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		await flushMicrotasks();
+		expect(slow.disposeSpy).toHaveBeenCalledTimes(1);
+		let disposed = false;
+		const disposePromise = store.dispose().then(() => {
+			disposed = true;
+		});
+		await flushMicrotasks();
+		expect(disposed).toBe(false);
+		resolvers[0]?.();
+		await disposePromise;
+		expect(disposed).toBe(true);
+	});
+
+	it("eviction does not share state across owners (no plaintext leak between tenants)", async () => {
+		// Per-entry plugin construction means evicting owner A's sandbox cannot
+		// surface its decrypted secrets into owner B's sandbox. This is a
+		// structural guarantee — each `get()` miss routes through
+		// `buildPluginDescriptors(workflow, keyStore)` which calls
+		// `decryptWorkflowSecrets(workflow, keyStore)` freshly; the fake factory
+		// sees two independent `options.plugins` arrays here, proving no shared
+		// descriptor leaks between the two owners.
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 1,
+		});
+		factory.buildQueue.push(makeFakeSandbox());
+		factory.buildQueue.push(makeFakeSandbox());
+		await store.get("ownerA", workflowWithSha("a".repeat(64)), "src");
+		await store.get("ownerB", workflowWithSha("a".repeat(64)), "src");
+		await flushMicrotasks();
+		const callArgs = factory.createSpy.mock.calls;
+		expect(callArgs.length).toBe(2);
+		// Plugin arrays are distinct instances — no object identity sharing.
+		expect(callArgs[0]?.[0]).not.toBe(callArgs[1]?.[0]);
+		const pluginsA = (callArgs[0]?.[0] as { plugins: unknown[] }).plugins;
+		const pluginsB = (callArgs[1]?.[0] as { plugins: unknown[] }).plugins;
+		expect(pluginsA).not.toBe(pluginsB);
+		await store.dispose();
 	});
 });

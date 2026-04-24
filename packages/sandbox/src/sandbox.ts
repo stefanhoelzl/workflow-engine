@@ -62,6 +62,11 @@ interface Sandbox {
 	onEvent(cb: (event: SandboxEvent) => void): void;
 	dispose(): void;
 	onDied(cb: (err: Error) => void): void;
+	// True iff a `run()` is currently in flight. Exposed so out-of-band
+	// callers (e.g. the runtime's sandbox cache deciding whether to evict
+	// an entry) can skip sandboxes that would race a live run. Host-side
+	// read only; there is no guest-visible counterpart.
+	readonly isActive: boolean;
 }
 
 function errorFromSerialized(err: SerializedError): Error {
@@ -292,7 +297,15 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		onEventCb = cb;
 	}
 
-	return { run, onEvent, dispose, onDied };
+	return {
+		run,
+		onEvent,
+		dispose,
+		onDied,
+		get isActive() {
+			return runActive;
+		},
+	};
 }
 
 export type { Logger, RunResult, Sandbox, SandboxOptions };

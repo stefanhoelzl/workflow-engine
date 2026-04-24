@@ -94,6 +94,65 @@ describe("sandbox isolation", () => {
 	});
 });
 
+describe("sandbox isActive", () => {
+	it("reports false on an idle sandbox", async () => {
+		const sb = await sandbox({
+			source: defaultHandler("return 1;"),
+			plugins: NOOP_PLUGINS,
+		});
+		try {
+			expect(sb.isActive).toBe(false);
+		} finally {
+			sb.dispose();
+		}
+	});
+
+	it("reports true during a run and false after it settles", async () => {
+		const sb = await sandbox({
+			source: defaultHandler("return 42;"),
+			plugins: NOOP_PLUGINS,
+		});
+		try {
+			const pending = sb.run("default", null);
+			// runActive is set synchronously inside run(); observable here.
+			expect(sb.isActive).toBe(true);
+			const result = await pending;
+			expect(result.ok).toBe(true);
+			expect(sb.isActive).toBe(false);
+		} finally {
+			sb.dispose();
+		}
+	});
+
+	it("reports false after a run settles with an error", async () => {
+		const sb = await sandbox({
+			source: defaultHandler("throw new Error('boom');"),
+			plugins: NOOP_PLUGINS,
+		});
+		try {
+			const result = await sb.run("default", null);
+			expect(result.ok).toBe(false);
+			expect(sb.isActive).toBe(false);
+		} finally {
+			sb.dispose();
+		}
+	});
+
+	it("is host-side only — not visible to the guest", async () => {
+		// The guest sees only what plugins export onto globalThis (and in
+		// production, the sdk-support plugin auto-deletes non-public descriptors
+		// post-init per SECURITY §2 R-1). `isActive` is a property on the
+		// host-side Sandbox object; it is never placed onto the guest's
+		// globalThis. Prove it: a guest probe for typeof isActive yields
+		// "undefined".
+		const { result } = await runSource(
+			defaultHandler("return typeof isActive;"),
+		);
+		expect(result.ok).toBe(true);
+		expect((result as { result: unknown }).result).toBe("undefined");
+	});
+});
+
 describe("sandbox dispose", () => {
 	it("rejects subsequent run calls after dispose", async () => {
 		const sb = await sandbox({

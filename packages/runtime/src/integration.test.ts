@@ -139,6 +139,7 @@ describe("end-to-end event flow", () => {
 			sandboxFactory,
 			logger,
 			keyStore: stubKeyStore,
+			maxCount: 100,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({
@@ -253,6 +254,7 @@ describe("end-to-end event flow", () => {
 			sandboxFactory,
 			logger,
 			keyStore: integrationKeyStore,
+			maxCount: 100,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({
@@ -952,6 +954,7 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 			sandboxFactory,
 			logger,
 			keyStore,
+			maxCount: 100,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({
@@ -1091,6 +1094,7 @@ var __wfe_exports__ = (function(exports) {
 			sandboxFactory,
 			logger,
 			keyStore,
+			maxCount: 100,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({
