@@ -4,7 +4,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"build": "wfe build"
+		"build": "node ../packages/sdk/dist/cli/cli.js build"
 	},
 	"dependencies": {
 		"@workflow-engine/sdk": "workspace:*"
