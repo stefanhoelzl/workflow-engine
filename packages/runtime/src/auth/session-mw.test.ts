@@ -72,7 +72,7 @@ async function freshCookie(
 	const provider: SessionProvider = over.provider ?? "github";
 	const payload: SessionPayload = {
 		provider,
-		name: "alice",
+		login: "alice",
 		mail: "alice@x",
 		orgs: ["acme"],
 		accessToken: "gho_xxx",
@@ -104,15 +104,15 @@ describe("sessionMiddleware", () => {
 			headers: { cookie },
 		});
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { user: { name: string } };
-		expect(body.user.name).toBe("alice");
+		const body = (await res.json()) as { user: { login: string } };
+		expect(body.user.login).toBe("alice");
 	});
 
 	it("passes through on fresh local session", async () => {
 		const now = 1_700_000_000_000;
 		const { cookie } = await freshCookie({
 			provider: "local",
-			name: "dev",
+			login: "dev",
 			mail: "dev@dev.local",
 			orgs: [],
 			accessToken: "",
@@ -121,8 +121,8 @@ describe("sessionMiddleware", () => {
 		const app = mkApp({ authAllow: "local:dev", nowFn: () => now });
 		const res = await app.request("/protected", { headers: { cookie } });
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { user: { name: string } };
-		expect(body.user.name).toBe("dev");
+		const body = (await res.json()) as { user: { login: string } };
+		expect(body.user.login).toBe("dev");
 	});
 
 	it("refreshes stale github session and re-seals", async () => {
@@ -150,7 +150,7 @@ describe("sessionMiddleware", () => {
 		const fetchFn = vi.fn(async () => new Response("{}", { status: 200 }));
 		const { cookie } = await freshCookie({
 			provider: "local",
-			name: "dev",
+			login: "dev",
 			mail: "dev@dev.local",
 			orgs: [],
 			accessToken: "",
@@ -235,7 +235,7 @@ describe("sessionMiddleware", () => {
 		const now = 1_700_000_000_000;
 		const { cookie } = await freshCookie({
 			provider: "local",
-			name: "dev",
+			login: "dev",
 			resolvedAt: now - 1000,
 		});
 		// Registry has only github — local session can't be refreshed

@@ -625,7 +625,7 @@ describe("ManifestSchema", () => {
 
 	const validManifest = { workflows: [validWorkflow] };
 
-	it("accepts a valid v1 tenant manifest", () => {
+	it("accepts a valid v1 owner manifest", () => {
 		const parsed = ManifestSchema.parse(validManifest);
 		expect(parsed.workflows).toHaveLength(1);
 		const wf = parsed.workflows[0];
@@ -682,7 +682,7 @@ describe("ManifestSchema", () => {
 		).toThrow();
 	});
 
-	it("rejects a tenant manifest missing the workflows array", () => {
+	it("rejects a owner manifest missing the workflows array", () => {
 		expect(() => ManifestSchema.parse({})).toThrow();
 	});
 
@@ -701,7 +701,7 @@ describe("ManifestSchema", () => {
 		expect(() => ManifestSchema.parse({ workflows: [rest] })).toThrow();
 	});
 
-	it("rejects duplicate workflow names within one tenant manifest", () => {
+	it("rejects duplicate workflow names within one owner manifest", () => {
 		expect(() =>
 			ManifestSchema.parse({
 				workflows: [validWorkflow, validWorkflow],

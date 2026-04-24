@@ -12,18 +12,18 @@
 - `pnpm test` — Vitest test suite (unit + integration, excludes WPT)
 - `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`); honours `WPT_CONCURRENCY` env override (default: `max(4, cpus × 2)`)
 - `pnpm test:wpt:refresh` — regenerate `packages/sandbox-stdlib/test/wpt/vendor/` from upstream WPT
-- `pnpm build` — Recursively runs workspace builds (`pnpm -r build`): `vite build` (runtime → `dist/main.js`, sandbox) + `tsc --build` (sdk); workflows emit a single tenant tarball `workflows/dist/bundle.tar.gz` containing a root `manifest.json` + one `<name>.js` per workflow at the tarball root. Per-workspace: `pnpm --filter @workflow-engine/runtime build`, `pnpm --filter @workflow-engine/sandbox build`, `pnpm --filter @workflow-engine/sdk build`.
+- `pnpm build` — Recursively runs workspace builds (`pnpm -r build`): `vite build` (runtime → `dist/main.js`, sandbox) + `tsc --build` (sdk); workflows emit a single owner tarball `workflows/dist/bundle.tar.gz` containing a root `manifest.json` + one `<name>.js` per workflow at the tarball root. Per-workspace: `pnpm --filter @workflow-engine/runtime build`, `pnpm --filter @workflow-engine/sandbox build`, `pnpm --filter @workflow-engine/sdk build`.
 - `pnpm start` — `pnpm build` then `pnpm dev` (builds workspaces, then boots the dev runtime with auto-upload of `workflows/src/demo.ts`)
 
 ## CLI (`wfe`)
 
 The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke it from the workflows project root via `pnpm exec`:
 
-- `pnpm exec wfe upload --tenant <name>` — build and upload the current project's bundle to the default URL.
-- `pnpm exec wfe upload --tenant <name> --url http://localhost:8080` — target local dev.
-- `pnpm exec wfe upload --tenant <name> --user <name>` — local-provider auth (requires server `LOCAL_DEPLOYMENT=1`).
-- `pnpm exec wfe upload --tenant <name> --token <ghp_…>` — github-provider auth (explicit token).
-- `pnpm exec wfe upload --tenant <name>` with `GITHUB_TOKEN=<ghp_…>` in the env — same as `--token`.
+- `pnpm exec wfe upload --owner <name>` — build and upload the current project's bundle to the default URL.
+- `pnpm exec wfe upload --owner <name> --url http://localhost:8080` — target local dev.
+- `pnpm exec wfe upload --owner <name> --user <name>` — local-provider auth (requires server `LOCAL_DEPLOYMENT=1`).
+- `pnpm exec wfe upload --owner <name> --token <ghp_…>` — github-provider auth (explicit token).
+- `pnpm exec wfe upload --owner <name>` with `GITHUB_TOKEN=<ghp_…>` in the env — same as `--token`.
 
 `--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive. The check runs *before* the build; a conflicting invocation fails fast and produces no artefacts (see SECURITY.md §4 "CLI authentication").
 
@@ -50,21 +50,21 @@ Prod/staging runbook: `docs/infrastructure.md`.
 
 ## Dev verification
 
-Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the full cluster. `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` to tenant `dev`, and hot-reloads on source changes — no kind cluster, no Traefik, no cert-manager.
+Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the full cluster. `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` to owner `dev`, and hot-reloads on source changes — no kind cluster, no Traefik, no cert-manager.
 
 **Escalate to `pnpm local:up:build` (https://localhost:8443) only when the change touches:** `infrastructure/`, Traefik routing/middleware, `secure-headers.ts` (CSP/HSTS/Permissions-Policy), `NetworkPolicy`, cert-manager, K8s manifests, or Helm values. Agents do NOT run `pnpm local:up:build` themselves; they write a `Cluster smoke (human)` block in `tasks.md` listing the specific probes for a human to run. Local auth (`/login`, the local-user dropdown, session-cookie flows) is NOT a cluster-escalation reason — the in-app local provider renders identically under `pnpm dev`.
 
 ### Spawn & readiness
 
 1. Start backgrounded: `pnpm dev --random-port --kill`. Agents use `run_in_background` so the process tree is owned by the agent.
-2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (tenant=dev)`. Parse the port from that line. Do NOT probe before it appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
+2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (owner=dev)`. Parse the port from that line. Do NOT probe before it appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
 3. Kill the process tree at end of task. `.persistence/` is left as-is between tasks; each boot re-uploads the bundle anyway.
 
 ### Auth fixture (set by `scripts/dev.ts`: `AUTH_ALLOW=local:dev,local:alice:acme,local:bob`, `LOCAL_DEPLOYMENT=1`)
 
-- `/api/*`: `X-Auth-Provider: local` + `Authorization: User dev` — default happy path on tenant `dev`.
-- Positive tenant isolation: `Authorization: User alice` against tenant `acme` → 200.
-- Negative tenant isolation: `Authorization: User bob` against tenant `acme` → 404.
+- `/api/*`: `X-Auth-Provider: local` + `Authorization: User dev` — default happy path on owner `dev`.
+- Positive owner isolation: `Authorization: User alice` against owner `acme` → 200.
+- Negative owner isolation: `Authorization: User bob` against owner `acme` → 404.
 - `/webhooks/*`: public, no headers.
 - UI routes (`/dashboard`, `/trigger`, `/login`): use `curl -c/-b cookiejar` against `POST /auth/local/signin` with form field `name=dev` to obtain the sealed `session` cookie, then send it on subsequent GETs. For interactive Alpine behaviour, use Playwright (below).
 
@@ -75,7 +75,7 @@ Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the
 ### Probe toolkit
 
 - **HTTP**: `curl` against `/api/workflows/dev`, `POST /webhooks/dev/demo/<trigger>`, `/dashboard`, `/dashboard/invocations`, `/trigger`. Assert on status code + JSON/HTML content.
-- **EventStore**: inspect `.persistence/` for emitted events (`invocation.started`, `invocation.completed`, `trigger.request`, `action.error`, …). Useful when verifying tenant scoping or event-shape changes without a UI.
+- **EventStore**: inspect `.persistence/` for emitted events (`invocation.started`, `invocation.completed`, `trigger.request`, `action.error`, …). Useful when verifying owner scoping or event-shape changes without a UI.
 - **Dashboard HTML scraping**: grep rendered output for expected classes (`kind-trigger`, `kind-action`, `kind-rest`, `.entry.skeleton`) — cheap UI regression check without a browser.
 - **Stdout tailing**: tee the dev process's stdout to a file; grep for error traces and upload confirmations.
 - **Playwright** (agent-only; NOT in `pnpm test` / `pnpm validate`): use for Alpine-driven interactivity, focus rings, form submission, copy-event buttons. First-time use in a fresh clone requires `pnpm exec playwright install chromium` (~300 MB download, one-time). Scripts are ad-hoc via `pnpm exec playwright test -c <inline-config>` or `node -e '...'` — no test suite wiring.
@@ -85,7 +85,7 @@ Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the
 Replace the old "visit `https://localhost:8443` and click X" bullets with dev-probe bullets the agent ticks as it executes them. Example shape:
 
 ```
-- [ ] N.1 `pnpm dev --random-port --kill` boots; stdout contains `Dev ready on http://localhost:<port> (tenant=dev)`.
+- [ ] N.1 `pnpm dev --random-port --kill` boots; stdout contains `Dev ready on http://localhost:<port> (owner=dev)`.
 - [ ] N.2 `GET /api/workflows/dev` (headers: `X-Auth-Provider: local`, `Authorization: User dev`) → 200 lists `demo`.
 - [ ] N.3 `POST /webhooks/dev/demo/<trigger>` with <fixture body> → 202; `.persistence/` event stream shows paired `invocation.started` / `invocation.completed`.
 - [ ] N.4 `GET /dashboard` (session cookie for `dev`) → 200; HTML contains `kind-trigger` and `kind-action` spans.
@@ -97,7 +97,7 @@ Replace the old "visit `https://localhost:8443` and click X" bullets with dev-pr
 ```
 ## Upgrade notes
 
-- **SMTP plugin + `sendMail` SDK export (2026-04-24).** Additive. No state wipe. Tenants that want to use `sendMail` from `@workflow-engine/sdk` must rebuild via `pnpm build` and re-upload via `wfe upload --tenant <name>` to pick up the new export. Tenants that do not use mail see zero behavioural change. New event kinds `mail.request` / `mail.response` / `mail.error` flow through the unchanged event pipeline.
+- **SMTP plugin + `sendMail` SDK export (2026-04-24).** Additive. No state wipe. Tenants that want to use `sendMail` from `@workflow-engine/sdk` must rebuild via `pnpm build` and re-upload via `wfe upload --owner <name>` to pick up the new export. Tenants that do not use mail see zero behavioural change. New event kinds `mail.request` / `mail.response` / `mail.error` flow through the unchanged event pipeline.
 
 ## Example workflows
 
@@ -138,13 +138,13 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 - **NEVER** mutate `bridge.*` or construct `seq`/`ref`/`ts`/`at`/`id` directly from plugin code — all events flow through `ctx.emit` / `ctx.request`, which stamp those fields internally (§2 R-5).
 - **NEVER** introduce cross-thread method calls between main and worker; plugin code is worker-only and plugin configs MUST be JSON-serializable (verified by `assertSerializableConfig`) (§2 R-6).
 - **NEVER** use the reserved event prefixes `trigger`, `action`, `fetch`, `mail`, `timer`, `console`, `wasi`, or `uncaught-error` for third-party plugins; use a domain-specific prefix instead (§2 R-7).
-- **NEVER** stamp tenant, workflow, workflowSha, or invocationId inside sandbox or plugin code — the sandbox only stamps intrinsic event fields (`seq`, `ref`, `ts`, `at`, `id`, `kind`, `name`) via `ctx.emit`/`ctx.request`, and the runtime attaches runtime-owned fields (`tenant`, `workflow`, `workflowSha`, `invocationId`) in its `sb.onEvent` receiver before forwarding to the bus. `BusConsumer.handle` therefore always sees a fully-widened `InvocationEvent`; consumers MUST NOT re-stamp or mutate either set (§2 R-8).
+- **NEVER** stamp owner, workflow, workflowSha, or invocationId inside sandbox or plugin code — the sandbox only stamps intrinsic event fields (`seq`, `ref`, `ts`, `at`, `id`, `kind`, `name`) via `ctx.emit`/`ctx.request`, and the runtime attaches runtime-owned fields (`owner`, `workflow`, `workflowSha`, `invocationId`) in its `sb.onEvent` receiver before forwarding to the bus. `BusConsumer.handle` therefore always sees a fully-widened `InvocationEvent`; consumers MUST NOT re-stamp or mutate either set (§2 R-8).
 - **NEVER** emit, read, or construct `InvocationEvent.meta` (including `meta.dispatch`) from inside sandbox or plugin code — `meta` is stamped only by the executor's `sb.onEvent` widener, gated on `event.kind === "trigger.request"`. Dispatch provenance (`{source, user?}`) is a runtime-only concern; guests never see it (§2 R-9; canonical contract in `openspec/specs/invocations/spec.md` under "Dispatch provenance on trigger.request").
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add an authenticated UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without wiring `sessionMiddleware` into its middleware factory (§4).
 - **NEVER** add an `/api/*` route without the `apiAuthMiddleware` in front of it (§4).
-- **NEVER** accept a `<tenant>` URL parameter without validating against the tenant regex (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) AND the `isMember(user, tenant)` predicate; both paths must fail-closed with a `404 Not Found` identical to "tenant does not exist" to prevent enumeration (§4).
-- **NEVER** expose workflow or invocation data cross-tenant in API responses, dashboard queries, or trigger listings — every query must be scoped by `tenant`. For invocation events, the only scoped read API is `EventStore.query(tenant)` (do not construct raw queries against the `events` table); for workflows, route through `WorkflowRegistry`, which is keyed by tenant (§1 I-T2, §4).
+- **NEVER** accept a `<owner>` URL parameter without validating against the owner regex (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) AND the `isMember(user, owner)` predicate; both paths must fail-closed with a `404 Not Found` identical to "owner does not exist" to prevent enumeration (§4).
+- **NEVER** expose workflow or invocation data cross-owner in API responses, dashboard queries, or trigger listings — every query must be scoped by `owner`. For invocation events, the only scoped read API is `EventStore.query(owner)` (do not construct raw queries against the `events` table); for workflows, route through `WorkflowRegistry`, which is keyed by owner (§1 I-T2, §4).
 - **NEVER** read `X-Auth-Request-*` on any code path. Forward-auth identity was removed by the `replace-oauth2-proxy` change; no upstream produces those headers any more. Neither `apiAuthMiddleware` (API) nor `sessionMiddleware` (UI) reads them, and reading them anywhere would reintroduce the forged-header class (§4 A13).
 - **NEVER** weaken the app-pod `NetworkPolicy` (§5 R-I1). The load-bearing controls against the forged-header class are now app-side (no code path reads `X-Auth-Request-*`) and edge-side (oauth2-proxy sidecar removed, no upstream produces those headers) per §4 A13; the NetworkPolicy remains as defence-in-depth and as a baseline for blast radius on any future in-cluster compromise.
 - **NEVER** hardcode or commit a secret; route all *secret* values (credentials, keys, tokens) through K8s Secrets injected via `envFrom.secretRef` (§5). Non-secret config (`AUTH_ALLOW`, `LOG_LEVEL`, `PORT`, `BASE_URL`, `LOCAL_DEPLOYMENT`, `PERSISTENCE_S3_BUCKET`, etc.) is intentionally visible in pod specs for auditability and does NOT require `envFrom.secretRef` — see `openspec/specs/runtime-config/spec.md` "AUTH_ALLOW config variable" for the canonical auditability carve-out.

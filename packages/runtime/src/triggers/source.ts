@@ -10,9 +10,9 @@ import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 // shared deps, passes the list into the WorkflowRegistry, and manages
 // start()/stop() lifecycle.
 //
-// On every tenant-upload the registry calls `reconfigure(tenant, entries)`
-// on every backend in parallel. Each backend replaces its per-tenant state
-// atomically; empty entries removes the tenant. Backends never touch the
+// On every owner-upload the registry calls `reconfigure(owner, entries)`
+// on every backend in parallel. Each backend replaces its per-owner state
+// atomically; empty entries removes the owner. Backends never touch the
 // Executor — they invoke `entry.fire(input)` with a normalized protocol
 // input; the closure (constructed by the registry via `buildFire`) validates
 // input and dispatches through the executor.
@@ -33,7 +33,7 @@ interface TriggerEntry<
 
 // User-facing configuration error. Maps to 4xx on the upload API. Never
 // carries stack traces or credentials — only safe, actionable fields that
-// can be surfaced to the tenant who uploaded the bundle.
+// can be surfaced to the owner who uploaded the bundle.
 interface TriggerConfigError {
 	readonly backend: string;
 	readonly trigger: string;
@@ -52,7 +52,7 @@ interface TriggerSource<
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	reconfigure(
-		tenant: string,
+		owner: string,
 		entries: readonly TriggerEntry<D>[],
 	): Promise<ReconfigureResult>;
 }

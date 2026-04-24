@@ -24,7 +24,7 @@ describe("isSafeReturnTo", () => {
 	it.each([
 		"/",
 		"/dashboard",
-		"/dashboard/invocations?tenant=acme",
+		"/dashboard/invocations?owner=acme",
 		"/trigger/#fragment",
 	])("accepts %s", (v) => {
 		expect(isSafeReturnTo(v)).toBe(true);

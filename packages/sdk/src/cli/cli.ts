@@ -16,9 +16,9 @@ const uploadCommand = defineCommand({
 			description: "Target runtime URL",
 			default: DEFAULT_URL,
 		},
-		tenant: {
+		owner: {
 			type: "string",
-			description: "Target tenant (falls back to WFE_TENANT env var)",
+			description: "Target owner (falls back to WFE_OWNER env var)",
 		},
 		user: {
 			type: "string",
@@ -27,18 +27,18 @@ const uploadCommand = defineCommand({
 		},
 	},
 	async run({ args }) {
-		// biome-ignore lint/style/noProcessEnv: reading WFE_TENANT is the documented fallback
-		const tenant = args.tenant ?? process.env.WFE_TENANT?.trim() ?? "";
-		if (!tenant) {
+		// biome-ignore lint/style/noProcessEnv: reading WFE_OWNER is the documented fallback
+		const owner = args.owner ?? process.env.WFE_OWNER?.trim() ?? "";
+		if (!owner) {
 			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-			console.error("tenant required: pass --tenant <name> or set WFE_TENANT");
+			console.error("owner required: pass --owner <name> or set WFE_OWNER");
 			process.exit(1);
 		}
 		try {
 			const { failed } = await upload({
 				cwd: process.cwd(),
 				url: args.url,
-				tenant,
+				owner,
 				...(args.user ? { user: args.user } : {}),
 			});
 			process.exit(failed === 0 ? 0 : 1);

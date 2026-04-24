@@ -322,7 +322,7 @@ describe("buildFire", () => {
 
 		await fire(
 			{ body: { name: "alice" } },
-			{ source: "manual", user: { name: "Jane", mail: "jane@ex.com" } },
+			{ source: "manual", user: { login: "Jane", mail: "jane@ex.com" } },
 		);
 
 		expect(invoke).toHaveBeenCalledTimes(1);
@@ -334,7 +334,7 @@ describe("buildFire", () => {
 			bundleSource: "bundle-src",
 			dispatch: {
 				source: "manual",
-				user: { name: "Jane", mail: "jane@ex.com" },
+				user: { login: "Jane", mail: "jane@ex.com" },
 			},
 		});
 	});
@@ -374,7 +374,7 @@ describe("buildFire", () => {
 
 		const result = await fire(
 			{ body: {} }, // missing required `name`
-			{ source: "manual", user: { name: "Jane", mail: "jane@ex.com" } },
+			{ source: "manual", user: { login: "Jane", mail: "jane@ex.com" } },
 		);
 
 		expect(result.ok).toBe(false);

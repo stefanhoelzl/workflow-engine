@@ -104,7 +104,7 @@ sections must append (§7 and onward), not renumber.
 | # | Surface | Trust level | Entry points | Auth mechanism | Section |
 |---|---------|-------------|--------------|----------------|---------|
 | 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox({source, plugins}).run(handlerName, payload)` | Isolation, not auth | §2 |
-| 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/<tenant>/<workflow>/<trigger>` | None — payload-schema validation only | §3 |
+| 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/<owner>/<workflow>/<trigger>` | None — payload-schema validation only | §3 |
 | 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/login`, `/auth/*`, `/api/*` | In-app OAuth (sealed session cookie) for UI; Bearer (GitHub) for API. Both gated by `AUTH_ALLOW`. `/login` is the provider-agnostic sign-in page; `/auth/github/*` is the GitHub-specific handshake. | §4 |
 | 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Traefik | K8s RBAC, pod network | §5 |
 
@@ -120,10 +120,10 @@ sections must append (§7 and onward), not renumber.
 - **INTERNAL** — Cluster-local, reachable only by other pods. Not exposed
   externally. Not a substitute for authentication at the app level.
 
-### Tenant isolation invariants
+### Owner isolation invariants
 
 **I-T2** — No caller (authenticated or not) SHALL read, modify, or execute
-another tenant's workflows or invocation events.
+another owner's workflows or invocation events.
 
 Enforcement is distributed across several mechanisms; each is
 load-bearing and documented in its own section or capability spec. The
@@ -131,13 +131,13 @@ table below is the navigation map:
 
 | Data path                              | Enforcement mechanism                                       | Documented in                      |
 |----------------------------------------|-------------------------------------------------------------|------------------------------------|
-| `POST /api/workflows/:tenant`          | Tenant regex + `isMember(user, tenant)` gate; identical 404 | §4, threat A12                     |
-| Invocation event reads                 | `EventStore.query(tenant)` pre-binds `.where("tenant", …)`  | `event-store/spec.md`              |
-| Invocation event writes                | Runtime stamps `tenant` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no tenant concept) | `executor/spec.md`, §2 R-2 |
-| `POST /webhooks/:tenant/:workflow/*`   | Registry lookup by `(tenant, workflow)` pair                | §3, `http-trigger/spec.md`         |
-| Workflow bundle storage                | Storage key = `workflows/<tenant>.tar.gz`                   | `workflow-registry/spec.md`        |
+| `POST /api/workflows/:owner`          | Owner regex + `isMember(user, owner)` gate; identical 404 | §4, threat A12                     |
+| Invocation event reads                 | `EventStore.query(owner)` pre-binds `.where("owner", …)`  | `event-store/spec.md`              |
+| Invocation event writes                | Runtime stamps `owner` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no owner concept) | `executor/spec.md`, §2 R-2 |
+| `POST /webhooks/:owner/:workflow/*`   | Registry lookup by `(owner, workflow)` pair                | §3, `http-trigger/spec.md`         |
+| Workflow bundle storage                | Storage key = `workflows/<owner>.tar.gz`                   | `workflow-registry/spec.md`        |
 
-The regex-validated tenant identifier is NOT a permission check — it is
+The regex-validated owner identifier is NOT a permission check — it is
 a format check. Every mechanism above is load-bearing; weakening any one
 of them breaks I-T2. Threats that specifically target I-T2 are
 enumerated in §4 (A12, A13, A14) alongside their mitigations.
@@ -202,11 +202,11 @@ descriptor).
   to the worker.
 - `createSandboxFactory({ logger })` — construction primitive for
   `Sandbox` instances. Every `create({source, plugins}, options?)` call
-  spawns a new worker. Tenant-scoped sandbox reuse is owned by
+  spawns a new worker. Owner-scoped sandbox reuse is owned by
   `SandboxStore` (`packages/runtime/src/sandbox-store.ts`), keyed by
-  `(tenant, workflow.sha)`.
+  `(owner, workflow.sha)`.
 - `Sandbox.run(name, input)` — invokes a named export from the workflow
-  module. Runtime metadata (tenant/workflow/workflowSha/invocationId) is
+  module. Runtime metadata (owner/workflow/workflowSha/invocationId) is
   NOT passed into `run` — the runtime stamps those fields on events in
   its `sb.onEvent` receiver after the sandbox emits them (see R-2 below).
 - `Sandbox.onEvent(cb)` — registers a callback invoked for each
@@ -236,7 +236,7 @@ Every `create()` runs deterministically through:
    registered `GuestFunctionDescription` and `delete globalThis[name]` for
    every entry with `public !== true`. This is structural enforcement,
    not review discipline.
-4. Phase-4: user source evaluation (the tenant bundle IIFE).
+4. Phase-4: user source evaluation (the owner bundle IIFE).
 5. Ready. Subsequent `run()` calls invoke exports.
 
 Failures in any phase dispose the bridge, post `init-error`, and
@@ -305,7 +305,7 @@ emitted.
   stdout/stderr (rare; mostly mbedTLS notices and engine panic paths).
   Guest `console.log` does NOT reach `fd_write`; it flows through the
   console plugin's descriptor. The telemetry setup emits `wasi.fd_write`
-  with `{fd, text}`. **`fd_write` bytes never become tenant-visible
+  with `{fd, text}`. **`fd_write` bytes never become owner-visible
   `console.*` events** — engine plumbing belongs in the operational log.
 
 **Residual observability gap.** Operations inside the WASM crypto
@@ -320,7 +320,7 @@ and is out of scope.
 
 Every event is stamped with `id/seq/ref/ts/at/kind/name/input?/output?/error?`
 by the sandbox on the worker thread (single-authority counter). The
-sandbox does NOT know tenant/workflow/workflowSha/invocationId; those
+sandbox does NOT know owner/workflow/workflowSha/invocationId; those
 are labels the runtime attaches post-hoc in its `sb.onEvent` receiver
 (see R-2, R-8). `seq` is monotonic per run; `ref` forms the parent-
 frame stack (`createsFrame` pushes after emit; `closesFrame` emits with
@@ -472,7 +472,7 @@ exists.
 | R-S3 | Host timers run on the Node event loop with no per-spawn cap; per-run cleanup mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
 | R-S4 | Every outbound-TCP plugin in `sandbox-stdlib` MUST route host resolution through the shared `net-guard` primitive (`assertHostIsPublic` in `packages/sandbox-stdlib/src/net-guard/`) so the IANA special-use blocklist is applied identically across plugins. Current consumers: the `fetch` plugin (via `hardenedFetch` — closed over in `createFetchPlugin` as the structural production default; override requires replacing the entire plugin via `__pluginLoaderOverride`, a test-only path) and the `mail` plugin (`assertHostIsPublic(smtp.host)` called before constructing the nodemailer transport, with `host: <validatedIP>` + `tls.servername: <originalHost>` to close the TOCTOU window). Any future outbound-TCP plugin MUST adopt the same primitive. | S5 closed | **Resolved** |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. Defence-in-depth under R-S4. | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
-| R-S12 | **No public-URL allowlist.** Guest code can still `fetch()` any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration to attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-tenant host allowlist in the tenant manifest, enforced at upload-time + in `hardenedFetch`. | S8 deferred | **Deferred** (separate change) |
+| R-S12 | **No public-URL allowlist.** Guest code can still `fetch()` any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration to attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-owner host allowlist in the owner manifest, enforced at upload-time + in `hardenedFetch`. | S8 deferred | **Deferred** (separate change) |
 | R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret a handler returns, echoes into an action input, or logs will appear in the archive / pino logs | S7 partial | Behavioural; author responsibility |
 | R-S7 | **Resolved.** CryptoKey objects live in WASM linear memory (PSA key handles managed by the crypto extension) and are freed with the VM. | — | **Resolved** |
 | R-S8 | `crypto.subtle.exportKey("jwk", ...)` is not supported by the WASM crypto extension (raw / pkcs8 / spki are). | Feature gap | v1 limitation (engine-level) |
@@ -497,7 +497,7 @@ plugin, and every change that adds a guest-visible surface.
    `Object.defineProperty({writable: false, configurable: false})`
    wrapping an `Object.freeze`d inner object. Canonical examples: `__sdk`
    (action dispatcher) and `__mail` (SMTP dispatcher).
-   Rationale: tenant code cannot replace the dispatcher with a stub that
+   Rationale: owner code cannot replace the dispatcher with a stub that
    bypasses `action.*` / `mail.*` emission. Adding a new top-level
    host-callable global without this structural lock is forbidden.
 3. **R-3 Hardened fetch default.** `createFetchPlugin` closes over
@@ -535,10 +535,10 @@ plugin, and every change that adds a guest-visible surface.
    `mypkg.response`) to avoid conflating with core audit categories.
 8. **R-8 No runtime metadata in the sandbox.** The sandbox stamps only
    intrinsic event fields: `kind`, `name`, `id`, `seq`, `ref`, `ts`,
-   `at`, and `input?` / `output?` / `error?`. Tenant, workflow,
+   `at`, and `input?` / `output?` / `error?`. Owner, workflow,
    workflowSha, and invocationId are stamped by the runtime in its
    `sb.onEvent` receiver before forwarding events to the bus. A plugin
-   that needs to attach a tenant or workflow label is doing something
+   that needs to attach a owner or workflow label is doing something
    wrong — that labelling belongs on the runtime side.
 9. **R-9 Runtime-only dispatch provenance.** `InvocationEvent.meta` and
    every field nested under it (including `meta.dispatch`, which carries
@@ -625,9 +625,9 @@ Additional standing rules that predate the plugin rewrite:
 - Runtime host-call-action plugin: `packages/runtime/src/plugins/host-call-action.ts`,
   `packages/runtime/src/host-call-action-config.ts`
 - Runtime trigger plugin: `packages/runtime/src/plugins/trigger.ts`
-- Sandbox store (per-`(tenant, sha)` sandbox cache + plugin composition):
+- Sandbox store (per-`(owner, sha)` sandbox cache + plugin composition):
   `packages/runtime/src/sandbox-store.ts`
-- Workflow registry (metadata + per-tenant trigger index):
+- Workflow registry (metadata + per-owner trigger index):
   `packages/runtime/src/workflow-registry.ts`
 - HTTP trigger middleware: `packages/runtime/src/triggers/http.ts`
 - Executor (per-workflow runQueue + `sb.onEvent` stamping):
@@ -642,16 +642,16 @@ Additional standing rules that predate the plugin rewrite:
 
 ### Trust level
 
-**PUBLIC.** `POST /webhooks/{tenant}/{workflow}/{trigger_path}` is reachable by
+**PUBLIC.** `POST /webhooks/{owner}/{workflow}/{trigger_path}` is reachable by
 anyone on the Internet without authentication. This is an **intentional design
 choice**: webhooks are how external systems deliver events. Do not add
 authentication here without an OpenSpec change proposal — existing
 integrations depend on unauthenticated ingress.
 
-The tenant and workflow-name prefixes in the URL are **identification, not
-authorization**: knowledge of a valid `(tenant, workflow, path)` tuple is
+The owner and workflow-name prefixes in the URL are **identification, not
+authorization**: knowledge of a valid `(owner, workflow, path)` tuple is
 sufficient to trigger the workflow. These segments exist to disambiguate
-tenants and workflows at the routing layer, not to gate access.
+owners and workflows at the routing layer, not to gate access.
 
 Everything received on this surface must be treated as
 attacker-controlled: body, headers, query string, URL parameters, and
@@ -665,20 +665,20 @@ reflected in the SDK's `inputSchema: z.object({})` property, enforced at the
 type level and validated by the `fire` closure before the sandbox is entered).
 Cron triggers are exposed only via the authenticated `/trigger` UI's
 "Run now" affordance, which sits behind `sessionMiddleware` +
-`requireTenantMember` (§4).
+`requireOwnerMember` (§4).
 
 ### Entry points
 
-- `POST /webhooks/{tenant}/{workflow}/{trigger_name}` (or whatever `method` the
+- `POST /webhooks/{owner}/{workflow}/{trigger_name}` (or whatever `method` the
   trigger declares; default POST) with JSON body.
-- `{tenant}` and `{workflow}` are validated against the tenant identifier regex
+- `{owner}` and `{workflow}` are validated against the owner identifier regex
   (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`); `{trigger_name}` is validated against
   the trigger-name regex (`^[A-Za-z_][A-Za-z0-9_]{0,62}$`); non-matching values
   receive 404.
 - Trigger segment matching is **exact**: the URL MUST be exactly three
   regex-constrained segments after `/webhooks/`. No URLPattern, no `:param`
   named segments, no `*wildcard` tail segments. Lookup is a constant-time
-  `Map.get()` keyed by `(tenant, workflow, trigger-name)`
+  `Map.get()` keyed by `(owner, workflow, trigger-name)`
   (`packages/runtime/src/triggers/http.ts`). Query strings on the URL are
   tolerated for compatibility with providers that append tracking params
   (AWS signatures, delivery IDs) but are **not parsed** into any structured
@@ -741,20 +741,20 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 - **TLS termination at Traefik** (HTTPS only on the websecure
   entrypoint).
 - **Closed URL vocabulary.** The three URL segments
-  (`<tenant>/<workflow>/<trigger-name>`) are all regex-constrained identifiers
+  (`<owner>/<workflow>/<trigger-name>`) are all regex-constrained identifiers
   set at workflow build time (the trigger name IS the export identifier,
   enforced by the vite plugin) and validated at upload (the manifest Zod
   schema's `.regex()` constraints). There is no author-controlled URL
   fragment; there are no param placeholders; there is no URL-derived data
   structured onto the handler's payload. A request URL either matches
-  exactly one registered `(tenant, workflow, trigger-name)` triple or
+  exactly one registered `(owner, workflow, trigger-name)` triple or
   returns **404**. This is strictly stricter than URLPattern-based matching
   and eliminates any `payload.params` / `payload.query` injection surface
   entirely — the handler receives `{ body, headers, url, method }` and
   nothing else. Collisions within a workflow are impossible by
   construction (JS rejects duplicate export names at parse time; the
   manifest schema requires unique trigger names per workflow; the
-  workflow manifest schema requires unique workflow names per tenant).
+  workflow manifest schema requires unique workflow names per owner).
 - **Separate trust domain** — webhook handlers cannot read the session
   cookies or bearer tokens used by the UI / API routes, because those
   headers are not forwarded to this route family.
@@ -770,7 +770,7 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
 | R-W1 | **No signature verification** on incoming payloads (HMAC, GitHub signature, Stripe signature, etc.) | W4 unmitigated | v1 limitation; add per-integration |
-| R-W2 | ~~No payload size limit~~ — Mitigated by a global 10 MiB Hono `bodyLimit` in `createApp` (`packages/runtime/src/services/server.ts`). A tenant tarball is additionally bounded to 10 MiB decompressed inside `extractTenantTarGz` (`packages/runtime/src/workflow-registry.ts`). | W2 mitigated | Resolved |
+| R-W2 | ~~No payload size limit~~ — Mitigated by a global 10 MiB Hono `bodyLimit` in `createApp` (`packages/runtime/src/services/server.ts`). A owner tarball is additionally bounded to 10 MiB decompressed inside `extractOwnerTarGz` (`packages/runtime/src/workflow-registry.ts`). | W2 mitigated | Resolved |
 | R-W3 | **No rate limiting** at the application or Traefik level | W3, W7 unmitigated | v1 limitation |
 | R-W4 | **All request headers are forwarded verbatim** into the payload's `headers` field, including any `Authorization` / `Cookie` the caller sent | W5 unmitigated | **High priority** — move to per-trigger header allowlist |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |
@@ -879,15 +879,15 @@ Both transports produce `UserContext = { name, mail, orgs }` (no
 `/login` renders with no provider sections and nothing can authenticate
 (`/api/*` → 401 unconditionally; UI → redirect to an empty `/login`).
 This replaces the former "disabled mode" rejection-of-all-requests
-behaviour — same end result, different mechanism. Tenant scope for writes
-runs through `isMember(user, tenant)`, unchanged from prior revisions.
+behaviour — same end result, different mechanism. Owner scope for writes
+runs through `isMember(user, owner)`, unchanged from prior revisions.
 
 **Manual-fire dispatch through `/trigger/*`.** The operator "fire this
 trigger now" UI submits every kind (HTTP, cron, future kinds) to the
-authenticated endpoint `POST /trigger/<tenant>/<workflow>/<name>`, which
-sits behind `sessionMiddleware` + `requireTenantMember`. HTTP descriptors
+authenticated endpoint `POST /trigger/<owner>/<workflow>/<name>`, which
+sits behind `sessionMiddleware` + `requireOwnerMember`. HTTP descriptors
 are server-wrapped into the `HttpTriggerPayload` shape before dispatch
-(`{ body, headers: {}, url: "/webhooks/<tenant>/<workflow>/<name>",
+(`{ body, headers: {}, url: "/webhooks/<owner>/<workflow>/<name>",
 method }`). The session user (`{ name, mail }`) is captured as dispatch
 provenance (`meta.dispatch.user`, see `invocations` spec and R-9) so
 operator-initiated fires are attributable. External (non-UI) callers
@@ -923,9 +923,9 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 | A9 | Bearer token, session cookie, GitHub access token, or the in-memory sealing password is written to logs or to an event payload | Information disclosure |
 | A10 | User is removed from `AUTH_ALLOW` but an existing session cookie is still honoured until the next soft-TTL refresh | EoP (stale access) |
 | A11 | OAuth callback CSRF: attacker tricks a signed-in user into visiting a malicious `/auth/github/callback?code=…&state=…` URL | Spoofing (phishing) |
-| A12 | Allow-listed user uploads to a tenant they are not a member of (or enumerates tenants) to discover tenant names | EoP (cross-tenant) / Information disclosure |
-| A13 | *(Eliminated.)* Historical: allow-listed Bearer caller on `/api/*` forges `X-Auth-Request-*` headers to impersonate membership in another tenant. No code path reads those headers; kept here as a reminder. | n/a |
-| A14 | Authenticated caller reads workflow or invocation-event data by id or name on a surface whose handler omits the tenant scope (breaks I-T2) | EoP (cross-tenant) / Information disclosure |
+| A12 | Allow-listed user uploads to a owner they are not a member of (or enumerates owners) to discover owner names | EoP (cross-owner) / Information disclosure |
+| A13 | *(Eliminated.)* Historical: allow-listed Bearer caller on `/api/*` forges `X-Auth-Request-*` headers to impersonate membership in another owner. No code path reads those headers; kept here as a reminder. | n/a |
+| A14 | Authenticated caller reads workflow or invocation-event data by id or name on a surface whose handler omits the owner scope (breaks I-T2) | EoP (cross-owner) / Information disclosure |
 | A15 | App Deployment is scaled to `replicas > 1` while the sealing password is in-memory; cookies signed on pod A fail to decrypt on pod B | Availability / EoP (indirect: forces re-login, possibly thrashing) |
 
 ### Mitigations (current)
@@ -1011,25 +1011,25 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   upstream provider error, and allow-list miss are indistinguishable
   to the caller.
   (`packages/runtime/src/api/auth.ts`)
-- **Tenant membership enforcement via `requireTenantMember()` middleware
+- **Owner membership enforcement via `requireOwnerMember()` middleware
   (R-A12).** A single Hono middleware factory is the sole enforcement
-  point for the `:tenant` authorization invariant. It validates
-  `<tenant>` against the identifier regex
+  point for the `:owner` authorization invariant. It validates
+  `<owner>` against the identifier regex
   (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), then evaluates
-  `isMember(user, tenant) := user.orgs.includes(tenant) || user.name === tenant`.
+  `isMember(user, owner) := user.orgs.includes(owner) || user.name === owner`.
   Both failures return `404 Not Found` with an identical JSON body
   (`{"error":"Not Found"}`) sourced from each sub-app's
   `app.notFound(...)` handler. Teams are not consulted (and are no
   longer part of `UserContext`). The membership check applies to every
   authenticated caller regardless of which provider minted the
   identity — there is no longer an "open mode" bypass. The middleware
-  is mounted on `/api/workflows/:tenant` and on the `/trigger`-basePath
-  sub-app's `/:tenant/*` subtree. Inline `validateTenant` +
-  `isMember`/`tenantSet` checks in individual route handlers are
-  prohibited; any new route that accepts a `:tenant` path parameter
-  MUST mount `requireTenantMember()` on its subpath.
-  (`packages/runtime/src/auth/tenant.ts`,
-  `packages/runtime/src/auth/tenant-mw.ts`,
+  is mounted on `/api/workflows/:owner` and on the `/trigger`-basePath
+  sub-app's `/:owner/*` subtree. Inline `validateOwner` +
+  `isMember`/`ownerSet` checks in individual route handlers are
+  prohibited; any new route that accepts a `:owner` path parameter
+  MUST mount `requireOwnerMember()` on its subpath.
+  (`packages/runtime/src/auth/owner.ts`,
+  `packages/runtime/src/auth/owner-mw.ts`,
   `packages/runtime/src/api/index.ts`,
   `packages/runtime/src/ui/trigger/middleware.ts`)
 - **No code path reads `X-Auth-Request-*` (A13 eliminated).** The
@@ -1053,17 +1053,17 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 - **TLS termination at Traefik.** Session cookies, Bearer tokens, and
   the GitHub access token stored inside the sealed cookie are not in
   cleartext on the wire.
-- **Tenant-scoped query API (A14).** Unchanged. `EventStore.query(tenant)`
-  pre-binds `.where("tenant", "=", tenant)`; no unscoped read path
-  against the `events` table exists. Workflow bundles are tenant-keyed
-  at the storage layer (`workflows/<tenant>.tar.gz`).
+- **Owner-scoped query API (A14).** Unchanged. `EventStore.query(owner)`
+  pre-binds `.where("owner", "=", owner)`; no unscoped read path
+  against the `events` table exists. Workflow bundles are owner-keyed
+  at the storage layer (`workflows/<owner>.tar.gz`).
 
 ### CLI authentication (`wfe upload`)
 
-The `@workflow-engine/sdk` CLI (`pnpm exec wfe upload --tenant <name>`
+The `@workflow-engine/sdk` CLI (`pnpm exec wfe upload --owner <name>`
 — packaged as `bin: { wfe: dist/cli/cli.js }` in
 `packages/sdk/package.json`) POSTs the built tarball to
-`/api/workflows/:tenant`. That endpoint lives under `/api/*`, so the
+`/api/workflows/:owner`. That endpoint lives under `/api/*`, so the
 same `apiAuthMiddleware` rules apply: every request SHALL carry
 `X-Auth-Provider` plus an `Authorization` credential the provider can
 validate. The CLI supports two mutually-exclusive auth inputs and one
@@ -1098,7 +1098,7 @@ only after the Vite build completed — the build ran even when the
 credentials would have been rejected.
 
 The CLI also performs bundle sealing (see §5 workflow-secret-key
-management) against `GET /api/workflows/:tenant/public-key`, which
+management) against `GET /api/workflows/:owner/public-key`, which
 uses the same auth pair; if `--user` and `--token` disagree the
 public-key fetch would fail before the upload ever ran, but the
 mutual-exclusion check in front of `build()` gives the clearer error.
@@ -1120,7 +1120,7 @@ HTTP status and server-reported error message only.
 | R-A8 | The dashboard has state-changing forms (upload, logout). Logout is POST-only; uploads go to `/api/*` which is Bearer-only (no cookie accepted). CSRF surface on the cookie path is limited to logout; CSRF surface on `/api/*` does not exist because the cookie is never read there. | Low | Accepted |
 | R-A9 | Pod restart (deploy, eviction, OOM) invalidates every session because the sealing password is in-memory. Deploy-frequency–driven forced re-logins are the UX cost. Moving the password to a shared mechanism is required before `replicas > 1` (A15). | Low | Accepted |
 | R-A10 | The sealed session cookie carries the GitHub access token at rest in the browser. HttpOnly prevents JS access; the scope granted is `user:email read:org`, so the blast radius of a cookie exfiltration is read-only user metadata. A caller who extracts the browser cookie store can act as the user for up to 7 d (hard TTL) or until they refresh against GitHub. | Medium | Accepted |
-| R-A14 | Unchanged from prior revisions; `EventStore.query(tenant)` pre-binds the tenant predicate. | High | **Resolved** |
+| R-A14 | Unchanged from prior revisions; `EventStore.query(owner)` pre-binds the owner predicate. | High | **Resolved** |
 
 ### Rules for AI agents
 
@@ -1196,17 +1196,17 @@ HTTP status and server-reported error message only.
     registry, share `isMember()` — but never accept one transport's
     credential where the other is expected.
 14. **NEVER read or list workflow or invocation-event data without a
-    tenant scope.** `EventStore.query(tenant)` is the only scoped read
+    owner scope.** `EventStore.query(owner)` is the only scoped read
     API. For workflows, route through `WorkflowRegistry`, which is
-    keyed by tenant. Format validation of a tenant identifier (the
+    keyed by owner. Format validation of a owner identifier (the
     regex) is NOT a permission check and does NOT substitute for a
-    tenant-scoped query (A14, R-A14, §1 I-T2).
-15. **NEVER enforce the `:tenant` authorization invariant inline in a
-    route handler.** `requireTenantMember()` is the sole enforcement
+    owner-scoped query (A14, R-A14, §1 I-T2).
+15. **NEVER enforce the `:owner` authorization invariant inline in a
+    route handler.** `requireOwnerMember()` is the sole enforcement
     point and MUST be mounted on every subpath that accepts a
-    `:tenant` path parameter (today: `/api/workflows/:tenant` and
-    `/trigger/:tenant/*`). Inline `validateTenant(tenant)` +
-    `isMember(user, tenant)` / `tenantSet(user).has(tenant)` checks in
+    `:owner` path parameter (today: `/api/workflows/:owner` and
+    `/trigger/:owner/*`). Inline `validateOwner(owner)` +
+    `isMember(user, owner)` / `ownerSet(user).has(owner)` checks in
     handlers are prohibited — they are the drift source the middleware
     exists to prevent.
 
@@ -1226,12 +1226,12 @@ HTTP status and server-reported error message only.
 - Provider-agnostic `/login` + `POST /auth/logout`: `packages/runtime/src/auth/routes.ts`
 - GitHub API client (typed): `packages/runtime/src/auth/github-api.ts`
 - API auth dispatcher (`X-Auth-Provider` → provider.resolveApiIdentity): `packages/runtime/src/api/auth.ts`
-- Tenant predicate + regex: `packages/runtime/src/auth/tenant.ts`
-- Tenant-authorization middleware: `packages/runtime/src/auth/tenant-mw.ts`
+- Owner predicate + regex: `packages/runtime/src/auth/owner.ts`
+- Owner-authorization middleware: `packages/runtime/src/auth/owner-mw.ts`
 - Deny banner template: `packages/runtime/src/ui/auth/login-page.ts`
 - Config / env (AUTH_ALLOW, OAuth creds, BASE_URL): `packages/runtime/src/config.ts`
 - App wiring (route ordering): `packages/runtime/src/main.ts`
-- Tenant predicate: `packages/runtime/src/auth/tenant.ts`
+- Owner predicate: `packages/runtime/src/auth/owner.ts`
 - Routes chart (no auth middlewares): `infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`
 - OpenSpec spec: `openspec/specs/auth/spec.md` (created by change `replace-oauth2-proxy`)
 - OpenSpec spec: `openspec/specs/runtime-config/spec.md`
@@ -1457,13 +1457,13 @@ following as **must-have** before exposing to real traffic:
 
 ### Workflow secret-key management
 
-Tenant-authored workflows may declare sealed env bindings (`env({name, secret: true})` per the `workflow-secrets` change). The server holds an X25519 keypair list in the `SECRETS_PRIVATE_KEYS` env var; the public key is derivable from any secret key via `crypto_scalarmult_base` and is exposed by `GET /api/workflows/:tenant/public-key` so the CLI can seal values before upload. Decryption happens twice: once at upload for fail-fast validation, and once per invocation inside the executor to hand plaintexts to the future consumer plugin. Plaintext bytes are `fill(0)`-wiped after use and never logged.
+Owner-authored workflows may declare sealed env bindings (`env({name, secret: true})` per the `workflow-secrets` change). The server holds an X25519 keypair list in the `SECRETS_PRIVATE_KEYS` env var; the public key is derivable from any secret key via `crypto_scalarmult_base` and is exposed by `GET /api/workflows/:owner/public-key` so the CLI can seal values before upload. Decryption happens twice: once at upload for fail-fast validation, and once per invocation inside the executor to hand plaintexts to the future consumer plugin. Plaintext bytes are `fill(0)`-wiped after use and never logged.
 
 **Key location.**
 - **Prod:** keypair list lives in `envs/persistence/secrets.tf` (same blast radius as the prod S3 bucket — outlives cluster destroys). `envs/prod/` reads it via `terraform_remote_state` and creates the `app-secrets-key` K8s Secret in the prod namespace.
-- **Staging, local:** each generates its own keypair list in-project (`envs/staging/secrets.tf`, `envs/local/secrets.tf`). Losing staging or local state forces re-deployment but not tenant re-upload.
+- **Staging, local:** each generates its own keypair list in-project (`envs/staging/secrets.tf`, `envs/local/secrets.tf`). Losing staging or local state forces re-deployment but not owner re-upload.
 
-**Rotation.** Prepend a new id to `var.secret_key_ids`, `tofu apply` persistence (prod) or the env-local secrets file (staging/local), redeploy. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when a tenant's bundle references a retired keyId.
+**Rotation.** Prepend a new id to `var.secret_key_ids`, `tofu apply` persistence (prod) or the env-local secrets file (staging/local), redeploy. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when a owner's bundle references a retired keyId.
 
 **Security property.** The app pod is the only place the secret key material exists. Storage (S3) sees only ciphertexts. Operators with S3/state-bucket access cannot unseal any secret without the K8s-secret-held private key. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
 
@@ -1543,7 +1543,7 @@ capabilities it does not need.
 - **No inline handlers, scripts, or styles in rendered HTML.** All
   behaviour lives in `/static/*.js` files (currently
   `flamegraph.js`, `local-time.js`, `result-dialog.js`,
-  `tenant-selector.js`, `trigger-forms.js`) bound via
+  `owner-selector.js`, `trigger-forms.js`) bound via
   `addEventListener` over `data-*` hooks on rendered HTML.
   `html-invariants.test.ts` asserts no inline `<script>`, no `on*=`
   handler attributes, no `style=` attributes, and no `javascript:` URLs
@@ -1600,7 +1600,7 @@ capabilities it does not need.
    method body.** The runtime currently ships no Alpine directives;
    prefer plain `addEventListener` wiring in a new `/static/*.js`
    file, hooked to rendered HTML via `data-*` attributes (see
-   `tenant-selector.js`, `trigger-forms.js`). If Alpine is genuinely
+   `owner-selector.js`, `trigger-forms.js`). If Alpine is genuinely
    needed for a new component, register it via
    `Alpine.data('<name>', () => ({...}))` in a new `/static/*.js`
    module and reference it by bare identifier (`x-data="myComponent"`)
@@ -1626,7 +1626,7 @@ capabilities it does not need.
   `packages/runtime/src/services/secure-headers.test.ts`
 - HTML invariants test: `packages/runtime/src/ui/html-invariants.test.ts`
 - Static JS behaviour (plain `addEventListener` over `data-*` hooks):
-  `packages/runtime/src/ui/static/{flamegraph,local-time,result-dialog,tenant-selector,trigger-forms}.js`
+  `packages/runtime/src/ui/static/{flamegraph,local-time,result-dialog,owner-selector,trigger-forms}.js`
 - Static middleware (serves `/static/*` incl. vendored `alpine.js`,
   `htmx.js`, `jedison.js` from `@alpinejs/csp`):
   `packages/runtime/src/ui/static/middleware.ts`

@@ -32,12 +32,12 @@ function triggerKindLabel(kind: string): string {
 
 function triggerCardMeta(
 	descriptor: TriggerDescriptor,
-	tenant: string,
+	owner: string,
 	workflow: string,
 ): string {
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
-		return `${http.method} /webhooks/${tenant}/${workflow}/${http.name}`;
+		return `${http.method} /webhooks/${owner}/${workflow}/${http.name}`;
 	}
 	if (descriptor.kind === "cron") {
 		const cron = descriptor as CronTriggerDescriptor;

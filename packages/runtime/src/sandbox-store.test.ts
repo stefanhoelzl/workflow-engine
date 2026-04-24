@@ -99,14 +99,14 @@ describe("sandbox-store: caching", () => {
 		expect(a).toBe(b);
 	});
 
-	it("different tenants with the same sha get distinct sandboxes", async () => {
+	it("different owners with the same sha get distinct sandboxes", async () => {
 		store = makeStore();
 		const a = await store.get("acme", WORKFLOW, BUNDLE_SOURCE);
 		const b = await store.get("contoso", WORKFLOW, BUNDLE_SOURCE);
 		expect(a).not.toBe(b);
 	});
 
-	it("different shas within a tenant get distinct sandboxes (and orphan the old)", async () => {
+	it("different shas within a owner get distinct sandboxes (and orphan the old)", async () => {
 		store = makeStore();
 		const v1 = await store.get("acme", WORKFLOW, BUNDLE_SOURCE);
 		const WORKFLOW_V2: WorkflowManifest = { ...WORKFLOW, sha: "b".repeat(64) };
@@ -160,13 +160,13 @@ describe("sandbox-store: execution (end-to-end)", () => {
 		expect(kinds).toContain("action.request");
 		expect(kinds).toContain("action.response");
 
-		// The sandbox emits `SandboxEvent` — no tenant/workflow/workflowSha/id.
+		// The sandbox emits `SandboxEvent` — no owner/workflow/workflowSha/id.
 		// The runtime executor widens to `InvocationEvent` by stamping those
 		// at its `sb.onEvent` boundary (SECURITY.md §2 R-8). Covered by
 		// executor/index.test.ts.
 		for (const e of events) {
 			expect(e).not.toHaveProperty("id");
-			expect(e).not.toHaveProperty("tenant");
+			expect(e).not.toHaveProperty("owner");
 			expect(e).not.toHaveProperty("workflow");
 			expect(e).not.toHaveProperty("workflowSha");
 		}
@@ -205,7 +205,7 @@ describe("sandbox-store: execution (end-to-end)", () => {
 		expect(body.body.error).toContain("unknownAction");
 	});
 
-	it("exposes only __sdk to tenant source; __sdkDispatchAction, __hostCallAction, __emitEvent, __dispatchAction are absent", async () => {
+	it("exposes only __sdk to owner source; __sdkDispatchAction, __hostCallAction, __emitEvent, __dispatchAction are absent", async () => {
 		const probeBundle = `
 			var __wfe_exports__ = (function(exports) {
 				exports.onPing = Object.assign(

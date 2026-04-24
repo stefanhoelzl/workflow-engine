@@ -43,7 +43,7 @@ function openAuthRegistry(): ProviderRegistry {
 	});
 }
 
-describe("GET /api/workflows/:tenant/public-key", () => {
+describe("GET /api/workflows/:owner/public-key", () => {
 	beforeAll(async () => {
 		await readySodium();
 	});
@@ -103,7 +103,7 @@ describe("GET /api/workflows/:tenant/public-key", () => {
 		expect(body.keyId).toBe(hex);
 	});
 
-	it("returns 404 for an invalid tenant identifier", async () => {
+	it("returns 404 for an invalid owner identifier", async () => {
 		const sk = sodium.randombytes_buf(32);
 		const app = mount(createKeyStore(makeCsv(sk)));
 		const res = await app.request("/api/workflows/$bad/public-key", {

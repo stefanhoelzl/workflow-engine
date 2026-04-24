@@ -8,24 +8,24 @@ import {
 	verifyManifestSecrets,
 } from "../secrets/index.js";
 import {
-	extractTenantTarGz,
+	extractOwnerTarGz,
 	type RegisterResult,
 	type WorkflowRegistry,
 } from "../workflow-registry.js";
 
 // ---------------------------------------------------------------------------
-// POST /api/workflows/:tenant — upload a tenant bundle
+// POST /api/workflows/:owner — upload a owner bundle
 // ---------------------------------------------------------------------------
 //
 // Payload: gzip-compressed tarball containing the root `manifest.json`
-// (tenant manifest with `workflows: [...]`) plus one `<name>.js` per
+// (owner manifest with `workflows: [...]`) plus one `<name>.js` per
 // workflow at the tarball root.
 //
 // Auth: the /api/* surface is gated by `bearerUserMiddleware` +
-// `authorizeMiddleware`; `requireTenantMember()` is mounted on
-// `/workflows/:tenant` and enforces identifier regex + `isMember` with a
-// JSON 404 fail-closed response (see auth spec: "Tenant-authorization
-// middleware"). This handler never performs tenant checks inline.
+// `authorizeMiddleware`; `requireOwnerMember()` is mounted on
+// `/workflows/:owner` and enforces identifier regex + `isMember` with a
+// JSON 404 fail-closed response (see auth spec: "Owner-authorization
+// middleware"). This handler never performs owner checks inline.
 //
 // Error classification:
 //   - 415: not a valid gzip/tar archive.
@@ -95,7 +95,7 @@ function failureResponse(
  */
 function verifySecretsIfPresent(
 	files: Map<string, string>,
-	tenant: string,
+	owner: string,
 	keyStore: SecretsKeyStore,
 ): Record<string, unknown> | null {
 	const manifestRaw = files.get("manifest.json");
@@ -113,14 +113,14 @@ function verifySecretsIfPresent(
 	if (failure.kind === "unknown_secret_key_id") {
 		return {
 			error: "unknown_secret_key_id",
-			tenant,
+			owner,
 			workflow: failure.workflow,
 			keyId: failure.keyId,
 		};
 	}
 	return {
 		error: "secret_decrypt_failed",
-		tenant,
+		owner,
 		workflow: failure.workflow,
 		envName: failure.envName,
 	};
@@ -128,13 +128,13 @@ function verifySecretsIfPresent(
 
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
-		const tenant = c.req.param("tenant") ?? "";
+		const owner = c.req.param("owner") ?? "";
 
 		const body = await c.req.arrayBuffer();
 		const tarballBytes = new Uint8Array(body);
 		let files: Map<string, string>;
 		try {
-			files = await extractTenantTarGz(tarballBytes);
+			files = await extractOwnerTarGz(tarballBytes);
 		} catch {
 			return c.json(
 				{ error: "Not a valid gzip/tar archive" },
@@ -142,12 +142,12 @@ function createUploadHandler(deps: UploadDeps) {
 			);
 		}
 
-		const secretsVerify = verifySecretsIfPresent(files, tenant, deps.keyStore);
+		const secretsVerify = verifySecretsIfPresent(files, owner, deps.keyStore);
 		if (secretsVerify !== null) {
 			return c.json(secretsVerify, HTTP_BAD_REQUEST);
 		}
 
-		const result = await deps.registry.registerTenant(tenant, files, {
+		const result = await deps.registry.registerOwner(owner, files, {
 			tarballBytes,
 		});
 		if (!result.ok) {

@@ -338,7 +338,7 @@ describe("/auth/logout", () => {
 		const now = 1_700_000_000_000;
 		const sealedSession = await sealSession({
 			provider: "github",
-			name: "alice",
+			login: "alice",
 			mail: "alice@x",
 			orgs: [],
 			accessToken: "gho_xxx",
@@ -368,7 +368,7 @@ describe("/auth/logout", () => {
 		const now = 1_700_000_000_000;
 		const sealedSession = await sealSession({
 			provider: "local",
-			name: "dev",
+			login: "dev",
 			mail: "dev@dev.local",
 			orgs: [],
 			accessToken: "",

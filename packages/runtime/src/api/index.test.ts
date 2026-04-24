@@ -147,17 +147,17 @@ describe("apiMiddleware", () => {
 			expect(res.status).not.toBe(401);
 		});
 
-		it("forged X-Auth-Request-Groups cannot grant cross-tenant upload", async () => {
+		it("forged X-Auth-Request-Groups cannot grant cross-owner upload", async () => {
 			const fetchFn = githubFetch({ login: "stefan", email: null }, []);
 			const app = mountApi({ authAllow: "github:user:stefan", fetchFn });
 
-			const res = await app.request("/api/workflows/victim-tenant", {
+			const res = await app.request("/api/workflows/victim-owner", {
 				method: "POST",
 				headers: {
 					"x-auth-provider": "github",
 					authorization: "Bearer valid-token",
 					"X-Auth-Request-User": "stefan",
-					"X-Auth-Request-Groups": "victim-tenant",
+					"X-Auth-Request-Groups": "victim-owner",
 				},
 				body: new Uint8Array(),
 			});
@@ -194,7 +194,7 @@ describe("apiMiddleware", () => {
 			expect(res.status).toBe(401);
 		});
 
-		it("local user denied access to another tenant with 404", async () => {
+		it("local user denied access to another owner with 404", async () => {
 			const app = mountApi({ authAllow: "local:dev" });
 			const res = await app.request("/api/workflows/other", {
 				method: "POST",

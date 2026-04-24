@@ -7,13 +7,13 @@ interface PublicKeyHandlerOptions {
 }
 
 /**
- * GET /api/workflows/:tenant/public-key
+ * GET /api/workflows/:owner/public-key
  *
  * Returns the current primary X25519 public key and its fingerprint so
  * that the `wfe upload` CLI can seal workflow secrets before POSTing the
- * bundle. Authentication + tenant-membership are enforced by the parent
- * `/api/workflows/:tenant` middleware stack (bearer user -> tenant member);
- * unknown tenants and non-members fall through to the default 404.
+ * bundle. Authentication + owner-membership are enforced by the parent
+ * `/api/workflows/:owner` middleware stack (bearer user -> owner member);
+ * unknown owners and non-members fall through to the default 404.
  *
  * The returned `keyId` is computed via `computeKeyId(publicKey)` from
  * `@workflow-engine/core` so all callers (CLI, upload handler, this route)

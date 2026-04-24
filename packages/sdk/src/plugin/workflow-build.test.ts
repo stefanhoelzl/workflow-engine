@@ -93,7 +93,7 @@ function skipTypecheckPlugin() {
 	};
 }
 
-async function readTenantBundle(outDir: string): Promise<Map<string, string>> {
+async function readOwnerBundle(outDir: string): Promise<Map<string, string>> {
 	const bundleBytes = await readFile(join(outDir, "bundle.tar.gz"));
 	const files = new Map<string, string>();
 	const extractor = tarExtract();
@@ -118,17 +118,17 @@ async function readWorkflowManifest(
 	outDir: string,
 	name: string,
 ): Promise<unknown> {
-	const files = await readTenantBundle(outDir);
+	const files = await readOwnerBundle(outDir);
 	const manifestRaw = files.get("manifest.json");
 	if (!manifestRaw) {
 		throw new Error(`manifest.json missing from bundle.tar.gz at ${outDir}`);
 	}
-	const tenant = JSON.parse(manifestRaw) as {
+	const owner = JSON.parse(manifestRaw) as {
 		workflows: Array<{ name: string }>;
 	};
-	const wf = tenant.workflows.find((w) => w.name === name);
+	const wf = owner.workflows.find((w) => w.name === name);
 	if (!wf) {
-		throw new Error(`workflow "${name}" not in tenant manifest`);
+		throw new Error(`workflow "${name}" not in owner manifest`);
 	}
 	return wf;
 }
@@ -137,10 +137,10 @@ async function readWorkflowBundleSource(
 	outDir: string,
 	name: string,
 ): Promise<string> {
-	const files = await readTenantBundle(outDir);
+	const files = await readOwnerBundle(outDir);
 	const src = files.get(`${name}.js`);
 	if (!src) {
-		throw new Error(`${name}.js missing from tenant bundle`);
+		throw new Error(`${name}.js missing from owner bundle`);
 	}
 	return src;
 }
@@ -412,7 +412,7 @@ describe("workflowPlugin: brand-based discovery", () => {
 		// must route action dispatch through `globalThis.__sdk.dispatchAction`
 		// (installed as a locked global by the sandbox-store's dispatcher
 		// IIFE). Legacy `__dispatchAction` / `__hostCallAction` / `__emitEvent`
-		// references must NOT appear in tenant bundles.
+		// references must NOT appear in owner bundles.
 		expect(bundleSrc).toContain("globalThis.__sdk");
 		expect(bundleSrc).not.toContain("__dispatchAction");
 		expect(bundleSrc).not.toContain("__hostCallAction");

@@ -16,8 +16,8 @@ import type { TriggerEntry, TriggerSource } from "./source.js";
 // ---------------------------------------------------------------------------
 //
 // Every trigger kind's source must satisfy shared lifecycle invariants:
-// start/stop are idempotent, reconfigure(tenant, entries) replaces per-
-// tenant state atomically, empty entries clears a tenant.
+// start/stop are idempotent, reconfigure(owner, entries) replaces per-
+// owner state atomically, empty entries clears a owner.
 
 type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;
 
@@ -124,7 +124,7 @@ for (const factory of KIND_FACTORIES) {
 			await source.stop();
 		});
 
-		it("reconfigure replaces per-tenant state atomically", async () => {
+		it("reconfigure replaces per-owner state atomically", async () => {
 			const source = factory.createSource();
 			const resA = await source.reconfigure("t0", [factory.makeEntry("a")]);
 			expect(resA.ok).toBe(true);
@@ -134,7 +134,7 @@ for (const factory of KIND_FACTORIES) {
 			expect(resEmpty.ok).toBe(true);
 		});
 
-		it("reconfigure with an empty entries array is a no-op on unknown tenant", async () => {
+		it("reconfigure with an empty entries array is a no-op on unknown owner", async () => {
 			const source = factory.createSource();
 			const res = await source.reconfigure("never-seen", []);
 			expect(res.ok).toBe(true);

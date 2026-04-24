@@ -19,7 +19,7 @@ import { triggerCardMeta, triggerKindIcon } from "../triggers.js";
 // the public webhook URL — the HTTP source fills in headers/url/method from
 // the real HTTP request. For non-HTTP kinds (cron, future mail) the form is
 // built from the full `descriptor.inputSchema` and POSTs to the
-// kind-agnostic `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint.
+// kind-agnostic `/trigger/<owner>/<workflow>/<trigger-name>` endpoint.
 
 function prepareSchema(schema: unknown): unknown {
 	if (schema === null || typeof schema !== "object") {
@@ -74,7 +74,7 @@ function schemaHasNoInputs(schema: object): boolean {
 }
 
 interface TriggerCardData {
-	readonly tenant: string;
+	readonly owner: string;
 	readonly workflow: string;
 	readonly trigger: string;
 	readonly kind: string;
@@ -91,7 +91,7 @@ const chevronIconSvg = raw(
 
 function renderTriggerCard(data: TriggerCardData) {
 	const schemaJson = JSON.stringify(prepareSchema(data.schema));
-	const cardId = `trigger-${data.tenant}-${data.workflow}-${data.trigger}`
+	const cardId = `trigger-${data.owner}-${data.workflow}-${data.trigger}`
 		.replace(/[^a-zA-Z0-9_-]/g, "-")
 		.toLowerCase();
 	const empty = schemaHasNoInputs(data.schema);
@@ -118,16 +118,16 @@ function renderTriggerCard(data: TriggerCardData) {
 
 function entryToCardDataList(entry: WorkflowEntry): TriggerCardData[] {
 	return entry.triggers.map((descriptor) =>
-		descriptorToCardData(entry.tenant, entry.workflow.name, descriptor),
+		descriptorToCardData(entry.owner, entry.workflow.name, descriptor),
 	);
 }
 
 function descriptorToCardData(
-	tenant: string,
+	owner: string,
 	workflow: string,
 	descriptor: TriggerDescriptor,
 ): TriggerCardData {
-	const meta = triggerCardMeta(descriptor, tenant, workflow);
+	const meta = triggerCardMeta(descriptor, owner, workflow);
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
 		// UI fires route through the authenticated /trigger/* endpoint so
@@ -135,12 +135,12 @@ function descriptorToCardData(
 		// chip still surfaces the public /webhooks/... URL documenting the
 		// endpoint external callers use.
 		return {
-			tenant,
+			owner,
 			workflow,
 			trigger: http.name,
 			kind: "http",
 			schema: (http.body ?? { type: "object" }) as object,
-			submitUrl: `/trigger/${tenant}/${workflow}/${http.name}`,
+			submitUrl: `/trigger/${owner}/${workflow}/${http.name}`,
 			submitMethod: "POST",
 			meta,
 		};
@@ -148,24 +148,24 @@ function descriptorToCardData(
 	if (descriptor.kind === "cron") {
 		const cron = descriptor as CronTriggerDescriptor;
 		return {
-			tenant,
+			owner,
 			workflow,
 			trigger: cron.name,
 			kind: "cron",
 			schema: (cron.inputSchema ?? { type: "object" }) as object,
-			submitUrl: `/trigger/${tenant}/${workflow}/${cron.name}`,
+			submitUrl: `/trigger/${owner}/${workflow}/${cron.name}`,
 			submitMethod: "POST",
 			meta,
 		};
 	}
 	const manual = descriptor as ManualTriggerDescriptor;
 	return {
-		tenant,
+		owner,
 		workflow,
 		trigger: manual.name,
 		kind: "manual",
 		schema: (manual.inputSchema ?? { type: "object" }) as object,
-		submitUrl: `/trigger/${tenant}/${workflow}/${manual.name}`,
+		submitUrl: `/trigger/${owner}/${workflow}/${manual.name}`,
 		submitMethod: "POST",
 		meta,
 	};
@@ -175,12 +175,12 @@ interface TriggerPageOptions {
 	readonly entries: readonly WorkflowEntry[];
 	readonly user: string;
 	readonly email: string;
-	readonly tenants: readonly string[];
-	readonly activeTenant: string | undefined;
+	readonly owners: readonly string[];
+	readonly activeOwner: string | undefined;
 }
 
 function renderTriggerPage(options: TriggerPageOptions) {
-	const { entries, user, email, tenants, activeTenant } = options;
+	const { entries, user, email, owners, activeOwner } = options;
 
 	// Group cards by workflow, alpha-sort groups and triggers within groups.
 	const byWorkflow = new Map<string, TriggerCardData[]>();
@@ -221,8 +221,8 @@ function renderTriggerPage(options: TriggerPageOptions) {
 			user,
 			email,
 			head,
-			tenants,
-			...(activeTenant === undefined ? {} : { activeTenant }),
+			owners,
+			...(activeOwner === undefined ? {} : { activeOwner }),
 		},
 		content,
 	);

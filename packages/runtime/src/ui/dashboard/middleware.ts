@@ -1,7 +1,7 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { tenantSet, validateTenant } from "../../auth/tenant.js";
+import { ownerSet, validateOwner } from "../../auth/owner.js";
 import type { EventStore } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
@@ -57,46 +57,43 @@ function statusFromTerminal(kind: string | undefined): string {
 	return "pending";
 }
 
-function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
+function sortedOwners(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
 	if (user) {
-		return Array.from(tenantSet(user)).sort();
+		return Array.from(ownerSet(user)).sort();
 	}
-	// Test fallback: show all tenants the runtime knows about when no
+	// Test fallback: show all owners the runtime knows about when no
 	// user is seeded on the context. In production, `sessionMw` mounted
 	// on `/dashboard/*` ensures a `UserContext` is always set (or
 	// redirects to `/login`); reaching this branch means a test invoked
 	// the middleware without a session middleware attached.
 	const fromRegistry = new Set<string>();
-	for (const tenant of registry.tenants()) {
-		if (validateTenant(tenant)) {
-			fromRegistry.add(tenant);
+	for (const owner of registry.owners()) {
+		if (validateOwner(owner)) {
+			fromRegistry.add(owner);
 		}
 	}
 	return Array.from(fromRegistry).sort();
 }
 
-function resolveActiveTenant(
-	c: Context,
-	tenants: string[],
-): string | undefined {
-	if (tenants.length === 0) {
+function resolveActiveOwner(c: Context, owners: string[]): string | undefined {
+	if (owners.length === 0) {
 		return;
 	}
-	const requested = c.req.query("tenant");
-	if (requested && tenants.includes(requested)) {
+	const requested = c.req.query("owner");
+	if (requested && owners.includes(requested)) {
 		return requested;
 	}
-	return tenants[0];
+	return owners[0];
 }
 
 function lookupTriggerKind(
 	registry: WorkflowRegistry,
-	tenant: string,
+	owner: string,
 	workflow: string,
 	triggerName: string,
 ): string | undefined {
-	for (const entry of registry.list(tenant)) {
+	for (const entry of registry.list(owner)) {
 		if (entry.workflow.name !== workflow) {
 			continue;
 		}
@@ -108,11 +105,11 @@ function lookupTriggerKind(
 async function fetchInvocationRows(
 	eventStore: EventStore,
 	registry: WorkflowRegistry,
-	tenant: string,
+	owner: string,
 	limit: number,
 ): Promise<InvocationRow[]> {
 	const requests = (await eventStore
-		.query(tenant)
+		.query(owner)
 		.where("kind", "=", "trigger.request")
 		.select(["id", "workflow", "name", "at", "ts", "meta"])
 		.orderBy("at", "desc")
@@ -125,7 +122,7 @@ async function fetchInvocationRows(
 		ids.length === 0
 			? []
 			: ((await eventStore
-					.query(tenant)
+					.query(owner)
 					.where("kind", "in", ["trigger.response", "trigger.error"])
 					.where("id", "in", ids)
 					.select(["id", "kind", "at", "ts", "error"])
@@ -138,7 +135,7 @@ async function fetchInvocationRows(
 
 	return requests.map((r) => {
 		const t = terminalById.get(r.id);
-		const kind = lookupTriggerKind(registry, tenant, r.workflow, r.name);
+		const kind = lookupTriggerKind(registry, owner, r.workflow, r.name);
 		const dispatch = extractDispatch(r.meta);
 		const row: InvocationRow = {
 			id: r.id,
@@ -167,25 +164,25 @@ function extractDispatch(
 	if (!dispatch || typeof dispatch !== "object") {
 		return;
 	}
-	const d = dispatch as { source?: unknown; user?: { name?: unknown } };
+	const d = dispatch as { source?: unknown; user?: { login?: unknown } };
 	if (d.source !== "manual" && d.source !== "trigger") {
 		return;
 	}
-	const userName =
-		d.user && typeof d.user.name === "string" ? d.user.name : undefined;
+	const userLogin =
+		d.user && typeof d.user.login === "string" ? d.user.login : undefined;
 	return {
 		source: d.source,
-		...(userName ? { user: { name: userName } } : {}),
+		...(userLogin ? { user: { login: userLogin } } : {}),
 	};
 }
 
 async function fetchInvocationEvents(
 	eventStore: EventStore,
 	id: string,
-	tenant: string,
+	owner: string,
 ): Promise<InvocationEvent[]> {
 	const rows = (await eventStore
-		.query(tenant)
+		.query(owner)
 		.where("id", "=", id)
 		.selectAll()
 		.orderBy("seq", "asc")
@@ -197,7 +194,7 @@ function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 	const base = {
 		kind: row.kind as InvocationEvent["kind"],
 		id: row.id as string,
-		tenant: row.tenant as string,
+		owner: row.owner as string,
 		seq: Number(row.seq),
 		ref: row.ref === null || row.ref === undefined ? null : Number(row.ref),
 		at: row.at as string,
@@ -244,14 +241,14 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 
 	const renderShell = (c: Context) => {
 		const user = c.get("user");
-		const tenants = sortedTenants(c, deps.registry);
-		const activeTenant = resolveActiveTenant(c, tenants);
+		const owners = sortedOwners(c, deps.registry);
+		const activeOwner = resolveActiveOwner(c, owners);
 		return c.html(
 			renderDashboardPage({
-				user: user?.name ?? "",
+				user: user?.login ?? "",
 				email: user?.mail ?? "",
-				tenants,
-				activeTenant,
+				owners,
+				activeOwner,
 			}),
 		);
 	};
@@ -259,31 +256,31 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	app.get("/", renderShell);
 	app.get("", renderShell);
 	app.get("/invocations", async (c) => {
-		const tenants = sortedTenants(c, deps.registry);
-		const activeTenant = resolveActiveTenant(c, tenants);
-		if (!activeTenant) {
+		const owners = sortedOwners(c, deps.registry);
+		const activeOwner = resolveActiveOwner(c, owners);
+		if (!activeOwner) {
 			return c.html(renderInvocationList([]));
 		}
 		const rows = await fetchInvocationRows(
 			deps.eventStore,
 			deps.registry,
-			activeTenant,
+			activeOwner,
 			limit,
 		);
 		return c.html(renderInvocationList(rows));
 	});
 	app.get("/invocations/:id/flamegraph", async (c) => {
 		const id = c.req.param("id");
-		const tenants = sortedTenants(c, deps.registry);
-		const activeTenant = resolveActiveTenant(c, tenants);
-		logger?.debug("dashboard.flamegraph.request", { id, tenant: activeTenant });
-		if (!activeTenant) {
+		const owners = sortedOwners(c, deps.registry);
+		const activeOwner = resolveActiveOwner(c, owners);
+		logger?.debug("dashboard.flamegraph.request", { id, owner: activeOwner });
+		if (!activeOwner) {
 			return c.html(renderFlamegraph([]));
 		}
 		const events = await fetchInvocationEvents(
 			deps.eventStore,
 			id,
-			activeTenant,
+			activeOwner,
 		);
 		return c.html(renderFlamegraph(events));
 	});

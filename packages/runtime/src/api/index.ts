@@ -1,6 +1,6 @@
 import { Hono } from "hono";
+import { requireOwnerMember } from "../auth/owner-mw.js";
 import type { ProviderRegistry } from "../auth/providers/index.js";
-import { requireTenantMember } from "../auth/tenant-mw.js";
 import type { Logger } from "../logger.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
 import { createNotFoundHandler } from "../services/content-negotiation.js";
@@ -15,8 +15,8 @@ import { createUploadHandler } from "./upload.js";
 // ---------------------------------------------------------------------------
 //
 // `/api/*` is the authenticated management plane. v1 exposes:
-//   POST /api/workflows/:tenant — upload a workflow bundle (see upload.ts).
-//   GET  /api/workflows/:tenant/public-key — serve the current primary X25519
+//   POST /api/workflows/:owner — upload a workflow bundle (see upload.ts).
+//   GET  /api/workflows/:owner/public-key — serve the current primary X25519
 //       public key so the `wfe upload` CLI can seal secrets before POSTing.
 //
 // SECURITY (CLAUDE.md + /SECURITY.md §4): `/api/*` dispatches by
@@ -35,12 +35,12 @@ function apiMiddleware(options: ApiOptions): Middleware {
 
 	app.use("/*", apiAuthMiddleware({ registry: options.authRegistry }));
 
-	app.use("/workflows/:tenant", requireTenantMember());
-	app.use("/workflows/:tenant/*", requireTenantMember());
+	app.use("/workflows/:owner", requireOwnerMember());
+	app.use("/workflows/:owner/*", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 
 	app.post(
-		"/workflows/:tenant",
+		"/workflows/:owner",
 		createUploadHandler({
 			registry: options.registry,
 			logger: options.logger,
@@ -49,7 +49,7 @@ function apiMiddleware(options: ApiOptions): Middleware {
 	);
 
 	app.get(
-		"/workflows/:tenant/public-key",
+		"/workflows/:owner/public-key",
 		createPublicKeyHandler({ keyStore: options.keyStore }),
 	);
 

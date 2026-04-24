@@ -1,5 +1,5 @@
 interface UserContext {
-	readonly name: string;
+	readonly login: string;
 	readonly mail: string;
 	readonly orgs: readonly string[];
 }

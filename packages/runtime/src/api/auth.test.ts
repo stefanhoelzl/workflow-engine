@@ -36,7 +36,7 @@ function createApp(reg: ProviderRegistry): Hono {
 	return app;
 }
 
-const ALICE: UserContext = { name: "alice", mail: "a@x", orgs: ["acme"] };
+const ALICE: UserContext = { login: "alice", mail: "a@x", orgs: ["acme"] };
 
 describe("apiAuthMiddleware", () => {
 	it("returns 401 when X-Auth-Provider header is missing", async () => {

@@ -69,13 +69,13 @@ interface InvocationEventError {
  */
 interface DispatchMeta {
 	readonly source: "trigger" | "manual";
-	readonly user?: { readonly name: string; readonly mail: string };
+	readonly user?: { readonly login: string; readonly mail: string };
 }
 
 // The subset of event fields the sandbox owns. Sandbox code (worker + main-
-// thread factory) emits `SandboxEvent` — it has no knowledge of tenant or
+// thread factory) emits `SandboxEvent` — it has no knowledge of owner or
 // invocation identity. The runtime widens each `SandboxEvent` to a full
-// `InvocationEvent` by stamping runtime metadata (`id`, `tenant`, `workflow`,
+// `InvocationEvent` by stamping runtime metadata (`id`, `owner`, `workflow`,
 // `workflowSha`) at the `sb.onEvent` boundary in the executor, before
 // forwarding to the bus. See SECURITY.md §2 R-8.
 interface SandboxEvent {
@@ -92,7 +92,7 @@ interface SandboxEvent {
 
 interface InvocationEvent extends SandboxEvent {
 	readonly id: string;
-	readonly tenant: string;
+	readonly owner: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 	// Runtime-only metadata stamped by the executor's onEvent widener.
@@ -288,7 +288,7 @@ const ManifestSchema = z
 			}
 			return true;
 		},
-		{ error: "workflow names must be unique within a tenant" },
+		{ error: "workflow names must be unique within a owner" },
 	);
 
 type Manifest = z.infer<typeof ManifestSchema>;

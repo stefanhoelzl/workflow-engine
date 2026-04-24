@@ -37,7 +37,7 @@ const DATA_EVENT_PAIR_0_6_RE = /data-event-pair="0-6"/;
 
 function makeWorkflowEntry(): WorkflowEntry {
 	return {
-		tenant: "t0",
+		owner: "t0",
 		workflow: {
 			name: "w",
 			module: "w.js",
@@ -98,8 +98,8 @@ describe("HTML CSP invariants", () => {
 			await renderDashboardPage({
 				user: "user",
 				email: "user@example.com",
-				tenants: ["acme"],
-				activeTenant: "acme",
+				owners: ["acme"],
+				activeOwner: "acme",
 			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);
@@ -131,8 +131,8 @@ describe("HTML CSP invariants", () => {
 				entries,
 				user: "user",
 				email: "user@example.com",
-				tenants: ["t0"],
-				activeTenant: "t0",
+				owners: ["t0"],
+				activeOwner: "t0",
 			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);

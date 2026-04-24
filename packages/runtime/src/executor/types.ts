@@ -13,8 +13,8 @@ interface BaseTriggerDescriptor<K extends string> {
 	readonly name: string;
 	// Workflow identity. The manifest nests triggers under workflows, so
 	// `(workflowName, name)` uniqueness is enforced at build time. Backends
-	// key their per-tenant bookkeeping by `(tenant, workflowName, name)` to
-	// avoid collisions when two workflows in the same tenant expose same-
+	// key their per-owner bookkeeping by `(owner, workflowName, name)` to
+	// avoid collisions when two workflows in the same owner expose same-
 	// named triggers. The registry fills this in during descriptor build.
 	readonly workflowName: string;
 	// JSON Schema (from manifest) describing the full input the shared

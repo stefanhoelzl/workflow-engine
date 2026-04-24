@@ -51,7 +51,7 @@ const dependsOn: readonly string[] = [];
  * exports `validateAction(name, input)` + `validateActionOutput(name, output)`
  * for consumption by sdk-support via `dependsOn: ["host-call-action"]`.
  * Registers no guest functions; the only consumer is another plugin, not
- * tenant code. Validators persist for the sandbox's lifetime — no
+ * owner code. Validators persist for the sandbox's lifetime — no
  * recompilation between runs.
  */
 function compileValidators(

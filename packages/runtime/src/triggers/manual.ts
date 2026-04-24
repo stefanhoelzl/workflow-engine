@@ -9,9 +9,9 @@ import type {
 // Manual TriggerSource
 // ---------------------------------------------------------------------------
 //
-// The manual backend is intentionally quiescent: it holds no per-tenant state,
+// The manual backend is intentionally quiescent: it holds no per-owner state,
 // registers no HTTP route, and arms no timer. The only path through which a
-// manual trigger fires is the authenticated `/trigger/<tenant>/<workflow>/
+// manual trigger fires is the authenticated `/trigger/<owner>/<workflow>/
 // <trigger>` UI endpoint, which resolves entries via `registry.getEntry` and
 // calls `entry.fire(body)` directly. This source exists solely to satisfy the
 // "every kind has a registered backend" invariant that `reconfigureBackends`
@@ -29,7 +29,7 @@ function createManualTriggerSource(): ManualTriggerSource {
 			return Promise.resolve();
 		},
 		reconfigure(
-			_tenant: string,
+			_owner: string,
 			_entries: readonly TriggerEntry<ManualTriggerDescriptor>[],
 		): Promise<ReconfigureResult> {
 			return Promise.resolve({ ok: true });

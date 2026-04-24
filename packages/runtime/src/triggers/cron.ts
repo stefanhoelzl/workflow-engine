@@ -12,11 +12,11 @@ import type {
 // ---------------------------------------------------------------------------
 //
 // `createCronTriggerSource` is the cron-kind protocol adapter. The source:
-//   - Holds one `setTimeout` handle per (tenant, workflowName, triggerName),
-//     grouped per-tenant so `reconfigure(tenant, entries)` only touches the
-//     specified tenant's timers.
-//   - Receives `reconfigure(tenant, entries)` from the WorkflowRegistry on
-//     every tenant upload. Entries for other tenants are untouched.
+//   - Holds one `setTimeout` handle per (owner, workflowName, triggerName),
+//     grouped per-owner so `reconfigure(owner, entries)` only touches the
+//     specified owner's timers.
+//   - Receives `reconfigure(owner, entries)` from the WorkflowRegistry on
+//     every owner upload. Entries for other owners are untouched.
 //   - On each fire, invokes `entry.fire({})` with an empty payload and
 //     arms the next tick regardless of outcome.
 //   - Clamps `setTimeout` delays to 24h max so yearly schedules don't hit
@@ -40,7 +40,7 @@ interface CronTriggerSourceDeps {
 }
 
 interface SourceEntry {
-	readonly tenant: string;
+	readonly owner: string;
 	readonly entry: TriggerEntry<CronTriggerDescriptor>;
 	timer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -48,7 +48,7 @@ interface SourceEntry {
 interface CronTriggerSource
 	extends TriggerSource<"cron", CronTriggerDescriptor> {
 	getEntry(
-		tenant: string,
+		owner: string,
 		workflowName: string,
 		triggerName: string,
 	): TriggerEntry<CronTriggerDescriptor> | undefined;
@@ -79,12 +79,12 @@ function computeNextDelay(
 function createCronTriggerSource(
 	deps: CronTriggerSourceDeps,
 ): CronTriggerSource {
-	// Per-tenant map of entry-key -> SourceEntry. Outer key is tenant so
-	// `reconfigure(tenant, [])` can cancel only that tenant's timers.
-	const tenants = new Map<string, Map<string, SourceEntry>>();
+	// Per-owner map of entry-key -> SourceEntry. Outer key is owner so
+	// `reconfigure(owner, [])` can cancel only that owner's timers.
+	const owners = new Map<string, Map<string, SourceEntry>>();
 
-	function cancelTenant(tenant: string): void {
-		const entries = tenants.get(tenant);
+	function cancelOwner(owner: string): void {
+		const entries = owners.get(owner);
 		if (!entries) {
 			return;
 		}
@@ -97,8 +97,8 @@ function createCronTriggerSource(
 	}
 
 	function cancelAll(): void {
-		for (const tenant of tenants.keys()) {
-			cancelTenant(tenant);
+		for (const owner of owners.keys()) {
+			cancelOwner(owner);
 		}
 	}
 
@@ -111,7 +111,7 @@ function createCronTriggerSource(
 			// Schedule or tz invalid — shouldn't reach here because the manifest
 			// Zod schema gates both at upload, but fail loudly if it does.
 			deps.logger.error("cron.schedule-invalid", {
-				tenant: srcEntry.tenant,
+				owner: srcEntry.owner,
 				workflow: srcEntry.entry.descriptor.workflowName,
 				trigger: srcEntry.entry.descriptor.name,
 				schedule: srcEntry.entry.descriptor.schedule,
@@ -154,7 +154,7 @@ function createCronTriggerSource(
 			// closure itself failed (should not happen). Log and keep
 			// scheduling.
 			deps.logger.error("cron.fire-threw", {
-				tenant: srcEntry.tenant,
+				owner: srcEntry.owner,
 				workflow: srcEntry.entry.descriptor.workflowName,
 				trigger: srcEntry.entry.descriptor.name,
 				error: err instanceof Error ? err.message : String(err),
@@ -163,12 +163,12 @@ function createCronTriggerSource(
 		// Re-arm from the current clock regardless of invocation outcome.
 		// Guard against races with reconfigure: only re-arm if this entry
 		// is still the current one for its key.
-		const tenantMap = tenants.get(srcEntry.tenant);
+		const ownerMap = owners.get(srcEntry.owner);
 		const key = entryKey(
 			srcEntry.entry.descriptor.workflowName,
 			srcEntry.entry.descriptor.name,
 		);
-		if (tenantMap?.get(key) === srcEntry) {
+		if (ownerMap?.get(key) === srcEntry) {
 			arm(srcEntry);
 		}
 	}
@@ -180,28 +180,28 @@ function createCronTriggerSource(
 		},
 		stop() {
 			cancelAll();
-			tenants.clear();
+			owners.clear();
 			return Promise.resolve();
 		},
 		reconfigure(
-			tenant: string,
+			owner: string,
 			entries: readonly TriggerEntry<CronTriggerDescriptor>[],
 		): Promise<ReconfigureResult> {
-			// Cancel any existing timers for this tenant and clear its map.
-			cancelTenant(tenant);
-			tenants.delete(tenant);
+			// Cancel any existing timers for this owner and clear its map.
+			cancelOwner(owner);
+			owners.delete(owner);
 			if (entries.length === 0) {
 				return Promise.resolve({ ok: true });
 			}
-			const tenantMap = new Map<string, SourceEntry>();
-			tenants.set(tenant, tenantMap);
+			const ownerMap = new Map<string, SourceEntry>();
+			owners.set(owner, ownerMap);
 			for (const entry of entries) {
 				const srcEntry: SourceEntry = {
-					tenant,
+					owner,
 					entry,
 					timer: undefined,
 				};
-				tenantMap.set(
+				ownerMap.set(
 					entryKey(entry.descriptor.workflowName, entry.descriptor.name),
 					srcEntry,
 				);
@@ -209,9 +209,8 @@ function createCronTriggerSource(
 			}
 			return Promise.resolve({ ok: true });
 		},
-		getEntry(tenant, workflowName, triggerName) {
-			return tenants.get(tenant)?.get(entryKey(workflowName, triggerName))
-				?.entry;
+		getEntry(owner, workflowName, triggerName) {
+			return owners.get(owner)?.get(entryKey(workflowName, triggerName))?.entry;
 		},
 	};
 }

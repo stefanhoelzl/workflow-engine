@@ -56,7 +56,7 @@ interface Sandbox {
 	// in-tree; see `RunInput.extras` in plugin.ts.
 	run(name: string, ctx: unknown, extras?: unknown): Promise<RunResult>;
 	// Subscriber receives `SandboxEvent` — the subset of event fields the
-	// sandbox owns (no tenant/workflow/workflowSha/id). The runtime widens
+	// sandbox owns (no owner/workflow/workflowSha/id). The runtime widens
 	// to `InvocationEvent` by stamping invocation metadata in its own
 	// `sb.onEvent` handler before forwarding to the bus (SECURITY.md §2 R-8).
 	onEvent(cb: (event: SandboxEvent) => void): void;
@@ -93,7 +93,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 
 	let onEventCb: ((event: SandboxEvent) => void) | null = null;
 
-	// Events from the worker arrive as `SandboxEvent` (no tenant/workflow/
+	// Events from the worker arrive as `SandboxEvent` (no owner/workflow/
 	// workflowSha/id). They flow straight to the subscriber — the runtime
 	// widens by stamping invocation metadata in its `sb.onEvent` handler,
 	// so the sandbox package stays ignorant of runtime identity.
@@ -198,7 +198,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 
 	const pendingRunRejects = new Set<(err: Error) => void>();
 	// Concurrent-run guard. The sandbox serves one run at a time; the
-	// executor is expected to queue per-(tenant, sha). A second `run()`
+	// executor is expected to queue per-(owner, sha). A second `run()`
 	// while one is active rejects loudly rather than silently interleaving.
 	let runActive = false;
 

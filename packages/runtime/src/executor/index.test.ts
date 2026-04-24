@@ -128,7 +128,7 @@ describe("executor", () => {
 			throw new Error("expected bus emission");
 		}
 		expect(first.id).toMatch(EVT_ID_RE);
-		expect(first.tenant).toBe("t0");
+		expect(first.owner).toBe("t0");
 		expect(first.workflow).toBe("wf");
 		expect(first.workflowSha).toBe("0".repeat(64));
 	});
@@ -305,7 +305,7 @@ describe("executor", () => {
 			bundleSource: "source",
 			dispatch: {
 				source: "manual",
-				user: { name: "Jane", mail: "jane@example.com" },
+				user: { login: "Jane", mail: "jane@example.com" },
 			},
 		});
 
@@ -315,7 +315,7 @@ describe("executor", () => {
 		expect(req?.meta).toEqual({
 			dispatch: {
 				source: "manual",
-				user: { name: "Jane", mail: "jane@example.com" },
+				user: { login: "Jane", mail: "jane@example.com" },
 			},
 		});
 		expect(act?.kind).toBe("action.request");

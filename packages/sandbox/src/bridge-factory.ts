@@ -31,7 +31,7 @@ interface RestExtractor<T> {
 
 // The bridge emits `SandboxEvent` — the subset of event fields the sandbox
 // owns (`kind`, `seq`, `ref`, `at`, `ts`, `name`, `input`/`output`/`error`).
-// Runtime metadata (`id`, `tenant`, `workflow`, `workflowSha`) is added by
+// Runtime metadata (`id`, `owner`, `workflow`, `workflowSha`) is added by
 // the runtime's `sb.onEvent` receiver in the executor before events reach
 // the bus (SECURITY.md §2 R-8: no runtime metadata in sandbox).
 //

@@ -24,7 +24,7 @@ import {
 } from "../index.js";
 
 // URL-safe trigger-export-name regex. Matches a JS identifier (no `$`),
-// length-capped at 63 to mirror the tenant regex. Enforced at manifest
+// length-capped at 63 to mirror the owner regex. Enforced at manifest
 // emission so the export name can be used directly as the webhook URL's
 // trailing segment — see the `http-trigger` capability spec.
 const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
@@ -129,12 +129,12 @@ async function runAllWorkflows(
 		}),
 	);
 
-	// Assemble the tenant tarball:
+	// Assemble the owner tarball:
 	//   dist/bundle.tar.gz
 	//     manifest.json   ({ workflows: [...] })
 	//     <name>.js       (one per workflow)
-	const tenantManifest = { workflows: built.map((b) => b.manifest) };
-	const manifestJson = `${JSON.stringify(tenantManifest, null, 2)}\n`;
+	const ownerManifest = { workflows: built.map((b) => b.manifest) };
+	const manifestJson = `${JSON.stringify(ownerManifest, null, 2)}\n`;
 
 	const files: { name: string; content: string }[] = [
 		{ name: "manifest.json", content: manifestJson },
@@ -148,7 +148,7 @@ async function runAllWorkflows(
 
 	// biome-ignore lint/suspicious/noConsole: intentional build output
 	console.log(
-		`Tenant bundle: ${built.length} workflow(s) packed to ${tarGzPath}`,
+		`Owner bundle: ${built.length} workflow(s) packed to ${tarGzPath}`,
 	);
 }
 
@@ -931,7 +931,7 @@ function actionNameInjectionPlugin(workflowPath: string): Plugin {
 // Properties that are harvested at manifest-build time and don't need to
 // survive into the runtime bundle. All three are zod schemas today, so
 // stripping them is what lets vite tree-shake the zod package out of the
-// tenant bundle. The vite plugin composes the full JSON Schemas for the
+// owner bundle. The vite plugin composes the full JSON Schemas for the
 // manifest host-side.
 const ZOD_PROPERTY_NAMES: readonly string[] = [
 	"input",

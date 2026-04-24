@@ -21,7 +21,7 @@ const standaloneCode = ((standaloneCodeMod as { default?: unknown }).default ??
  * boundary (it's just strings) and is consumed by the host-call-action
  * plugin's `worker()` via `new Function(src)` at sandbox boot.
  *
- * Runs once per sandbox construction (keyed by `(tenant, sha)` in
+ * Runs once per sandbox construction (keyed by `(owner, sha)` in
  * `SandboxStore`); no recompilation between runs.
  */
 function compileActionValidators(

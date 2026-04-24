@@ -327,7 +327,7 @@ function isAction(value: unknown): value is Action {
 // method, body, and responseBody are attached as readonly properties on the
 // callable. There is no public `.handler` slot; the callable IS the handler
 // invocation path. The webhook URL is mechanical — derived from the
-// trigger's exported identifier as `/webhooks/<tenant>/<workflow>/<export-name>`
+// trigger's exported identifier as `/webhooks/<owner>/<workflow>/<export-name>`
 // — so no URL-shape config exists on this type.
 //
 // The composed input/output JSON Schemas (envelope with body + headers + url

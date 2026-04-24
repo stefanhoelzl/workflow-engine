@@ -95,7 +95,7 @@ describe("createCronTriggerSource", () => {
 		await source.stop();
 	});
 
-	it("cancels pending timers on reconfigure for the same tenant", async () => {
+	it("cancels pending timers on reconfigure for the same owner", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
@@ -116,7 +116,7 @@ describe("createCronTriggerSource", () => {
 		await source.stop();
 	});
 
-	it("reconfigure for one tenant does not affect another", async () => {
+	it("reconfigure for one owner does not affect another", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
@@ -146,7 +146,7 @@ describe("createCronTriggerSource", () => {
 		await source.stop();
 	});
 
-	it("stop cancels all timers across tenants", async () => {
+	it("stop cancels all timers across owners", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
 		const source = createCronTriggerSource({ logger: silentLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");

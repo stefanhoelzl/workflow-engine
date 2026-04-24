@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { requireTenantMember } from "./tenant-mw.js";
+import { requireOwnerMember } from "./owner-mw.js";
 import type { UserContext } from "./user-context.js";
 
 interface AppOptions {
@@ -9,15 +9,15 @@ interface AppOptions {
 
 function mkApp(options: AppOptions = {}) {
 	const app = new Hono();
-	app.use("/workflows/:tenant", async (c, next) => {
+	app.use("/workflows/:owner", async (c, next) => {
 		if (options.user) {
 			c.set("user", options.user);
 		}
 		await next();
 	});
-	app.use("/workflows/:tenant", requireTenantMember());
-	app.post("/workflows/:tenant", (c) =>
-		c.json({ ok: true, tenant: c.req.param("tenant") }),
+	app.use("/workflows/:owner", requireOwnerMember());
+	app.post("/workflows/:owner", (c) =>
+		c.json({ ok: true, owner: c.req.param("owner") }),
 	);
 	app.notFound((c) => c.json({ error: "Not Found" }, 404));
 	return app;
@@ -32,31 +32,35 @@ async function post(
 	return { status: res.status, body };
 }
 
-const alice: UserContext = { name: "alice", mail: "", orgs: ["acme"] };
+const alice: UserContext = {
+	login: "alice",
+	mail: "",
+	orgs: ["alice", "acme"],
+};
 
-describe("requireTenantMember", () => {
+describe("requireOwnerMember", () => {
 	it("passes through when user is a member (org)", async () => {
 		const app = mkApp({ user: alice });
 		const { status, body } = await post(app, "/workflows/acme");
 		expect(status).toBe(200);
-		expect(body).toEqual({ ok: true, tenant: "acme" });
+		expect(body).toEqual({ ok: true, owner: "acme" });
 	});
 
-	it("passes through when tenant equals user.name (personal namespace)", async () => {
+	it("passes through when owner equals user.login (personal namespace)", async () => {
 		const app = mkApp({ user: alice });
 		const { status, body } = await post(app, "/workflows/alice");
 		expect(status).toBe(200);
-		expect(body).toEqual({ ok: true, tenant: "alice" });
+		expect(body).toEqual({ ok: true, owner: "alice" });
 	});
 
-	it("returns JSON 404 when user is not a member of tenant", async () => {
+	it("returns JSON 404 when user is not a member of owner", async () => {
 		const app = mkApp({ user: alice });
 		const { status, body } = await post(app, "/workflows/victim");
 		expect(status).toBe(404);
 		expect(body).toEqual({ error: "Not Found" });
 	});
 
-	it("returns JSON 404 for invalid tenant identifier", async () => {
+	it("returns JSON 404 for invalid owner identifier", async () => {
 		const app = mkApp({ user: alice });
 		const { status, body } = await post(app, "/workflows/..");
 		expect(status).toBe(404);
@@ -70,9 +74,9 @@ describe("requireTenantMember", () => {
 		expect(body).toEqual({ error: "Not Found" });
 	});
 
-	it("rejects regex-invalid tenant even when it matches a user org literally", async () => {
+	it("rejects regex-invalid owner even when it matches a user org literally", async () => {
 		const weird: UserContext = {
-			name: "alice",
+			login: "alice",
 			mail: "",
 			orgs: ["bad:group"],
 		};

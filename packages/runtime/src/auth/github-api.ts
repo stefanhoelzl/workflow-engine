@@ -145,12 +145,13 @@ async function resolveUser(input: UserFetch): Promise<Result<UserContext>> {
 	if (!orgsRes.ok) {
 		return orgsRes;
 	}
+	const login = userRes.data.login;
 	return {
 		ok: true,
 		data: {
-			name: userRes.data.login,
+			login,
 			mail: userRes.data.email ?? "",
-			orgs: orgsRes.data.map((o) => o.login),
+			orgs: [login, ...orgsRes.data.map((o) => o.login)],
 		},
 	};
 }
