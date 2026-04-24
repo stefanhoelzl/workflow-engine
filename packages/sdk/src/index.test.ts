@@ -14,7 +14,7 @@ import {
 	isEnvRef,
 	isHttpTrigger,
 	isManualTrigger,
-	isSecretEnvRef,
+	isSecret,
 	isWorkflow,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
@@ -803,24 +803,23 @@ describe("ManifestSchema", () => {
 // ---------------------------------------------------------------------------
 
 describe("env({ secret: true })", () => {
-	it("returns a SecretEnvRef distinct from EnvRef", () => {
+	it("returns an EnvRef flagged as secret", () => {
 		const ref = env({ secret: true });
-		expect(isSecretEnvRef(ref)).toBe(true);
-		expect(isEnvRef(ref)).toBe(false);
+		expect(isEnvRef(ref)).toBe(true);
+		expect(isSecret(ref)).toBe(true);
 	});
 
 	it("captures the explicit name", () => {
 		const ref = env({ name: "TOKEN", secret: true });
-		expect(isSecretEnvRef(ref)).toBe(true);
-		if (isSecretEnvRef(ref)) {
-			expect(ref.name).toBe("TOKEN");
-		}
+		expect(isEnvRef(ref)).toBe(true);
+		expect(isSecret(ref)).toBe(true);
+		expect(ref.name).toBe("TOKEN");
 	});
 
-	it("plain env() returns an EnvRef, not a SecretEnvRef", () => {
+	it("plain env() returns an EnvRef not flagged as secret", () => {
 		const ref = env({ default: "x" });
 		expect(isEnvRef(ref)).toBe(true);
-		expect(isSecretEnvRef(ref)).toBe(false);
+		expect(isSecret(ref)).toBe(false);
 	});
 
 	it("resolveEnvRecord (via defineWorkflow build-time path) emits sentinels for secret bindings", () => {
@@ -846,6 +845,7 @@ describe("env({ secret: true })", () => {
 			env: {
 				PROP_KEY: env({ secret: true }),
 			},
+			envSource: { PROP_KEY: "value" },
 		});
 		expect(w.env.PROP_KEY).toBe(encodeSentinel("PROP_KEY"));
 	});
@@ -856,15 +856,37 @@ describe("env({ secret: true })", () => {
 			env: {
 				LOCAL: env({ secret: true, name: "MANIFEST_NAME" }),
 			},
+			envSource: { MANIFEST_NAME: "value" },
 		});
 		// The sentinel carries the manifest-visible name, not the property key.
 		expect(w.env.LOCAL).toBe(encodeSentinel("MANIFEST_NAME"));
+	});
+
+	it("throws when a secret env var is missing (parity with plain env())", () => {
+		expect(() => {
+			defineWorkflow({
+				name: "wf",
+				env: { TOKEN: env({ secret: true }) },
+				envSource: {},
+			});
+		}).toThrow("Missing environment variable: TOKEN");
+	});
+
+	it("uses the explicit name in the missing-secret error", () => {
+		expect(() => {
+			defineWorkflow({
+				name: "wf",
+				env: { tok: env({ secret: true, name: "API_TOKEN" }) },
+				envSource: {},
+			});
+		}).toThrow("Missing environment variable: API_TOKEN");
 	});
 
 	it("sentinel composes cleanly inside template literals", () => {
 		const w = defineWorkflow({
 			name: "wf",
 			env: { T: env({ secret: true }) },
+			envSource: { T: "value" },
 		});
 		const composed = `Bearer ${w.env.T}`;
 		expect(composed).toBe(`Bearer ${encodeSentinel("T")}`);
