@@ -43,13 +43,8 @@ function clearSession(c: Context, secure: boolean) {
 	deleteCookie(c, SESSION_COOKIE, clearOpts(secure));
 }
 
-async function setFlash(
-	c: Context,
-	login: string,
-	provider: SessionPayload["provider"],
-	secure: boolean,
-) {
-	const sealed = await sealFlash({ kind: "denied", login, provider });
+async function setFlash(c: Context, login: string, secure: boolean) {
+	const sealed = await sealFlash({ kind: "denied", login });
 	setCookie(c, FLASH_COOKIE, sealed, writeOpts(secure, SIXTY_SECONDS));
 }
 
@@ -102,7 +97,7 @@ function sessionMiddleware(
 
 		const refreshed = await provider.refreshSession(payload);
 		if (!refreshed) {
-			await setFlash(c, payload.login, payload.provider, secureCookies);
+			await setFlash(c, payload.login, secureCookies);
 			clearSession(c, secureCookies);
 			return c.redirect(LOGIN_PATH);
 		}

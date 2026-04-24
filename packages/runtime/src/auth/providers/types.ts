@@ -20,15 +20,6 @@ interface AuthProvider {
 	mountAuthRoutes(subApp: Hono): void;
 	resolveApiIdentity(req: Request): Promise<UserContext | undefined>;
 	refreshSession(payload: SessionPayload): Promise<UserContext | undefined>;
-
-	// Optional provider-supplied addenda rendered on /login when a flash
-	// (denied or logged-out) is attributed to this provider:
-	//   - renderFlashBody: appended into the banner body, after the generic copy
-	//   - renderFlashAction: appended into the action area, below the provider
-	//                        login sections (e.g., "Sign out of GitHub")
-	// Local provider omits both — sessionless local sign-out has no IdP to mention.
-	renderFlashBody?(): LoginSection;
-	renderFlashAction?(): LoginSection;
 }
 
 interface AuthProviderFactory {
