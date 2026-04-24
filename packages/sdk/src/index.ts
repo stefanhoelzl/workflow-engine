@@ -6,6 +6,8 @@ import type {
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
 import { ManifestSchema, z } from "@workflow-engine/core";
 import type { StandardCRON } from "ts-cron-validator";
+// biome-ignore lint/style/noExportedImports: sendMail is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
+import { sendMail } from "./mail.js";
 
 // ---------------------------------------------------------------------------
 // Action dispatch (routed through the sdk-support plugin's locked __sdk)
@@ -587,6 +589,15 @@ export type {
 	Manifest,
 } from "@workflow-engine/core";
 export type {
+	AttachmentContent,
+	MailError,
+	MailErrorKind,
+	SendMailAttachment,
+	SendMailOptions,
+	SendMailResult,
+	SendMailSmtp,
+} from "./mail.js";
+export type {
 	Action,
 	CronTrigger,
 	EnvRef,
@@ -616,6 +627,7 @@ export {
 	ManifestSchema,
 	manualTrigger,
 	secret,
+	sendMail,
 	WORKFLOW_BRAND,
 	WORKFLOW_SECRET_BINDINGS_KEY,
 	z,

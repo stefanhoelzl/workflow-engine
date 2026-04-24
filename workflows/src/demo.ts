@@ -16,6 +16,7 @@ import {
 	ManifestSchema,
 	manualTrigger,
 	secret,
+	sendMail,
 	WORKFLOW_BRAND,
 	z,
 } from "@workflow-engine/sdk";
@@ -73,6 +74,11 @@ declare const Observable: {
 };
 
 const MEASURE_DELAY_MS = 5;
+
+// Hoisted to module scope per `lint/performance/useTopLevelRegex`. Used by
+// `sendDemo` to extract ethereal.email's preview-message id from the raw SMTP
+// `250 Accepted` response string (matches nodemailer's own getTestMessageUrl).
+const ETHEREAL_MSGID_RE = /MSGID=([^\s\]]+)/;
 
 export const workflow = defineWorkflow({
 	env: {
@@ -417,6 +423,70 @@ export const run = manualTrigger({
 		await runDemo({ name });
 		return { ok: true };
 	},
+});
+
+// `sendDemo` exercises the mail plugin end-to-end using ethereal.email: we
+// bootstrap throwaway SMTP credentials via the public nodemailer REST endpoint,
+// then send a tiny message through them. Ethereal captures the message and
+// returns a `viewUrl` the operator can click to see it — nothing is actually
+// delivered. Kept out of `runDemo` so a transient outage of
+// `api.nodemailer.com` cannot break every other demo trigger.
+export const sendDemo = action({
+	input: z.object({ to: z.string() }),
+	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
+	handler: async ({ to }) => {
+		const bootstrapRes = await fetch("https://api.nodemailer.com/user", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				requestor: "workflow-engine-demo",
+				version: "1",
+			}),
+		});
+		if (!bootstrapRes.ok) {
+			throw new Error(
+				`ethereal bootstrap failed: ${bootstrapRes.status} ${bootstrapRes.statusText}`,
+			);
+		}
+		const creds = (await bootstrapRes.json()) as {
+			user: string;
+			pass: string;
+			smtp: { host: string; port: number; secure: boolean };
+			web: string;
+		};
+
+		const result = await sendMail({
+			smtp: {
+				host: creds.smtp.host,
+				port: creds.smtp.port,
+				tls: "starttls",
+				auth: { user: creds.user, pass: creds.pass },
+			},
+			from: `"Workflow Engine Demo" <${creds.user}>`,
+			to,
+			subject: "Hello from workflow-engine",
+			text: "This demo was sent via the sandbox-stdlib mail plugin.",
+		});
+
+		// Ethereal encodes its preview-URL id as `MSGID=<id>` inside the raw
+		// SMTP `250 Accepted` response string (what nodemailer's own
+		// `getTestMessageUrl` parses). `creds.web` already includes the
+		// scheme.
+		const msgIdMatch = (result.response ?? "").match(ETHEREAL_MSGID_RE);
+		const previewId = msgIdMatch?.[1];
+		const viewUrl = previewId
+			? `${creds.web}/message/${previewId}`
+			: `${creds.web}/messages`;
+		return { messageId: result.messageId, viewUrl };
+	},
+});
+
+export const sendMailDemo = manualTrigger({
+	input: z.object({
+		to: z.string().meta({ example: "demo@example.com" }),
+	}),
+	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
+	handler: async ({ to }) => sendDemo({ to }),
 });
 
 export const boom = action({

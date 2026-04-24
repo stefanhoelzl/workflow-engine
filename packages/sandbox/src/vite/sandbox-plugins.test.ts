@@ -110,10 +110,11 @@ describe("sandboxPlugins()", () => {
 		if (!code) {
 			throw new Error("unreachable");
 		}
-		// Virtual module output references the original file.
-		expect(code).toContain(JSON.stringify(pluginFile));
-		expect(code).toContain("export const name = mod.name;");
-		expect(code).toContain("export const dependsOn = mod.dependsOn;");
+		// Virtual module output emits static name + dependsOn literals
+		// (extracted at build time so the outer bundle does not walk the
+		// plugin's transitive imports).
+		expect(code).toContain('export const name = "example";');
+		expect(code).toContain("export const dependsOn =");
 		expect(code).toContain("export const workerSource =");
 		expect(code).toContain("export default { name, dependsOn, workerSource };");
 		// Tree-shaking check: the prepare function and its token must NOT
@@ -387,8 +388,9 @@ describe("sandboxPlugins()", () => {
 		if (!code) {
 			throw new Error("unreachable");
 		}
-		// The namespace import protects us from a hard error; dependsOn is
-		// simply `undefined` on the module namespace.
-		expect(code).toContain("export const dependsOn = mod.dependsOn;");
+		// Meta extraction finds no `dependsOn` export and emits the literal
+		// `undefined`, so consumers treating `dependsOn` as optional observe
+		// the same shape the source file used.
+		expect(code).toContain("export const dependsOn = undefined;");
 	});
 });

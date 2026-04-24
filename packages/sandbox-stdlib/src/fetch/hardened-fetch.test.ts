@@ -8,14 +8,8 @@ vi.mock("node:dns/promises", () => ({
 }));
 
 import { lookup as mockLookup } from "node:dns/promises";
-import {
-	BLOCKED_CIDRS_IPV4,
-	BLOCKED_CIDRS_IPV6,
-	FetchBlockedError,
-	hardenedFetch,
-	hasZoneIdentifier,
-	isBlockedAddress,
-} from "./hardened-fetch.js";
+import { HostBlockedError } from "../net-guard/index.js";
+import { hardenedFetch } from "./hardened-fetch.js";
 
 // dns.promises.lookup has two overloads (single address vs array). vi.mocked
 // picks the single-address overload by default; cast through unknown when
@@ -43,100 +37,16 @@ beforeEach(() => {
 	lookup.mockReset();
 });
 
-describe("isBlockedAddress", () => {
-	// Coverage map: one representative per listed CIDR. Keep ordering aligned
-	// with the BLOCKED_CIDRS_IPV4 / IPV6 constants for audit readability.
-	const IPV4_BLOCKED = [
-		["unspecified 0/8", "0.0.0.1"],
-		["RFC1918 10/8", "10.1.2.3"],
-		["CGNAT 100.64/10", "100.64.0.1"],
-		["loopback 127/8", "127.0.0.1"],
-		["link-local 169.254/16", "169.254.169.254"],
-		["RFC1918 172.16/12", "172.16.0.1"],
-		["protocol 192.0.0/24", "192.0.0.1"],
-		["TEST-NET-1", "192.0.2.5"],
-		["6to4 relay", "192.88.99.1"],
-		["RFC1918 192.168/16", "192.168.1.1"],
-		["benchmark 198.18/15", "198.18.0.1"],
-		["TEST-NET-2", "198.51.100.5"],
-		["TEST-NET-3", "203.0.113.5"],
-		["multicast 224/4", "224.0.0.1"],
-		["reserved 240/4", "240.0.0.1"],
-		["broadcast", "255.255.255.255"],
-	] as const;
-
-	for (const [label, addr] of IPV4_BLOCKED) {
-		it(`blocks ${label} (${addr})`, () => {
-			expect(isBlockedAddress(addr)).toBe(true);
-		});
-	}
-
-	const IPV6_BLOCKED = [
-		["unspecified ::", "::"],
-		["loopback ::1", "::1"],
-		["discard 100::/64", "100::1"],
-		["ULA fc00::/7", "fc00::1"],
-		["link-local fe80::/10", "fe80::1"],
-	] as const;
-
-	for (const [label, addr] of IPV6_BLOCKED) {
-		it(`blocks ${label} (${addr})`, () => {
-			expect(isBlockedAddress(addr)).toBe(true);
-		});
-	}
-
-	it("allows public IPv4 8.8.8.8", () => {
-		expect(isBlockedAddress("8.8.8.8")).toBe(false);
-	});
-
-	it("allows public IPv4 1.1.1.1", () => {
-		expect(isBlockedAddress("1.1.1.1")).toBe(false);
-	});
-
-	it("allows public IPv6 2606:4700:4700::1111", () => {
-		expect(isBlockedAddress("2606:4700:4700::1111")).toBe(false);
-	});
-
-	it("unwraps IPv4-mapped IPv6 and blocks if the IPv4 is private", () => {
-		expect(isBlockedAddress("::ffff:169.254.169.254")).toBe(true);
-		expect(isBlockedAddress("::ffff:10.0.0.1")).toBe(true);
-		expect(isBlockedAddress("::ffff:127.0.0.1")).toBe(true);
-	});
-
-	it("unwraps IPv4-mapped IPv6 and allows if the IPv4 is public", () => {
-		expect(isBlockedAddress("::ffff:8.8.8.8")).toBe(false);
-	});
-
-	it("refuses unparseable addresses", () => {
-		expect(isBlockedAddress("not-an-address")).toBe(true);
-		expect(isBlockedAddress("")).toBe(true);
-	});
-
-	it("exposes the CIDR constants for spec cross-check", () => {
-		expect(BLOCKED_CIDRS_IPV4).toContain("169.254.0.0/16");
-		expect(BLOCKED_CIDRS_IPV4).toContain("10.0.0.0/8");
-		expect(BLOCKED_CIDRS_IPV6).toContain("fe80::/10");
-		expect(BLOCKED_CIDRS_IPV6).toContain("::1/128");
-	});
-});
-
-describe("hasZoneIdentifier", () => {
-	it("detects percent-encoded zone ids", () => {
-		expect(hasZoneIdentifier("[fe80::1%eth0]")).toBe(true);
-		expect(hasZoneIdentifier("[fe80::1%25eth0]")).toBe(true);
-	});
-
-	it("passes addresses without zone ids", () => {
-		expect(hasZoneIdentifier("example.com")).toBe(false);
-		expect(hasZoneIdentifier("[::1]")).toBe(false);
-		expect(hasZoneIdentifier("127.0.0.1")).toBe(false);
-	});
-});
+// `isBlockedAddress`, `hasZoneIdentifier`, and the CIDR constants live in
+// `../net-guard/` and are covered by `net-guard.test.ts` as the single source
+// of truth. The describes below exercise hardenedFetch's integration with
+// those primitives end-to-end (scheme allowlist, DNS validation, error
+// wrapping).
 
 describe("hardenedFetch — scheme validation", () => {
 	it("rejects file:// scheme", async () => {
 		await expect(hardenedFetch("file:///etc/passwd")).rejects.toMatchObject({
-			name: "FetchBlockedError",
+			name: "HostBlockedError",
 			reason: "bad-scheme",
 		});
 	});
@@ -183,7 +93,7 @@ describe("hardenedFetch — DNS validation", () => {
 		mockResolve("127.0.0.1");
 		await expect(hardenedFetch("http://internal.local/")).rejects.toMatchObject(
 			{
-				name: "FetchBlockedError",
+				name: "HostBlockedError",
 				reason: "private-ip",
 			},
 		);
@@ -231,25 +141,25 @@ describe("hardenedFetch — DNS validation", () => {
 	// (`new URL("http://[fe80::1%eth0]/")` throws "Invalid URL"), so a
 	// malicious guest cannot reach the connector's zone-id check through a
 	// standard URL input. The `hasZoneIdentifier` check stays as
-	// defense-in-depth for callers that bypass URL parsing. Tested directly
-	// in the `hasZoneIdentifier` block above.
+	// defense-in-depth for callers that bypass URL parsing. Direct coverage
+	// lives in `../net-guard/net-guard.test.ts`.
 });
 
 describe("hardenedFetch — error wrapping", () => {
-	it("FetchBlockedError has the expected shape", () => {
-		const err = new FetchBlockedError("private-ip", "nope");
+	it("HostBlockedError has the expected shape", () => {
+		const err = new HostBlockedError("private-ip", "nope");
 		expect(err).toBeInstanceOf(Error);
-		expect(err.name).toBe("FetchBlockedError");
+		expect(err.name).toBe("HostBlockedError");
 		expect(err.reason).toBe("private-ip");
 		expect(err.message).toBe("nope");
 	});
 
-	it("DNS NXDOMAIN surfaces as a non-FetchBlockedError", async () => {
+	it("DNS NXDOMAIN surfaces as a non-HostBlockedError", async () => {
 		lookup.mockRejectedValueOnce(
 			Object.assign(new Error("NXDOMAIN"), { code: "ENOTFOUND" }),
 		);
 		const err = await hardenedFetch("http://nxdomain.example/").catch((e) => e);
 		expect(err).toBeDefined();
-		expect(err).not.toBeInstanceOf(FetchBlockedError);
+		expect(err).not.toBeInstanceOf(HostBlockedError);
 	});
 });

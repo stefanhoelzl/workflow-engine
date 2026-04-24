@@ -6,15 +6,11 @@
 //   0. `data:` URLs short-circuit via undici's native handler — no DNS,
 //      no socket, no exfiltration vector (the URL IS the response body)
 //   1. scheme allowlist (http / https; any port)
-//   2. dns.lookup(host, {all: true}) → full A + AAAA set
-//   3. unwrap IPv4-mapped IPv6, reject IPv6 zone identifiers
-//   4. IANA special-use blocklist — fail-closed if ANY address is blocked
-//   5. TCP connect to the validated IP, servername = original host (SNI)
-//   6. manual redirect follow, cap 5, Authorization stripped cross-origin
-//   7. 30s total wall-clock cap composed with caller's signal
+//   2. shared net-guard primitive (dns.lookup + IANA blocklist)
+//   3. TCP connect to the validated IP, servername = original host (SNI)
+//   4. manual redirect follow, cap 5, Authorization stripped cross-origin
+//   5. 30s total wall-clock cap composed with caller's signal
 
-import { lookup as dnsLookup } from "node:dns/promises";
-import ipaddr from "ipaddr.js";
 import {
 	Agent,
 	buildConnector,
@@ -22,131 +18,7 @@ import {
 	request,
 	fetch as undiciFetch,
 } from "undici";
-
-type BlockReason =
-	| "bad-scheme"
-	| "private-ip"
-	| "redirect-to-private"
-	| "zone-id";
-
-class FetchBlockedError extends Error {
-	readonly reason: BlockReason;
-	constructor(reason: BlockReason, message: string) {
-		super(message);
-		this.name = "FetchBlockedError";
-		this.reason = reason;
-	}
-}
-
-// IANA special-use CIDRs — explicit list so the spec and code match by
-// inspection. Any change here requires updating the spec scenario in
-// openspec/specs/sandbox/spec.md §Hardened outbound fetch and SECURITY.md §2.
-const BLOCKED_CIDRS_IPV4: readonly string[] = [
-	"0.0.0.0/8", // unspecified / "this network"
-	"10.0.0.0/8", // RFC1918 private
-	"100.64.0.0/10", // CGNAT
-	"127.0.0.0/8", // loopback
-	"169.254.0.0/16", // link-local / cloud metadata
-	"172.16.0.0/12", // RFC1918 private
-	"192.0.0.0/24", // IETF protocol assignments
-	"192.0.2.0/24", // TEST-NET-1
-	"192.88.99.0/24", // 6to4 relay
-	"192.168.0.0/16", // RFC1918 private
-	"198.18.0.0/15", // benchmark
-	"198.51.100.0/24", // TEST-NET-2
-	"203.0.113.0/24", // TEST-NET-3
-	"224.0.0.0/4", // multicast
-	"240.0.0.0/4", // reserved (future use)
-	"255.255.255.255/32", // limited broadcast
-];
-
-const BLOCKED_CIDRS_IPV6: readonly string[] = [
-	"::/128", // unspecified
-	"::1/128", // loopback
-	"100::/64", // discard-only prefix
-	"fc00::/7", // unique-local addresses (ULA)
-	"fe80::/10", // link-local
-];
-
-type Cidr = [ipaddr.IPv4 | ipaddr.IPv6, number];
-
-const PARSED_IPV4_CIDRS: readonly Cidr[] = BLOCKED_CIDRS_IPV4.map((c) =>
-	ipaddr.parseCIDR(c),
-);
-const PARSED_IPV6_CIDRS: readonly Cidr[] = BLOCKED_CIDRS_IPV6.map((c) =>
-	ipaddr.parseCIDR(c),
-);
-
-function isBlockedAddress(addrStr: string): boolean {
-	let parsed: ipaddr.IPv4 | ipaddr.IPv6;
-	try {
-		parsed = ipaddr.parse(addrStr);
-	} catch {
-		// An unparseable address is refused rather than allowed.
-		return true;
-	}
-	// Unwrap IPv4-mapped IPv6 and re-classify as IPv4.
-	if (parsed.kind() === "ipv6") {
-		const v6 = parsed as ipaddr.IPv6;
-		if (v6.isIPv4MappedAddress()) {
-			parsed = v6.toIPv4Address();
-		}
-	}
-	if (parsed.kind() === "ipv4") {
-		const v4 = parsed as ipaddr.IPv4;
-		for (const cidr of PARSED_IPV4_CIDRS) {
-			if (v4.match(cidr as [ipaddr.IPv4, number])) {
-				return true;
-			}
-		}
-		return false;
-	}
-	const v6 = parsed as ipaddr.IPv6;
-	for (const cidr of PARSED_IPV6_CIDRS) {
-		if (v6.match(cidr as [ipaddr.IPv6, number])) {
-			return true;
-		}
-	}
-	return false;
-}
-
-// URL parsing preserves zone identifiers inside brackets — `new URL("http://
-// [fe80::1%eth0]/")` parses with hostname `"[fe80::1%25eth0]"`. Treat any
-// percent inside the bracketed literal as a zone id.
-function hasZoneIdentifier(hostname: string): boolean {
-	return hostname.includes("%");
-}
-
-async function assertHostIsPublic(hostname: string): Promise<string> {
-	if (hasZoneIdentifier(hostname)) {
-		throw new FetchBlockedError(
-			"zone-id",
-			"IPv6 zone identifiers are not permitted",
-		);
-	}
-	// Strip IPv6 brackets for dns.lookup (`[::1]` → `::1`).
-	const bare =
-		hostname.startsWith("[") && hostname.endsWith("]")
-			? hostname.slice(1, -1)
-			: hostname;
-	const addresses = await dnsLookup(bare, { all: true });
-	if (addresses.length === 0) {
-		throw new Error(`dns.lookup returned no addresses for ${hostname}`);
-	}
-	for (const entry of addresses) {
-		if (isBlockedAddress(entry.address)) {
-			throw new FetchBlockedError(
-				"private-ip",
-				`${hostname} resolves to a blocked address`,
-			);
-		}
-	}
-	const first = addresses[0];
-	if (!first) {
-		throw new Error(`dns.lookup returned empty list for ${hostname}`);
-	}
-	return first.address;
-}
+import { assertHostIsPublic, HostBlockedError } from "../net-guard/index.js";
 
 // Undici connector: resolves + validates, then hands the base connector a
 // pre-resolved IP so no second DNS lookup occurs between validation and
@@ -225,10 +97,10 @@ function bodyFromInit(init?: RequestInit): string | null {
 	return String(init.body);
 }
 
-function unwrapFetchBlocked(err: unknown): FetchBlockedError | null {
+function unwrapHostBlocked(err: unknown): HostBlockedError | null {
 	let cursor: unknown = err;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && cursor; depth += 1) {
-		if (cursor instanceof FetchBlockedError) {
+		if (cursor instanceof HostBlockedError) {
 			return cursor;
 		}
 		cursor = (cursor as { cause?: unknown }).cause;
@@ -317,7 +189,7 @@ function stripHeader(
 
 function validateScheme(parsed: URL): void {
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-		throw new FetchBlockedError(
+		throw new HostBlockedError(
 			"bad-scheme",
 			`unsupported scheme: ${parsed.protocol}`,
 		);
@@ -352,7 +224,7 @@ function applyRedirect(
 	try {
 		nextUrl = new URL(location, state.currentUrl).toString();
 	} catch {
-		throw new FetchBlockedError(
+		throw new HostBlockedError(
 			"bad-scheme",
 			`invalid redirect target: ${location}`,
 		);
@@ -401,13 +273,13 @@ async function issueHopRequest(
 			signal,
 		});
 	} catch (err) {
-		const blocked = unwrapFetchBlocked(err);
+		const blocked = unwrapHostBlocked(err);
 		if (blocked) {
 			// Past the initial hop, a "private-ip" reason is really a
 			// redirect-to-private event — re-wrap so the handler observes
 			// the more specific classification.
 			if (hop > 0 && blocked.reason === "private-ip") {
-				throw new FetchBlockedError(
+				throw new HostBlockedError(
 					"redirect-to-private",
 					`redirect target ${state.currentUrl} resolves to a blocked address`,
 				);
@@ -474,7 +346,7 @@ async function hardenedFetch(
 			}
 			await body.text();
 			if (hop >= MAX_REDIRECTS) {
-				throw new FetchBlockedError(
+				throw new HostBlockedError(
 					"redirect-to-private",
 					`redirect chain exceeded ${MAX_REDIRECTS} hops`,
 				);
@@ -487,18 +359,10 @@ async function hardenedFetch(
 		return responseFromUndici(statusCode, headers, text, state.currentUrl);
 	}
 	// Unreachable — the for-loop either returns or throws.
-	throw new FetchBlockedError(
+	throw new HostBlockedError(
 		"redirect-to-private",
 		`redirect chain exceeded ${MAX_REDIRECTS} hops`,
 	);
 }
 
-export type { BlockReason };
-export {
-	BLOCKED_CIDRS_IPV4,
-	BLOCKED_CIDRS_IPV6,
-	FetchBlockedError,
-	hardenedFetch,
-	hasZoneIdentifier,
-	isBlockedAddress,
-};
+export { hardenedFetch };

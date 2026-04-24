@@ -463,7 +463,7 @@ exists.
 | R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that omit it fall back to WASM defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
 | R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
 | R-S3 | Host timers run on the Node event loop with no per-spawn cap; per-run cleanup mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
-| R-S4 | `hardenedFetch` is the structural default in `createFetchPlugin` (closes over it; override requires replacing the entire plugin via `__pluginLoaderOverride`, which is a test-only path). | S5 closed | **Resolved** |
+| R-S4 | Every outbound-TCP plugin in `sandbox-stdlib` MUST route host resolution through the shared `net-guard` primitive (`assertHostIsPublic` in `packages/sandbox-stdlib/src/net-guard/`) so the IANA special-use blocklist is applied identically across plugins. Current consumers: the `fetch` plugin (via `hardenedFetch` — closed over in `createFetchPlugin` as the structural production default; override requires replacing the entire plugin via `__pluginLoaderOverride`, a test-only path) and the `mail` plugin (`assertHostIsPublic(smtp.host)` called before constructing the nodemailer transport, with `host: <validatedIP>` + `tls.servername: <originalHost>` to close the TOCTOU window). Any future outbound-TCP plugin MUST adopt the same primitive. | S5 closed | **Resolved** |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. Defence-in-depth under R-S4. | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
 | R-S12 | **No public-URL allowlist.** Guest code can still `fetch()` any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration to attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-tenant host allowlist in the tenant manifest, enforced at upload-time + in `hardenedFetch`. | S8 deferred | **Deferred** (separate change) |
 | R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret a handler returns, echoes into an action input, or logs will appear in the archive / pino logs | S7 partial | Behavioural; author responsibility |
@@ -488,10 +488,11 @@ plugin, and every change that adds a guest-visible surface.
 2. **R-2 Locked internals.** Any `globalThis` binding installed for
    guest access MUST be
    `Object.defineProperty({writable: false, configurable: false})`
-   wrapping an `Object.freeze`d inner object. Canonical example: `__sdk`.
+   wrapping an `Object.freeze`d inner object. Canonical examples: `__sdk`
+   (action dispatcher) and `__mail` (SMTP dispatcher).
    Rationale: tenant code cannot replace the dispatcher with a stub that
-   bypasses `action.*` emission. Adding a new top-level host-callable
-   global without this structural lock is forbidden.
+   bypasses `action.*` / `mail.*` emission. Adding a new top-level
+   host-callable global without this structural lock is forbidden.
 3. **R-3 Hardened fetch default.** `createFetchPlugin` closes over
    `hardenedFetch` as the structural production default (scheme
    allowlist + IANA blocklist + DNS validation + redirect re-check +
@@ -521,8 +522,8 @@ plugin, and every change that adds a guest-visible surface.
    in a plugin — it must be passed in as serialized config or reached
    via a descriptor-bridged guest function that the plugin registers.
 7. **R-7 Reserved prefixes.** Event prefixes `trigger`, `action`,
-   `fetch`, `timer`, `console`, `wasi`, and `uncaught-error` are
-   reserved for stdlib / runtime plugins. Third-party plugins use
+   `fetch`, `mail`, `timer`, `console`, `wasi`, and `uncaught-error`
+   are reserved for stdlib / runtime plugins. Third-party plugins use
    domain-specific prefixes (e.g. `mypkg.request` /
    `mypkg.response`) to avoid conflating with core audit categories.
 8. **R-8 No runtime metadata in the sandbox.** The sandbox stamps only
