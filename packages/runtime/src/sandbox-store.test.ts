@@ -308,6 +308,85 @@ describe("sandbox-store: __sdk lock semantics (SECURITY.md §2)", () => {
 	});
 });
 
+describe("sandbox-store: __mail lock semantics (SECURITY.md §2 R-2)", () => {
+	let store: SandboxStore;
+
+	afterEach(() => {
+		store?.dispose();
+	});
+
+	async function probeMailLock(code: string): Promise<unknown> {
+		const probeBundle = `
+			var __wfe_exports__ = (function(exports) {
+				exports.onPing = Object.assign(
+					async () => ({ status: 200, body: (${code})() }),
+					{ body: { parse: (x) => x }, schema: { parse: (x) => x } },
+				);
+				return exports;
+			})({});
+		`;
+		store = makeStore();
+		const sb = await store.get("acme", WORKFLOW, probeBundle);
+		const result = await sb.run("onPing", { body: {} });
+		if (!result.ok) {
+			throw new Error(`probe failed: ${JSON.stringify(result.error)}`);
+		}
+		return (result.result as { body: unknown }).body;
+	}
+
+	it("__mail is installed with a send function", async () => {
+		const body = (await probeMailLock(`() => ({
+			mail: typeof globalThis.__mail,
+			send: typeof globalThis.__mail.send,
+		})`)) as { mail: string; send: string };
+		expect(body.mail).toBe("object");
+		expect(body.send).toBe("function");
+	});
+
+	it("$mail/send private descriptor is deleted after phase 3", async () => {
+		const body = (await probeMailLock(`() => ({
+			type: typeof globalThis["$mail/send"],
+			hasKey: Object.hasOwn(globalThis, "$mail/send"),
+		})`)) as { type: string; hasKey: boolean };
+		expect(body.type).toBe("undefined");
+		expect(body.hasKey).toBe(false);
+	});
+
+	it("__mail reassignment throws in strict mode (non-writable property)", async () => {
+		const body = (await probeMailLock(`() => {
+			'use strict';
+			let threw = null;
+			try { globalThis.__mail = { send: () => 'pwned' }; }
+			catch (e) { threw = e.message; }
+			return { threw: threw, stillObject: typeof globalThis.__mail === 'object', send: typeof globalThis.__mail.send };
+		}`)) as { threw: string; stillObject: boolean; send: string };
+		expect(body.threw).toMatch(/assign|read.?only|Cannot/i);
+		expect(body.stillObject).toBe(true);
+		expect(body.send).toBe("function");
+	});
+
+	it("delete __mail returns false (non-configurable property)", async () => {
+		const body = (await probeMailLock(`() => {
+			const deleted = delete globalThis.__mail;
+			return { deleted: deleted, stillThere: typeof globalThis.__mail };
+		}`)) as { deleted: boolean; stillThere: string };
+		expect(body.deleted).toBe(false);
+		expect(body.stillThere).toBe("object");
+	});
+
+	it("__mail.send reassignment is rejected (inner object is frozen)", async () => {
+		const body = (await probeMailLock(`() => {
+			'use strict';
+			let threw = null;
+			try { globalThis.__mail.send = () => 'pwned'; }
+			catch (e) { threw = e.message; }
+			return { threw: threw, sendType: typeof globalThis.__mail.send };
+		}`)) as { threw: string; sendType: string };
+		expect(body.threw).toMatch(/assign|read.?only|Cannot/i);
+		expect(body.sendType).toBe("function");
+	});
+});
+
 describe("sandbox-store: orphan survives re-upload", () => {
 	let store: SandboxStore;
 

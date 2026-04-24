@@ -93,6 +93,9 @@ Replace the old "visit `https://localhost:8443` and click X" bullets with dev-pr
 ## Cluster smoke (human)
 - [ ] `pnpm local:up:build`; `curl -k https://localhost:8443/` → 302 to `/trigger`; `/login` renders local-user dropdown; …
 ```
+## Upgrade notes
+
+- **SMTP plugin + `sendMail` SDK export (2026-04-24).** Additive. No state wipe. Tenants that want to use `sendMail` from `@workflow-engine/sdk` must rebuild via `pnpm build` and re-upload via `wfe upload --tenant <name>` to pick up the new export. Tenants that do not use mail see zero behavioural change. New event kinds `mail.request` / `mail.response` / `mail.error` flow through the unchanged event pipeline.
 
 ## Example workflows
 
@@ -126,12 +129,12 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 
 - **NEVER** add a Node.js surface, or a new guest-visible global, to the QuickJS sandbox without extending §2's "Globals surface" list in the same PR, with a threat assessment (§2).
 - **NEVER** add a `GuestFunctionDescription` with `public: true` without a written rationale — descriptors default to `public: false` so phase-3 auto-deletes them from `globalThis` after plugin source eval (§2 R-1).
-- **NEVER** install a top-level host-callable global for guest use without locking it via `Object.defineProperty({writable: false, configurable: false})` wrapping a frozen inner object; canonical example is `__sdk` (§2 R-2).
+- **NEVER** install a top-level host-callable global for guest use without locking it via `Object.defineProperty({writable: false, configurable: false})` wrapping a frozen inner object; canonical examples are `__sdk` and `__mail` (§2 R-2).
 - **NEVER** override `createFetchPlugin`'s default `hardenedFetch` in production composition; overriding is a test-only path via `__pluginLoaderOverride` (§2 R-3).
 - **NEVER** add a plugin with long-lived state (timers, pending `Callable`s, in-flight fetches) without an `onRunFinished` that routes cleanup through the same path as guest-initiated teardown so audit events fire (§2 R-4).
 - **NEVER** mutate `bridge.*` or construct `seq`/`ref`/`ts`/`at`/`id` directly from plugin code — all events flow through `ctx.emit` / `ctx.request`, which stamp those fields internally (§2 R-5).
 - **NEVER** introduce cross-thread method calls between main and worker; plugin code is worker-only and plugin configs MUST be JSON-serializable (verified by `assertSerializableConfig`) (§2 R-6).
-- **NEVER** use the reserved event prefixes `trigger`, `action`, `fetch`, `timer`, `console`, `wasi`, or `uncaught-error` for third-party plugins; use a domain-specific prefix instead (§2 R-7).
+- **NEVER** use the reserved event prefixes `trigger`, `action`, `fetch`, `mail`, `timer`, `console`, `wasi`, or `uncaught-error` for third-party plugins; use a domain-specific prefix instead (§2 R-7).
 - **NEVER** stamp tenant, workflow, workflowSha, or invocationId inside sandbox or plugin code — the sandbox only stamps intrinsic event fields (`seq`, `ref`, `ts`, `at`, `id`, `kind`, `name`) via `ctx.emit`/`ctx.request`, and the runtime attaches runtime-owned fields (`tenant`, `workflow`, `workflowSha`, `invocationId`) in its `sb.onEvent` receiver before forwarding to the bus. `BusConsumer.handle` therefore always sees a fully-widened `InvocationEvent`; consumers MUST NOT re-stamp or mutate either set (§2 R-8).
 - **NEVER** emit, read, or construct `InvocationEvent.meta` (including `meta.dispatch`) from inside sandbox or plugin code — `meta` is stamped only by the executor's `sb.onEvent` widener, gated on `event.kind === "trigger.request"`. Dispatch provenance (`{source, user?}`) is a runtime-only concern; guests never see it (§2 R-9; canonical contract in `openspec/specs/invocations/spec.md` under "Dispatch provenance on trigger.request").
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).

@@ -44,7 +44,10 @@ type EventKind =
 	| "timer.request"
 	| "timer.response"
 	| "timer.error"
-	| "timer.clear";
+	| "timer.clear"
+	| "mail.request"
+	| "mail.response"
+	| "mail.error";
 
 interface InvocationEventError {
 	message: string;

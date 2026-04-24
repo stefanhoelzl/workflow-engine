@@ -15,6 +15,7 @@ import type {
 import wasiPlugin from "../../sandbox/src/plugins/wasi-plugin.ts?sandbox-plugin";
 import consolePlugin from "../../sandbox-stdlib/src/console/index.ts?sandbox-plugin";
 import fetchPlugin from "../../sandbox-stdlib/src/fetch/index.ts?sandbox-plugin";
+import mailPlugin from "../../sandbox-stdlib/src/mail/index.ts?sandbox-plugin";
 import timersPlugin from "../../sandbox-stdlib/src/timers/index.ts?sandbox-plugin";
 import webPlatformPlugin from "../../sandbox-stdlib/src/web-platform/index.ts?sandbox-plugin";
 import sdkSupportPlugin from "../../sdk/src/sdk-support/index.ts?sandbox-plugin";
@@ -28,10 +29,10 @@ import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 
 // Per-(tenant, sha) sandbox cache. Composes the production plugin list for
-// every entry: wasi → wasi-telemetry → web-platform → fetch → timers →
-// console → host-call-action → sdk-support → trigger. Plugin sources are
-// pre-bundled at build time by `sandboxPlugins()` and loaded via `data:`
-// URI import.
+// every entry: wasi → wasi-telemetry → web-platform → fetch → mail →
+// timers → console → host-call-action → sdk-support → trigger. Plugin
+// sources are pre-bundled at build time by `sandboxPlugins()` and loaded
+// via `data:` URI import.
 //
 // Sandboxes are held for the lifetime of the store. Re-upload on a changed
 // sha orphans the old `(tenant, oldSha)` sandbox, which remains reachable
@@ -82,6 +83,7 @@ function buildPluginDescriptors(
 		{ ...secretsPlugin, config: secretsConfig },
 		{ ...webPlatformPlugin },
 		{ ...fetchPlugin },
+		{ ...mailPlugin },
 		{ ...timersPlugin },
 		{ ...consolePlugin },
 		{ ...hostCallActionPlugin, config: hostCallActionConfig },
