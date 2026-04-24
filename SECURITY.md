@@ -401,17 +401,32 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   implement `onRunFinished`. The `timers` plugin iterates live timers at
   run end and routes each through the same clear path as guest-initiated
   `clearTimeout`, emitting `timer.clear` leaves. The `fetch` plugin's
-  per-run `AbortController` aborts in-flight requests. Cleanup runs
-  inside the run's refStack frame so audit events parent correctly.
+  per-run `AbortController` aborts in-flight requests. The `sql` plugin
+  (`createSqlPlugin`) calls `sql.end({timeout:5})` in a `finally` block
+  around every query so the per-call connection is closed on both
+  success and failure; `onRunFinished` is a backstop that forces
+  `sql.end({timeout:0})` on any handle whose `finally` path failed to
+  complete. Cleanup runs inside the run's refStack frame so audit events
+  parent correctly.
 - **ctx-only emission (S14).** All events flow through `ctx.emit` /
   `ctx.request`. `seq`/`ref`/`ts`/`at`/`id` are stamped internally and
   never exposed to plugin code. Direct `bridge.*` mutation from plugin
   code is prohibited by convention and reviewed per plugin (catalog is
   small — ~8 plugins).
-- **Reserved event prefixes.** `trigger`, `action`, `fetch`, `timer`,
-  `console`, `wasi`, `uncaught-error` are reserved for stdlib / runtime
-  plugins. Third-party plugins use domain-specific prefixes to avoid
-  conflating with core audit categories.
+- **Reserved event prefixes.** `trigger`, `action`, `fetch`, `mail`,
+  `sql`, `timer`, `console`, `wasi`, `uncaught-error` are reserved for
+  stdlib / runtime plugins. Third-party plugins use domain-specific
+  prefixes to avoid conflating with core audit categories.
+- **SQL event param-value redaction.** `sql.request` events MAY carry
+  the full `query` text (authors see it in the dashboard for
+  debugging) but MUST NOT carry any param *values*. The
+  `createSqlPlugin` descriptor's `logInput` emits
+  `{engine, host, database, query, paramCount}` — `paramCount` is the
+  length of the params array; the values themselves never appear in
+  any `sql.request`, `sql.response`, or `sql.error` event payload.
+  This matches the `mail` plugin's "log envelope, not body" discipline:
+  param values are the most common carrier of PII / PHI / tokens flowing
+  through SQL calls, and the event stream is operator-visible.
 - **Worker-only plugin execution.** Plugin code runs in the Node worker
   thread exclusively. No cross-thread method calls. Plugin configs are
   validated JSON-serializable (`assertSerializableConfig`) at sandbox
@@ -478,7 +493,7 @@ exists.
 | R-S1 | `SandboxOptions.memoryLimit` wires through to `QuickJS.create({ memoryLimit })` — callers that omit it fall back to WASM defaults | S2 opt-in | Caller-controlled (runtime does not set a default yet) |
 | R-S2 | WASI `interruptHandler` is supported by the engine, but the current worker protocol cannot serialize functions across `postMessage`, so there is no wired-in timeout. | S3 unmitigated | **Follow-up** (engine supports it; wire-up is pending) |
 | R-S3 | Host timers run on the Node event loop with no per-spawn cap; per-run cleanup mitigates cross-run leakage but an active run can still register arbitrarily many pending callbacks | S4 partial | v1 limitation |
-| R-S4 | Every outbound-TCP plugin in `sandbox-stdlib` MUST route host resolution through the shared `net-guard` primitive (`assertHostIsPublic` in `packages/sandbox-stdlib/src/net-guard/`) so the IANA special-use blocklist is applied identically across plugins. Current consumers: the `fetch` plugin (via `hardenedFetch` — closed over in `createFetchPlugin` as the structural production default; override requires replacing the entire plugin via `__pluginLoaderOverride`, a test-only path) and the `mail` plugin (`assertHostIsPublic(smtp.host)` called before constructing the nodemailer transport, with `host: <validatedIP>` + `tls.servername: <originalHost>` to close the TOCTOU window). Any future outbound-TCP plugin MUST adopt the same primitive. | S5 closed | **Resolved** |
+| R-S4 | Every outbound-TCP plugin in `sandbox-stdlib` MUST route host resolution through the shared `net-guard` primitive (`assertHostIsPublic` in `packages/sandbox-stdlib/src/net-guard/`) so the IANA special-use blocklist is applied identically across plugins. Current consumers: the `fetch` plugin (via `hardenedFetch` — closed over in `createFetchPlugin` as the structural production default; override requires replacing the entire plugin via `__pluginLoaderOverride`, a test-only path), the `mail` plugin (`assertHostIsPublic(smtp.host)` called before constructing the nodemailer transport, with `host: <validatedIP>` + `tls.servername: <originalHost>` to close the TOCTOU window), and the `sql` plugin (`createSqlPlugin`: `assertHostIsPublic(host)` called before the porsager/postgres `socket` factory hands the driver a socket connected to the validated IP, with `ssl.servername: <originalHost>` pinned for SNI + cert verification; the driver never re-resolves DNS after the socket is handed over). Any future outbound-TCP plugin MUST adopt the same primitive. Note: `createSqlPlugin` invokes the driver via `sql.unsafe(query, params)` — the `unsafe` method name is porsager/postgres's label for the raw-string API; with `$N` placeholders and a non-empty `params` array it routes through Postgres's extended protocol and is parameterized / injection-safe. Empty `params` uses the simple-query protocol (multi-statement allowed, no binding). The plugin does not expose tagged-template authoring. | S5 closed | **Resolved** |
 | R-S5 | K8s `NetworkPolicy` on the runtime pod restricts cross-pod traffic and blocks RFC1918 + link-local egress. Defence-in-depth under R-S4. | S5 defence-in-depth | **Resolved** (see §5 R-I1 / R-I9) |
 | R-S12 | **No public-URL allowlist.** Guest code can still `fetch()` any public URL the pod can reach. This mitigates S5 (internal SSRF) but leaves S8 (exfiltration to attacker-controlled public endpoint) unaddressed. Closing S8 requires a per-owner host allowlist in the owner manifest, enforced at upload-time + in `hardenedFetch`. | S8 deferred | **Deferred** (separate change) |
 | R-S6 | Workflow `env` is resolved at load time from `process.env` and shipped into the sandbox as JSON; any secret a handler returns, echoes into an action input, or logs will appear in the archive / pino logs | S7 partial | Behavioural; author responsibility |
