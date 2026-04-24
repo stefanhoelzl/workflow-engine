@@ -50,6 +50,13 @@ interface InvocationEventError {
 	message: string;
 	stack: string;
 	issues?: unknown;
+	/**
+	 * Recovery stamps `kind: "engine_crashed"` onto the synthetic `trigger.error`
+	 * it emits for invocations whose pending events were found on disk at
+	 * startup but never reached a terminal. See `recovery/spec.md` for the
+	 * full shape and semantics.
+	 */
+	kind?: "engine_crashed";
 }
 
 /**

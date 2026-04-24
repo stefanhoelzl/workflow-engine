@@ -59,4 +59,4 @@ The layout SHALL render a full-width top bar above the sidebar and main content 
 
 #### Scenario: Sign out link
 - **WHEN** the user clicks the "Sign out" link in the top bar
-- **THEN** the browser navigates to `/oauth2/sign_out`
+- **THEN** the browser submits a POST to `/auth/logout`

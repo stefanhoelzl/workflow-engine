@@ -6,7 +6,7 @@ Workflows are currently compiled at build time and baked into the container imag
 
 - Add `POST /api/workflows` endpoint that accepts a tar.gz workflow bundle (manifest.json + actions/*.js), validates it, persists it to the storage backend, and hot-reloads it into the runtime
 - Add GitHub token authentication middleware for the upload endpoint (validates against GitHub API, restricts to a configured user)
-- **BREAKING**: Restructure storage backend layout from flat `pending/`/`archive/` to `events/pending/`/`events/archive/` + `workflows/{name}/`
+- ~~**BREAKING**: Restructure storage backend layout from flat `pending/`/`archive/` to `events/pending/`/`events/archive/` + `workflows/{name}/`~~ (superseded — the `events/` prefix migration was not implemented and the spec was reverted; event prefixes remain `pending/` and `archive/`. Tenant bundles live at `workflows/{tenant}.tar.gz`, not `workflows/{name}/`. See `openspec/specs/storage-backend/spec.md` "Storage layout".)
 - **BREAKING**: Remove `WORKFLOW_DIR` env var — runtime loads workflows from the storage backend (or holds them in memory if no backend configured) instead of from a local directory
 - **BREAKING**: `createWorkflow("name")` — name becomes a required first argument in the SDK
 - **BREAKING**: Manifest schema gains a required `name` field; bundle layout changes to `manifest.json` + `actions/<name>.js`
@@ -21,7 +21,7 @@ Workflows are currently compiled at build time and baked into the container imag
 - `workflow-registry`: Incremental, mutable workflow registry replacing the one-shot startup registration
 
 ### Modified Capabilities
-- `storage-backend`: Layout restructure (`events/` and `workflows/` prefixes), FS backend `list()` becomes recursive
+- `storage-backend`: Add `workflows/` prefix for tenant bundles; FS backend `list()` becomes recursive. (The proposed `events/` prefix migration was never implemented — see note in the preceding list.)
 - `workflow-manifest`: Add required `name` field, change bundle layout to use `actions/` subdirectory
 - `sdk`: `createWorkflow("name")` requires name as first argument
 - `vite-plugin`: Extract workflow name, write actions to `actions/` subdirectory in bundle output

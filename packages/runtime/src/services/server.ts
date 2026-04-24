@@ -70,6 +70,7 @@ function createServer(
 				server.on("error", reject);
 				server.on("listening", () => {
 					server?.removeListener("error", reject);
+					opts.logger?.info(`Runtime listening on port ${port}`);
 				});
 				server.on("close", resolve);
 			});

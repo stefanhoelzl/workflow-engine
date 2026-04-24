@@ -62,12 +62,8 @@ variable "rfc1918_except" {
 
 variable "coredns_selector" {
   type = object({
-    namespace_labels = map(string)
-    match_expressions = object({
-      key      = string
-      operator = string
-      values   = list(string)
-    })
+    namespace  = string
+    k8s_app_in = list(string)
   })
-  description = "Selectors for CoreDNS pods (namespace labels + pod match_expressions)"
+  description = "Shorthand CoreDNS selector: target namespace (matched via kubernetes.io/metadata.name) and list of k8s-app label values to accept (typically [\"coredns\", \"kube-dns\"])."
 }

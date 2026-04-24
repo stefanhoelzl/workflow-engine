@@ -652,7 +652,9 @@ timing.
 **Cron triggers are NOT on this surface.** `cronTrigger(...)` fires from the
 runtime's internal scheduler (`packages/runtime/src/triggers/cron.ts`) —
 there is no external caller, no external URL, and no untrusted input crosses
-a network boundary at fire time (the handler receives an empty payload `{}`).
+a network boundary at fire time (the handler receives an empty payload `{}`,
+reflected in the SDK's `inputSchema: z.object({})` property, enforced at the
+type level and validated by the `fire` closure before the sandbox is entered).
 Cron triggers are exposed only via the authenticated `/trigger` UI's
 "Run now" affordance, which sits behind `sessionMiddleware` +
 `requireTenantMember` (§4).
@@ -674,18 +676,23 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   (AWS signatures, delivery IDs) but are **not parsed** into any structured
   field on the handler's payload.
 - Request data delivered to the trigger handler as the `payload`
-  argument:
+  argument is exactly these four fields, and no others:
 
   ```typescript
   { body, headers, url, method }
   ```
 
-  `body` is a JSON-parsed object validated against the trigger's JSON
-  Schema (Ajv) before the sandbox is entered. `headers`, `url`, and `method`
-  are attacker-controlled metadata — the sandbox sees them as data, not as
-  authentication. A handler that needs a query-string value SHALL parse it
-  explicitly via `new URL(payload.url).searchParams` and treat the result
-  as untrusted.
+  There are no `params` fields (webhook URLs have no `:param`
+  segments) and no `query` field (the query string is not pre-parsed
+  into structured data). Handlers that need a query-string value SHALL
+  parse it explicitly via `new URL(payload.url).searchParams` and
+  treat the result as untrusted. `body` is a JSON-parsed object
+  validated against the trigger's JSON Schema (Ajv) before the sandbox
+  is entered. `headers`, `url`, and `method` are attacker-controlled
+  metadata — the sandbox sees them as data, not as authentication.
+  Removing `params`/`query` eliminated an entire class of
+  URL-to-handler-argument injection vectors; do not reintroduce these
+  fields without a threat-model proposal.
 
 ### Threats
 
@@ -1043,6 +1050,55 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   against the `events` table exists. Workflow bundles are tenant-keyed
   at the storage layer (`workflows/<tenant>.tar.gz`).
 
+### CLI authentication (`wfe upload`)
+
+The `@workflow-engine/sdk` CLI (`pnpm exec wfe upload --tenant <name>`
+— packaged as `bin: { wfe: dist/cli/cli.js }` in
+`packages/sdk/package.json`) POSTs the built tarball to
+`/api/workflows/:tenant`. That endpoint lives under `/api/*`, so the
+same `apiAuthMiddleware` rules apply: every request SHALL carry
+`X-Auth-Provider` plus an `Authorization` credential the provider can
+validate. The CLI supports two mutually-exclusive auth inputs and one
+env-var fallback:
+
+- `--user <name>` → sends `X-Auth-Provider: local` +
+  `Authorization: User <name>`. Only accepted when the server has
+  `LOCAL_DEPLOYMENT=1` and registers the `local` provider (see
+  `AUTH_ALLOW` above). Local-dev only.
+- `--token <ghp_…>` → sends `X-Auth-Provider: github` +
+  `Authorization: Bearer <token>`. The server delegates validation to
+  the GitHub API (`/user`, `/user/emails`, org membership per
+  `AUTH_ALLOW`). Intended for CI / human operators against prod.
+- `GITHUB_TOKEN` env var → identical to `--token` when neither
+  `--user` nor `--token` is passed. Documented fallback so CI can set
+  the secret once and reuse it across invocations.
+
+Mutual exclusion is enforced in `packages/sdk/src/cli/upload.ts`
+before the build step so that conflicting auth inputs never cause an
+upload request and never waste a build:
+
+- `--user` and `--token` together → `Error("user and token are
+  mutually exclusive…")`.
+- `--user` and `GITHUB_TOKEN=…` together → `Error("user and
+  GITHUB_TOKEN are mutually exclusive…")`.
+
+Both checks run *before* `await build(...)` so a misconfigured caller
+sees the error immediately and the build artefacts are not produced.
+This ordering was tightened to resolve a prior
+env-var-read-after-build bug in which `GITHUB_TOKEN` was resolved
+only after the Vite build completed — the build ran even when the
+credentials would have been rejected.
+
+The CLI also performs bundle sealing (see §5 workflow-secret-key
+management) against `GET /api/workflows/:tenant/public-key`, which
+uses the same auth pair; if `--user` and `--token` disagree the
+public-key fetch would fail before the upload ever ran, but the
+mutual-exclusion check in front of `build()` gives the clearer error.
+
+No CLI path reads or logs `Authorization`, `GITHUB_TOKEN`, or the
+`WFE_WORKFLOW_SECRET_KEY` sealing password; failures surface the
+HTTP status and server-reported error message only.
+
 ### Residual risks
 
 | ID | Gap | Impact | Status |
@@ -1191,7 +1247,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 |---|---|---|---|---|
 | Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `traefik` | Internet |
 | Traefik Ingress (HTTP) | Public (LB → 80) | 80 | `traefik` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
-| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/healthz`, plus the OAuth handshake |
+| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/readyz`, `/healthz`, plus the OAuth handshake |
 | S2 (S3-compatible storage) | In-cluster Service | 9000 | `default` (local only) | App pod (NP-enforced) |
 | cert-manager controllers | In-cluster Service (webhook) | 9402 | `cert-manager` | kube-apiserver (admission webhooks) |
 | DuckDB | Process-local | — | — | App process only (in-memory) |
@@ -1203,7 +1259,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 | ID | Threat | Category |
 |----|--------|----------|
 | I1 | K8s Secret is leaked via logs, etcd snapshots, or a pod with broad RBAC read | Information disclosure |
-| I2 | A compromised pod or sidecar reaches the app pod's `:8080` directly, bypassing Traefik | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — see §4 A13) |
+| I2 | A compromised pod reaches the app pod's `:8080` directly, bypassing Traefik | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — the oauth2-proxy sidecar that used to produce those headers was removed; see §4 A13) |
 | I3 | A compromised pod or action (via SSRF, §2) reaches cloud metadata endpoints (e.g. `169.254.169.254`) or internal admin APIs | Information disclosure / EoP |
 | I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as a privileged user | EoP |
 | I5 | No resource limits → a runaway action or memory leak crashes the node, not just the pod | DoS |
@@ -1338,20 +1394,40 @@ following as **must-have** before exposing to real traffic:
    explicit review. The public surface is currently exactly Traefik
    on 443; widening it requires §3 / §4 treatment.
 3. **NEVER hardcode a secret** in Terraform, Kubernetes manifests,
-   Helm values, or container images. Secrets come from K8s Secrets
-   injected via `envFrom.secretRef`.
+   Helm values, or container images. Secret values (credentials, keys,
+   tokens) come from K8s Secrets injected via `envFrom.secretRef`.
+   Non-secret config (allowlists like `AUTH_ALLOW`, log levels, ports,
+   base URLs, `LOCAL_DEPLOYMENT` toggles, S3 bucket names) is injected
+   via plain `env` on the pod spec — it is intentionally visible in
+   pod specs and Kubernetes events for auditability and SHALL NOT be
+   wrapped in a K8s Secret.
 4. **NEVER downgrade to HTTP** for any route. Cookies rely on
    `COOKIE_SECURE=true`; serving plain HTTP breaks session security.
 5. **When adding a new in-cluster service**, place it on an in-cluster
    Service only (not NodePort). Document who is allowed to reach it
    and plan for a NetworkPolicy.
 6. **When adding a new environment variable that holds a secret**,
-   route it through a K8s Secret. Mark the Terraform variable
-   `sensitive = true`. Do not log it. In the runtime config schema,
-   wrap the field with `createSecret()` at the zod field level so the
-   resulting `Secret` value self-redacts on `JSON.stringify`,
-   `String()`, and `util.inspect`. Reveal only at the boundary that
-   hands the cleartext to the receiving client (e.g. AWS SDK).
+   route it through a K8s Secret. The end-to-end chain is:
+   (a) create a K8s `Secret` resource and inject it into the pod spec
+   via `envFrom.secretRef` (NEVER via `env` with literal values and
+   NEVER via Docker build args or image layers — canonical example:
+   `infrastructure/modules/app-instance/secrets.tf`);
+   (b) mark the Terraform variable `sensitive = true`;
+   (c) in the runtime config schema, compose the field's Zod schema
+   with `.transform(createSecret)` so the value on the returned config
+   object is a `Secret`-wrapped type that self-redacts on
+   `JSON.stringify`, `String()`, and `util.inspect` (canonical
+   examples: `GITHUB_OAUTH_CLIENT_SECRET`,
+   `PERSISTENCE_S3_ACCESS_KEY_ID`,
+   `PERSISTENCE_S3_SECRET_ACCESS_KEY` in
+   `packages/runtime/src/config.ts`);
+   (d) reveal only at the boundary that hands the cleartext to the
+   receiving client (e.g. AWS SDK, `buildRegistry`); never log the
+   cleartext. Non-secret config fields that are intentionally visible
+   in pod specs (e.g. `AUTH_ALLOW`, `LOG_LEVEL`, `PORT`, `BASE_URL`,
+   `LOCAL_DEPLOYMENT`, `PERSISTENCE_S3_BUCKET`) SHALL NOT be
+   `Secret`-wrapped and do NOT require `envFrom.secretRef` — they are
+   visible by design for auditability.
 7. **Assume "internal" is not a perimeter.** Any new component must
    justify its own auth / isolation story, not rely on "it's only
    cluster-local".
@@ -1444,16 +1520,26 @@ capabilities it does not need.
   `'unsafe-hashes'`, `'strict-dynamic'`, or remote origins. Mitigates
   H1–H4.
 - **Alpine CSP build.** `@alpinejs/csp` replaces the standard build so
-  Alpine's expression evaluator never reaches `new Function()`. All
-  components are pre-registered via `Alpine.data(...)` in
-  `packages/runtime/src/ui/static/dashboard-alpine.js`. Alpine `:style`
-  bindings use object form exclusively (Alpine sets styles via
-  `el.style.setProperty`; string form sets the inline `style`
-  attribute and is blocked by `style-src 'self'`).
+  that if Alpine directives are ever added, Alpine's expression
+  evaluator never reaches `new Function()` and therefore does not need
+  `'unsafe-eval'` in CSP. The runtime currently ships no `x-data`
+  directives and no `Alpine.data(...)` registrations — all interactive
+  behaviour lives in plain JS event listeners (see next bullet) — but
+  the CSP build is loaded as a guardrail so any future directive
+  cannot silently require loosening CSP. If Alpine directives are
+  reintroduced, any `:style` binding MUST use object form (Alpine sets
+  object-form styles via `el.style.setProperty`; string form sets the
+  inline `style` attribute and is blocked by `style-src 'self'`), and
+  any component MUST be pre-registered via `Alpine.data(...)` in a
+  `/static/*.js` file rather than inlined as an `x-data` object literal.
 - **No inline handlers, scripts, or styles in rendered HTML.** All
-  behaviour lives in `/static/*.js` files bound via `addEventListener`
-  or `Alpine.data`. `html-invariants.test.ts` asserts this at build
-  time across every HTML surface.
+  behaviour lives in `/static/*.js` files (currently
+  `flamegraph.js`, `local-time.js`, `result-dialog.js`,
+  `tenant-selector.js`, `trigger-forms.js`) bound via
+  `addEventListener` over `data-*` hooks on rendered HTML.
+  `html-invariants.test.ts` asserts no inline `<script>`, no `on*=`
+  handler attributes, no `style=` attributes, and no `javascript:` URLs
+  across every HTML surface.
 - **HSTS.** `Strict-Transport-Security: max-age=31536000;
   includeSubDomains` on every response in production. Gated off in
   local via `LOCAL_DEPLOYMENT=1` to prevent developer browsers from
@@ -1503,10 +1589,14 @@ capabilities it does not need.
    `el.style.setProperty`, which is CSP-safe; string form sets the
    inline `style` attribute and is blocked).
 5. **NEVER add an `x-data` attribute with an inline object literal or
-   method body.** Register the component via
-   `Alpine.data('<name>', () => ({...}))` in
-   `packages/runtime/src/ui/static/dashboard-alpine.js` and reference
-   it by bare identifier: `x-data="myComponent"`.
+   method body.** The runtime currently ships no Alpine directives;
+   prefer plain `addEventListener` wiring in a new `/static/*.js`
+   file, hooked to rendered HTML via `data-*` attributes (see
+   `tenant-selector.js`, `trigger-forms.js`). If Alpine is genuinely
+   needed for a new component, register it via
+   `Alpine.data('<name>', () => ({...}))` in a new `/static/*.js`
+   module and reference it by bare identifier (`x-data="myComponent"`)
+   — never inline the component body on the element.
 6. **NEVER replace `@alpinejs/csp` with the standard `alpinejs` CDN
    build.** The standard build uses `new Function()` and requires
    `'unsafe-eval'` in CSP.
@@ -1527,8 +1617,11 @@ capabilities it does not need.
 - Unit + integration tests:
   `packages/runtime/src/services/secure-headers.test.ts`
 - HTML invariants test: `packages/runtime/src/ui/html-invariants.test.ts`
-- Alpine component registrations:
-  `packages/runtime/src/ui/static/dashboard-alpine.js`
+- Static JS behaviour (plain `addEventListener` over `data-*` hooks):
+  `packages/runtime/src/ui/static/{flamegraph,local-time,result-dialog,tenant-selector,trigger-forms}.js`
+- Static middleware (serves `/static/*` incl. vendored `alpine.js`,
+  `htmx.js`, `jedison.js` from `@alpinejs/csp`):
+  `packages/runtime/src/ui/static/middleware.ts`
 - Local deployment gate:
   `infrastructure/modules/workflow-engine/modules/app/app.tf`
   (`local_deployment` variable), set to `true` in

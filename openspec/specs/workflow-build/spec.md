@@ -1,6 +1,6 @@
 ## Purpose
 
-Define the build-time contract between a workflow author's TypeScript source (under `workflows/`) and the artifacts the runtime consumes (`dist/<workflow>/manifest.json` + `dist/<workflow>/<workflow>.js`). Owns the `@workflow-engine/sdk/plugin` Vite plugin that performs brand-symbol export discovery, action-name AST injection, per-kind manifest emission, trigger-identifier URL-safety validation, and build-time TypeScript typecheck against a fixed strict compiler configuration.
+Define the build-time contract between a workflow author's TypeScript source (under `workflows/`) and the tenant bundle the runtime consumes. The plugin emits a **single tenant tarball** at `<outDir>/bundle.tar.gz` containing a root `manifest.json` (listing every discovered workflow) plus one `<name>.js` file per workflow at the tarball root. Owns the `@workflow-engine/sdk/plugin` Vite plugin that performs brand-symbol export discovery, action-name AST injection, per-kind manifest emission, trigger-identifier URL-safety validation, and build-time TypeScript typecheck against a fixed strict compiler configuration.
 ## Requirements
 ### Requirement: Workflow source files in workflows directory
 Each workflow SHALL be a single TypeScript file in the `workflows/` directory that exports branded SDK products (`defineWorkflow`, `action`, `httpTrigger`). Action and trigger identity SHALL be determined by export names.
@@ -10,17 +10,18 @@ Each workflow SHALL be a single TypeScript file in the `workflows/` directory th
 - **THEN** it SHALL export branded SDK products as named constants
 - **AND** it SHALL import `defineWorkflow`, `action`, `httpTrigger`, and `z` from `@workflow-engine/sdk`
 
-### Requirement: Vite plugin builds workflows into manifest and bundle
-`workflows/vite.config.ts` (if used) SHALL import the plugin from `@workflow-engine/sdk/plugin` instead of `@workflow-engine/vite-plugin`. Plugin produces subdirectory per workflow in `workflows/dist/` containing `manifest.json` and per-workflow bundle. Bundle does NOT contain SDK or Zod imports. Node built-ins remain as external imports.
+### Requirement: Vite plugin builds workflows into a single tenant tarball
+`workflows/vite.config.ts` (if used) SHALL import the plugin from `@workflow-engine/sdk/plugin` instead of `@workflow-engine/vite-plugin`. The plugin SHALL emit a single tarball at `<outDir>/bundle.tar.gz` (typically `workflows/dist/bundle.tar.gz`) whose entries are a root `manifest.json` with shape `{ workflows: [...] }` and one `<name>.js` per discovered workflow at the tarball root. Workflow bundles do NOT contain SDK or Zod imports. Node built-ins remain as external imports.
 
 #### Scenario: Plugin import path in vite config
 - **WHEN** a vite config imports the workflow plugin
 - **THEN** it uses `import { workflowPlugin } from "@workflow-engine/sdk/plugin"`
 
-#### Scenario: Build produces directory per workflow
+#### Scenario: Build produces a single tenant tarball
 - **WHEN** `pnpm --filter workflows build` is run
-- **AND** `workflows/vite.config.ts` lists `"./cronitor.ts"` in the workflow configuration
-- **THEN** `workflows/dist/cronitor/manifest.json` and `workflows/dist/cronitor/cronitor.js` SHALL be produced
+- **AND** `workflows/vite.config.ts` lists `"./cronitor.ts"` and `"./demo.ts"` in the workflow configuration
+- **THEN** exactly one file `workflows/dist/bundle.tar.gz` SHALL be produced
+- **AND** extracting the tarball SHALL yield `manifest.json` at the root plus `cronitor.js` and `demo.js` at the root
 
 #### Scenario: Bundle has no SDK dependency
 - **WHEN** a workflow is built
@@ -48,17 +49,17 @@ The root `pnpm build` script SHALL build both the runtime and the workflows.
 #### Scenario: Full build
 - **WHEN** `pnpm build` is run from the repository root
 - **THEN** `dist/main.js` (runtime) SHALL be produced
-- **AND** `workflows/dist/*/manifest.json` and `workflows/dist/*/*.js` (workflow artifacts) SHALL be produced
+- **AND** `workflows/dist/bundle.tar.gz` (the tenant tarball containing `manifest.json` + every `<name>.js`) SHALL be produced
 
 ### Requirement: Per-workflow bundle output
 
-The build SHALL produce one bundled JS module per workflow file. The bundle SHALL contain all action handlers, the trigger handler(s), and module-scoped imports/constants as named exports under their original names.
+The build SHALL produce one bundled JS module per workflow file, named `<name>.js` and packed at the root of the tenant tarball. Each bundle SHALL contain all action handlers, the trigger handler(s), and module-scoped imports/constants as named exports under their original names.
 
-#### Scenario: Single bundle per workflow
+#### Scenario: Single bundle per workflow inside the tenant tarball
 
 - **GIVEN** a workflow file `cronitor.ts` with two actions and one trigger
 - **WHEN** the build runs
-- **THEN** the build SHALL produce exactly one JS bundle `dist/cronitor/cronitor.js`
+- **THEN** the tenant tarball SHALL contain exactly one entry `cronitor.js` at its root
 - **AND** the bundle SHALL export each action and the trigger by their original export names
 
 #### Scenario: Bundle includes module-scoped npm imports
@@ -67,15 +68,17 @@ The build SHALL produce one bundled JS module per workflow file. The bundle SHAL
 - **WHEN** the build runs
 - **THEN** the bundle SHALL inline the `format` function
 
-### Requirement: Build emits manifest alongside bundle
+### Requirement: Build emits root manifest alongside workflow bundles in the tarball
 
-For each workflow, the build SHALL emit `dist/<name>/manifest.json` and `dist/<name>/<name>.js`. The manifest format follows the `workflow-manifest` capability spec.
+The build SHALL emit a single tenant tarball `<outDir>/bundle.tar.gz` whose entries are `manifest.json` at the root plus one `<name>.js` per workflow at the root. The root manifest's shape is `{ workflows: [...] }` where each element follows the per-workflow manifest format defined by the `workflow-manifest` capability spec.
 
-#### Scenario: Manifest and bundle in same directory
+#### Scenario: Tarball contains root manifest and per-workflow bundles
 
-- **GIVEN** a workflow named `cronitor`
+- **GIVEN** workflows named `cronitor` and `demo`
 - **WHEN** the build runs
-- **THEN** `dist/cronitor/manifest.json` and `dist/cronitor/cronitor.js` SHALL both exist
+- **THEN** `workflows/dist/bundle.tar.gz` SHALL exist
+- **AND** extracting it SHALL yield `manifest.json`, `cronitor.js`, and `demo.js` at the tarball root
+- **AND** the `manifest.json` SHALL have shape `{ workflows: [<cronitor-manifest>, <demo-manifest>] }`
 
 ### Requirement: Plugin accepts explicit workflow list
 
@@ -108,7 +111,7 @@ The vite plugin code SHALL live inside `@workflow-engine/sdk` at `packages/sdk/s
 
 ### Requirement: Per-workflow IIFE bundle with shared namespace
 
-The plugin SHALL emit one bundled JavaScript file per workflow source file. The bundle SHALL contain every action handler, every trigger handler, and module-scoped constants + imports. The bundle SHALL be written to `<outDir>/<workflow-name>/<workflow-name>.js`. Rollup output `format` SHALL be `"iife"`; the IIFE namespace name SHALL be the fixed `IIFE_NAMESPACE` constant exported from `@workflow-engine/core` and imported both by the plugin (as Rollup's `output.name`) and by the sandbox (when reading exports). The namespace SHALL NOT be derived from the workflow name. Exports SHALL be accessible via `globalThis[IIFE_NAMESPACE]`.
+The plugin SHALL emit one bundled JavaScript file per workflow source file. The bundle SHALL contain every action handler, every trigger handler, and module-scoped constants + imports. The bundle SHALL be packed into the tenant tarball at the root as `<workflow-name>.js`. Rollup output `format` SHALL be `"iife"`; the IIFE namespace name SHALL be the fixed `IIFE_NAMESPACE` constant exported from `@workflow-engine/core` and imported both by the plugin (as Rollup's `output.name`) and by the sandbox (when reading exports). The namespace SHALL NOT be derived from the workflow name. Exports SHALL be accessible via `globalThis[IIFE_NAMESPACE]`.
 
 The bundle SHALL NOT import `@workflow-engine/sdk` or `zod`. Web-platform globals (`URL`, `TextEncoder`, `Headers`, `crypto`, `atob`, `btoa`, `structuredClone`, `fetch`, `Blob`, `AbortController`, `ReadableStream`) SHALL NOT be polyfilled in the bundle; they are provided by the sandbox's Phase-1 quickjs-wasi extensions and by `sandbox-stdlib`'s plugins at Phase 2.
 
@@ -116,7 +119,7 @@ The bundle SHALL NOT import `@workflow-engine/sdk` or `zod`. Web-platform global
 
 - **GIVEN** a workflow file `cronitor.ts` declaring two actions and one trigger
 - **WHEN** the plugin builds
-- **THEN** exactly one bundle `dist/cronitor/cronitor.js` SHALL be emitted
+- **THEN** exactly one tarball entry `cronitor.js` SHALL be emitted at the tenant-tarball root
 - **AND** the bundle SHALL assign its exports to `globalThis[IIFE_NAMESPACE]`
 
 #### Scenario: Namespace is the shared constant
@@ -185,7 +188,7 @@ When `defineWorkflow({name})` is omitted (or `defineWorkflow` itself is omitted)
 - **GIVEN** `workflows/cronitor.ts` with `defineWorkflow()` (no name)
 - **WHEN** the plugin builds
 - **THEN** the manifest SHALL have `name: "cronitor"`
-- **AND** the bundle SHALL be at `dist/cronitor/cronitor.js`
+- **AND** the bundle SHALL appear as `cronitor.js` at the root of the tenant tarball
 
 #### Scenario: Explicit name overrides filestem
 

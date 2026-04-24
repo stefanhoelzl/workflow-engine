@@ -60,6 +60,37 @@ The runtime SHALL invoke the trigger by calling `Sandbox.run(triggerExportName, 
 - **AND** a handler return of `{ status: 202 }` (body missing) SHALL NOT validate successfully
 - **AND** a handler return of `{ body: { orderId: "x", debug: true } }` SHALL NOT validate successfully unless the tenant declared `responseBody` with `.loose()`
 
+### Requirement: Response-shaping pipeline
+
+The HTTP response the public caller receives SHALL be produced by a three-stage pipeline that clearly separates each component's responsibility:
+
+1. **Handler** — the user's `httpTrigger({ handler })` returns a plain object shaped like `HttpTriggerResult = { status?, body?, headers? }`. The handler has no knowledge of the transport envelope; it just returns data.
+2. **Executor** — wraps the handler's return value in a kind-agnostic `InvokeResult<unknown>` (see `executor/spec.md` "Requirement: Executor return shape is kind-agnostic"). On success the wrapper is `{ ok: true, output: <handler-return> }`; on thrown error it is `{ ok: false, error: { message, stack } }` (or `{ ok: false, error: { issues, … } }` for input-schema validation failures). The executor SHALL NOT construct HTTP status codes, response bodies, or header maps.
+3. **HTTP `TriggerSource`** — receives the `InvokeResult`, unwraps it, and serialises to the on-the-wire HTTP response: `{ ok: true, output }` → `output` interpreted as `HttpTriggerResult` with defaults applied (see below); `{ ok: false, error: { issues } }` → `422` with `{ error: "payload_validation_failed", issues }`; `{ ok: false, error }` without `issues` → `500` with `{ error: "internal_error" }`.
+
+Stage 3 is the only stage that constructs an HTTP envelope. Adding a new trigger kind (e.g. cron, queue) reuses stages 1–2 unchanged and supplies its own stage-3 serialiser — the `InvokeResult` boundary is the contract.
+
+#### Scenario: Handler return flows through executor unchanged
+
+- **GIVEN** a handler that returns `{ status: 202, body: { ok: true } }`
+- **WHEN** the executor resolves the invocation
+- **THEN** the executor SHALL return `{ ok: true, output: { status: 202, body: { ok: true } } }`
+- **AND** the HTTP `TriggerSource` SHALL serialise this `output` as HTTP `202` with JSON body `{"ok":true}`
+
+#### Scenario: Handler throw yields 500 at the HTTP boundary
+
+- **GIVEN** a handler that throws `new Error("boom")`
+- **WHEN** the executor resolves the invocation
+- **THEN** the executor SHALL return `{ ok: false, error: { message: "boom", stack: <stack> } }` with no `issues` field
+- **AND** the HTTP `TriggerSource` SHALL serialise this as HTTP `500` with body `{ "error": "internal_error" }`
+
+#### Scenario: Payload validation failure yields 422 at the HTTP boundary
+
+- **GIVEN** a request whose body fails the trigger's `body` schema
+- **WHEN** the `fire` closure returns `{ ok: false, error: { issues: [...] } }`
+- **THEN** the HTTP `TriggerSource` SHALL serialise this as HTTP `422` with body `{ "error": "payload_validation_failed", "issues": [...] }`
+- **AND** the handler SHALL NOT have been called
+
 ### Requirement: Trigger handler return value is the HTTP response
 
 The HTTP trigger handler SHALL return a `Promise<HttpTriggerResult>` where `HttpTriggerResult = { status?, body?, headers? }`. The runtime SHALL use the returned object as the literal HTTP response, applying defaults: `status` = `200`, `body` = `""`, `headers` = `{}`.

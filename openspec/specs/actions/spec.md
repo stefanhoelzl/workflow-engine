@@ -81,14 +81,14 @@ Action handlers SHALL be invoked as `handler(input)` with a single argument. Han
 - **WHEN** the handler executes
 - **THEN** `workflow.env.NEXTCLOUD_URL` SHALL contain the resolved env value declared on `defineWorkflow({ env })`
 
-### Requirement: createHostCallActionPlugin factory
+### Requirement: host-call-action plugin module
 
-The runtime package SHALL export a `createHostCallActionPlugin(config: { manifest: Manifest; logger?: Logger }): Plugin` factory. The plugin's `worker()` SHALL construct an Ajv instance and compile input + output validators for each action in `config.manifest.actions`. The plugin SHALL return `exports: { validateAction, validateActionOutput }` where:
+The runtime package SHALL provide a `host-call-action` plugin module at `packages/runtime/src/plugins/host-call-action.ts`. The plugin file SHALL be imported via the `?sandbox-plugin` vite query (which returns a `{ name, dependsOn?, workerSource, guestSource? }` record). The plugin's `worker()` SHALL accept a `Config` of shape `{ inputValidatorSources: Record<string, string>; outputValidatorSources: Record<string, string> }` and SHALL `new Function(...)`-instantiate each per-action Ajv `standaloneCode` source into a predicate. Ajv compilation itself runs on the main thread in `packages/runtime/src/host-call-action-config.ts` via `compileActionValidators(manifest)`, and the resulting sources are spread into `descriptor.config` when composing the descriptor list. The plugin SHALL return `exports: { validateAction, validateActionOutput }` where:
 
 - `validateAction(name: string, input: unknown): void` — runs the compiled input validator for the given action name and throws a `ValidationError` carrying Ajv's `errors` array on validation failure.
 - `validateActionOutput(name: string, output: unknown): unknown` — runs the compiled output validator and returns the validated value on success. On failure it SHALL throw a `ValidationError` carrying Ajv's `errors` array transformed into `ValidationIssue[]` (each entry with `path: (string|number)[]` and `message: string`).
 
-Both validators SHALL share the same Ajv-compile WeakMap cache (keyed on the JSON Schema object), so schema objects referenced by both the manifest and tenant-declared `responseBody` reuse their compiled validator.
+Each direction SHALL have its own per-action validator source map. The main-thread Ajv instance MAY share its compile cache across directions so schema objects referenced by both the manifest and tenant-declared `responseBody` reuse their compiled validator at build time.
 
 The plugin SHALL register no guest functions; actions reach it via `deps["host-call-action"].validateAction` and `deps["host-call-action"].validateActionOutput`, not directly via guest globals.
 
@@ -132,18 +132,18 @@ The plugin SHALL register no guest functions; actions reach it via `deps["host-c
 
 ### Requirement: host-call-action plugin depends on none
 
-`createHostCallActionPlugin` SHALL declare `dependsOn: []` (or omit it). It provides validation capability to downstream plugins via `exports`; the sdk-support plugin declares `dependsOn: ["host-call-action"]` and topo-sort guarantees host-call-action's `worker()` runs first.
+The `host-call-action` plugin module SHALL declare `dependsOn: []` (or omit it). It provides validation capability to downstream plugins via `exports`; the `sdk-support` plugin declares `dependsOn: ["host-call-action"]` and topo-sort guarantees host-call-action's `worker()` runs first.
 
 #### Scenario: Plugin loads before sdk-support
 
-- **GIVEN** a composition with `createHostCallActionPlugin()` and `createSdkSupportPlugin()`
+- **GIVEN** a composition containing both the `host-call-action` and `sdk-support` plugins
 - **WHEN** the sandbox is constructed
 - **THEN** host-call-action's `worker()` SHALL run before sdk-support's
 - **AND** sdk-support SHALL receive `validateAction` + `validateActionOutput` via `deps["host-call-action"]`
 
 ### Requirement: Per-sandbox manifest binding
 
-The plugin SHALL be constructed with its `{manifest}` config at sandbox construction time (once per cached `(tenant, sha)` sandbox, not per run). Compiled validators SHALL persist for the sandbox's lifetime; validators are not recompiled between runs.
+The plugin's `config` (produced by `compileActionValidators(manifest)`) SHALL be computed once per cached `(tenant, sha)` sandbox at sandbox construction time, not per run. The `new Function(...)`-instantiated validators SHALL persist for the sandbox's lifetime; validators are not rehydrated between runs.
 
 #### Scenario: Validators persist across runs
 

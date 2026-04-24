@@ -34,18 +34,26 @@ resource "kubernetes_network_policy_v1" "this" {
     }
 
     # ── Egress: DNS to CoreDNS ─────────────────────────────────
+    # Consumes the baseline shorthand selector (spec.md:67) and expands it into
+    # the verbose namespace_selector + match_expressions form required by the
+    # K8s NetworkPolicy resource schema. `namespace` matches on the built-in
+    # `kubernetes.io/metadata.name` label (set automatically by the API server
+    # on every namespace), and `k8s_app_in` accepts any pod whose `k8s-app`
+    # label is in the provided list.
     dynamic "egress" {
       for_each = var.egress_dns ? [1] : []
       content {
         to {
           namespace_selector {
-            match_labels = var.coredns_selector.namespace_labels
+            match_labels = {
+              "kubernetes.io/metadata.name" = var.coredns_selector.namespace
+            }
           }
           pod_selector {
             match_expressions {
-              key      = var.coredns_selector.match_expressions.key
-              operator = var.coredns_selector.match_expressions.operator
-              values   = var.coredns_selector.match_expressions.values
+              key      = "k8s-app"
+              operator = "In"
+              values   = var.coredns_selector.k8s_app_in
             }
           }
         }

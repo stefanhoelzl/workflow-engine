@@ -2,23 +2,9 @@
 
 ## Purpose
 
-Own the lifecycle of trigger invocations end-to-end, including per-workflow serialization, lifecycle event emission via the bus, and HTTP response shaping.
+Own the lifecycle of trigger invocations end-to-end, including per-workflow serialization and kind-agnostic return shaping. The executor does NOT synthesize lifecycle events and does NOT construct HTTP-specific response envelopes — lifecycle events originate in the trigger plugin (see `Requirement: Lifecycle events emitted via bus` below and `invocations/spec.md §2`), and protocol-specific response shaping happens in the calling `TriggerSource` (see `http-trigger/spec.md`).
+
 ## Requirements
-### Requirement: Executor owns invocation lifecycle
-
-The runtime SHALL provide an `Executor` component that owns the lifecycle of trigger invocations end-to-end. The executor SHALL expose `invoke(tenant, workflow, triggerName, payload) -> Promise<HttpTriggerResult>` as its sole public method. The executor SHALL be the only component that calls `sandbox.run(...)` to execute a trigger handler.
-
-#### Scenario: Executor invocation lifecycle
-
-- **GIVEN** an executor created with `createExecutor({ bus, sandboxStore })`
-- **WHEN** `executor.invoke(tenant, workflow, triggerName, payload)` is called
-- **THEN** the executor SHALL resolve a `Sandbox` via `sandboxStore.get(tenant, workflow, bundleSource)`
-- **AND** the executor SHALL construct an invocation record with a unique id, the tenant, the workflow name, the trigger name, and the validated payload
-- **AND** the executor SHALL emit a `started` lifecycle event via the bus before dispatching the handler
-- **AND** the executor SHALL dispatch the trigger's handler by calling `sandbox.run("__trigger_<triggerName>", payload, { invocationId, tenant, workflow: workflow.name, workflowSha: workflow.sha })`
-- **AND** on successful return the executor SHALL emit a `completed` lifecycle event via the bus carrying the result
-- **AND** on thrown exception the executor SHALL emit a `failed` lifecycle event via the bus carrying a serialized error
-- **AND** the executor's promise SHALL resolve to the handler's return value (success) or to `{ status: 500, body: { error: "internal_error" }, headers: {} }` (failure)
 
 ### Requirement: Per-workflow serialization via runQueue
 
@@ -50,7 +36,9 @@ The executor SHALL maintain one runQueue per `(tenant, workflow.sha)` pair. The 
 
 ### Requirement: Lifecycle events emitted via bus
 
-The executor SHALL forward all events received from the sandbox to the bus via `bus.emit` after stamping `tenant`, `workflow`, `workflowSha`, and `invocationId` onto each event. The executor SHALL NOT emit synthesized trigger/action events outside of this forwarding path — all events originate in plugins, flow through `sb.onEvent`, get stamped, and hit the bus.
+Invocation lifecycle events (`trigger.request`, `trigger.response`, `trigger.error`) SHALL be emitted by the trigger plugin running inside the sandbox (see `sandbox-plugin/spec.md` and `invocations/spec.md §2`), NOT synthesised by the executor. The executor's role is limited to forwarding every event it receives from the sandbox to the bus via `bus.emit`, after widening each event with the current run's `tenant`, `workflow`, `workflowSha`, and `invocationId` (and, on `trigger.request` only, `meta.dispatch` — see `Requirement: Runtime stamps runtime-engine metadata in onEvent`).
+
+The executor SHALL NOT construct or emit any event outside of this forwarding path. All events originate in plugins, flow through `sb.onEvent`, get stamped by the executor's widener, and hit the bus as fully-widened `InvocationEvent` objects.
 
 #### Scenario: Every sandbox-emitted event reaches the bus
 
@@ -59,29 +47,6 @@ The executor SHALL forward all events received from the sandbox to the bus via `
 - **THEN** the bus SHALL receive exactly N events
 - **AND** each bus event SHALL carry the run's tenant/workflow/workflowSha/invocationId
 - **AND** no event SHALL be lost between sandbox emission and bus emission
-
-### Requirement: HTTP trigger result shape
-
-The executor's return value `HttpTriggerResult` SHALL be `{ status: number, body: unknown, headers: Record<string, string> }`. When the handler returns an object with `status?`, `body?`, `headers?` fields, those SHALL be used as-is with defaults (`status` defaults to `200`, `body` to `""`, `headers` to `{}`). When the handler throws, the executor SHALL return `{ status: 500, body: { error: "internal_error" }, headers: {} }`.
-
-#### Scenario: Handler returns full response
-
-- **GIVEN** a handler that returns `{ status: 202, body: { ok: true }, headers: { "x-trace": "abc" } }`
-- **WHEN** the executor invokes the trigger
-- **THEN** the executor SHALL return `{ status: 202, body: { ok: true }, headers: { "x-trace": "abc" } }`
-
-#### Scenario: Handler returns partial response
-
-- **GIVEN** a handler that returns `{ status: 204 }`
-- **WHEN** the executor invokes the trigger
-- **THEN** the executor SHALL return `{ status: 204, body: "", headers: {} }`
-
-#### Scenario: Handler throws unhandled error
-
-- **GIVEN** a handler that throws `new Error("boom")`
-- **WHEN** the executor invokes the trigger
-- **THEN** the executor SHALL return `{ status: 500, body: { error: "internal_error" }, headers: {} }`
-- **AND** the executor SHALL emit a `failed` lifecycle event with the serialized error
 
 ### Requirement: Executor has no retry logic in v1
 

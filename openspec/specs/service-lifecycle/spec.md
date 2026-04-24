@@ -73,7 +73,7 @@ The runtime entrypoint SHALL wrap all setup and service orchestration in a `func
 
 ### Requirement: Startup sequence wires executor and recovery
 
-The runtime startup sequence SHALL execute in this order: (1) initialize storage backend, (2) initialize bus and consumers (EventStore consumer bootstraps from `archive/` directly), (3) construct the `SandboxFactory`, (4) construct the `SandboxStore` over the factory, (5) construct the `WorkflowRegistry` (metadata-only) and run `registry.recover()` to load persisted tenants, (6) construct the executor with `{ bus, sandboxStore }`, (7) run `recover(persistence, bus)` to sweep crashed pendings, (8) start the Hono HTTP server and bind the HTTP trigger middleware (which calls `registry.lookup` and delegates to `executor.invoke`).
+The runtime startup sequence SHALL execute in this order: (1) initialize storage backend, (2) initialize bus and consumers (EventStore consumer bootstraps from `archive/` directly), (3) construct the `SandboxFactory`, (4) construct the `SandboxStore` over the factory, (5) construct the executor with `{ bus, sandboxStore }`, (6) construct the trigger backends (`http`, `cron`, `manual`) and call `start()` on every backend, (7) construct the `WorkflowRegistry` (metadata-only) and run `registry.recover()` to load persisted tenants (which calls `reconfigure(tenant, entries)` on every started backend), (8) run `recover(persistence, bus)` to sweep crashed pendings, (9) start the Hono HTTP server with the HTTP trigger backend's middleware mounted (which resolves tenant/workflow/trigger and delegates to the registry-built `fire` closure).
 
 The HTTP server SHALL NOT bind its port before recovery completes.
 
@@ -96,6 +96,13 @@ The HTTP server SHALL NOT bind its port before recovery completes.
 - **WHEN** the process receives a shutdown signal and the runtime's `stop()` sequence executes
 - **THEN** `sandboxStore.dispose()` SHALL be called
 - **AND** every cached sandbox SHALL have `dispose()` invoked on it before the process exits
+
+#### Scenario: Trigger backends are started before registry.recover() and stopped on shutdown
+
+- **GIVEN** a running runtime with trigger backends (`http`, `cron`, `manual`)
+- **WHEN** the startup sequence executes
+- **THEN** every backend's `start()` SHALL be awaited before `registry.recover()` calls `reconfigure(tenant, entries)` on it
+- **AND** on shutdown every backend's `stop()` SHALL be awaited before `sandboxStore.dispose()` runs
 
 ### Requirement: Scheduler service is removed
 

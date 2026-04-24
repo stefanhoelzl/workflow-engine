@@ -63,19 +63,19 @@ All packages SHALL use ES modules exclusively.
 - **THEN** the `type` field SHALL be `"module"`
 
 ### Requirement: Node.js version management via devEngines
-The root `package.json` SHALL declare a `devEngines` field requiring Node.js >=24.0.0 with `onFail: "download"`, so pnpm automatically downloads the correct version if the system Node doesn't match.
+The root `package.json` SHALL declare a `devEngines` field requiring Node.js `^25.9.0` with `onFail: "download"`, so pnpm automatically downloads the correct version if the system Node doesn't match.
 
 #### Scenario: System Node matches
-- **WHEN** a developer with Node.js >=24.0.0 runs `pnpm install`
+- **WHEN** a developer with Node.js `^25.9.0` runs `pnpm install`
 - **THEN** installation SHALL succeed using the system Node
 
 #### Scenario: System Node too old
-- **WHEN** a developer with a Node.js version below 24.0.0 runs `pnpm install`
+- **WHEN** a developer with a Node.js version outside `^25.9.0` runs `pnpm install`
 - **THEN** pnpm SHALL automatically download a matching Node.js version and use it
 
 #### Scenario: devEngines configuration
 - **WHEN** inspecting the root `package.json`
-- **THEN** it SHALL contain `devEngines.runtime` with `name: "node"`, `version: ">=24.0.0"`, and `onFail: "download"`
+- **THEN** it SHALL contain `devEngines.runtime` with `name: "node"`, `version: "^25.9.0"`, and `onFail: "download"`
 
 ### Requirement: Root workspace scripts
 The root `package.json` SHALL provide scripts that run tooling across all packages.

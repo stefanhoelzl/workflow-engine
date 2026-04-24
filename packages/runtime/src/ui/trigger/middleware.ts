@@ -25,16 +25,20 @@ import { renderTriggerPage } from "./page.js";
 // this endpoint validates the body against `descriptor.inputSchema` via the
 // shared `validate()` and dispatches through the shared executor.
 //
-// SECURITY (§4): mounted under `/trigger/*`, which oauth2-proxy protects
-// at Traefik via forward-auth. Cross-tenant form submissions (which hit
+// SECURITY (§4): mounted under `/trigger/*`, which is protected by the
+// in-app `sessionMw` that reads the sealed session cookie set by the
+// auth capability (the oauth2-proxy forward-auth chain was removed by
+// `replace-oauth2-proxy`). Cross-tenant form submissions (which hit
 // the public webhooks ingress) are still unauthenticated per §3.
 
 interface TriggerMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
-	// Optional session middleware to mount before the trigger handlers.
-	// In production this is the in-app auth `sessionMiddleware`; in tests
-	// the field is omitted and tests inject `UserContext` directly.
-	readonly sessionMw?: MiddlewareHandler;
+	// Session middleware mounted before the trigger handlers. Required
+	// per `auth/spec.md` "sessionMw mount points": every route under
+	// `/trigger/*` SHALL enforce session auth. Tests that do not exercise
+	// the real `sessionMiddleware` inject a stub that seeds `UserContext`
+	// on the request context via `c.set("user", …)`.
+	readonly sessionMw: MiddlewareHandler;
 }
 
 const HTTP_UNPROCESSABLE_ENTITY = 422;
@@ -45,9 +49,11 @@ function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	if (user) {
 		return Array.from(tenantSet(user)).sort();
 	}
-	// Dev/unauthenticated fallback: show tenants present in the registry.
-	// In production, oauth2-proxy ensures a user header is always set on
-	// `/trigger/*`; reaching this branch means open-mode dev.
+	// Test fallback: show tenants present in the registry when no user is
+	// seeded on the context. In production, `sessionMw` mounted on
+	// `/trigger/*` ensures a `UserContext` is always set (or redirects to
+	// `/login`); reaching this branch means a test invoked the middleware
+	// without a session middleware attached.
 	const fromRegistry = new Set<string>();
 	for (const tenant of registry.tenants()) {
 		if (validateTenant(tenant)) {
@@ -90,16 +96,12 @@ function buildDispatch(c: Context): DispatchMeta {
 			user: { name: user.name, mail: user.mail },
 		};
 	}
-	// Open-mode dev (`authOpen` set, no session user). Fires still go
-	// through `/trigger/*` authenticated by the middleware, but there is
-	// no real identity to attribute to. Attach a sentinel so the
-	// dashboard chip has a non-empty tooltip on hover.
-	if (c.get("authOpen")) {
-		return {
-			source: "manual",
-			user: { name: "local", mail: "" },
-		};
-	}
+	// Authentication is binary per `auth/spec.md`: either a `UserContext`
+	// is set by `sessionMw` / bearer-auth, or it is not. There is no
+	// `authOpen` open-mode flag. A missing user on `/trigger/*` in
+	// production means the session middleware has already redirected the
+	// caller to `/login`; reaching this branch is possible only in tests
+	// that exercise the middleware without seeding `user`.
 	return { source: "manual" };
 }
 
@@ -120,9 +122,7 @@ function resolveActiveTenant(
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires page-render GET and kind-agnostic POST dispatch; splitting fragments the handler flow
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
-	if (deps.sessionMw) {
-		app.use("*", deps.sessionMw);
-	}
+	app.use("*", deps.sessionMw);
 	app.use("/:tenant/*", requireTenantMember());
 	app.notFound(createNotFoundHandler());
 

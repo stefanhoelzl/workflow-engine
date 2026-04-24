@@ -140,10 +140,7 @@ async function init() {
 	consumers.push(eventStore, logging);
 	const eventBus: EventBus = createEventBus(consumers);
 
-	// 3. Workflow registry. Boots from the storage backend by LISTing
-	//    `workflows/*.tar.gz` tenant bundles. Previously supported a
-	//    filesystem bootstrap via `WORKFLOWS_DIR` — removed; operators
-	//    who still have either env var set get a warn log.
+	// Deprecation warning for removed filesystem-bootstrap env vars.
 	const legacyWorkflowsDir =
 		// biome-ignore lint/style/noProcessEnv: entry-point config read for deprecation warning
 		process.env.WORKFLOWS_DIR ?? process.env.WORKFLOW_DIR;
@@ -153,8 +150,10 @@ async function init() {
 			note: "workflow bootstrap is now storage-backend only; upload via `wfe upload --tenant <name>`",
 		});
 	}
-	// 3. Construct the sandbox factory + store. The store is keyed by
-	//    (tenant, workflow.sha); sandboxes live for process lifetime.
+
+	// 3 + 4. Construct the sandbox factory and sandbox store. The store is
+	//        keyed by (tenant, workflow.sha); sandboxes live for process
+	//        lifetime.
 	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
 	const sandboxStore = createSandboxStore({
 		sandboxFactory,
@@ -167,7 +166,9 @@ async function init() {
 	//    the bus).
 	const executor = createExecutor({ bus: eventBus, sandboxStore });
 
-	// 5a. Construct trigger backends.
+	// 6. Construct trigger backends and start them. Every backend's start()
+	//    MUST complete before registry.recover() runs, because recover()
+	//    drives reconfigure() on each backend.
 	const httpSource = createHttpTriggerSource();
 	const cronSource = createCronTriggerSource({
 		logger: runtimeLogger,
@@ -176,8 +177,9 @@ async function init() {
 	const triggerBackends = [httpSource, cronSource, manualSource];
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
-	// 6. Workflow registry. Boots from the storage backend by LISTing
-	//    `workflows/*.tar.gz` tenant bundles.
+	// 7. Workflow registry. Boots from the storage backend by LISTing
+	//    `workflows/*.tar.gz` tenant bundles and reconfiguring every
+	//    started backend with the persisted tenant entries.
 	const registry = createWorkflowRegistry({
 		logger: runtimeLogger,
 		executor,
@@ -189,7 +191,7 @@ async function init() {
 	}
 	runtimeLogger.info("workflows.loaded", { count: registry.size });
 
-	// 5. Sweep crashed pending invocations before binding the HTTP port.
+	// 8. Sweep crashed pending invocations before binding the HTTP port.
 	if (storageBackend) {
 		await recover(
 			{ backend: storageBackend, eventStore, logger: runtimeLogger },
@@ -209,7 +211,7 @@ async function init() {
 		authMiddleware({ secureCookies, registry: authRegistry }),
 	];
 
-	// 6. Wire the HTTP server. Order matters: secure-headers → logger →
+	// 9. Wire the HTTP server. Order matters: secure-headers → logger →
 	//    health → static → webhooks (httpTrigger) → /auth (login + per-provider
 	//    routes, unprotected) → /dashboard (UI, session-guarded) → /trigger
 	//    (UI, session-guarded) → /api. The session middleware is mounted

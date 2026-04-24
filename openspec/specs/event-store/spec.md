@@ -76,19 +76,21 @@ Cross-invocation ordering for the dashboard list is derived by the consuming cod
 #### Scenario: Archive loader tolerates legacy events without meta
 
 - **GIVEN** an `archive/` containing invocations persisted before this change (no `meta` field on any event)
-- **WHEN** `createEventStore({ persistence })` bootstraps and awaits `initialized`
+- **WHEN** `createEventStore({ persistence: { backend } })` bootstraps and awaits `initialized`
 - **THEN** the `events` table SHALL contain one row per archived event
 - **AND** every loaded row's `meta` column SHALL be `NULL`
 - **AND** no exception SHALL be thrown during bootstrap
 
 ### Requirement: EventStore bootstraps from persistence at init
 
-The EventStore consumer factory SHALL accept a persistence reference and SHALL eagerly populate its `events` table from the archive records returned by `persistence.scanArchive()` at construction. Each archived `InvocationEvent` SHALL become one row in the `events` table. The factory function SHALL be async (or expose an `initialized` promise that callers can await) so the dashboard list can render only after the bootstrap completes.
+The EventStore consumer factory SHALL accept an optional `persistence: { backend: StorageBackend }` option (the `StorageBackend` itself, wrapped in a struct for future extensibility — NOT the persistence consumer). When supplied, the factory SHALL eagerly populate its `events` table at construction by invoking the module-level `scanArchive(backend)` helper from `persistence.ts` and inserting one row per archived `InvocationEvent`. The factory function SHALL be async (or expose an `initialized` promise that callers can await) so the dashboard list can render only after the bootstrap completes.
+
+The wrapping struct exists so the signature can grow additional persistence-related knobs (logger, prefix override, etc.) without a breaking change. It is NOT a reference to the `Persistence` BusConsumer — EventStore and Persistence are independent bus consumers and neither holds a reference to the other.
 
 #### Scenario: Index populated from archive at init
 
 - **GIVEN** `archive/` containing 5 invocations, each with N events (for a total of M event records)
-- **WHEN** `createEventStore({ persistence })` is called and its `initialized` promise resolves
+- **WHEN** `createEventStore({ persistence: { backend } })` is called and its `initialized` promise resolves
 - **THEN** the `events` table SHALL contain `M` rows
 - **AND** each row's `(id, seq)` pair SHALL match an event record found in the archive
 

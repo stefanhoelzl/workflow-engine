@@ -51,12 +51,8 @@ variable "baseline" {
     rfc1918_except = list(string)
     node_cidr      = string
     coredns_selector = object({
-      namespace_labels = map(string)
-      match_expressions = object({
-        key      = string
-        operator = string
-        values   = list(string)
-      })
+      namespace  = string
+      k8s_app_in = list(string)
     })
   })
   description = "Baseline security constants from the baseline module"
@@ -116,6 +112,24 @@ resource "helm_release" "traefik" {
 
   values = [yamlencode(merge(
     {
+      # ServiceAccount token MUST remain mounted for Traefik (SECURITY.md §5
+      # R-I11 accepted residual risk). Traefik's controller watches `Ingress`
+      # / `IngressRoute` / `Middleware` CRDs via the K8s API and therefore
+      # requires a bearer token for the in-cluster API server. The RBAC
+      # granted to the chart-managed ServiceAccount is scoped by the upstream
+      # Traefik chart to ingress/route/middleware resources; see chart
+      # `values.yaml` under `rbac.*`.
+      #
+      # App and s2 pods, by contrast, set `automountServiceAccountToken:
+      # false` (see modules/app-instance/workloads.tf and object-storage/s2).
+      #
+      # Setting `serviceAccount.automountServiceAccountToken = true`
+      # explicitly documents intent — do NOT flip to `false` without a plan
+      # to proxy kube-api access via a sidecar.
+      serviceAccount = {
+        automountServiceAccountToken = true
+      }
+
       podSecurityContext = {
         runAsGroup          = 65532
         runAsNonRoot        = true

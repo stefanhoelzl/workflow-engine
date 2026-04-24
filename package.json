@@ -17,6 +17,7 @@
 		"test:wpt:refresh": "tsx scripts/wpt-refresh.ts",
 		"validate": "concurrently -g --names lint,tsc,test,tofu-fmt,tofu-val-local,tofu-val-persistence,tofu-val-cluster,tofu-val-prod,tofu-val-staging \"pnpm lint\" \"pnpm check\" \"pnpm test\" \"tofu fmt -check -recursive infrastructure/\" \"tofu -chdir=infrastructure/envs/local validate\" \"tofu -chdir=infrastructure/envs/persistence validate\" \"tofu -chdir=infrastructure/envs/cluster validate\" \"tofu -chdir=infrastructure/envs/prod validate\" \"tofu -chdir=infrastructure/envs/staging validate\"",
 		"dev": "tsx scripts/dev.ts",
+		"start": "pnpm build && pnpm dev",
 		"postinstall": "(tofu -chdir=infrastructure/envs/local init || true) && (tofu -chdir=infrastructure/envs/persistence init -backend=false || true) && (tofu -chdir=infrastructure/envs/cluster init -backend=false || true) && (tofu -chdir=infrastructure/envs/prod init -backend=false || true) && (tofu -chdir=infrastructure/envs/staging init -backend=false || true)",
 		"local:init": "tofu -chdir=infrastructure/envs/local init",
 		"local:up": "tofu -chdir=infrastructure/envs/local apply --auto-approve",

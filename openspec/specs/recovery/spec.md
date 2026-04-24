@@ -14,7 +14,17 @@ The function SHALL iterate `scanPending(backend)` and group the yielded events b
 
 1. If the event store contains any event for that invocation id, the archive is already durable (the prior process crashed during pending cleanup). The function SHALL call `backend.removePrefix("pending/{id}/")` to clear the stale pending files, SHALL log an info-level entry `runtime.recovery.archive-cleanup` with the id and the count of stale files, and SHALL NOT emit any event to the bus for that id.
 
-2. Otherwise, the prior process crashed mid-invocation (no archive was written). The function SHALL emit each replayed pending event to the bus in seq order, then SHALL emit a synthetic `trigger.error` event whose `error` carries `{ kind: "engine_crashed" }`, whose seq is `max(pending seq) + 1`, whose `at` is `new Date().toISOString()` captured at recovery time, and whose `ts` is copied from the last replayed event's `ts` (or `0` if no events were replayed). The persistence consumer handles the synthetic terminal event by writing `archive/{id}.json` and calling `removePrefix` as part of its normal flow.
+2. Otherwise, the prior process crashed mid-invocation (no archive was written). The function SHALL emit each replayed pending event to the bus in seq order, then SHALL emit a synthetic `trigger.error` event with the following fields:
+
+   - `kind`: `"trigger.error"`.
+   - `seq`: `max(pending seq) + 1`.
+   - `ref`: `null`. The synthetic terminal does not pair with any emitted request — recovery runs outside the executor's request/response lifecycle and has no prior seq to reference.
+   - `at`: `new Date().toISOString()` captured at recovery time.
+   - `ts`: copied from the last replayed event's `ts` (or `0` if no events were replayed). See the anchor-reuse rationale below.
+   - `id`, `tenant`, `workflow`, `workflowSha`, `name`: copied from the first replayed event of the group (all replayed events for an id share these fields).
+   - `error`: `{ message: "engine crashed before invocation completed", stack: "", kind: "engine_crashed" }`. `message` is a fixed human-readable string and `stack` is an empty string (recovery synthesizes the event, so there is no real stack to capture); `kind: "engine_crashed"` is the machine-readable discriminator downstream consumers (UI, EventStore filters) match on.
+
+   The persistence consumer handles the synthetic terminal event by writing `archive/{id}.json` and calling `removePrefix` as part of its normal flow.
 
 The synthetic event's `ts` is deliberately reused from the last replayed event rather than freshly sampled from a `performance.now()` anchor, because recovery runs outside any sandbox context and therefore has no anchor. The consequence is that `terminal.ts - request.ts` on a recovered invocation reads as "how far the run got before the crash," not the total wall-clock gap to recovery — which is the most informative value we can surface without fabricating precision we do not have.
 
@@ -27,7 +37,7 @@ Partial overlap (some pending seqs present in the event store, others not) SHALL
 - **AND** the event store contains no event for `evt_a`
 - **WHEN** `recover({ backend, eventStore }, bus)` runs
 - **THEN** the function SHALL emit the two replayed events to the bus in seq order
-- **AND** SHALL emit a synthetic `trigger.error` event with seq 2, `error: { kind: "engine_crashed" }`, `ts = 4200`, and `at` matching the wall-clock time of emission
+- **AND** SHALL emit a synthetic `trigger.error` event with seq 2, `ref: null`, `error: { message: "engine crashed before invocation completed", stack: "", kind: "engine_crashed" }`, `ts = 4200`, and `at` matching the wall-clock time of emission
 - **AND** after the function returns, no file under `pending/evt_a/` SHALL remain
 - **AND** `archive/evt_a.json` SHALL contain a JSON array including the two original events and the synthetic terminal event
 

@@ -4,6 +4,8 @@
 
 Define the invocation record shape, lifecycle events, and the relationship between trigger invocations and action calls.
 
+Throughout this spec, "trigger" refers to the SDK-authored `httpTrigger`/`cronTrigger`/`manualTrigger` callable (the declared entry point in the workflow source). "Invocation" refers to a single *fire* of that trigger — one unit of persistence, one `id`, one lifecycle-event stream on the bus. An invocation is always *invocation-scoped*: dispatch provenance, timing, and status attach to the invocation record, not to the trigger definition. A single trigger can produce many invocations over its lifetime (one per HTTP request, one per cron tick, one per "Run now" click); each invocation is tracked independently and carries its own `meta.dispatch` (see "Dispatch provenance on trigger.request" below).
+
 ## Requirements
 
 ### Requirement: Invocation record shape
@@ -28,26 +30,28 @@ An invocation record SHALL be the unit of persistence and indexing for a trigger
 
 The runtime SHALL define three invocation lifecycle event kinds emitted to the bus during normal operation: `started`, `completed`, `failed`. Each event SHALL carry the invocation id, workflow name, trigger name, and two orthogonal time fields: `at` (ISO 8601 wall-clock string with millisecond precision, produced by `new Date().toISOString()`) and `ts` (integer microseconds since the current sandbox run's monotonic anchor; resets to ≈ 0 at the start of each `sandbox.run()` and is monotonic within a run). `completed` events SHALL additionally carry the result; `failed` events SHALL additionally carry the serialized error.
 
-Events emitted outside an active sandbox run (currently only the synthetic `trigger.error` produced by recovery) SHALL carry `at = new Date().toISOString()` at emission time and SHALL carry a `ts` value copied from the last replayed event's `ts` (or `0` if no events were replayed).
+Lifecycle events SHALL be emitted by the **trigger plugin** running inside the sandbox (see `sandbox-plugin/spec.md` and `executor/spec.md` "Requirement: Lifecycle events emitted via bus"), NOT synthesised by the executor. The executor's role is limited to forwarding each sandbox-emitted event through its `sb.onEvent` receiver, widening it with runtime-engine metadata (`tenant`, `workflow`, `workflowSha`, `invocationId`, and on the lifecycle "started" kind only `meta.dispatch`) before `bus.emit`. Downstream consumers (persistence, event-store, logging) receive the fully-widened `InvocationEvent` and map terminal lifecycle events to invocation completion in their own layers.
+
+Events emitted outside an active sandbox run (currently only the synthetic terminal event produced by recovery) SHALL carry `at = new Date().toISOString()` at emission time and SHALL carry a `ts` value copied from the last replayed event's `ts` (or `0` if no events were replayed). Recovery is the sole component permitted to synthesise a terminal event from outside the sandbox — it does so on behalf of a pending invocation whose worker process terminated before the trigger plugin could emit a terminal event.
 
 `ts` is a per-run measurement and SHALL NOT be used to order events across different invocations; cross-invocation ordering SHALL use `at`.
 
 #### Scenario: Started event has no terminal payload
 
 - **GIVEN** an invocation about to begin
-- **WHEN** the executor emits the `started` lifecycle event
-- **THEN** the event SHALL carry `{ id, workflow, trigger, input, at, ts }`
+- **WHEN** the trigger plugin emits the `started` lifecycle event and the executor forwards it
+- **THEN** the widened event SHALL carry `{ id, workflow, trigger, input, at, ts }` plus runtime-stamped `tenant`, `workflowSha`, `invocationId`, and `meta.dispatch`
 - **AND** the event SHALL NOT carry `result` or `error`
 
 #### Scenario: Completed event carries result
 
-- **WHEN** the executor emits a `completed` lifecycle event
-- **THEN** the event SHALL carry `{ id, workflow, trigger, at, ts, result }`
+- **WHEN** the trigger plugin emits a `completed` lifecycle event and the executor forwards it
+- **THEN** the widened event SHALL carry `{ id, workflow, trigger, at, ts, result }` plus runtime-stamped `tenant`, `workflowSha`, `invocationId`
 
 #### Scenario: Failed event carries error
 
-- **WHEN** the executor emits a `failed` lifecycle event
-- **THEN** the event SHALL carry `{ id, workflow, trigger, at, ts, error }`
+- **WHEN** the trigger plugin emits a `failed` lifecycle event and the executor forwards it
+- **THEN** the widened event SHALL carry `{ id, workflow, trigger, at, ts, error }` plus runtime-stamped `tenant`, `workflowSha`, `invocationId`
 - **AND** when emitted by recovery for crashed pendings, the event SHALL carry `error: { kind: "engine_crashed" }`
 
 #### Scenario: ts is monotonic and anchored per run
@@ -112,11 +116,11 @@ The dispatch blob SHALL be stamped by the runtime, never by the sandbox or by pl
 - **WHEN** the executor emits the `trigger.request` event for the resulting invocation
 - **THEN** the event SHALL carry `meta.dispatch = { source: "manual", user: { name: "Jane Doe", mail: "jane@example.com" } }`
 
-#### Scenario: Unauthenticated open-mode UI fire produces source=manual with sentinel user
+#### Scenario: UI fire without a user omits dispatch.user
 
-- **GIVEN** the server is running in open-mode dev and `/trigger/*` receives a POST with no session cookie (`c.get("authOpen")` is `true` and `c.get("user")` is undefined)
+- **GIVEN** a test that mounts `/trigger/*` with a stub `sessionMw` that does not set `c.set("user", …)` so `c.get("user")` is undefined (in production, `sessionMw` redirects unauthenticated requests to `/login` before the handler runs)
 - **WHEN** the executor emits the `trigger.request` event for the resulting invocation
-- **THEN** the event SHALL carry `meta.dispatch = { source: "manual", user: { name: "local", mail: "" } }`
+- **THEN** the event SHALL carry `meta.dispatch = { source: "manual" }` with no `user` field
 
 #### Scenario: Non-trigger events do not carry meta.dispatch
 

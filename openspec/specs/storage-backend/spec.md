@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the `StorageBackend` interface (FS-backed and S3-backed implementations) that the runtime uses for: tenant bundle persistence under `workflows/<tenant>.tar.gz`, append-only event files under `pending/<invocationId>.ndjson` (live in-flight) and `archive/<tenant>/<invocationId>.json` (sealed). Owns atomicity, path sanitization, and the backend-selection logic driven by `PERSISTENCE_PATH` vs `PERSISTENCE_S3_*` env vars.
+Define the `StorageBackend` interface (FS-backed and S3-backed implementations) that the runtime uses for: tenant bundle persistence under `workflows/<tenant>.tar.gz`, per-invocation pending event files under `pending/<invocationId>/<seq>.json` (live in-flight), and per-invocation sealed archives under `archive/<invocationId>.json` (each a JSON array of every event in seq order). Owns atomicity, path sanitization, and the backend-selection logic driven by `PERSISTENCE_PATH` vs `PERSISTENCE_S3_*` env vars.
 
 ## Requirements
 
@@ -10,14 +10,18 @@ Define the `StorageBackend` interface (FS-backed and S3-backed implementations) 
 
 The system SHALL expose a `StorageBackend` interface with the following methods:
 - `init(): Promise<void>` — initialize the backend (create directories, verify access)
-- `write(path: string, data: string): Promise<void>` — write data atomically to a path
-- `read(path: string): Promise<string>` — read data from a path
+- `write(path: string, data: string): Promise<void>` — write string data atomically to a path (UTF-8 encoded internally)
+- `writeBytes(path: string, data: Uint8Array): Promise<void>` — write raw bytes atomically to a path (for binary payloads such as workflow bundles)
+- `read(path: string): Promise<string>` — read data from a path as a UTF-8 string
+- `readBytes(path: string): Promise<Uint8Array>` — read raw bytes from a path
 - `list(prefix: string): AsyncIterable<string>` — yield all paths under a prefix recursively, one per iteration
 - `remove(path: string): Promise<void>` — remove a path
 - `removePrefix(prefix: string): Promise<void>` — remove every key/file under a prefix (best-effort; see dedicated requirement)
 - `move(from: string, to: string): Promise<void>` — move a path from source to destination
 
-Paths SHALL use forward-slash separators (e.g. `events/pending/000001_evt_abc.json`).
+The string `write`/`read` methods SHALL use UTF-8 encoding internally; callers needing any other encoding or binary payloads SHALL use `writeBytes`/`readBytes`.
+
+Paths SHALL use forward-slash separators (e.g. `pending/evt_abc/000001.json`).
 
 #### Scenario: Interface contract
 
@@ -25,25 +29,38 @@ Paths SHALL use forward-slash separators (e.g. `events/pending/000001_evt_abc.js
 - **WHEN** `write("dir/file.json", "content")` is called followed by `read("dir/file.json")`
 - **THEN** `read` SHALL return `"content"`
 
+#### Scenario: Byte-level write and read roundtrip
+
+- **GIVEN** a `StorageBackend` implementation
+- **AND** a `Uint8Array` containing arbitrary binary bytes (e.g. a gzip header `0x1f 0x8b 0x08 0x00`)
+- **WHEN** `writeBytes("bundles/foo.tar.gz", data)` is called followed by `readBytes("bundles/foo.tar.gz")`
+- **THEN** `readBytes` SHALL return a `Uint8Array` whose byte contents are identical to `data`
+
+#### Scenario: String write uses UTF-8 encoding
+
+- **GIVEN** a `StorageBackend` implementation
+- **WHEN** `write("dir/file.txt", "héllo")` is called followed by `readBytes("dir/file.txt")`
+- **THEN** `readBytes` SHALL return the UTF-8 byte sequence of `"héllo"` (`0x68 0xc3 0xa9 0x6c 0x6c 0x6f`)
+
 #### Scenario: List yields matching paths recursively
 
-- **GIVEN** files at `workflows/foo/manifest.json`, `workflows/foo/actions/handle.js`, and `events/pending/001.json`
+- **GIVEN** files at `workflows/foo.tar.gz`, `pending/evt_a/000000.json`, and `archive/evt_a.json`
 - **WHEN** `list("workflows/")` is iterated
-- **THEN** it SHALL yield `"workflows/foo/manifest.json"` and `"workflows/foo/actions/handle.js"`
-- **AND** it SHALL NOT yield `"events/pending/001.json"`
+- **THEN** it SHALL yield `"workflows/foo.tar.gz"`
+- **AND** it SHALL NOT yield `"pending/evt_a/000000.json"` or `"archive/evt_a.json"`
 
 #### Scenario: Move relocates a file
 
-- **GIVEN** a file at `events/pending/a.json`
-- **WHEN** `move("events/pending/a.json", "events/archive/a.json")` is called
-- **THEN** `read("events/archive/a.json")` SHALL return the original content
-- **AND** `list("events/pending/")` SHALL NOT yield `"events/pending/a.json"`
+- **GIVEN** a file at `pending/a.json`
+- **WHEN** `move("pending/a.json", "archive/a.json")` is called
+- **THEN** `read("archive/a.json")` SHALL return the original content
+- **AND** `list("pending/")` SHALL NOT yield `"pending/a.json"`
 
 #### Scenario: Remove deletes a file
 
-- **GIVEN** a file at `events/pending/a.json`
-- **WHEN** `remove("events/pending/a.json")` is called
-- **THEN** `list("events/pending/")` SHALL NOT yield `"events/pending/a.json"`
+- **GIVEN** a file at `pending/a.json`
+- **WHEN** `remove("pending/a.json")` is called
+- **THEN** `list("pending/")` SHALL NOT yield `"pending/a.json"`
 
 ### Requirement: removePrefix method
 
@@ -90,8 +107,10 @@ The `StorageBackend` interface SHALL expose a `removePrefix(prefix: string): Pro
 The system SHALL provide a filesystem-backed `StorageBackend` implementation created via a factory function that accepts a root directory path.
 
 - `init` SHALL create the root directory recursively if it does not exist
-- `write` SHALL use a write-then-rename pattern (write to `<path>.tmp`, then rename to `<path>`) for atomicity
+- `write` SHALL use a write-then-rename pattern (write to `<path>.tmp`, then rename to `<path>`) for atomicity and SHALL encode the string as UTF-8
+- `writeBytes` SHALL use the same write-then-rename pattern as `write` and SHALL persist the `Uint8Array` without any encoding transformation
 - `read` SHALL read UTF-8 file content
+- `readBytes` SHALL read the file as raw bytes and return a `Uint8Array` over its contents
 - `list` SHALL yield paths recursively relative to the root directory using `readdir({ recursive: true })`
 - `remove` SHALL delete the file using `fs.unlink`
 - `move` SHALL use `fs.rename`
@@ -99,7 +118,7 @@ The system SHALL provide a filesystem-backed `StorageBackend` implementation cre
 #### Scenario: Atomic write survives crash
 
 - **GIVEN** a filesystem backend
-- **WHEN** the process crashes during `write("events/pending/file.json", data)`
+- **WHEN** the process crashes during `write("pending/evt_a/000001.json", data)`
 - **THEN** either the complete file exists or only a `.tmp` file remains
 - **AND** no partial JSON is written to the target path
 
@@ -111,17 +130,19 @@ The system SHALL provide a filesystem-backed `StorageBackend` implementation cre
 
 #### Scenario: Recursive listing
 
-- **GIVEN** a filesystem backend with files at `workflows/foo/manifest.json` and `workflows/foo/actions/handle.js`
-- **WHEN** `list("workflows/")` is iterated
-- **THEN** it SHALL yield `"workflows/foo/manifest.json"` and `"workflows/foo/actions/handle.js"`
+- **GIVEN** a filesystem backend with files at `pending/evt_a/000000.json` and `pending/evt_a/000001.json`
+- **WHEN** `list("pending/")` is iterated
+- **THEN** it SHALL yield `"pending/evt_a/000000.json"` and `"pending/evt_a/000001.json"`
 
 ### Requirement: S3 backend
 
 The system SHALL provide an S3-compatible `StorageBackend` implementation created via a factory function that accepts bucket name, credentials, and optional endpoint/region.
 
 - `init` SHALL verify bucket access via `HeadBucket`
-- `write` SHALL use `PutObject` (natively atomic)
+- `write` SHALL use `PutObject` (natively atomic) with `ContentType: application/json`; the UTF-8 encoding is performed by the S3 client
+- `writeBytes` SHALL use `PutObject` with the raw `Uint8Array` as the body and `ContentType: application/octet-stream`
 - `read` SHALL use `GetObject` and return the body as a UTF-8 string
+- `readBytes` SHALL use `GetObject` and return the body as a `Uint8Array` (via `transformToByteArray`)
 - `list` SHALL use `ListObjectsV2` with pagination, yielding one key per iteration across page boundaries
 - `remove` SHALL use `DeleteObject`
 - `move` SHALL use `CopyObject` followed by `DeleteObject` (non-atomic)
@@ -175,22 +196,27 @@ The system SHALL provide a `createStorageBackend` factory function that accepts 
 - **WHEN** `createStorageBackend` is called with `{}`
 - **THEN** it SHALL return `undefined`
 
-### Requirement: Storage layout with events and workflows prefixes
+### Requirement: Storage layout
 
-Event persistence SHALL use `events/pending/` and `events/archive/` prefixes (previously `pending/` and `archive/`). Workflow storage SHALL use `workflows/{name}/` prefix. This is a **BREAKING** change to the storage layout.
+The storage backend root SHALL house three top-level prefixes:
 
-#### Scenario: Event written to events prefix
+- `pending/{id}/{seq}.json` — per-invocation pending event files (written live, during an invocation; see `persistence/spec.md`).
+- `archive/{id}.json` — per-invocation terminal archive files, each a JSON array of every event for `{id}` in seq order (written once on terminal; see `persistence/spec.md`).
+- `workflows/{tenant}.tar.gz` — tenant workflow bundles (see `workflow-registry/spec.md`).
 
-- **WHEN** a pending event is persisted
-- **THEN** it SHALL be written to `events/pending/{counter}_evt_{id}.json`
+These three prefixes partition the root; no other top-level prefix is reserved by this spec.
 
-#### Scenario: Event archived to events prefix
+#### Scenario: Pending event is written under `pending/`
 
-- **WHEN** a terminal event is persisted
-- **THEN** it SHALL be written to `events/archive/{counter}_evt_{id}.json`
+- **WHEN** a non-terminal event for invocation `evt_a` with seq 1 is persisted
+- **THEN** it SHALL be written to `pending/evt_a/000001.json`
 
-#### Scenario: Workflow stored under workflows prefix
+#### Scenario: Terminal archive is written under `archive/`
 
-- **WHEN** workflow "foo" is uploaded
-- **THEN** its manifest SHALL be stored at `workflows/foo/manifest.json`
-- **AND** its action files SHALL be stored at `workflows/foo/actions/{name}.js`
+- **WHEN** a terminal event seals invocation `evt_a`
+- **THEN** the archive file SHALL be written to `archive/evt_a.json`
+
+#### Scenario: Workflow bundle stored under `workflows/`
+
+- **WHEN** the tenant `acme` uploads a workflow bundle
+- **THEN** the bundle SHALL be stored at `workflows/acme.tar.gz`

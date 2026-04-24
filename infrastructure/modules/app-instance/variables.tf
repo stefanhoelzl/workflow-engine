@@ -100,16 +100,19 @@ variable "local_deployment" {
 
 variable "baseline" {
   type = object({
-    rfc1918_except   = list(string)
-    node_cidr        = string
-    coredns_selector = any
+    rfc1918_except = list(string)
+    node_cidr      = string
+    coredns_selector = object({
+      namespace  = string
+      k8s_app_in = list(string)
+    })
     pod_security_context = object({
       run_as_non_root        = bool
       run_as_user            = number
       run_as_group           = number
       fs_group               = number
       fs_group_change_policy = string
-      seccomp_profile_type   = string
+      seccomp_profile        = object({ type = string })
     })
     container_security_context = object({
       run_as_non_root            = bool

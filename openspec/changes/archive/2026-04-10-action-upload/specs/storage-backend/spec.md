@@ -1,3 +1,13 @@
+<!--
+Historical note (superseded): This delta proposed a breaking migration from
+`pending/`/`archive/` to `events/pending/`/`events/archive/`, and a
+`workflows/{name}/` unpacked layout. That migration was NOT implemented.
+The canonical storage-backend layout is `openspec/specs/storage-backend/spec.md`:
+event prefixes remain `pending/` and `archive/`, and tenant bundles are stored
+at `workflows/{tenant}.tar.gz`. This file is kept verbatim as a historical
+record of the proposal at the time of archival.
+-->
+
 ## MODIFIED Requirements
 
 ### Requirement: StorageBackend interface

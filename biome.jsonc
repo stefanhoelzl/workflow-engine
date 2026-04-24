@@ -1,0 +1,251 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.10/schema.json",
+	// NOTE: Biome 2.x removed `"all": true` (top-level and per-group). The closest
+	// equivalent is `recommended: true` per group (expressed here via the string
+	// form `"group": "error"`), which enables every recommended rule at error
+	// severity and auto-includes future rules Biome promotes to recommended.
+	// Non-recommended rules must be opted into explicitly per rule. Group
+	// overrides that turn a rule off MUST include a comment justifying the
+	// disable (mirrors the `biome-ignore` inline convention).
+	"files": {
+		"includes": [
+			"**",
+			"!**/node_modules",
+			"!**/dist",
+			"!.persistence",
+			"!**/.terraform",
+			// Pre-bundled sandbox shims — checked in as plain `.js` so they can be
+			// inlined verbatim into the guest preamble. Biome's TS-oriented rules
+			// don't apply cleanly to the shim source shape.
+			"!packages/runtime/src/action-dispatcher.js",
+			"!packages/sdk/src/plugin/sandbox-globals-setup.js",
+			"!packages/sdk/src/plugin/sandbox-globals.js",
+			// Build output.
+			"!packages/sandbox/dist",
+			// Vendored WPT tests — upstream style, not ours to lint.
+			"!packages/sandbox-stdlib/test/wpt/vendor"
+		]
+	},
+	"linter": {
+		"rules": {
+			"a11y": "error",
+			"complexity": "error",
+			"correctness": {
+				"recommended": true,
+				// Node built-ins are allowed in runtime/tool code; guest code runs
+				// in the QuickJS sandbox where Node modules are physically
+				// unavailable, so a lint rule against importing them is noise.
+				"noNodejsModules": "off"
+			},
+			"performance": "error",
+			"security": "error",
+			"style": "error",
+			"suspicious": "error"
+		}
+	},
+	"formatter": {
+		// Biome defaults: tabs for indentation, 80-char line width, LF line
+		// endings, double quotes for JS/TS. These are the canonical formatter
+		// settings for the repo — do not override without a proposal.
+		"enabled": true
+	},
+	"overrides": [
+		{
+			// Vite/Vitest config files require default exports by convention and
+			// read environment variables during config load.
+			"includes": ["**/vite.config.ts", "vitest.config.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
+			// Test files: relaxed ergonomics — long arrange blocks, magic numbers
+			// in fixtures, non-null assertions on known-good test data, literal
+			// secrets in auth fixtures, empty mocks, `any` casts for edge cases.
+			"includes": ["**/*.test.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						// Arrange/act/assert blocks legitimately push past the cap.
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"performance": {
+						// Per-test regex literals keep the test local + readable.
+						"useTopLevelRegex": "off"
+					},
+					"security": {
+						// Fixture tokens/keys are not real secrets.
+						"noSecrets": "off"
+					},
+					"style": {
+						// Fixture magic numbers (ports, counts, timestamps) are
+						// clearer inline than as named constants.
+						"noMagicNumbers": "off",
+						// Tests assert shape on values they just constructed.
+						"noNonNullAssertion": "off",
+						// Test helpers often mirror domain casing (e.g. HTTP headers).
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						// Empty mock bodies are common.
+						"noEmptyBlockStatements": "off",
+						// `any` in tests is fine for edge-case inputs.
+						"noExplicitAny": "off",
+						// `async () => {}` tests without `await` are idiomatic for
+						// testing sync error paths inside an async context.
+						"useAwait": "off"
+					}
+				}
+			}
+		},
+		{
+			// AWS SDK shape uses PascalCase externally; the adapter must mirror it.
+			"includes": ["**/storage/s3.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
+			// User-authored workflows use `export default` and mirror external
+			// naming (webhook paths, cron IDs). The SDK DX requires both.
+			"includes": ["workflows/**/*.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off",
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
+			// Repo tooling scripts: run interactively, log to console, iterate
+			// sequentially over CLI args, and read env vars. None of that applies
+			// to production code paths.
+			"includes": ["scripts/**/*.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						// CLI driver functions are naturally long / branchy.
+						"noExcessiveCognitiveComplexity": "off",
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"performance": {
+						// Sequential `await` in loops is correct for rate-limited APIs.
+						"noAwaitInLoops": "off",
+						"useTopLevelRegex": "off"
+					},
+					"suspicious": {
+						// Scripts log progress to stdout by design.
+						"noConsole": "off",
+						// `let x; if (...) x = ...` is a common CLI-parsing pattern.
+						"noEvolvingTypes": "off",
+						"noImplicitAnyLet": "off",
+						"useAwait": "off"
+					},
+					"style": {
+						"noMagicNumbers": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
+			// Virtual module ambient declarations.
+			"includes": ["**/virtual.d.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off"
+					}
+				}
+			}
+		},
+		{
+			// Sandbox guest-side stdlib + vite plugin + WPT preamble: these run
+			// inside QuickJS and must mirror upstream web-platform naming /
+			// patterns (namespace imports, `delete`, `any`, default exports).
+			"includes": [
+				"packages/sandbox-stdlib/src/web-platform/guest/**/*.ts",
+				"packages/sandbox/src/vite/**/*.ts",
+				"packages/sandbox-stdlib/test/wpt/harness/preamble/**/*.ts"
+			],
+			"linter": {
+				"rules": {
+					"performance": {
+						// Web-platform semantics require `delete` on host objects.
+						"noDelete": "off",
+						// Vite plugin boundary uses namespace imports for ESM interop.
+						"noNamespaceImport": "off"
+					},
+					"style": {
+						// WPT preamble + vite plugins expect default exports.
+						"noDefaultExport": "off",
+						// Matches upstream spec constants.
+						"noMagicNumbers": "off",
+						// Mirrors web-platform API casing (`DOMException`, etc.).
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						// Guest shims must cast through `any` when widening host types.
+						"noExplicitAny": "off"
+					}
+				}
+			}
+		},
+		{
+			// WPT test harness: upstream-style assertions, long suites, skipped
+			// tests tracked explicitly in `skip.ts`.
+			"includes": ["packages/sandbox-stdlib/test/wpt/**/*.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off",
+						"useTopLevelRegex": "off"
+					},
+					"style": {
+						"noDefaultExport": "off",
+						"noMagicNumbers": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						"noEmptyBlockStatements": "off",
+						// Skip-list is authoritative; skipped tests are intentional.
+						"noSkippedTests": "off",
+						"useAwait": "off"
+					}
+				}
+			}
+		},
+		{
+			// `.claude/commands/` slash commands log their own output and poll
+			// remote state sequentially.
+			"includes": [".claude/commands/**/*.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off"
+					}
+				}
+			}
+		}
+	]
+}

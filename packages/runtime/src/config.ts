@@ -33,30 +33,33 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		FILE_IO_CONCURRENCY: z.coerce.number().default(10),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		AUTH_ALLOW: z.string().optional(),
+		AUTH_ALLOW: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
+		GITHUB_OAUTH_CLIENT_ID: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		GITHUB_OAUTH_CLIENT_SECRET: z.string().transform(createSecret).optional(),
+		GITHUB_OAUTH_CLIENT_SECRET: z.exactOptional(
+			z.string().transform(createSecret),
+		),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_PATH: z.string().optional(),
+		PERSISTENCE_PATH: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_BUCKET: z.string().optional(),
+		PERSISTENCE_S3_BUCKET: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_ACCESS_KEY_ID: z.string().transform(createSecret).optional(),
+		PERSISTENCE_S3_ACCESS_KEY_ID: z.exactOptional(
+			z.string().transform(createSecret),
+		),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_SECRET_ACCESS_KEY: z
-			.string()
-			.transform(createSecret)
-			.optional(),
+		PERSISTENCE_S3_SECRET_ACCESS_KEY: z.exactOptional(
+			z.string().transform(createSecret),
+		),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_ENDPOINT: z.string().optional(),
+		PERSISTENCE_S3_ENDPOINT: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_REGION: z.string().optional(),
+		PERSISTENCE_S3_REGION: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		BASE_URL: z.string().optional(),
+		BASE_URL: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		LOCAL_DEPLOYMENT: z.string().optional(),
+		LOCAL_DEPLOYMENT: z.exactOptional(z.string()),
 		// CSV of `keyId:base64(sk)` entries; primary (active sealing) key first.
 		// See packages/runtime/src/secrets/parse-keys.ts for the grammar.
 		// biome-ignore lint/style/useNamingConvention: env var name

@@ -54,13 +54,15 @@ The health middleware SHALL be passed to `createServer` alongside the existing m
 
 ### Requirement: Unmatched routes return 404
 
-The server SHALL return a `404` response for requests that do not match any middleware or route. The response body SHALL be content-negotiated: if the request's `Accept` header explicitly includes `text/html` (in any segment, at any `q` value), the response body SHALL be the cached `404.html` page content with `Content-Type: text/html; charset=utf-8`; otherwise the response body SHALL be `{"error":"Not Found"}` with `Content-Type: application/json`. A missing `Accept` header, `*/*`, and any header that does not include `text/html` (e.g. `application/json`, `text/css`, `*/*;q=0.8`) SHALL resolve to the JSON form.
+The server SHALL return a `404` response for requests that do not match any middleware or route. The response body SHALL be content-negotiated: if the request's `Accept` header explicitly includes `text/html` (in any segment, at any `q` value), the response body SHALL be the `404.html` page content with `Content-Type: text/html; charset=utf-8`; otherwise the response body SHALL be `{"error":"Not Found"}` with `Content-Type: application/json`. A missing `Accept` header, `*/*`, and any header that does not include `text/html` (e.g. `application/json`, `text/css`, `*/*;q=0.8`) SHALL resolve to the JSON form.
+
+The HTML page content for `404` and `5xx` responses is bundled at build time as a string constant — `content-negotiation.ts` imports `packages/runtime/src/ui/static/404.html` and `error.html` via Vite's `?raw` query so the HTML is inlined into the runtime bundle. There is no runtime loading, filesystem read, or cache-population step at startup.
 
 #### Scenario: Browser request to unknown path
-- **GIVEN** the 404 body cache is populated at startup from `packages/runtime/src/ui/static/404.html`
+- **GIVEN** `404.html` is bundled at build time as a string constant imported in `content-negotiation.ts` via `?raw`
 - **WHEN** a `GET /nonexistent` request is received with `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`
 - **THEN** the server SHALL return a `404` response
-- **AND** the response body SHALL be the cached `404.html` content
+- **AND** the response body SHALL be the bundled `404.html` content
 - **AND** `Content-Type` SHALL be `text/html; charset=utf-8`
 
 #### Scenario: JSON client request to unknown path
@@ -81,9 +83,9 @@ The server SHALL return a `404` response for requests that do not match any midd
 - **AND** the response body SHALL be `{"error":"Not Found"}`
 
 #### Scenario: Sub-app 404 returns the same body via the shared factory
-- **GIVEN** `/trigger/*` is mounted as a sub-Hono-app via `app.use("/trigger/*", (c) => subApp.fetch(c.req.raw))`, and the sub-app installs `app.notFound(createNotFoundHandler())` from `content-negotiation.ts`
+- **GIVEN** sub-apps are mounted through the `Middleware` abstraction — each middleware is a `{ match: string, handler: MiddlewareHandler }` object, and `createApp` installs it with `app.use(match, handler)`. For `/trigger/*`, `triggerMiddleware` builds a sub-Hono app internally and exposes `handler: (c) => subApp.fetch(c.req.raw)` so the parent app forwards to the sub-app. Each sub-app installs `app.notFound(createNotFoundHandler())` from `content-negotiation.ts`.
 - **WHEN** a `GET /trigger/nonexistent-page` request is received with `Accept: text/html`
-- **THEN** the response body SHALL be the cached `404.html` content
+- **THEN** the response body SHALL be the bundled `404.html` content
 - **AND** the response status SHALL be `404`
 
 #### Scenario: Every sub-app uses the shared notFound factory

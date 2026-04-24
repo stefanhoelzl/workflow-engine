@@ -364,7 +364,7 @@ async function main(): Promise<void> {
 		}
 
 		// Runnable. Vendor the file + deps regardless of skip.ts — runtime
-		// applies skip.ts via findMostSpecific.
+		// applies skip.ts via findReason.
 		const entry: RunnableEntry = { scripts: deps };
 		if (meta.timeout === "long") {
 			entry.timeout = "long";

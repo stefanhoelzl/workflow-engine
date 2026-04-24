@@ -41,6 +41,12 @@ A new `handle /api/*` block in the Caddyfile routes directly to the runtime, byp
 
 ### 3. Storage layout: events/ and workflows/ prefixes
 
+> **Historical note (superseded):** The `events/` prefix migration described in this section was **not** implemented. The canonical layout (see `openspec/specs/storage-backend/spec.md` "Storage layout") is:
+> - `pending/{id}/{seq}.json` and `archive/{id}.json` — event prefixes unchanged
+> - `workflows/{tenant}.tar.gz` — tenant bundles stored as a single tarball per tenant, not an unpacked `{name}/manifest.json` + `{name}/actions/*.js` tree
+>
+> The rest of this section is preserved verbatim as the original proposal.
+
 Restructure the storage backend layout:
 - `events/pending/` and `events/archive/` (moved from `pending/`, `archive/`)
 - `workflows/{name}/manifest.json` and `workflows/{name}/actions/*.js`

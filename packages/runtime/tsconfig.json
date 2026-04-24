@@ -6,6 +6,6 @@
 		"outDir": "dist",
 		"types": ["node", "vite/client"]
 	},
-	"include": ["src/**/*"],
+	"include": ["src"],
 	"references": [{ "path": "../core" }, { "path": "../sandbox" }]
 }

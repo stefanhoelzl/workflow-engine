@@ -85,10 +85,14 @@ describe("recovery", () => {
 		]);
 		const synthetic = seen[3];
 		expect(synthetic?.seq).toBe(3);
-		expect(synthetic?.ref).toBe(0);
+		expect(synthetic?.ref).toBeNull();
 		expect(synthetic?.workflow).toBe("wf");
 		expect(synthetic?.workflowSha).toBe("sha");
-		expect(synthetic?.error).toBeDefined();
+		expect(synthetic?.error).toEqual({
+			message: "engine crashed before invocation completed",
+			stack: "",
+			kind: "engine_crashed",
+		});
 	});
 
 	it("synthetic terminal reuses the last replayed event's ts", async () => {
