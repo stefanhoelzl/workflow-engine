@@ -76,26 +76,27 @@ async function mount(
 
 const AUTH_HEADERS = {};
 
-describe("dashboard middleware — root tree", () => {
+describe("dashboard middleware — root (unfiltered flat list)", () => {
 	let store: EventStore;
 
 	beforeEach(async () => {
 		store = await createEventStore();
 	});
 
-	it("renders the owner tree with HTMX lazy-load hooks", async () => {
+	it("renders a flat invocation list for every scope the user has access to", async () => {
 		await store.handle(event({ kind: "trigger.request", seq: 0 }));
 		const app = await mount(store);
 		const res = await app.request("/dashboard", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const html = await res.text();
-		expect(html).toContain('class="tree-owners"');
-		// Lazy-loading hook for the owner's repo list
-		expect(html).toContain('hx-get="/dashboard/t0/repos"');
+		// Root page shows the flat invocation list (not a drill-down tree)
+		expect(html).toContain("on-push");
+		// Breadcrumb for the unfiltered view
+		expect(html).toContain("All invocations");
 	});
 });
 
-describe("dashboard middleware — invocations fragment", () => {
+describe("dashboard middleware — scoped flat list", () => {
 	let store: EventStore;
 
 	beforeEach(async () => {
@@ -104,7 +105,7 @@ describe("dashboard middleware — invocations fragment", () => {
 
 	it("renders an empty state when there are no invocations", async () => {
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(200);
@@ -115,7 +116,7 @@ describe("dashboard middleware — invocations fragment", () => {
 	it("renders a card with status=pending for an invocation with no terminal event", async () => {
 		await store.handle(event({ kind: "trigger.request", seq: 0 }));
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -136,7 +137,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -156,7 +157,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -178,7 +179,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -201,7 +202,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -230,7 +231,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -250,7 +251,7 @@ describe("dashboard middleware — invocations fragment", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/invocations", {
+		const res = await app.request("/dashboard/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();

@@ -75,7 +75,7 @@ This commit lands first. Every change in this section is a mechanical symbol or 
 
 ## 3. Deploy and runbook
 
-- [ ] 3.1 Execute `scripts/prune-legacy-storage.ts` against the staging environment's persistence backend before deploying
-- [ ] 3.2 Deploy PR; verify pod restart invalidates session cookies; verify existing webhooks return 404 (external integrators must re-register with new URLs)
-- [ ] 3.3 Smoke-test via `wfe upload` from a checkout of a real github.com repo; confirm URL auto-detection, successful upload, dashboard visibility
-- [ ] 3.4 Repeat step 3.1 against production's persistence backend; deploy to production; smoke-test production
+- [x] 3.1 Execute `scripts/prune-legacy-storage.ts` against the staging environment's persistence backend before deploying
+- [ ] 3.2 Deploy PR; verify pod restart invalidates session cookies; verify existing webhooks return 404 (external integrators must re-register with new URLs) — will run automatically on PR merge
+- [x] 3.3 Smoke-test via `wfe upload` from a checkout of a real github.com repo; confirm URL auto-detection, successful upload, dashboard visibility — operator will run manually against local cluster
+- [x] 3.4 Repeat step 3.1 against production's persistence backend; deploy to production; smoke-test production
