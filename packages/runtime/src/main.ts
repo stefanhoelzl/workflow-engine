@@ -247,7 +247,7 @@ async function init() {
 		},
 	};
 
-	return { runtimeLogger, server, sandboxService };
+	return { runtimeLogger, server, sandboxService, httpSource };
 }
 
 function start(
@@ -282,10 +282,11 @@ function start(
 }
 
 async function main() {
-	const { runtimeLogger, server, sandboxService } = await init();
+	const { runtimeLogger, server, sandboxService, httpSource } = await init();
 	runtimeLogger.info("main.initialized");
 
 	start(runtimeLogger, server, sandboxService);
+	httpSource.markReady();
 	runtimeLogger.info("main.started");
 }
 
