@@ -18,7 +18,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [cluster, persistence]
+        include:
+          - project: cluster
+            changes-allowed: false
+          - project: persistence
+            changes-allowed: false
+          - project: staging
+            changes-allowed: true
+          - project: prod
+            changes-allowed: true
     steps:
       - uses: actions/checkout@v6
 
@@ -42,6 +50,12 @@ jobs:
           TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
           TF_VAR_upcloud_token: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
           UPCLOUD_TOKEN: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
+          TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
+          TF_VAR_github_oauth_client_id: ${{ matrix.project == 'prod' && secrets.GH_APP_CLIENT_ID_PROD || secrets.GH_APP_CLIENT_ID_STAGING }}
+          TF_VAR_github_oauth_client_secret: ${{ matrix.project == 'prod' && secrets.GH_APP_CLIENT_SECRET_PROD || secrets.GH_APP_CLIENT_SECRET_STAGING }}
+          TF_VAR_auth_allow: ${{ matrix.project == 'prod' && vars.AUTH_ALLOW_PROD || vars.AUTH_ALLOW_STAGING }}
+          CHANGES_ALLOWED: ${{ matrix.changes-allowed }}
+          PROJECT: ${{ matrix.project }}
         run: |
           {
             echo '### Tofu plan (${{ matrix.project }})'
@@ -49,11 +63,23 @@ jobs:
             echo '```hcl'
           } >> "$GITHUB_STEP_SUMMARY"
 
+          plan_args=(-detailed-exitcode -lock=false -no-color)
+          if [ "$PROJECT" = "staging" ] || [ "$PROJECT" = "prod" ]; then
+            plan_args+=(-var "image_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000")
+          fi
+
           set +e
-          tofu plan -detailed-exitcode -lock=false -no-color 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          tofu plan "${plan_args[@]}" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           plan_exit=${PIPESTATUS[0]}
           set -e
 
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          exit "$plan_exit"
+          # detailed-exitcode: 0 = no changes, 1 = error, 2 = changes pending.
+          # changes-allowed=false (cluster, persistence): only 0 passes.
+          # changes-allowed=true (staging, prod): 0 and 2 pass, 1 fails.
+          if [ "$CHANGES_ALLOWED" = "true" ]; then
+            [ "$plan_exit" = "1" ] && exit 1 || exit 0
+          else
+            exit "$plan_exit"
+          fi

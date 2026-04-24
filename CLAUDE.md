@@ -42,6 +42,8 @@ Secrets: copy `infrastructure/envs/local/local.secrets.auto.tfvars.example` to `
 
 Prod/staging runbook: `docs/infrastructure.md`.
 
+**Pre-merge infra plan gate.** `.github/workflows/plan-infra.yml` plans `cluster`, `persistence`, `staging`, `prod` on every PR and all four are required checks. `cluster` and `persistence` use `changes-allowed: false` (exit 2 fails) — any change to `infrastructure/envs/{cluster,persistence}/` or modules they consume MUST be applied locally by the operator before the PR can merge (`tofu -chdir=infrastructure/envs/<project> apply`). When an agent touches those paths, surface the apply-first requirement to the user in its summary; do NOT run `tofu apply` yourself. Full flow in `docs/infrastructure.md` under "Pre-merge plan gate".
+
 ## Definition of Done
 
 - `pnpm validate` must pass. Runs in parallel: `pnpm lint` (Biome), `pnpm check` (TypeScript), `pnpm test` (Vitest unit + integration; **excludes WPT** — run `pnpm test:wpt` separately when touching sandbox-stdlib), and `tofu fmt -check` + `tofu validate` for every infrastructure env.
