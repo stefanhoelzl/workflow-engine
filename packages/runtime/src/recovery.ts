@@ -41,6 +41,37 @@ async function isArchived(
 	return rows.length > 0;
 }
 
+function buildSyntheticTerminal(
+	id: string,
+	events: InvocationEvent[],
+): InvocationEvent {
+	const lastEvent = events.at(-1);
+	const lastSeq = lastEvent?.seq ?? -1;
+	// events.length > 0 is guaranteed by the caller (firstEvent check above).
+	// biome-ignore lint/style/noNonNullAssertion: caller guarantees at least one event
+	const firstEvent = events[0]!;
+	return {
+		kind: "trigger.error",
+		id,
+		seq: lastSeq + 1,
+		// Synthetic terminals have no paired request — recovery is not a
+		// response to any emitted request. `null` matches the `SandboxEvent`
+		// convention for unpaired events; see recovery/spec.md.
+		ref: null,
+		at: new Date().toISOString(),
+		ts: lastEvent?.ts ?? 0,
+		tenant: firstEvent.tenant,
+		workflow: firstEvent.workflow,
+		workflowSha: firstEvent.workflowSha,
+		name: firstEvent.name,
+		error: {
+			message: "engine crashed before invocation completed",
+			stack: "",
+			kind: "engine_crashed",
+		},
+	};
+}
+
 async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 	const byId = new Map<string, InvocationEvent[]>();
 	for await (const event of scanPending(deps.backend)) {
@@ -78,26 +109,7 @@ async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 			await bus.emit(event);
 		}
 
-		const lastEvent = events.at(-1);
-		const lastSeq = lastEvent?.seq ?? -1;
-		const synthetic: InvocationEvent = {
-			kind: "trigger.error",
-			id,
-			seq: lastSeq + 1,
-			ref: 0,
-			at: new Date().toISOString(),
-			ts: lastEvent?.ts ?? 0,
-			tenant: firstEvent.tenant,
-			workflow: firstEvent.workflow,
-			workflowSha: firstEvent.workflowSha,
-			name: firstEvent.name,
-			error: {
-				message: "engine crashed before invocation completed",
-				stack: "",
-				...({ kind: "engine_crashed" } as Record<string, unknown>),
-			},
-		};
-		await bus.emit(synthetic);
+		await bus.emit(buildSyntheticTerminal(id, events));
 	}
 }
 

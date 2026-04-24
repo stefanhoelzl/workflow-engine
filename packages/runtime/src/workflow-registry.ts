@@ -459,18 +459,14 @@ function createWorkflowRegistry(
 		if (!backend) {
 			return { ok: true };
 		}
-		const finalKey = `workflows/${tenant}.tar.gz`;
-		const tempKey = `${finalKey}.upload-${crypto.randomUUID()}`;
+		// Write directly to the canonical key. `StorageBackend.writeBytes` is
+		// contractually atomic (FS: tmp+rename; S3: PutObject), so no staging
+		// key is needed. See openspec/specs/storage-backend/spec.md.
+		const key = `workflows/${tenant}.tar.gz`;
 		try {
-			await backend.writeBytes(tempKey, bytes);
-			await backend.move(tempKey, finalKey);
+			await backend.writeBytes(key, bytes);
 			return { ok: true };
 		} catch (err) {
-			try {
-				await backend.remove(tempKey);
-			} catch {
-				// best-effort cleanup
-			}
 			return {
 				ok: false,
 				error: err instanceof Error ? err.message : String(err),

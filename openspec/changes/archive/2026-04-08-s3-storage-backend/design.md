@@ -33,6 +33,8 @@ interface StorageBackend {
 }
 ```
 
+> **Note (post-design addendum):** The string `write`/`read` methods use UTF-8 encoding internally. A follow-up change added byte-oriented siblings `writeBytes(path, data: Uint8Array)` and `readBytes(path): Promise<Uint8Array>` for binary payloads (workflow bundle tarballs, action upload blobs) where UTF-8 round-tripping would corrupt data. The byte methods share the same atomicity guarantees as their string counterparts (tmp+rename on FS, `PutObject` on S3). See `openspec/specs/storage-backend/spec.md` for the current authoritative interface.
+
 **Why**: The persistence layer already has well-tested logic for counters, naming, pending/archive semantics, and recovery. Abstracting at the file I/O level lets us keep all of that unchanged. An event-level abstraction would duplicate persistence logic in each backend.
 
 **Alternatives considered**: Event-level `EventStore` interface (save/load/archive/recover) — rejected because it would require each backend to reimplement persistence semantics.

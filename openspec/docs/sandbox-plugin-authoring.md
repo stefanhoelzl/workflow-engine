@@ -49,15 +49,15 @@ Use `Guest.raw()` when an upstream caller already validated the payload (e.g. th
 
 ```ts
 // packages/sdk/src/sdk-support/index.ts
-args: [Guest.string(), Guest.raw(), Guest.callable(), Guest.callable()],
-handler: async (actionName, input, handler, completer) => {
+args: [Guest.string(), Guest.raw(), Guest.callable()],
+result: Guest.raw(),
+handler: async (actionName, input, handler) => {
     try {
         validateAction(actionName, input);
         const raw = await handler(input as GuestValue);
-        return await completer(raw);
+        return validateActionOutput(actionName, raw);  // host-side
     } finally {
         handler.dispose();
-        completer.dispose();
     }
 },
 ```
@@ -69,6 +69,8 @@ Every descriptor emits an audit event by default. `log` controls the shape.
 - `log: { event: "name" }` — emits a single leaf event before handler invocation. Use for commands with no response pair (e.g. `timer.set`, `timer.clear`, `console.log`). See `sandbox-stdlib/src/timers/index.ts`.
 - `log: { request: "prefix" }` — wraps the handler in `ctx.request(prefix, ...)`, emitting `prefix.request` before and `prefix.response` or `prefix.error` after. Use for anything resembling an RPC (fetch, host-call-action, sdk dispatcher).
 - Default (no `log`) — equivalent to `{ request: descriptor.name }`. Audit-by-default keeps forgotten declarations safe.
+
+**Event-volume note.** Every descriptor call produces at least one bus event (leaf or request/response pair) that fans out through the full consumer chain — persistence (`pending/`/`archive/`), EventStore (DuckDB index), and the logging consumer. In practice only the logging consumer filters: it logs solely the three `trigger.*` lifecycle kinds and drops `action.*`, `fetch.*`, `timer.*`, `console.*`, `wasi.*`, and `system.*` (see `logging-consumer/spec.md`). Persistence and EventStore, however, receive everything. A hot loop that calls an audited descriptor N times per invocation therefore produces ~N sandbox→host→bus round trips and N event-store rows. When introducing a new descriptor on a tight path, consider `log: { event: "name" }` (a single leaf, not a request/response pair) or no-op audit only for operations whose volume is bounded by the invocation surface; do not add a new reserved event prefix (`trigger`, `action`, `fetch`, `timer`, `console`, `wasi`, `uncaught-error`) for a third-party plugin (§2 R-7 in `CLAUDE.md`).
 
 See design §7 for the rationale against kind-suffix auto-detection.
 
@@ -96,10 +98,11 @@ The default audit event stamps `name = descriptor.name` and `input = args`. Over
 // packages/sdk/src/sdk-support/index.ts
 {
     name: "__sdkDispatchAction",
-    args: [Guest.string(), Guest.raw(), Guest.callable(), Guest.callable()],
+    args: [Guest.string(), Guest.raw(), Guest.callable()],
+    result: Guest.raw(),
     log: { request: "action" },
     logName: (args) => String(args[0] ?? ""),  // the action's business name
-    logInput: (args) => args[1],               // just the payload, no Callables
+    logInput: (args) => args[1],               // just the payload, no Callable
     public: false,
 }
 ```
@@ -141,10 +144,16 @@ A plugin can expose functions to other plugins by returning `{ exports: { ... } 
 
 ```ts
 // packages/runtime/src/plugins/host-call-action.ts
+// Config carries separate per-action validator-source maps (strings
+// emitted on the main thread via Ajv standaloneCode). The worker
+// `new Function(...)`-instantiates each one at load; no Ajv runtime
+// is bundled into the worker.
 function worker(_ctx, _deps, config: Config): PluginSetup {
-    const validators = /* compile from config */;
-    const validateAction = (name, input) => { /* ... */ };
-    return { exports: { validateAction } };
+    const inputValidators = compileValidators(config.inputValidatorSources);
+    const outputValidators = compileValidators(config.outputValidatorSources);
+    const validateAction = (name, input) => { /* runs input validator */ };
+    const validateActionOutput = (name, output) => { /* runs output validator, returns output */ };
+    return { exports: { validateAction, validateActionOutput } };
 }
 ```
 
@@ -175,12 +184,13 @@ import standaloneCodeMod from "ajv/dist/standalone/index.js";
 
 function compileActionValidators(manifest): HostCallActionConfig {
     const ajv = new Ajv2020.default({ /* ... */ });
-    const validatorSources: Record<string, string> = {};
+    const inputValidatorSources: Record<string, string> = {};
+    const outputValidatorSources: Record<string, string> = {};
     for (const action of manifest.actions) {
-        const validator = ajv.compile(action.input);
-        validatorSources[action.name] = standaloneCode(ajv, validator);
+        inputValidatorSources[action.name] = standaloneCode(ajv, ajv.compile(action.input));
+        outputValidatorSources[action.name] = standaloneCode(ajv, ajv.compile(action.output));
     }
-    return { validatorSources };
+    return { inputValidatorSources, outputValidatorSources };
 }
 ```
 
@@ -189,11 +199,9 @@ The plugin file imports nothing from Ajv. It receives the string sources and reh
 ```ts
 // packages/runtime/src/plugins/host-call-action.ts
 function worker(_ctx, _deps, config: Config): PluginSetup {
-    const validators = new Map();
-    for (const [n, src] of Object.entries(config.validatorSources)) {
-        validators.set(n, instantiateValidator(src));  // new Function(src)
-    }
-    // ...
+    const inputValidators = compileValidators(config.inputValidatorSources);
+    const outputValidators = compileValidators(config.outputValidatorSources);
+    // validateAction / validateActionOutput close over the maps ...
 }
 ```
 
@@ -205,12 +213,12 @@ Sandbox-store calls the main-thread helper when composing descriptors and spread
 - **Don't import main-thread-only packages inside code reachable from `worker()`.** A single transitive import of Ajv, `node:fs`, etc. defeats tree-shaking and bloats the worker bundle. Keep heavy deps in separate helpers (§9).
 - **Configs must be JSON-serializable.** No functions, Promises, `Date`s, `RegExp`s, or class instances. `serializePluginDescriptors` rejects non-conforming values at sandbox construction — fail loudly, fail early.
 - **Don't mutate `globalThis` directly from plugin source.** Use `guestFunctions` with `public: true`; the sandbox handles naming, installation, and Phase-3 deletion centrally. Manual `globalThis.foo = ...` bypasses the audit-log auto-wrap.
-- **Private descriptors need a capture IIFE.** If `public: false` (the default) and you don't put a capture into `PluginSetup.source`, the binding is deleted before anyone can reach it. The `source` IIFE runs in Phase 2 (before Phase-3 deletion) specifically for this capture window.
+- **Private descriptors need a capture IIFE.** If `public: false` (the default) and you don't export a `guest()` function (bundled as `descriptor.guestSource` by the vite plugin) that captures the private binding into a closure, the binding is deleted before anyone can reach it. Phase 2 evaluates `descriptor.guestSource` before Phase 3's auto-delete specifically for this capture window; see `packages/sdk/src/sdk-support/index.ts` (`guest()` export capturing `__sdkDispatchAction` into a locked `__sdk`) and `packages/sandbox-stdlib/src/console/index.ts` for canonical examples.
 - **Always `dispose()` captured `Callable`s** — ideally in a `finally`. Leaking a Callable pins a guest closure past its expected lifetime.
 
 ## 11. The vite plugin
 
-Consumers register `sandboxPlugins()` from `@workflow-engine/sandbox/vite` in their vite config. Thereafter, importing a plugin file with the `?sandbox-plugin` query returns a `{ name, dependsOn?, source }` record ready to spread into a `PluginDescriptor` together with a `config`:
+Consumers register `sandboxPlugins()` from `@workflow-engine/sandbox/vite` in their vite config. Thereafter, importing a plugin file with the `?sandbox-plugin` query returns a `{ name, dependsOn?, workerSource, guestSource? }` record ready to spread into a `PluginDescriptor` together with a `config`:
 
 ```ts
 import hostCallActionPlugin from "./plugins/host-call-action?sandbox-plugin";

@@ -28,41 +28,40 @@ The runtime SHALL provide a `WorkflowRegistry` created with an optional `Storage
 - **AND** the HTTP trigger index for `tenant` SHALL be rebuilt
 - **AND** sandboxes held by the `SandboxStore` for `(tenant, oldSha)` keys SHALL NOT be disposed (see `sandbox-store`)
 
-### Requirement: WorkflowRegistry exposes metadata lookup
+### Requirement: WorkflowRegistry exposes metadata accessors
 
-The runtime SHALL provide a `WorkflowRegistry.lookup(tenant, method, path)` method that returns `{ workflow, triggerName, validator }` when a matching HTTP trigger exists for `(tenant, method, path)`, or `undefined` otherwise. The returned `workflow` SHALL be the parsed `WorkflowManifest`. The registry SHALL NOT expose a `WorkflowRunner` type, a `runners[]` array, or a `sandbox` reference on any returned value.
+The runtime SHALL expose `list(tenant?)`, `tenants()`, and `getEntry(tenant, workflowName, triggerName)` on the `WorkflowRegistry` for presentation (dashboard / trigger UI) and manual-fire. The registry SHALL NOT expose a `WorkflowRunner` type, a `runners[]` array, or a `sandbox` reference on any returned value. Protocol routing (e.g., URL-based HTTP dispatch) is owned by each `TriggerSource` backend (see `http-trigger` spec), NOT the registry.
 
-#### Scenario: Lookup returns the matching workflow and trigger
+#### Scenario: getEntry returns the pre-built TriggerEntry
 
-- **GIVEN** a tenant with two workflows, one of which declares an HTTP trigger on `POST /orders`
-- **WHEN** `registry.lookup(tenant, "POST", "/orders")` is called
-- **THEN** the registry SHALL return `{ workflow, triggerName: "ordersWebhook", validator }`
-- **AND** `workflow` SHALL be the `WorkflowManifest` that declared the trigger
+- **GIVEN** tenant `acme` has workflow `demo` with trigger `onPing`
+- **WHEN** `registry.getEntry("acme", "demo", "onPing")` is called
+- **THEN** the registry SHALL return the `TriggerEntry { descriptor, fire }` pre-built during registration
 
-#### Scenario: Lookup returns undefined on no match
+#### Scenario: getEntry is tenant-scoped
 
-- **WHEN** `registry.lookup(tenant, method, path)` is called with values that do not match any registered trigger for that tenant
+- **GIVEN** tenant `A` and tenant `B` both register a workflow `demo` with trigger `onPing`
+- **WHEN** `registry.getEntry("A", "demo", "onPing")` is called
+- **THEN** the registry SHALL return `A`'s entry, not `B`'s
+
+#### Scenario: getEntry returns undefined on no match
+
+- **WHEN** `registry.getEntry(tenant, workflowName, triggerName)` is called with values that do not match any registered trigger for that tenant
 - **THEN** the registry SHALL return `undefined`
 
-#### Scenario: Lookup is tenant-scoped
+### Requirement: Persist before in-memory update
 
-- **GIVEN** tenant `A` and tenant `B` both register a workflow with an HTTP trigger on the same path
-- **WHEN** `registry.lookup("A", method, path)` is called
-- **THEN** the registry SHALL return `A`'s workflow manifest, not `B`'s
-
-### Requirement: Persist before rebuild
-
-When a storage backend is configured, `register()` SHALL persist the workflow files to the storage backend before updating in-memory state. If persistence fails, the in-memory state SHALL NOT be updated.
+When a storage backend is configured, `registerTenant()` SHALL persist the tenant tarball to the storage backend before updating the registry's in-memory tenant state map. If persistence fails, the in-memory tenant state SHALL NOT be updated. Note: backend `reconfigure()` happens before persistence (see "Persist-on-full-success"); "rebuild" here refers to the registry's own in-memory `tenantStates` map, not the trigger sources' per-kind indexes.
 
 #### Scenario: Successful persistence
 
-- **WHEN** `register(files)` is called and the storage backend write succeeds
-- **THEN** the files SHALL be written to `workflows/{name}/` in the storage backend
+- **WHEN** `registerTenant(tenant, files, { tarballBytes })` is called and the storage backend write succeeds
+- **THEN** the tarball SHALL be written to `workflows/<tenant>.tar.gz` in the storage backend
 - **AND** the in-memory workflow state SHALL be updated
 
 #### Scenario: No storage backend
 
-- **WHEN** `register(files)` is called and no storage backend is configured
+- **WHEN** `registerTenant(tenant, files)` is called and no storage backend is configured
 - **THEN** the workflow SHALL exist only in memory
 - **AND** it SHALL be lost on restart
 
@@ -98,14 +97,15 @@ The registry SHALL provide a `recover()` method that loads all tenant tarballs f
 
 ### Requirement: Derived indexes rebuilt eagerly
 
-The registry SHALL maintain a per-tenant HTTP trigger index that is rebuilt eagerly on every `registerTenant` call. The index SHALL map `(tenant, method, path)` tuples to `{ workflow, triggerName, validator }`. Tenant-scoped: a trigger registered for tenant `A` SHALL NOT be reachable via a lookup for tenant `B`.
+The registry SHALL maintain a per-tenant map of `TriggerEntry` objects (keyed by `${workflowName}/${triggerName}`) that is rebuilt eagerly on every `registerTenant` call. Each entry SHALL carry the `TriggerDescriptor` (with its `inputSchema`) and the pre-wired `fire` closure. Tenant-scoped: a trigger registered for tenant `A` SHALL NOT be reachable via `getEntry` for tenant `B`. The registry SHALL also push the rebuilt per-kind entry lists to every registered `TriggerSource` via `reconfigure(tenant, entries)` (see "Registry reconfigures backends per-tenant in parallel").
 
 #### Scenario: Rebuild after re-registration
 
 - **GIVEN** a tenant with workflow `v1` registered
-- **WHEN** the tenant re-registers with workflow `v2` (different trigger paths)
-- **THEN** `v1`'s triggers SHALL no longer appear in lookup results
+- **WHEN** the tenant re-registers with workflow `v2` (different triggers)
+- **THEN** `v1`'s triggers SHALL no longer appear in `getEntry` / `list` results
 - **AND** `v2`'s triggers SHALL be reachable
+- **AND** every registered backend SHALL have received `reconfigure(tenant, <v2-entries-of-its-kind>)`
 
 ### Requirement: Registry knows its backends and rejects unknown kinds
 
@@ -203,16 +203,18 @@ The registry SHALL NOT roll back backends that succeeded when another backend fa
 
 ### Requirement: Persist-on-full-success
 
-The registry SHALL persist the tenant tarball to the storage backend (`workflows/<tenant>.tar.gz`) ONLY after every backend's `reconfigure` returns `{ok: true}`. If any backend fails (user-config or infra), the tarball SHALL NOT be written. Live backend state may then diverge from storage; this is an explicit non-guarantee documented in `CLAUDE.md`.
+The registry SHALL persist the tenant tarball to the storage backend (`workflows/<tenant>.tar.gz`) ONLY after every backend's `reconfigure` returns `{ok: true}`. If any backend fails (user-config or infra), the tarball SHALL NOT be written. Live backend state may then diverge from storage; this partial-state outcome is an explicit non-guarantee (see "Registry reconfigures backends per-tenant in parallel": the registry does not roll back successful backends when another backend fails).
 
-The registry SHALL NOT stage the tarball to a temporary key before reconfigure. The only storage key used for tenant bundles SHALL be `workflows/<tenant>.tar.gz`.
+The registry SHALL write the tarball directly to `workflows/<tenant>.tar.gz`. `StorageBackend.writeBytes` is contractually atomic (see `storage-backend/spec.md`: FS uses tmp+rename, S3 uses PutObject), so no staging key is used.
+
+The HTTP response contract (e.g., `204 No Content` on successful upload) is owned by the upload handler; see `action-upload/spec.md`.
 
 #### Scenario: Successful upload persists tarball
 
 - **GIVEN** a successful reconfigure across all backends
 - **WHEN** the registry finishes aggregating results
 - **THEN** the registry SHALL call `backend.writeBytes("workflows/<tenant>.tar.gz", bytes)` exactly once
-- **AND** the upload API SHALL return 204
+- **AND** SHALL NOT write to any other key (no staging / temp key)
 
 #### Scenario: Failed upload does not persist tarball
 

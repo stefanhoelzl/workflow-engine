@@ -173,12 +173,34 @@ function sealFailureToUploadFailure(
 	};
 }
 
-async function upload(options: UploadOptions): Promise<UploadResult> {
+function resolveAuth(options: UploadOptions): {
+	user: string | undefined;
+	token: string | undefined;
+} {
 	if (options.user !== undefined && options.token !== undefined) {
 		throw new Error(
 			"user and token are mutually exclusive: pass only one of --user or --token",
 		);
 	}
+
+	// Resolve GITHUB_TOKEN from env BEFORE running the build so that mutual
+	// exclusion with --user is caught early per cli/spec.md §Authentication
+	// (no upload request, no build, when the auth inputs conflict).
+	// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
+	const envToken = process.env.GITHUB_TOKEN?.trim();
+	const envTokenValue = envToken && envToken.length > 0 ? envToken : undefined;
+
+	if (options.user !== undefined && envTokenValue !== undefined) {
+		throw new Error(
+			"user and GITHUB_TOKEN are mutually exclusive: unset GITHUB_TOKEN or omit --user",
+		);
+	}
+
+	return { user: options.user, token: options.token ?? envTokenValue };
+}
+
+async function upload(options: UploadOptions): Promise<UploadResult> {
+	const auth = resolveAuth(options);
 
 	if (!TENANT_RE.test(options.tenant)) {
 		throw new Error(
@@ -190,15 +212,6 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 
 	const bundlePath = join(options.cwd, "dist", "bundle.tar.gz");
 	const bundleBytes = await readFile(bundlePath);
-
-	let resolvedToken = options.token;
-	if (resolvedToken === undefined && options.user === undefined) {
-		// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
-		const envToken = process.env.GITHUB_TOKEN?.trim();
-		resolvedToken = envToken && envToken.length > 0 ? envToken : undefined;
-	}
-
-	const auth = { user: options.user, token: resolvedToken };
 
 	let toUpload: Uint8Array = bundleBytes;
 	try {

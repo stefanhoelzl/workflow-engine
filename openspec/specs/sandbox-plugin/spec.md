@@ -204,9 +204,9 @@ Only one plugin across the composition MAY register each hook key; collisions SH
 
 #### Scenario: Override hook replaces result
 
-- **GIVEN** a wasi plugin with `clockTimeGet: () => ({ ns: 0n })`
+- **GIVEN** a wasi plugin with `clockTimeGet: () => ({ ns: 0 })`
 - **WHEN** guest code triggers a WASI clock call
-- **THEN** `0n` SHALL be passed to the WASM caller instead of the real value
+- **THEN** `0` SHALL be passed to the WASM caller instead of the real value (the sandbox widens it to `BigInt(0)` before handing it to WASM)
 
 #### Scenario: Hook-key collision throws
 
@@ -214,20 +214,20 @@ Only one plugin across the composition MAY register each hook key; collisions SH
 - **WHEN** the sandbox is constructed
 - **THEN** construction SHALL throw with an error naming the colliding plugins
 
-### Requirement: createWasiPlugin factory
+### Requirement: wasi base plugin + separate telemetry plugins
 
-The sandbox package SHALL export a `createWasiPlugin(setup?: (ctx: SandboxContext) => WasiHooks): Plugin` factory. When `setup` is omitted, the plugin SHALL register an empty `wasiHooks` object (no hooks) — WASI calls compute real values and emit nothing. When `setup` is provided, the factory SHALL invoke it in the plugin's `worker()` with the sandbox ctx and use the returned `WasiHooks` as the plugin's registration.
+The sandbox package SHALL provide an inert `wasi` plugin module at `packages/sandbox/src/plugins/wasi-plugin.ts` whose `worker()` returns `undefined` — it registers no `wasiHooks` so WASI calls compute real values and emit nothing. Plugin configs must be JSON-serializable across `postMessage`, which precludes a live `setup` callback on the base plugin; telemetry and overrides SHALL be composed as separate plugins (e.g. the runtime's `wasi-telemetry` plugin) whose own `worker()` returns a `wasiHooks` object and whose own `dependsOn` sequences them after `wasi`.
 
 #### Scenario: Inert default
 
-- **GIVEN** `createWasiPlugin()` with no setup
-- **WHEN** composed into a sandbox
-- **THEN** the plugin's `wasiHooks` SHALL have no hook implementations
+- **GIVEN** the `wasi` plugin composed alone
+- **WHEN** guest code triggers any WASI call
+- **THEN** no plugin-contributed `wasiHooks` entry SHALL be registered
 - **AND** WASI calls SHALL NOT emit any events
 
-#### Scenario: Caller-provided telemetry
+#### Scenario: Telemetry via a separate plugin
 
-- **GIVEN** `createWasiPlugin((ctx) => ({ clockTimeGet: ({ label, defaultNs }) => { ctx.emit("wasi.clock_time_get", label, { input: { label }, output: { ns: defaultNs } }); } }))`
+- **GIVEN** a separate telemetry plugin whose `worker(ctx)` returns `{ wasiHooks: { clockTimeGet: ({ label, defaultNs }) => { ctx.emit("wasi.clock_time_get", label, { input: { label }, output: { ns: defaultNs } }); } } }`
 - **WHEN** guest code triggers a WASI clock call
 - **THEN** a `wasi.clock_time_get` leaf event SHALL be emitted
 - **AND** the real clock value SHALL be returned to WASM (observation only)

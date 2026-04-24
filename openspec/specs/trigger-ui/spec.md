@@ -17,9 +17,26 @@ The system SHALL provide a `triggerMiddleware` factory function that accepts a J
 
 ### Requirement: Event list page
 
-The system SHALL serve an HTML page at `GET /trigger/` listing all defined workflow events by name, rendered with authenticated user identity. Identity SHALL come from the authenticated session (`sessionMw` on `/trigger/*` reads the sealed `session` cookie, unseals it, and sets `c.set("user", UserContext)`). The page SHALL read `c.get("user")` and render the user's display name + email in the shared layout.
+The system SHALL serve an HTML page at `GET /trigger/` listing all defined workflow events by name, rendered with authenticated user identity. Identity SHALL come from the authenticated session: `sessionMw` on `/trigger/*` reads the sealed `session` cookie, unseals it, and sets `c.set("user", UserContext)` where `UserContext = { name, mail, orgs }`. The trigger middleware SHALL read `c.get("user")` and extract the `.name` and `.mail` fields, passing them as separate `user` and `email` parameters to the page renderer; the shared layout then displays both strings in the top-bar user block. The middleware SHALL NOT pass the raw `UserContext` object through to the renderer — only the two display strings cross that boundary.
 
-The page SHALL NOT read `X-Auth-Request-*` headers — those were stripped by Traefik's `strip-auth-headers` middleware before arrival and are ignored by both the bearer middleware (API) and the session middleware (UI). The `replace-oauth2-proxy` change replaced forward-auth header identity with in-app session identity; this requirement's scenario was updated accordingly.
+The page SHALL NOT read `X-Auth-Request-*` headers. Those headers are no longer emitted by any upstream (oauth2-proxy was replaced with in-app session auth); no code path reads them.
+
+**Tenant scoping on `GET /trigger/` (root).** The root route is intentionally tenant-agnostic: it carries no `:tenant` path parameter and SHALL NOT mount `requireTenantMember()`. The handler SHALL derive the list of tenants the request is allowed to see from `tenantSet(c.get("user"))` (i.e., the `orgs` attached to the session) and render the tenant selector from that set alone. Invocation / trigger queries issued by the root handler SHALL be scoped to the active tenant chosen from that set; cross-tenant reads are impossible by construction because `tenantSet` never contains a tenant the user is not a member of. The `requireTenantMember()` middleware SHALL be mounted on `/trigger/:tenant/*` (see SECURITY.md §4 and `auth/spec.md` "Tenant-authorization middleware"), which is where the path parameter exists and where fail-closed 404 behaviour is load-bearing. A request to `GET /trigger/<tenant>` for a tenant the user is not a member of therefore resolves via the tenant-scoped subpath and SHALL return 404 identical to "tenant does not exist".
+
+#### Scenario: Root lists only tenants the user is a member of
+
+- **GIVEN** `user = { name: "alice", mail: "alice@example.com", orgs: ["acme"] }` is set on the request context
+- **AND** the registry has workflows for tenants `acme` and `victim`
+- **WHEN** `GET /trigger/` is requested
+- **THEN** the rendered tenant selector SHALL contain only `acme`
+- **AND** SHALL NOT contain `victim`
+
+#### Scenario: Root with :tenant path delegates to requireTenantMember
+
+- **GIVEN** `user = { name: "alice", orgs: ["acme"] }` is set on the request context
+- **WHEN** `GET /trigger/victim/<workflow>/<trigger>` is requested (tenant alice is not a member of)
+- **THEN** `requireTenantMember()` mounted on `/trigger/:tenant/*` SHALL respond `404 Not Found`
+- **AND** the response SHALL be indistinguishable from the response for a non-existent tenant
 
 #### Scenario: Page lists all events with user identity
 
@@ -68,7 +85,7 @@ The system SHALL accept `POST /trigger/<tenant>/<workflow>/<trigger>` with a JSO
 
 The endpoint SHALL accept dispatches for every registered trigger kind, including HTTP. For an HTTP descriptor the POSTed JSON body SHALL be treated as the body field of the `HttpTriggerPayload`, and the handler SHALL construct the full payload as `{ body: <posted JSON>, headers: {}, url: "/webhooks/<tenant>/<workflow>/<trigger>", method: descriptor.method }` before calling `fire`. For non-HTTP kinds the POSTed JSON body SHALL be used as the trigger input directly. In every case the constructed input SHALL be validated against `descriptor.inputSchema` by the shared `buildFire` path.
 
-The handler SHALL construct a `DispatchMeta` from the request's authenticated session and pass it as the second argument to `entry.fire`. The dispatch SHALL have `source: "manual"` for every successful `/trigger/*` dispatch. When the request carries an authenticated user, `dispatch.user` SHALL be `{ name, mail }` sourced from the session (e.g. `c.get("user")`). When no authenticated user is present but the request is in open-mode dev (`c.get("authOpen") === true`), `dispatch.user` SHALL be populated with the sentinel `{ name: "local", mail: "" }` so downstream consumers (dashboard chip tooltip) have a non-empty attribution. When neither an authenticated user nor the open-mode flag is set, `dispatch.user` SHALL be omitted while `source` remains `"manual"`.
+The handler SHALL construct a `DispatchMeta` from the request's authenticated session and pass it as the second argument to `entry.fire`. The dispatch SHALL have `source: "manual"` for every successful `/trigger/*` dispatch. When the request carries an authenticated user, `dispatch.user` SHALL be `{ name, mail }` sourced from the session (`c.get("user")`). When no authenticated user is present, `dispatch.user` SHALL be omitted while `source` remains `"manual"` — authentication is binary per `auth/spec.md`, and there is no `authOpen` / open-mode sentinel user fallback. In production this branch is unreachable because `sessionMw` on `/trigger/*` redirects unauthenticated requests to `/login` before the handler runs; it exists solely for tests that exercise the handler with a stub session middleware that omits `user`.
 
 The endpoint SHALL be mounted behind `requireTenantMember`; dispatches for tenants the user is not a member of SHALL return `404` identical to an unknown trigger response (see the "Unknown trigger" scenario).
 
@@ -111,11 +128,11 @@ The endpoint SHALL be mounted behind `requireTenantMember`; dispatches for tenan
 - **WHEN** the handler calls `entry.fire(input, dispatch)` for a valid trigger
 - **THEN** `dispatch` SHALL equal `{ source: "manual", user: { name: "Jane Doe", mail: "jane@example.com" } }`
 
-#### Scenario: Open-mode dispatch attaches a sentinel user
+#### Scenario: Dispatch without a user omits dispatch.user
 
-- **GIVEN** the server running in open-mode dev such that `c.get("user")` returns undefined and `c.get("authOpen")` is `true`
+- **GIVEN** a test that mounts the trigger handler with a stub `sessionMw` that does not call `c.set("user", …)` so `c.get("user")` returns undefined
 - **WHEN** the handler calls `entry.fire(input, dispatch)` for a valid trigger
-- **THEN** `dispatch` SHALL equal `{ source: "manual", user: { name: "local", mail: "" } }`
+- **THEN** `dispatch` SHALL equal `{ source: "manual" }` with no `user` field
 
 #### Scenario: Cross-tenant dispatch returns 404
 

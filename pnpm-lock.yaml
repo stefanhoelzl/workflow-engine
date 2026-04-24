@@ -245,9 +245,6 @@ importers:
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
-      typescript:
-        specifier: ^6.0.2
-        version: 6.0.2
       vite:
         specifier: ^8.0.8
         version: 8.0.8(@types/node@25.5.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.8.3)
@@ -261,6 +258,9 @@ importers:
       '@types/tar-stream':
         specifier: ^3.1.4
         version: 3.1.4
+      typescript:
+        specifier: ^6.0.2
+        version: 6.0.2
 
   workflows:
     dependencies:

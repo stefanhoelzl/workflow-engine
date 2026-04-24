@@ -275,7 +275,7 @@ function action<I, O>(config: {
 	const callable = async function callAction(input: I): Promise<O> {
 		if (assignedName === undefined || assignedName === "") {
 			throw new Error(
-				"Action constructed without a name; pass name explicitly or build via @workflow-engine/sdk/vite-plugin",
+				"Action constructed without a name; pass name explicitly or build via @workflow-engine/sdk/plugin",
 			);
 		}
 		return (await dispatchViaSdk(

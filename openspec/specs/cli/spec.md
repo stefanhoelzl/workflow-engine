@@ -42,17 +42,18 @@ The CLI SHALL exit with a non-zero status and print `no workflows found in src/`
 
 ### Requirement: Build pipeline
 
-The CLI SHALL build workflows using the vite plugin imported from `@workflow-engine/sdk/plugin` (previously `@workflow-engine/vite-plugin`). Build output SHALL be written to `<cwd>/dist/<name>/bundle.tar.gz` for each workflow. The CLI SHALL NOT support a user-authored `vite.config.ts`; any such file in `cwd` SHALL be ignored.
+The CLI SHALL build workflows using the vite plugin imported from `@workflow-engine/sdk/plugin` (previously `@workflow-engine/vite-plugin`). Build output SHALL be a single tenant tarball at `<cwd>/dist/bundle.tar.gz` containing a root `manifest.json` (`{ workflows: [...] }`) plus one `<name>.js` per discovered workflow. The CLI SHALL NOT support a user-authored `vite.config.ts`; any such file in `cwd` SHALL be ignored.
 
 #### Scenario: CLI uses SDK-internal plugin
 
 - **WHEN** the CLI's vite-config module imports the plugin
 - **THEN** it imports from the SDK's internal plugin module (not a separate package)
 
-#### Scenario: Build produces bundles for all discovered workflows
+#### Scenario: Build produces a single tenant tarball for all discovered workflows
 
-- **WHEN** `wfe upload` is invoked with `src/foo.ts` and `src/bar.ts`
-- **THEN** `dist/foo/bundle.tar.gz` and `dist/bar/bundle.tar.gz` SHALL exist after the build step
+- **WHEN** `wfe upload` is invoked in a directory containing `src/foo.ts` and `src/bar.ts`
+- **THEN** exactly one file `<cwd>/dist/bundle.tar.gz` SHALL exist after the build step
+- **AND** extracting it SHALL yield `manifest.json`, `foo.js`, and `bar.js` at the tarball root
 
 #### Scenario: User vite.config.ts is ignored
 

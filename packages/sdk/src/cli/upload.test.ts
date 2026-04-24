@@ -199,6 +199,21 @@ describe("upload", () => {
 		expect(runtime.requests).toHaveLength(0);
 	});
 
+	it("rejects when --user and GITHUB_TOKEN are both supplied, before building", async () => {
+		const { cwd } = await createProjectWithTenantBundle();
+		// biome-ignore lint/style/noProcessEnv: test needs to manipulate the CLI's documented env var
+		process.env.GITHUB_TOKEN = "ghp_env";
+		const buildModule = await import("./build.js");
+		const buildSpy = vi.mocked(buildModule.build);
+		buildSpy.mockClear();
+
+		await expect(
+			upload({ cwd, url: runtime.url, tenant: "acme", user: "dev" }),
+		).rejects.toThrow(MUTUALLY_EXCLUSIVE_RE);
+		expect(runtime.requests).toHaveLength(0);
+		expect(buildSpy).not.toHaveBeenCalled();
+	});
+
 	it("surfaces 401 as a failure", async () => {
 		const { cwd } = await createProjectWithTenantBundle();
 		runtime.setResponder(() => ({

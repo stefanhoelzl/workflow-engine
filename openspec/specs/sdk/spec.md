@@ -267,10 +267,11 @@ The SDK SHALL re-export the `z` namespace from Zod v4 for workflow authors. The 
 
 ### Requirement: SDK provides subpath exports
 
-The SDK package SHALL expose three entry points via the `exports` field in `package.json`:
+The SDK package SHALL expose four entry points via the `exports` field in `package.json`:
 - `"."` — DSL (defineWorkflow, action, httpTrigger, env, z, brands, type guards)
 - `"./plugin"` — Vite plugin (`workflowPlugin` factory)
 - `"./cli"` — Programmatic API (`build`, `upload`, `NoWorkflowsFoundError`)
+- `"./sdk-support"` — Runtime-composed sandbox plugin factory (`createSdkSupportPlugin`). Consumed by the runtime's plugin composition; workflow authors do not import this.
 
 #### Scenario: Import DSL from root
 
@@ -286,6 +287,11 @@ The SDK package SHALL expose three entry points via the `exports` field in `pack
 
 - **WHEN** a module imports `{ build, upload } from "@workflow-engine/sdk/cli"`
 - **THEN** it receives the programmatic build and upload functions
+
+#### Scenario: Import sandbox sdk-support plugin from subpath
+
+- **WHEN** the runtime imports `{ createSdkSupportPlugin } from "@workflow-engine/sdk/sdk-support"`
+- **THEN** it receives the plugin factory used to compose action-dispatch lifecycle into the sandbox
 
 ### Requirement: SDK provides wfe binary
 
@@ -332,16 +338,16 @@ The SDK SHALL constrain the `schedule` field's TypeScript type using `ts-cron-va
 - **WHEN** the workflow file is type-checked
 - **THEN** TypeScript SHALL reject the call with a type error on `schedule`
 
-### Requirement: SDK exports createSdkSupportPlugin
+### Requirement: SDK exposes the sdk-support plugin module
 
-The SDK package (`@workflow-engine/sdk`) SHALL export a `createSdkSupportPlugin(): Plugin` factory alongside its guest-facing exports. The plugin encapsulates all action-dispatch lifecycle logic (previously in runtime's appended `action-dispatcher.js` source). Runtime compositions SHALL include this plugin. (Detailed plugin behavior: see sandbox-sdk-plugin capability.)
+The SDK package (`@workflow-engine/sdk`) SHALL expose the `sdk-support` plugin module via the `./sdk-support` subpath export, separately from its guest-facing root entrypoint. The module SHALL export the plugin's `name`, `dependsOn`, `worker`, and `guest` symbols (consumed by the `?sandbox-plugin` vite query when composing the production plugin catalog). The plugin encapsulates all action-dispatch lifecycle logic (previously in runtime's appended `action-dispatcher.js` source). Runtime compositions SHALL include this plugin. (Detailed plugin behavior: see sandbox-sdk-plugin capability.)
 
-#### Scenario: SDK package exports the plugin factory
+#### Scenario: SDK subpath exposes the plugin module
 
 - **GIVEN** the `@workflow-engine/sdk` package
-- **WHEN** consumers import from it
-- **THEN** `createSdkSupportPlugin` SHALL be a named export
-- **AND** invoking it SHALL return a `Plugin` whose name is `"sdk-support"` and whose `dependsOn` includes `"host-call-action"`
+- **WHEN** a build-time consumer imports `@workflow-engine/sdk/sdk-support?sandbox-plugin` (or the TypeScript source directly, as `sandbox-store.ts` does)
+- **THEN** the resulting plugin descriptor's `name` SHALL be `"sdk-support"`
+- **AND** its `dependsOn` SHALL include `"host-call-action"`
 
 ### Requirement: manualTrigger factory
 
@@ -369,25 +375,24 @@ The factory config SHALL accept an optional `input` Zod schema, an optional `out
 - **THEN** `inputSchema` SHALL correspond to `z.object({ id: z.string() })`
 - **AND** `outputSchema` SHALL correspond to `z.number()`
 
-### Requirement: createSdkSupportPlugin factory
+### Requirement: sdk-support plugin shape
 
-The SDK package SHALL export a `createSdkSupportPlugin(): Plugin` factory. The plugin SHALL declare `dependsOn: ["host-call-action"]`, consuming both `validateAction` and `validateActionOutput` from the host-call-action plugin's exports.
+The SDK's `sdk-support` plugin module SHALL declare `dependsOn: ["host-call-action"]`, consuming both `validateAction` and `validateActionOutput` from the host-call-action plugin's exports.
 
-The plugin SHALL register a private guest function descriptor `__sdkDispatchAction` with signature `(name: string, input: unknown, handler: Callable) => unknown`. The handler SHALL:
+The plugin SHALL register a private guest function descriptor `__sdkDispatchAction` with signature `(name: string, input: unknown, handler: Callable) => unknown`. The descriptor's `log` SHALL be `{ request: "action" }`, so the sandbox auto-wraps each call in an `action.request` / `action.response` / `action.error` frame. Within that wrap the handler SHALL:
 
-1. `ctx.request("action", name, { input }, async () => { ... })` — wraps the body so `action.request` / `action.response` / `action.error` events frame the dispatch.
-2. Invoke `validateAction(name, input)` (via `deps["host-call-action"].validateAction`); on throw, the rejection propagates out of the request wrapper and `action.error` fires.
-3. Invoke the captured guest `handler(input)` callable, awaiting a raw value.
-4. Invoke `validateActionOutput(name, raw)` on the host (via `deps["host-call-action"].validateActionOutput`) and return its validated result.
-5. Dispose the captured `handler` in a `finally` block.
+1. Invoke `validateAction(name, input)` (via `deps["host-call-action"].validateAction`); on throw, the rejection propagates out of the auto-wrap and `action.error` fires.
+2. Invoke the captured guest `handler(input)` callable, awaiting a raw value.
+3. Invoke `validateActionOutput(name, raw)` on the host (via `deps["host-call-action"].validateActionOutput`) and return its validated result.
+4. Dispose the captured `handler` in a `finally` block.
 
 The dispatcher signature SHALL NOT accept a `completer` callable. Any extra positional argument passed by a stale guest SHALL be ignored; validation SHALL run host-side regardless. This keeps the security property intact even if a tenant bundle lags behind the new SDK shape (per `sandbox-output-validation`).
 
-The plugin's `source` blob SHALL install a locked `__sdk` object via `Object.defineProperty(globalThis, "__sdk", { value: Object.freeze({ dispatchAction: (name, input, handler) => raw(name, input, handler) }), writable: false, configurable: false, enumerable: false })` where `raw` is the captured `__sdkDispatchAction` private global. The `log` field on the descriptor SHALL be `{ request: "action" }`. This is the canonical example of SECURITY.md §2 R-2 (locked host-callable global).
+The plugin's `guest()` export (bundled as `descriptor.guestSource` by the vite plugin) SHALL install a locked `__sdk` object via `Object.defineProperty(globalThis, "__sdk", { value: Object.freeze({ dispatchAction: (name, input, handler) => raw(name, input, handler) }), writable: false, configurable: false, enumerable: false })` where `raw` is the captured `__sdkDispatchAction` private global. This is the canonical example of SECURITY.md §2 R-2 (locked host-callable global).
 
 #### Scenario: __sdk.dispatchAction is the guest surface
 
-- **GIVEN** a sandbox with `createSdkSupportPlugin()` composed
+- **GIVEN** a sandbox with the `sdk-support` plugin composed
 - **WHEN** user source evaluates `typeof globalThis.__sdk.dispatchAction`
 - **THEN** the result SHALL be `"function"`
 - **AND** `typeof globalThis.__sdkDispatchAction` SHALL be `"undefined"`
@@ -457,7 +462,7 @@ The plugin's `source` blob SHALL install a locked `__sdk` object via `Object.def
 
 ### Requirement: action() SDK export is a passthrough
 
-The SDK's `action()` factory SHALL produce callables whose implementation is a thin wrapper calling `globalThis.__sdk.dispatchAction(name, input, handler)`. The wrapper SHALL NOT construct a `completer` closure; output validation SHALL be performed host-side by the sdk-support plugin via the host-call-action plugin's `validateActionOutput` export. The SDK SHALL NOT reach into any other sandbox internals; all action-lifecycle logic lives in `createSdkSupportPlugin`'s worker-side handler.
+The SDK's `action()` factory SHALL produce callables whose implementation is a thin wrapper calling `globalThis.__sdk.dispatchAction(name, input, handler)`. The wrapper SHALL NOT construct a `completer` closure; output validation SHALL be performed host-side by the `sdk-support` plugin via the host-call-action plugin's `validateActionOutput` export. The SDK SHALL NOT reach into any other sandbox internals; all action-lifecycle logic lives in the `sdk-support` plugin's worker-side handler.
 
 #### Scenario: action() wraps dispatchAction
 
@@ -469,7 +474,7 @@ The SDK's `action()` factory SHALL produce callables whose implementation is a t
 
 ### Requirement: No runtime-appended dispatcher source
 
-The runtime SHALL NOT append `action-dispatcher.js` (or any other dispatcher source) to tenant workflow bundles. All action-dispatcher logic lives in the SDK's `createSdkSupportPlugin`. This is cross-referenced from `workflow-registry` (Sandbox loading) and `sandbox` (plugin composition) for runtime enforcement.
+The runtime SHALL NOT append `action-dispatcher.js` (or any other dispatcher source) to tenant workflow bundles. All action-dispatcher logic lives in the SDK's `sdk-support` plugin module (at `packages/sdk/src/sdk-support/index.ts`, consumed via the `./sdk-support` subpath + `?sandbox-plugin` vite query). This is cross-referenced from `workflow-registry` (Sandbox loading) and `sandbox` (plugin composition) for runtime enforcement.
 
 #### Scenario: Bundle loaded without source appending
 

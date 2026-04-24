@@ -77,7 +77,7 @@ resource "kubernetes_deployment_v1" "app" {
           run_as_group           = local.pod_sc.run_as_group
           fs_group               = local.pod_sc.fs_group
           fs_group_change_policy = local.pod_sc.fs_group_change_policy
-          seccomp_profile { type = local.pod_sc.seccomp_profile_type }
+          seccomp_profile { type = local.pod_sc.seccomp_profile.type }
         }
 
         container {

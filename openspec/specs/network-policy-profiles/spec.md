@@ -61,28 +61,14 @@ The app-instance module SHALL create the workflow-engine app's NetworkPolicy via
 - **WHEN** the app netpol factory call is applied
 - **THEN** the generated NetworkPolicy SHALL permit the same traffic as the current hand-written `kubernetes_network_policy_v1.app`
 
-### Requirement: oauth2-proxy workload uses netpol factory
-
-The app-instance module SHALL create the oauth2-proxy NetworkPolicy via the netpol factory with a profile equivalent to the current hand-written NP:
-- `egress_internet = true`
-- `egress_dns = true`
-- `ingress_from_pods`: Traefik on port 4180 (cross-namespace from `ns/traefik`)
-- `ingress_from_cidrs`: node CIDR on port 4180 (kubelet probes)
-
-#### Scenario: oauth2-proxy NP matches current behavior
-
-- **WHEN** the oauth2-proxy netpol factory call is applied
-- **THEN** the generated NetworkPolicy SHALL permit the same traffic as the current hand-written `kubernetes_network_policy_v1.oauth2_proxy`
-
 ### Requirement: Traefik workload uses netpol factory
 
-The traefik module SHALL create the Traefik NetworkPolicy via the netpol factory. The profile SHALL include cross-namespace egress to app backends and oauth2-proxy in all workload namespaces.
+The traefik module SHALL create the Traefik NetworkPolicy via the netpol factory. The profile SHALL include cross-namespace egress to app backends in all workload namespaces.
 
 #### Scenario: Traefik NP egress crosses namespaces
 
 - **WHEN** the traefik netpol factory call is applied with workload namespaces `["prod"]`
 - **THEN** the generated NetworkPolicy SHALL permit egress to pods with `app.kubernetes.io/name=workflow-engine` in namespace `prod` on port 8080
-- **AND** egress to pods with `app.kubernetes.io/name=oauth2-proxy` in namespace `prod` on port 4180
 
 ### Requirement: S2 workload uses netpol factory
 

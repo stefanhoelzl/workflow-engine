@@ -854,7 +854,7 @@ Each app project (`envs/prod/`, `envs/staging/`) SHALL wire: `data "terraform_re
 - **AND** a default-deny NetworkPolicy SHALL be created in the `prod` namespace
 - **AND** a Certificate resource SHALL be created in the `prod` namespace referencing the `letsencrypt-prod` ClusterIssuer
 - **AND** the acme-solver ingress NetworkPolicy SHALL exist in the `prod` namespace
-- **AND** the app Deployment, Service, oauth2-proxy, and IngressRoute SHALL be deployed in `prod`
+- **AND** the app Deployment, Service, and IngressRoute SHALL be deployed in `prod`
 - **AND** a Dynu CNAME record SHALL point the prod domain at the cluster LB hostname
 
 #### Scenario: Staging apply deploys app in staging namespace with own bucket

@@ -17,13 +17,44 @@ variable "node_cidr" {
   description = "Node CIDR for kubelet probe ingress rules (e.g. 172.24.1.0/24)"
 }
 
+# -----------------------------------------------------------------------------
+# PodSecurity Admission (PSA) two-phase rollout
+# -----------------------------------------------------------------------------
+# Per pod-security-baseline/spec.md "Warn-then-enforce rollout":
+#
+#   Phase 1 (psa_mode = "warn"):
+#     Applies label `pod-security.kubernetes.io/warn=restricted`. Non-compliant
+#     pod creations emit a PodSecurity warning but still succeed. Operators run
+#     `tofu apply` in this mode first, inspect the warning stream for any
+#     non-compliant workload, and only proceed to phase 2 once the warning
+#     stream is clean.
+#
+#   Phase 2 (psa_mode = "enforce", default):
+#     Applies label `pod-security.kubernetes.io/enforce=restricted`. The API
+#     server rejects non-compliant pods at admission time.
+#
+# Phase 2 MUST NOT be applied until every workload Deployment in every listed
+# namespace carries compliant securityContext fields (see the app-instance and
+# s2 modules, and the Traefik Helm values in modules/traefik).
+# -----------------------------------------------------------------------------
+variable "psa_mode" {
+  type        = string
+  default     = "enforce"
+  description = "PodSecurity Admission rollout phase: 'warn' for phase 1 (advisory), 'enforce' for phase 2 (rejecting)."
+
+  validation {
+    condition     = contains(["warn", "enforce"], var.psa_mode)
+    error_message = "psa_mode must be either 'warn' (phase 1) or 'enforce' (phase 2)."
+  }
+}
+
 resource "kubernetes_namespace_v1" "ns" {
   for_each = toset(var.namespaces)
 
   metadata {
     name = each.value
     labels = {
-      "pod-security.kubernetes.io/enforce" = "restricted"
+      "pod-security.kubernetes.io/${var.psa_mode}" = "restricted"
     }
   }
 }
@@ -54,18 +85,16 @@ output "node_cidr" {
   description = "Node CIDR passed through for downstream NetworkPolicy ingress rules"
 }
 
+# Shorthand selector shape per pod-security-baseline/spec.md:67 — consumed
+# directly by modules/netpol (see variables.tf:coredns_selector). The netpol
+# module expands this into the verbose K8s namespace_selector +
+# match_expressions structure required by the NetworkPolicy resource.
 output "coredns_selector" {
   value = {
-    namespace_labels = {
-      "kubernetes.io/metadata.name" = "kube-system"
-    }
-    match_expressions = {
-      key      = "k8s-app"
-      operator = "In"
-      values   = ["coredns", "kube-dns"]
-    }
+    namespace  = "kube-system"
+    k8s_app_in = ["coredns", "kube-dns"]
   }
-  description = "Namespace + pod selector for CoreDNS egress rules"
+  description = "Namespace + pod selector shorthand for CoreDNS egress rules"
 }
 
 output "pod_security_context" {
@@ -75,7 +104,7 @@ output "pod_security_context" {
     run_as_group           = 65532
     fs_group               = 65532
     fs_group_change_policy = "OnRootMismatch"
-    seccomp_profile_type   = "RuntimeDefault"
+    seccomp_profile        = { type = "RuntimeDefault" }
   }
   description = "Pod-level security context for restricted workloads (nonroot/65532)"
 }

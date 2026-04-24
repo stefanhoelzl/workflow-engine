@@ -35,6 +35,12 @@ function consoleDescriptor(method: ConsoleMethod): GuestFunctionDescription {
 			/* no-op — the leaf event is emitted by the log auto-wrap */
 		},
 		log: { event: `console.${method}` },
+		// Guest bridge packs the tenant's variadic args into a single array
+		// (see `guest()` below). The log auto-wrap's default `input = args`
+		// would therefore emit `input: [[...]]` — a pointless extra level of
+		// wrapping. Unwrap so the audit shape matches the spec scenario:
+		// `console.log("hello", { x: 1 })` → `input: ["hello", { x: 1 }]`.
+		logInput: (args) => args[0],
 		public: false,
 	};
 }

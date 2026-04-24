@@ -1,13 +1,78 @@
 import {
+	ACTION_BRAND,
 	action,
+	CRON_TRIGGER_BRAND,
 	cronTrigger,
 	defineWorkflow,
 	env,
+	HTTP_TRIGGER_BRAND,
 	httpTrigger,
+	isAction,
+	isCronTrigger,
+	isHttpTrigger,
+	isManualTrigger,
+	isWorkflow,
+	MANUAL_TRIGGER_BRAND,
+	ManifestSchema,
 	manualTrigger,
 	secret,
+	WORKFLOW_BRAND,
 	z,
 } from "@workflow-engine/sdk";
+
+// -----------------------------------------------------------------------------
+// SDK surface statically referenced for compile-time coverage.
+//
+// Brands, `ManifestSchema`, and type guards are not needed at runtime inside
+// a well-typed workflow (the SDK factories produce branded values for you),
+// but listing them here means any rename at the SDK boundary breaks this
+// file and therefore breaks `pnpm build`. Treat `_sdkSurface` as a
+// compile-time contract test for the public surface of
+// `@workflow-engine/sdk`.
+// -----------------------------------------------------------------------------
+
+const _sdkSurface = {
+	brands: [
+		ACTION_BRAND,
+		HTTP_TRIGGER_BRAND,
+		CRON_TRIGGER_BRAND,
+		MANUAL_TRIGGER_BRAND,
+		WORKFLOW_BRAND,
+	] as const,
+	guards: {
+		isAction,
+		isHttpTrigger,
+		isCronTrigger,
+		isManualTrigger,
+		isWorkflow,
+	},
+	schemas: { Manifest: ManifestSchema },
+};
+// Reference `_sdkSurface` so tree-shakers keep the import chain alive.
+if (typeof _sdkSurface !== "object") {
+	throw new Error("unreachable");
+}
+
+// Observable (WICG tentative) is not yet in TypeScript's lib.dom; declare the
+// minimal shape the demo needs. Polyfill source:
+// packages/sandbox-stdlib/src/web-platform/guest/observable.ts.
+declare const Observable: {
+	new <T>(
+		subscribe: (sub: {
+			next: (v: T) => void;
+			complete: () => void;
+			error: (e: unknown) => void;
+		}) => void,
+	): {
+		subscribe(observer: {
+			next?: (v: T) => void;
+			complete?: () => void;
+			error?: (e: unknown) => void;
+		}): void;
+	};
+};
+
+const MEASURE_DELAY_MS = 5;
 
 export const workflow = defineWorkflow({
 	env: {
@@ -130,6 +195,110 @@ export const fetchEcho = action({
 	},
 });
 
+// Demonstrates error handling around fetch — a bad URL triggers a thrown
+// TypeError from the shim, which the handler surfaces as a structured result
+// instead of letting it become an uncaught action error.
+export const fetchSafe = action({
+	input: z.object({ url: z.string() }),
+	output: z.object({ ok: z.boolean(), status: z.number(), error: z.string() }),
+	handler: async ({ url }) => {
+		try {
+			const response = await fetch(url);
+			return { ok: response.ok, status: response.status, error: "" };
+		} catch (err) {
+			return {
+				ok: false,
+				status: 0,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	},
+});
+
+// -----------------------------------------------------------------------------
+// sandbox-stdlib Web Platform surface (see SECURITY.md §2 and
+// packages/sandbox-stdlib/src/web-platform/guest/entry.ts for install order).
+// Each action exercises at least one global per category so that regressions
+// in the polyfill install chain surface in this workflow's bundle.
+// -----------------------------------------------------------------------------
+
+// performance.mark / performance.measure (user-timing polyfill).
+export const measure = action({
+	input: z.object({ label: z.string() }),
+	output: z.object({ entries: z.number(), durationMs: z.number() }),
+	handler: async ({ label }) => {
+		performance.mark(`${label}:start`);
+		await new Promise((resolve) => setTimeout(resolve, MEASURE_DELAY_MS));
+		performance.mark(`${label}:end`);
+		performance.measure(label, `${label}:start`, `${label}:end`);
+		const entries = performance.getEntriesByName(label);
+		const durationMs = entries[0]?.duration ?? 0;
+		return { entries: entries.length, durationMs };
+	},
+});
+
+// EventTarget / Event / CustomEvent (event-target polyfill).
+export const eventBus = action({
+	input: z.object({ message: z.string() }),
+	output: z.object({ received: z.string() }),
+	handler: ({ message }) => {
+		const target = new EventTarget();
+		let received = "";
+		target.addEventListener("demo", (e) => {
+			received = (e as CustomEvent<string>).detail;
+		});
+		target.dispatchEvent(new CustomEvent("demo", { detail: message }));
+		return Promise.resolve({ received });
+	},
+});
+
+// AbortController / AbortSignal (event-target polyfill). fetch.signal is not
+// plumbed across the host bridge (see fetch.ts header comment), so the demo
+// exercises the controller/signal object shape rather than live cancellation.
+export const cancellable = action({
+	input: z.object({}),
+	output: z.object({ aborted: z.boolean(), reason: z.string() }),
+	handler: () => {
+		const controller = new AbortController();
+		controller.abort(new Error("demo-cancel"));
+		const reason = controller.signal.reason;
+		return Promise.resolve({
+			aborted: controller.signal.aborted,
+			reason: reason instanceof Error ? reason.message : String(reason),
+		});
+	},
+});
+
+// scheduler.postTask (scheduler-polyfill). Uses user-blocking priority so the
+// task runs on the next macrotask boundary even under load.
+export const scheduleTask = action({
+	input: z.object({ value: z.number() }),
+	output: z.object({ doubled: z.number() }),
+	handler: async ({ value }) => {
+		const doubled = await scheduler.postTask(() => value * 2, {
+			priority: "user-blocking",
+		});
+		return { doubled };
+	},
+});
+
+// Observable.subscribe (observable-polyfill, WICG tentative).
+export const observeTicks = action({
+	input: z.object({ count: z.number() }),
+	output: z.object({ values: z.array(z.number()) }),
+	handler: ({ count }) => {
+		const source = new Observable<number>((subscriber) => {
+			for (let i = 0; i < count; i++) {
+				subscriber.next(i);
+			}
+			subscriber.complete();
+		});
+		const values: number[] = [];
+		source.subscribe({ next: (v) => values.push(v) });
+		return Promise.resolve({ values });
+	},
+});
+
 export const runDemo = action({
 	input: z.object({ name: z.string() }),
 	output: z.object({
@@ -144,6 +313,11 @@ export const runDemo = action({
 		}),
 		signed: z.object({ sig: z.string() }),
 		fetched: z.object({ get: z.unknown(), post: z.unknown() }),
+		measured: z.object({ entries: z.number(), durationMs: z.number() }),
+		event: z.object({ received: z.string() }),
+		cancelled: z.object({ aborted: z.boolean(), reason: z.string() }),
+		scheduled: z.object({ doubled: z.number() }),
+		observed: z.object({ values: z.array(z.number()) }),
 	}),
 	handler: async ({ name }) => {
 		const greeting = await greet({ name });
@@ -156,6 +330,11 @@ export const runDemo = action({
 		});
 		const signed = await signedPing({ subject: name });
 		const fetched = await fetchEcho({ payload: { hello: name } });
+		const measured = await measure({ label: `run:${name}` });
+		const event = await eventBus({ message: name });
+		const cancelled = await cancellable({});
+		const scheduled = await scheduleTask({ value: name.length });
+		const observed = await observeTicks({ count: 3 });
 		return {
 			greeting,
 			shouted,
@@ -165,6 +344,11 @@ export const runDemo = action({
 			parsed,
 			signed,
 			fetched,
+			measured,
+			event,
+			cancelled,
+			scheduled,
+			observed,
 		};
 	},
 });
@@ -185,6 +369,19 @@ export const echo = httpTrigger({
 	},
 });
 
+// httpTrigger with `responseBody` — the SDK makes the response `body` field
+// required and validates it against the schema at handler return. Contrast
+// with `ping` / `echo` above, where all response fields are optional.
+export const greetJson = httpTrigger({
+	method: "POST",
+	body: z.object({ name: z.string().meta({ example: "world" }) }),
+	responseBody: z.object({ greeting: z.string() }),
+	handler: async ({ body }) => {
+		const greeting = await greet({ name: body.name });
+		return { status: 200, body: { greeting } };
+	},
+});
+
 export const everyFiveMinutes = cronTrigger({
 	schedule: "*/5 * * * *",
 	tz: "UTC",
@@ -198,6 +395,18 @@ export const dailyBerlin = cronTrigger({
 	tz: "Europe/Berlin",
 	handler: async () => {
 		await runDemo({ name: "cron-berlin" });
+	},
+});
+
+// Callable-style cron invocation — cronTrigger returns a branded callable, so
+// tests (and other workflow code) can fire it directly without going through
+// the scheduler. The scheduler discards the return value; callable-style
+// usage preserves `Promise<unknown>` per cron-trigger/spec.md §1.
+export const fireCron = httpTrigger({
+	method: "POST",
+	handler: async () => {
+		await everyFiveMinutes();
+		return { status: 202, body: { fired: "everyFiveMinutes" } };
 	},
 });
 

@@ -65,12 +65,13 @@ After a successful upload, the WorkflowRegistry SHALL make the workflow availabl
 - **THEN** the in-flight action SHALL complete using the old code
 - **AND** subsequent events SHALL use the new code
 
-#### Scenario: Invalid upload removes existing workflow
+#### Scenario: Invalid upload preserves existing workflow (all-or-nothing)
 
-- **WHEN** workflow "foo" exists in the registry
-- **AND** a new upload for "foo" fails validation (e.g., missing action source)
-- **THEN** the existing "foo" SHALL be removed from the registry
-- **AND** the runtime SHALL log the removal with the error reason
+- **WHEN** tenant "acme" exists in the registry with workflow "foo"
+- **AND** a new upload for tenant "acme" fails validation (e.g., missing module referenced from the manifest) or fails backend `reconfigure` (user-config or infra error)
+- **THEN** the existing tenant state SHALL remain unchanged (see `workflow-registry/spec.md` "Register returns a failure result on validation error")
+- **AND** the runtime SHALL log the failure reason
+- **AND** the previously persisted tarball (if any) SHALL remain unchanged on the storage backend
 
 ### Requirement: Upload response classifies reconfigure failures
 

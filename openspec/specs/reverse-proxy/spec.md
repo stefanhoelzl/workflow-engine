@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Traefik reverse-proxy Helm release and configuration for the cluster.
+Traefik reverse-proxy Helm release and configuration for the cluster. Traefik is a pure TLS + routing gateway; it performs no authentication, authorization, or forward-auth gating — all auth responsibility belongs to the app (see `auth/spec.md` and `http-server/spec.md`). Error pages (404, 5xx) and the root redirect are served by the app in Hono, not by Traefik plugins.
 ## Requirements
 ### Requirement: Traefik Helm release
 
@@ -32,37 +32,11 @@ The `extraObjects` value SHALL NOT include IngressRoutes or Middlewares (moved t
 - **THEN** `extraObjects` SHALL be empty or absent
 - **AND** IngressRoutes SHALL be delivered by per-instance routes-chart Helm releases
 
-### Requirement: Traefik inline-response plugin from committed tarball
-
-The plugin tarball SHALL be read from a committed file at `modules/traefik/plugin/plugin-<version>.tar.gz` via `filebase64()` and stored in a Kubernetes ConfigMap. The init container SHALL extract it to the shared `emptyDir` volume.
-
-The init container SHALL have explicit `securityContext`:
-- `runAsUser = 65532`
-- `runAsNonRoot = true`
-- `allowPrivilegeEscalation = false`
-- `readOnlyRootFilesystem = true`
-- `capabilities = { drop = ["ALL"] }`
-- `seccompProfile = { type = "RuntimeDefault" }`
-
-#### Scenario: Init container security context
-
-- **WHEN** the Traefik pod starts
-- **THEN** the init container SHALL run as UID 65532 (non-root)
-- **AND** the init container SHALL pass PodSecurity `restricted` admission
-
-#### Scenario: Plugin extracted from committed tarball
-
-- **WHEN** the Traefik pod starts
-- **THEN** the init container SHALL extract the plugin from the ConfigMap-mounted tarball
-- **AND** no runtime fetch from github.com SHALL occur
-
 ### Requirement: Traefik workload network allow-rules
 
 The traefik module SHALL create the Traefik NetworkPolicy via the `modules/netpol/` factory. The policy SHALL use cross-namespace selectors for egress to app backends in workload namespaces.
 
 The module SHALL accept a `workload_namespaces` variable (list of string) to construct namespace-selector-based egress rules. Egress to ACME solver pods SHALL use a namespace-agnostic selector (`namespace_selector = {}`) since solver pods appear transiently in any namespace with a Certificate resource.
-
-The policy SHALL NOT include an egress rule for `oauth2-proxy` pods because no such pods exist after the `replace-oauth2-proxy` change; any such rule SHALL be removed.
 
 #### Scenario: Traefik reaches app backend across namespaces
 
@@ -74,17 +48,13 @@ The policy SHALL NOT include an egress rule for `oauth2-proxy` pods because no s
 - **WHEN** cert-manager creates a solver pod in namespace `prod` during cert issuance
 - **THEN** the egress rule SHALL permit Traefik to reach the solver pod on `:8089`
 
-#### Scenario: No egress rule targets oauth2-proxy pods
+### Requirement: Traefik SHALL NOT enforce authentication
 
-- **WHEN** the rendered Traefik NetworkPolicy is inspected
-- **THEN** it SHALL NOT contain any egress rule targeting pods labelled `app.kubernetes.io/name = oauth2-proxy` on any port
+Traefik SHALL NOT implement any authentication, authorization, or forward-auth gating. All auth responsibility belongs to the app (see `auth/spec.md`). Traefik's sole duties are TLS termination and request routing to the app pod.
 
-### Requirement: Error page via variable
+#### Scenario: No forward-auth middleware attached to routes
 
-The traefik module SHALL accept an `error_page_5xx_html` variable (string) containing the 5xx error page HTML. The `traefik_inline_response` middleware SHALL serve this content. The HTML SHALL no longer be defined as an inline HCL heredoc.
-
-#### Scenario: Error page served from variable
-
-- **WHEN** the Traefik inline-response middleware handles a `/error` request
-- **THEN** it SHALL serve the HTML content from `var.error_page_5xx_html`
+- **WHEN** the rendered Traefik IngressRoutes / Middlewares are inspected
+- **THEN** no route SHALL have a `forwardAuth` middleware attached
+- **AND** no `oauth2-proxy` backend SHALL exist in the cluster
 

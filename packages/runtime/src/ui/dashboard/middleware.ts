@@ -18,10 +18,12 @@ interface DashboardMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
 	readonly limit?: number;
 	readonly logger?: Logger;
-	// Optional session middleware to mount before the dashboard handlers.
-	// In production this is the in-app auth `sessionMiddleware`; in tests
-	// the field is omitted and tests inject `UserContext` directly.
-	readonly sessionMw?: MiddlewareHandler;
+	// Session middleware mounted before the dashboard handlers. Required
+	// per `auth/spec.md` "sessionMw mount points": every route under
+	// `/dashboard/*` SHALL enforce session auth. Tests that do not
+	// exercise the real `sessionMiddleware` inject a stub that seeds
+	// `UserContext` on the request context via `c.set("user", …)`.
+	readonly sessionMw: MiddlewareHandler;
 }
 
 interface RawRequestRow {
@@ -60,9 +62,11 @@ function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 	if (user) {
 		return Array.from(tenantSet(user)).sort();
 	}
-	// Dev/unauthenticated fallback: show all tenants the runtime knows about.
-	// In production, oauth2-proxy forward-auth ensures a user is always set on
-	// `/dashboard/*`; arriving without one means auth is disabled (open mode).
+	// Test fallback: show all tenants the runtime knows about when no
+	// user is seeded on the context. In production, `sessionMw` mounted
+	// on `/dashboard/*` ensures a `UserContext` is always set (or
+	// redirects to `/login`); reaching this branch means a test invoked
+	// the middleware without a session middleware attached.
 	const fromRegistry = new Set<string>();
 	for (const tenant of registry.tenants()) {
 		if (validateTenant(tenant)) {
@@ -233,9 +237,7 @@ function parseJsonField(value: unknown): unknown {
 
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
-	if (deps.sessionMw) {
-		app.use("*", deps.sessionMw);
-	}
+	app.use("*", deps.sessionMw);
 	app.notFound(createNotFoundHandler());
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;

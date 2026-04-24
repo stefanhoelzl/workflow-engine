@@ -9,22 +9,24 @@ Provide the central event distribution mechanism that fans out invocation lifecy
 ### Requirement: BusConsumer interface for invocation lifecycle
 
 The system SHALL define a `BusConsumer` interface with one method:
-- `handle(event: InvocationLifecycleEvent): Promise<void>` --- called for each lifecycle event at runtime
+- `handle(event: InvocationEvent): Promise<void>` --- called for each event at runtime
 
-`InvocationLifecycleEvent` SHALL be a discriminated union over `kind: "started" | "completed" | "failed"` with the corresponding payload as defined in the `invocations` capability spec.
+`InvocationEvent` SHALL be a discriminated union over `kind` as defined in the `invocations` capability spec and the `@workflow-engine/core` `EventKind` union. The three invocation lifecycle kinds are `"trigger.request"` (invocation start), `"trigger.response"` (successful terminal), and `"trigger.error"` (failed terminal). Non-lifecycle kinds (`action.*`, `fetch.*`, `timer.*`, `console.*`, `wasi.*`, `system.*`) also flow through the bus; consumers SHALL filter by `kind` for logic that applies only to lifecycle events.
+
+Events reaching `handle` SHALL already be fully widened by the executor's `sb.onEvent` receiver: runtime-owned fields (`tenant`, `workflow`, `workflowSha`, `invocationId`, and on `trigger.request` only `meta.dispatch`) are stamped before emission and SHALL NOT be re-stamped or mutated by consumers. Sandbox-owned intrinsic fields (`seq`, `ref`, `ts`, `at`, `id`) are likewise immutable on receipt.
 
 The `bootstrap` method on `BusConsumer` SHALL be removed in v1; consumers that need startup data (like EventStore) SHALL read from persistence's `scanArchive()` directly during their own initialization.
 
 #### Scenario: Consumer receives lifecycle event
 
 - **GIVEN** a registered BusConsumer
-- **WHEN** `bus.emit({ kind: "started", id, workflow, trigger, ts, input })` is called
+- **WHEN** `bus.emit({ kind: "trigger.request", id, workflow, trigger, at, ts, input, meta: { dispatch: { source: "trigger" } } })` is called
 - **THEN** the consumer's `handle` SHALL be called with that event
 
 ### Requirement: EventBus interface
 
 The system SHALL define an `EventBus` interface with one method:
-- `emit(event: InvocationLifecycleEvent): Promise<void>` --- fan out a lifecycle event to all consumers
+- `emit(event: InvocationEvent): Promise<void>` --- fan out an event to all consumers
 
 The bus SHALL dispatch synchronously through registered consumers in registration order. `emit` SHALL await all consumers' `handle` calls in sequence and SHALL resolve only after the last consumer returns.
 
@@ -46,7 +48,9 @@ The bus SHALL dispatch synchronously through registered consumers in registratio
 
 ### Requirement: createEventBus factory
 
-The system SHALL provide a `createEventBus(consumers: BusConsumer[]): EventBus` factory function. Consumers SHALL be fixed at construction time. There SHALL be no `register()` or `unregister()` methods. Consumer order is determined by array position. The recommended consumer order is: Persistence, EventStore, Logging.
+The system SHALL provide a `createEventBus(consumers: BusConsumer[]): EventBus` factory function. Consumers SHALL be fixed at construction time. There SHALL be no `register()` or `unregister()` methods. Consumer order is determined by array position.
+
+Consumer order is guidance, not a contract — the event bus itself does not enforce any specific ordering, and no validation runs against the supplied array. The runtime's canonical wiring uses `[persistence, eventStore, logging]` (see `packages/runtime/src/main.ts`) so that persistence observes the event before EventStore indexes it and before the logging consumer emits human-readable output; this ordering is a runtime-integration choice, not a requirement on the event-bus module, and other compositions (tests, subset harnesses, future consumers) are free to pick a different order as long as intra-event serialization is preserved by the bus's internal emit loop.
 
 #### Scenario: Create bus with consumers
 - **GIVEN** an array of BusConsumer instances `[persistence, eventStore, logging]`
@@ -64,7 +68,7 @@ Events SHALL be treated as immutable. The original event object SHALL never be m
 
 #### Scenario: State transition creates new object
 
-- **GIVEN** an InvocationLifecycleEvent
+- **GIVEN** an `InvocationEvent`
 - **WHEN** a consumer processes the event
 - **THEN** the original event object SHALL not be mutated
 

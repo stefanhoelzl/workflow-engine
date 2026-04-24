@@ -18,11 +18,11 @@ A `tsconfig.base.json` at the repository root SHALL define the shared strict Typ
 - **THEN** it SHALL target `ES2025` with `module: "NodeNext"` and `moduleResolution: "NodeNext"`
 
 ### Requirement: Project references
-A root `tsconfig.json` SHALL declare project references for cross-package type checking. Initially only `runtime` is referenced; more packages will be added as they are created.
+A root `tsconfig.json` SHALL declare project references for cross-package type checking across every buildable workspace package (`core`, `sdk`, `sandbox`, `sandbox-stdlib`, `runtime`, and `workflows`).
 
 #### Scenario: Root references
 - **WHEN** inspecting the root `tsconfig.json`
-- **THEN** it SHALL contain a reference to `packages/runtime`
+- **THEN** it SHALL contain references to `packages/core`, `packages/sdk`, `packages/sandbox`, `packages/sandbox-stdlib`, `packages/runtime`, and `workflows`
 
 #### Scenario: Incremental type checking
 - **WHEN** a developer runs `tsc --build` at the repository root

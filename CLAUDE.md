@@ -10,10 +10,22 @@
 - `pnpm lint` — Biome linter
 - `pnpm check` — TypeScript type checking
 - `pnpm test` — Vitest test suite (unit + integration, excludes WPT)
-- `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`)
+- `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`); honours `WPT_CONCURRENCY` env override (default: `max(4, cpus × 2)`)
 - `pnpm test:wpt:refresh` — regenerate `packages/sandbox-stdlib/test/wpt/vendor/` from upstream WPT
-- `pnpm build` — Build runtime + workflows
-- `pnpm start` — Build workflows and start runtime
+- `pnpm build` — Recursively runs workspace builds (`pnpm -r build`): `vite build` (runtime → `dist/main.js`, sandbox) + `tsc --build` (sdk); workflows emit a single tenant tarball `workflows/dist/bundle.tar.gz` containing a root `manifest.json` + one `<name>.js` per workflow at the tarball root. Per-workspace: `pnpm --filter @workflow-engine/runtime build`, `pnpm --filter @workflow-engine/sandbox build`, `pnpm --filter @workflow-engine/sdk build`.
+- `pnpm start` — `pnpm build` then `pnpm dev` (builds workspaces, then boots the dev runtime with auto-upload of `workflows/src/demo.ts`)
+
+## CLI (`wfe`)
+
+The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke it from the workflows project root via `pnpm exec`:
+
+- `pnpm exec wfe upload --tenant <name>` — build and upload the current project's bundle to the default URL.
+- `pnpm exec wfe upload --tenant <name> --url http://localhost:8080` — target local dev.
+- `pnpm exec wfe upload --tenant <name> --user <name>` — local-provider auth (requires server `LOCAL_DEPLOYMENT=1`).
+- `pnpm exec wfe upload --tenant <name> --token <ghp_…>` — github-provider auth (explicit token).
+- `pnpm exec wfe upload --tenant <name>` with `GITHUB_TOKEN=<ghp_…>` in the env — same as `--token`.
+
+`--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive. The check runs *before* the build; a conflicting invocation fails fast and produces no artefacts (see SECURITY.md §4 "CLI authentication").
 
 ## Infrastructure (OpenTofu + kind)
 
@@ -32,7 +44,7 @@ Prod/staging runbook: `docs/infrastructure.md`.
 
 ## Definition of Done
 
-- `pnpm validate` must pass (runs lint, format check, type check, and tests)
+- `pnpm validate` must pass. Runs in parallel: `pnpm lint` (Biome), `pnpm check` (TypeScript), `pnpm test` (Vitest unit + integration; **excludes WPT** — run `pnpm test:wpt` separately when touching sandbox-stdlib), and `tofu fmt -check` + `tofu validate` for every infrastructure env.
 
 ## Dev verification
 
@@ -86,20 +98,27 @@ Replace the old "visit `https://localhost:8443` and click X" bullets with dev-pr
 
 `workflows/src/demo.ts` is the canonical authoring reference. Keep it in sync with any SDK surface or sandbox-stdlib change. It showcases:
 
-- SDK: `defineWorkflow({env})`, `env()`, `action` composition (action calls action), `httpTrigger` (GET + POST, zod body, `.meta({example})`), `cronTrigger` (schedule + explicit IANA tz), `manualTrigger` (zod `input` + `output`)
-- sandbox-stdlib: `fetch`, `crypto.subtle`, `crypto.randomUUID`, `setTimeout`, `URL` / `URLSearchParams`, `console`
+- SDK factories: `defineWorkflow({env})`, `env()`, `action` composition (action calls action), `httpTrigger` (GET + POST, zod `body`, `responseBody` variant via `greetJson`, `.meta({example})`), `cronTrigger` (schedule + explicit IANA tz) + callable-style invocation (`fireCron` http trigger calls `everyFiveMinutes()` directly), `manualTrigger` (zod `input` + `output`)
+- SDK identity surface (statically referenced in the `_sdkSurface` block): brand symbols (`ACTION_BRAND`, `HTTP_TRIGGER_BRAND`, `CRON_TRIGGER_BRAND`, `MANUAL_TRIGGER_BRAND`, `WORKFLOW_BRAND`), type guards (`isAction`, `isHttpTrigger`, `isCronTrigger`, `isManualTrigger`, `isWorkflow`), `ManifestSchema`, `z` re-export. Any rename at the SDK boundary breaks `pnpm build` on demo.ts.
+- sandbox-stdlib: `fetch` (happy path + error path in `fetchSafe`), `crypto.subtle`, `crypto.randomUUID`, `setTimeout`, `URL` / `URLSearchParams`, `console`, `performance.mark/measure` (`measure`), `EventTarget` + `CustomEvent` (`eventBus`), `AbortController`/`AbortSignal` (`cancellable`), `scheduler.postTask` (`scheduleTask`), `Observable` (`observeTicks`).
 - Failure path: `fail` manualTrigger invokes the `boom` action which throws, so the dashboard renders a real `action.error` / `trigger.error` pair.
 
 Every non-failure trigger dispatches the same `runDemo` orchestrator so any kind can exercise the full surface. A change that touches SDK surface or workflow-authoring ergonomics without updating `demo.ts` is incomplete.
 
+Surface intentionally NOT exercised by demo.ts (would bloat the file without adding coverage beyond what package-level tests already provide): `CompressionStream`/`DecompressionStream`, `indexedDB`, `structuredClone`, `FormData`, `Blob`/`File`, raw `ReadableStream`/`WritableStream`/`TransformStream`, `TextEncoderStream`/`TextDecoderStream`, `URLPattern`, `queueMicrotask`, `reportError`, CLI binary (`wfe`, exercised by `pnpm upload` / `scripts/dev.ts`). If one of these ever needs a workflow-author regression guard, extend demo.ts at that point.
+
 ## Code Conventions
 
-- All relative imports must use `.js` extensions (required by `verbatimModuleSyntax`)
-- Use `z.exactOptional()` not `.optional()` for optional Zod fields (`exactOptionalPropertyTypes` is enabled)
+- All relative imports must use `.js` extensions (required by `verbatimModuleSyntax`; enforced by `pnpm check`)
+- Use `z.exactOptional()` not `.optional()` for optional Zod fields (`exactOptionalPropertyTypes` is enabled; violations fail `pnpm check`)
 - Factory functions over classes. Closures for private state.
 - Named exports only. Separate `export type {}` from value exports. Exception: data-only modules whose filename already conveys identity (e.g. `skip.ts`) may use `export default`.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
 - SDK surface or sandbox-stdlib changes must land with a matching update to `workflows/src/demo.ts` — see `## Example workflows`.
+
+### Formatter
+
+Biome defaults (configured in `biome.jsonc`): tabs for indentation, 80-char line width, LF line endings, double quotes for JS/TS strings. `pnpm format` writes these in place; `pnpm lint` (aliased to `biome check --error-on-warnings .`) fails on formatter drift. Any rule disabled in `biome.jsonc` MUST carry an inline `//` comment explaining why — same convention as in-source `biome-ignore`.
 
 ## Security Invariants
 
@@ -113,19 +132,19 @@ Full threat model: `/SECURITY.md`. Consult it before writing security-sensitive 
 - **NEVER** mutate `bridge.*` or construct `seq`/`ref`/`ts`/`at`/`id` directly from plugin code — all events flow through `ctx.emit` / `ctx.request`, which stamp those fields internally (§2 R-5).
 - **NEVER** introduce cross-thread method calls between main and worker; plugin code is worker-only and plugin configs MUST be JSON-serializable (verified by `assertSerializableConfig`) (§2 R-6).
 - **NEVER** use the reserved event prefixes `trigger`, `action`, `fetch`, `timer`, `console`, `wasi`, or `uncaught-error` for third-party plugins; use a domain-specific prefix instead (§2 R-7).
-- **NEVER** stamp tenant, workflow, workflowSha, or invocationId inside sandbox or plugin code — the sandbox only stamps intrinsic event fields, and the runtime attaches runtime metadata in its `sb.onEvent` receiver before forwarding to the bus (§2 R-8).
-- **NEVER** emit, read, or construct `InvocationEvent.meta` (including `meta.dispatch`) from inside sandbox or plugin code — `meta` is stamped only by the executor's `sb.onEvent` widener, gated on `event.kind === "trigger.request"`. Dispatch provenance (`{source, user?}`) is a runtime-only concern; guests never see it (§2 R-9).
+- **NEVER** stamp tenant, workflow, workflowSha, or invocationId inside sandbox or plugin code — the sandbox only stamps intrinsic event fields (`seq`, `ref`, `ts`, `at`, `id`, `kind`, `name`) via `ctx.emit`/`ctx.request`, and the runtime attaches runtime-owned fields (`tenant`, `workflow`, `workflowSha`, `invocationId`) in its `sb.onEvent` receiver before forwarding to the bus. `BusConsumer.handle` therefore always sees a fully-widened `InvocationEvent`; consumers MUST NOT re-stamp or mutate either set (§2 R-8).
+- **NEVER** emit, read, or construct `InvocationEvent.meta` (including `meta.dispatch`) from inside sandbox or plugin code — `meta` is stamped only by the executor's `sb.onEvent` widener, gated on `event.kind === "trigger.request"`. Dispatch provenance (`{source, user?}`) is a runtime-only concern; guests never see it (§2 R-9; canonical contract in `openspec/specs/invocations/spec.md` under "Dispatch provenance on trigger.request").
 - **NEVER** add authentication to `/webhooks/*` — public ingress is intentional (§3).
 - **NEVER** add an authenticated UI route (`/dashboard`, `/trigger`, or any future authenticated UI prefix) without wiring `sessionMiddleware` into its middleware factory (§4).
-- **NEVER** add an `/api/*` route without the `githubAuthMiddleware` in front of it (§4).
+- **NEVER** add an `/api/*` route without the `apiAuthMiddleware` in front of it (§4).
 - **NEVER** accept a `<tenant>` URL parameter without validating against the tenant regex (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`) AND the `isMember(user, tenant)` predicate; both paths must fail-closed with a `404 Not Found` identical to "tenant does not exist" to prevent enumeration (§4).
 - **NEVER** expose workflow or invocation data cross-tenant in API responses, dashboard queries, or trigger listings — every query must be scoped by `tenant`. For invocation events, the only scoped read API is `EventStore.query(tenant)` (do not construct raw queries against the `events` table); for workflows, route through `WorkflowRegistry`, which is keyed by tenant (§1 I-T2, §4).
-- **NEVER** read `X-Auth-Request-*` on any code path. They are stripped by Traefik's `strip-auth-headers` middleware and ignored by every live middleware (`bearerUserMiddleware` explicitly asserts the headers are never read; `sessionMiddleware` reads only the sealed session cookie). Forward-auth identity was removed along with `headerUserMiddleware` by `replace-oauth2-proxy`; reading the headers anywhere would reintroduce the forged-header class (§4 A13).
-- **NEVER** weaken the app-pod `NetworkPolicy` (§5 R-I1). It is defence-in-depth for the forged-header threat (the load-bearing controls are now app-side + edge-side, per §4 A13) and a baseline for blast radius on any future in-cluster compromise.
-- **NEVER** hardcode or commit a secret; route all secrets through K8s Secrets injected via `envFrom.secretRef` (§5).
+- **NEVER** read `X-Auth-Request-*` on any code path. Forward-auth identity was removed by the `replace-oauth2-proxy` change; no upstream produces those headers any more. Neither `apiAuthMiddleware` (API) nor `sessionMiddleware` (UI) reads them, and reading them anywhere would reintroduce the forged-header class (§4 A13).
+- **NEVER** weaken the app-pod `NetworkPolicy` (§5 R-I1). The load-bearing controls against the forged-header class are now app-side (no code path reads `X-Auth-Request-*`) and edge-side (oauth2-proxy sidecar removed, no upstream produces those headers) per §4 A13; the NetworkPolicy remains as defence-in-depth and as a baseline for blast radius on any future in-cluster compromise.
+- **NEVER** hardcode or commit a secret; route all *secret* values (credentials, keys, tokens) through K8s Secrets injected via `envFrom.secretRef` (§5). Non-secret config (`AUTH_ALLOW`, `LOG_LEVEL`, `PORT`, `BASE_URL`, `LOCAL_DEPLOYMENT`, `PERSISTENCE_S3_BUCKET`, etc.) is intentionally visible in pod specs for auditability and does NOT require `envFrom.secretRef` — see `openspec/specs/runtime-config/spec.md` "AUTH_ALLOW config variable" for the canonical auditability carve-out.
 - **NEVER** log, emit, or store the `Authorization` header, session cookies, or OAuth secrets (§4).
-- **NEVER** add a config field sourced from a K8s Secret without wrapping it in `createSecret()` at the zod field level (§5).
+- **NEVER** add a config field sourced from a K8s Secret without composing its Zod schema with `.transform(createSecret)` so the field's value on the returned config object is a `Secret`-wrapped type that self-redacts on `JSON.stringify` / `String()` / `util.inspect` (§5; canonical examples: `GITHUB_OAUTH_CLIENT_SECRET`, `PERSISTENCE_S3_ACCESS_KEY_ID`, `PERSISTENCE_S3_SECRET_ACCESS_KEY` in `packages/runtime/src/config.ts`).
 - **NEVER** add a K8s workload with `automountServiceAccountToken` enabled unless it has a dedicated `ServiceAccount` with scoped RBAC and a documented justification in `SECURITY.md` §5 / I11.
 - **NEVER** add `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`, `'strict-dynamic'`, or a remote origin to the CSP in `secure-headers.ts` (§6).
-- **NEVER** add an inline `<script>`, inline `<style>`, `on*=` event-handler attribute, `style=` attribute, string-form Alpine `:style` binding, or free-form `x-data` object literal to any HTML served by the runtime. All behaviour goes to `/static/*.js`; components are pre-registered via `Alpine.data(...)` (§6).
+- **NEVER** add an inline `<script>`, inline `<style>`, `on*=` event-handler attribute, `style=` attribute, string-form Alpine `:style` binding, or free-form `x-data` object literal to any HTML served by the runtime. All behaviour goes to `/static/*.js` and is bound via `addEventListener` over `data-*` hooks; if Alpine is genuinely needed, components MUST be pre-registered via `Alpine.data(...)` in a `/static/*.js` module (§6).
 - **NEVER** remove the `LOCAL_DEPLOYMENT=1` HSTS gate; pinning HSTS on `localhost` breaks every other local dev service for up to a year (§6).

@@ -31,7 +31,7 @@ For each terminal event (`trigger.response` or `trigger.error`), after steps 1 a
 4. Clear the accumulator entry for that id (before cleanup, so the accumulator invariant is preserved on cleanup failure).
 5. Call `backend.removePrefix("pending/{id}/")` to remove the per-invocation pending directory. This call is best-effort.
 
-If the `archive/{id}.json` write fails, the consumer SHALL log the failure, leave the accumulator entry intact, leave pending files on disk, and NOT call `removePrefix`. Next-startup recovery handles the resulting state via the archive-authoritative rule (see `recovery/spec.md`).
+If the `archive/{id}.json` write fails, the consumer SHALL log the failure, leave the accumulator entry intact, leave pending files on disk, and NOT call `removePrefix`. Next-startup recovery handles the resulting state via the archive-authoritative rule (see `recovery/spec.md` § _Requirement: One-shot startup recovery function_, case 1).
 
 If `removePrefix` fails after a successful archive write, the consumer SHALL log the failure. The accumulator is already cleared; stale pending files are cleaned up by next-startup recovery.
 

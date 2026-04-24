@@ -522,7 +522,7 @@ describe("dashboard middleware — dispatch chip", () => {
 		expect(html).toContain('title="Jane Doe">manual</span>');
 	});
 
-	it("renders manual chip without user name in tooltip when dispatch has no user (open-mode dev)", async () => {
+	it("renders manual chip without user name in tooltip when dispatch has no user", async () => {
 		await store.handle(
 			event({
 				kind: "trigger.request",

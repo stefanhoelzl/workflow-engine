@@ -46,9 +46,18 @@ The `@workflow-engine/core` package SHALL depend only on `zod` (runtime) and `aj
 
 ### Requirement: Core package is ESM
 
-The `@workflow-engine/core` package SHALL use ES modules (`"type": "module"`) and export a single entry point via the `exports` field.
+The `@workflow-engine/core` package SHALL use ES modules (`"type": "module"`) and export two entry points via the `exports` field: the main `"."` entry and a `"./test-utils"` subpath for test-only helpers.
 
 #### Scenario: Core exports field
 
 - **WHEN** inspecting `packages/core/package.json`
-- **THEN** it has `"type": "module"` and `"exports": { ".": "./src/index.ts" }`
+- **THEN** it has `"type": "module"` and `"exports": { ".": "./src/index.ts", "./test-utils": "./src/test-utils.ts" }`
+
+### Requirement: Test-utils subpath is test-only
+
+The `@workflow-engine/core/test-utils` subpath SHALL be imported only from `*.test.ts` files and test-support modules. It SHALL NOT be imported from production runtime, SDK, or sandbox code paths. The subpath exports `makeEvent()` — a helper that fabricates `InvocationEvent` fixtures with sensible defaults — and is used by the runtime package's unit tests (event-store, persistence, recovery, dashboard, integration) to avoid duplicating boilerplate.
+
+#### Scenario: Test-utils is consumed only by tests
+
+- **WHEN** grepping the monorepo for `from "@workflow-engine/core/test-utils"` imports
+- **THEN** every match is in a `*.test.ts` file (or a test-support module co-located with tests)

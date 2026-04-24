@@ -88,26 +88,27 @@ The provider registry build SHALL:
 4. Append `rest` to the per-id bucket of raw strings.
 5. For each `(id, rawList)` bucket, call `factory.create(rawList, deps)` and register the returned provider under its id.
 
-`factory.create` SHALL be the only entry point that performs provider-specific parsing of the `rest` strings. Parsing SHALL NOT be exposed as a separate public method on the factory or instance. A provider whose entries fail to parse SHALL throw inside `create`, which SHALL propagate as a `createConfig` startup error.
+`factory.create` SHALL be the only entry point that performs provider-specific parsing of the `rest` strings. Parsing SHALL NOT be exposed as a separate public method on the factory or instance. A provider whose entries fail to parse SHALL throw inside `create`, which SHALL propagate out of `buildRegistry` as a startup error (aborting `main.ts` before the HTTP server binds). Per the `runtime-config` capability's deferred-validation model, `createConfig` itself does NOT parse `AUTH_ALLOW`; validation happens when `main.ts` invokes `buildRegistry(config.authAllow, factories, deps)`.
 
 The registry SHALL fail startup if an `AUTH_ALLOW` entry references a provider id that has no factory in the list — including `local` when `LOCAL_DEPLOYMENT` is unset. The error message SHALL be `unknown provider "local"`, identical to a typo error class, with no special-case treatment.
 
 #### Scenario: Empty AUTH_ALLOW yields empty registry
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW` unset
+- **WHEN** the runtime starts with `AUTH_ALLOW` unset
 - **THEN** the registry SHALL contain zero providers
 - **AND** the runtime SHALL start successfully
 
 #### Scenario: local entry without LOCAL_DEPLOYMENT fails startup
 
 - **GIVEN** `LOCAL_DEPLOYMENT` is unset
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "local:dev"`
-- **THEN** `createConfig` SHALL throw a validation error containing `unknown provider "local"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "local:dev"`
+- **THEN** `createConfig` SHALL succeed (deferred validation)
+- **AND** the subsequent `buildRegistry` call SHALL throw a startup error containing `unknown provider "local"`
 
 #### Scenario: local entry with LOCAL_DEPLOYMENT registers the provider
 
 - **GIVEN** `LOCAL_DEPLOYMENT = "1"`
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "local:dev,local:alice:acme|foo"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "local:dev,local:alice:acme|foo"`
 - **THEN** the registry SHALL contain a provider with id `"local"`
 - **AND** that provider SHALL render a login section with two selectable users (`dev`, `alice`)
 
@@ -233,7 +234,9 @@ The 401 response body SHALL be `{ "error": "Unauthorized" }`, identical for ever
 
 ### Requirement: AUTH_ALLOW grammar
 
-The runtime SHALL accept an `AUTH_ALLOW` environment variable with the grammar:
+The `auth` capability SHALL own the formal grammar for the `AUTH_ALLOW` environment variable. The `runtime-config` capability's `AUTH_ALLOW config variable (deferred validation model)` requirement SHALL cross-reference this section and NOT duplicate the grammar.
+
+The grammar is:
 
 ```
 AUTH_ALLOW    = Entry ( "," Entry )*
@@ -255,43 +258,43 @@ local rest  = Name | Name ":" OrgList
               Id      = [A-Za-z0-9][-A-Za-z0-9]*
 ```
 
-Tokens whose `ProviderId` is not a registered provider SHALL cause `createConfig` to throw `unknown provider "<id>"` at startup. Tokens whose `ProviderRest` fails the matched provider's parser SHALL cause `createConfig` to throw the provider's specific parse error.
+Tokens whose `ProviderId` is not a registered provider SHALL cause `buildRegistry` to throw `unknown provider "<id>"` and abort startup. Tokens whose `ProviderRest` fails the matched provider's parser SHALL cause `factory.create` (invoked from `buildRegistry`) to throw the provider's specific parse error, likewise aborting startup. In both cases `createConfig` itself succeeds (deferred-validation model per `runtime-config/spec.md`).
 
 The grammar SHALL NOT contain a sentinel for "auth disabled". Empty/unset `AUTH_ALLOW` SHALL produce an empty provider registry; the login page SHALL render with no provider sections; nothing SHALL authenticate.
 
 #### Scenario: Mixed user and org github entries
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice,github:org:acme,github:user:bob"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "github:user:alice,github:org:acme,github:user:bob"`
 - **THEN** the github provider SHALL be registered with internal entries representing users `{"alice", "bob"}` and orgs `{"acme"}`
 
 #### Scenario: Mixed providers parse independently
 
 - **GIVEN** `LOCAL_DEPLOYMENT = "1"`
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:user:alice,local:dev,local:bob:foo|bar"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "github:user:alice,local:dev,local:bob:foo|bar"`
 - **THEN** both `github` and `local` providers SHALL be registered
 - **AND** the local provider SHALL recognize logins `dev` and `bob` (with `bob` having orgs `["foo", "bar"]`)
 
 #### Scenario: Unknown provider fails startup
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "google:user:alice"`
-- **THEN** `createConfig` SHALL throw a validation error containing `unknown provider "google"`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "google:user:alice"`
+- **THEN** `buildRegistry` SHALL throw a startup error containing `unknown provider "google"` (after `createConfig` succeeds)
 
 #### Scenario: Whitespace around entries is trimmed
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = " github:user:alice , local:dev "`
+- **WHEN** the runtime starts with `AUTH_ALLOW = " github:user:alice , local:dev "`
 - **AND** `LOCAL_DEPLOYMENT = "1"`
 - **THEN** both providers SHALL be registered without parse error
 
 #### Scenario: github entry with malformed kind fails startup with provider-specific message
 
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "github:team:eng"`
-- **THEN** `createConfig` SHALL throw the github provider's parse error identifying `team` as an unknown kind
+- **WHEN** the runtime starts with `AUTH_ALLOW = "github:team:eng"`
+- **THEN** `buildRegistry` SHALL throw (via the github factory's `create`) the github provider's parse error identifying `team` as an unknown kind
 
 #### Scenario: local entry with comma-separated orgs fails startup with targeted hint
 
 - **GIVEN** `LOCAL_DEPLOYMENT = "1"`
-- **WHEN** `createConfig` is called with `AUTH_ALLOW = "local:alice:acme,foo"`
-- **THEN** `createConfig` SHALL throw an error containing `orgs use '|' separator`
+- **WHEN** the runtime starts with `AUTH_ALLOW = "local:alice:acme,foo"`
+- **THEN** `buildRegistry` SHALL throw (via the local factory's `create`) an error containing `orgs use '|' separator`
 
 ### Requirement: isMember tenant predicate
 
@@ -640,7 +643,9 @@ Behavior:
 
 The HTML SHALL contain no inline script, no inline style, no `on*=` event-handler attributes, and no `style=` attributes, per the app's CSP. The page SHALL NOT include the app chrome (topbar, sidebar, tenant selector) — it is a standalone layout for unauthenticated users.
 
-When the registry is empty, the rendered card SHALL contain the brand and any flash banner but no provider sections; the page SHALL still respond `200 OK` (it is not an error to have no providers configured, but the user cannot proceed past the page).
+When the registry is empty, the rendered card SHALL contain the brand and any flash banner but no provider sections; the page SHALL still respond `200 OK`. It is not an error to have no providers configured.
+
+> **Note:** that the user "cannot proceed past the page" is an emergent consequence of rendering no provider sections (no button or form to submit), not a separate enforce point the handler needs to check. If the registry is empty, the login card renders with only the brand/banner; the handler does not inspect or reject this state, and there is no fallback redirect.
 
 #### Scenario: Renders github section when only github is registered
 
@@ -771,6 +776,8 @@ The runtime SHALL mount a `sessionMw` middleware on every route under `/dashboar
 5. Otherwise (stale), call `provider.refreshSession(payload)`. If it returns `undefined`, set `auth_flash`, clear the session, and 302 to `/login`. If it returns a `UserContext`, re-seal the session cookie with the same `provider` and `accessToken`, a new `resolvedAt = now`, and the refreshed `name`/`mail`/`orgs`; set `UserContext` and call `next()`.
 
 The middleware SHALL NOT read the `Authorization` header. The middleware SHALL NOT read any `X-Auth-Request-*` header. The middleware SHALL NOT branch on auth modes (`disabled`/`open`/`restricted`); those modes SHALL NOT exist.
+
+The `DashboardMiddlewareDeps` and `TriggerMiddlewareDeps` shapes SHALL declare `sessionMw` as a required field (not optional). Callers that omit it are rejected by the type system. Tests that exercise the handlers without the real `sessionMiddleware` SHALL inject a stub `MiddlewareHandler` that seeds `UserContext` on the request context via `c.set("user", …)` — there is no "dev / no sessionMw" path.
 
 For the local provider, `refreshSession` SHALL return immediately with the payload's identity (no external call). For the github provider, `refreshSession` SHALL fetch `GET /user` and `GET /user/orgs`, evaluate the github allowlist, and return `undefined` on any non-OK response or allowlist miss.
 

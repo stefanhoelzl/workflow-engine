@@ -94,16 +94,11 @@ Phase 2 SHALL NOT be applied until all workload Deployments in the namespace inc
 
 ### Requirement: All workloads set pod and container securityContext
 
-Every `kubernetes_deployment_v1` managed by this project (app, oauth2-proxy, s2) SHALL set pod-level `security_context` matching `baseline.pod_security_context` and container-level `security_context` matching `baseline.container_security_context`. Traefik pod and init container securityContext SHALL be set via Helm values overrides.
+Every `kubernetes_deployment_v1` managed by this project (app, s2) SHALL set pod-level `security_context` matching `baseline.pod_security_context` and container-level `security_context` matching `baseline.container_security_context`. Traefik pod and init container securityContext SHALL be set via Helm values overrides.
 
 #### Scenario: App pod passes restricted admission
 
 - **WHEN** the workflow-engine Deployment is applied with securityContext from baseline
-- **THEN** the pod SHALL pass PodSecurity `restricted` admission
-
-#### Scenario: oauth2-proxy pod passes restricted admission
-
-- **WHEN** the oauth2-proxy Deployment is applied with securityContext from baseline
 - **THEN** the pod SHALL pass PodSecurity `restricted` admission
 
 #### Scenario: s2 pod passes restricted admission

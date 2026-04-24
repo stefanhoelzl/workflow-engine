@@ -2,6 +2,10 @@
 
 Prod/staging deployment runbook. Local-dev instructions live in `CLAUDE.md` under `## Infrastructure (OpenTofu + kind)`.
 
+## Authentication architecture
+
+Authentication is entirely in-app. The `oauth2-proxy` sidecar and Traefik forward-auth chain were removed by the `replace-oauth2-proxy` change. Traefik is now a pure TLS + routing gateway; it performs no authentication, authorization, or forward-auth gating. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (UI: `/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (API: `/api/*`) in-process. See `openspec/specs/auth/spec.md` for the full auth contract and `SECURITY.md §4` for the threat model.
+
 ## Production (OpenTofu + UpCloud)
 
 Prerequisites: OpenTofu >= 1.11, UpCloud account, Dynu DNS domain, two GitHub OAuth Apps (prod + staging).
@@ -14,6 +18,8 @@ Four OpenTofu projects under `infrastructure/envs/`:
 | `cluster/`    | `cluster`     | K8s cluster, Traefik + LB, cert-manager + `letsencrypt-prod` issuer  |
 | `prod/`       | `prod`        | Prod namespace, Certificate, app, Dynu CNAME; reads persistence S3   |
 | `staging/`    | `staging`     | Staging namespace, own bucket, Certificate, app, Dynu CNAME          |
+
+The S3 bucket is accessed by the runtime through the `StorageBackend` interface (`init`, `read`/`write`, `readBytes`/`writeBytes`, `list`, `remove`, `removePrefix`, `move`). Tenant bundles live under `workflows/<tenant>.tar.gz`; invocation events live under `events/pending/` and `events/archive/`. Both FS-backed (local dev) and S3-backed implementations exist; atomicity is provided per-write (FS: tmp+rename; S3: PutObject). The authoritative contract — including the FS-vs-S3 selection logic via `PERSISTENCE_PATH` / `PERSISTENCE_S3_*` env vars — is in `openspec/specs/storage-backend/spec.md`.
 
 State credentials via `AWS_*` (S3 backend requirement); secrets via `TF_VAR_*`. Each project declares only the vars it uses.
 
@@ -72,6 +78,19 @@ K8s cluster config (`zone`, `kubernetes_version`, `node_plan`, `node_cidr`) is h
 
 **Onboarding a new manual project.** If a future `envs/<new-project>/` is added as another operator-driven project: append it to `.github/workflows/plan-infra.yml`'s `matrix.project` list (one line) and add `plan (<new-project>)` to the `main` ruleset's `required_status_checks` via `gh api`. No other changes needed.
 
+### Storage backend selection
+
+The runtime chooses its `StorageBackend` from two mutually-exclusive env vars:
+
+- `PERSISTENCE_PATH` — filesystem backend rooted at the given directory. Used by local dev and by tests. Also hosts tenant workflow bundles at `workflows/<tenant>.tar.gz` under the same root.
+- `PERSISTENCE_S3_BUCKET` — S3 backend pointing at the named bucket. Used in staging and production.
+
+Setting both is a configuration error — `createConfig` SHALL reject the runtime start with a clear message. Setting neither SHALL also fail; every deployment declares exactly one.
+
+When `PERSISTENCE_S3_BUCKET` is set, the runtime reads S3 credentials from the standard AWS SDK chain: `PERSISTENCE_S3_ENDPOINT`, `PERSISTENCE_S3_REGION`, `PERSISTENCE_S3_ACCESS_KEY_ID`, and `PERSISTENCE_S3_SECRET_ACCESS_KEY`. These arrive in the pod via `envFrom.secretRef` pointing at the `app-persistence` K8s Secret, which is populated by the `envs/prod/` (and `envs/staging/`) project from the `TF_VAR_upcloud_token`-scoped Object Storage user created by `envs/persistence/`. The app pod therefore never sees long-lived root credentials — only the scoped user's access key pair, restricted to the single bucket.
+
+Storage key layout: event records live under `events/pending/` and `events/archive/` prefixes; workflow bundles live under `workflows/<tenant>.tar.gz`. Both backends implement the same `StorageBackend` interface (byte-level read/write + JSON record helpers), so switching from filesystem to S3 requires no application-code change beyond the env-var swap.
+
 ### Cert readiness check
 
 `tofu apply` on an app project returns once all K8s resources are created. ACME HTTP-01 issuance happens asynchronously over ~30-90 s. To block until the cert is served:
@@ -93,9 +112,38 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 
 then run `tofu -chdir=infrastructure/envs/cluster apply` to upgrade the Helm release.
 
+### Pod-security baseline
+
+`modules/baseline/` owns three cluster-wide security controls consumed by every workload module:
+
+1. **Namespace creation with PodSecurity Admission (PSA) labels.** Each namespace in `var.namespaces` is created with `pod-security.kubernetes.io/<var.psa_mode>=restricted`. The mode is `enforce` by default; during a cluster bootstrap or major workload change it should be flipped to `warn` first.
+2. **Default-deny `NetworkPolicy`** in every namespace. App-level modules (`app-instance`, `traefik`, `object-storage/s2`) layer their own allow-rules on top via `modules/netpol/`.
+3. **Shared `security_context` / selector outputs** — `pod_security_context`, `container_security_context`, `rfc1918_except`, `node_cidr`, `coredns_selector`. The `coredns_selector` output uses the shorthand form `{ namespace = "kube-system", k8s_app_in = ["coredns", "kube-dns"] }`; `modules/netpol/` expands it into the verbose K8s `namespace_selector` + pod `match_expressions` structure internally.
+
+**Apply order.** `module.baseline` must apply before any workload module in the same project (namespace must exist before any workload or NetworkPolicy in it). In `envs/cluster/` the baseline also creates the `traefik` and `cert-manager` namespaces; in `envs/prod/` and `envs/staging/` it creates the app namespace.
+
+**Two-phase PSA rollout.** The `psa_mode` variable switches the enforcement label:
+
+- **Phase 1 — `psa_mode = "warn"`.** Applies `pod-security.kubernetes.io/warn=restricted`. Non-compliant pods emit a warning at admission but are still created. Use this when introducing new workloads (or upgrading a chart that may have changed its pod spec). Run `tofu apply` and inspect `kubectl get events` / `tofu apply` output for PodSecurity warnings; resolve every one before proceeding.
+- **Phase 2 — `psa_mode = "enforce"` (default).** Applies `pod-security.kubernetes.io/enforce=restricted`. Non-compliant pods are rejected at admission. Only flip to enforce after phase 1 has produced zero warnings against the target workload set.
+
+Both phases are one `tofu apply` each; the label change is a namespace-metadata update (no pod restart). For steady-state operation leave `psa_mode = "enforce"`.
+
+**Traefik ServiceAccount token.** Per SECURITY.md §5 R-I11, Traefik pods keep their SA token mounted (`serviceAccount.automountServiceAccountToken = true` in the Helm values) because the controller watches `Ingress` / `IngressRoute` / `Middleware` CRDs via the K8s API. All other workloads (`app`, `s2`) set `automount_service_account_token = false` on the pod spec.
+
 ### URLs
 
 - Prod: `https://workflow-engine.webredirect.org`
 - Staging: `https://staging.workflow-engine.webredirect.org`
 
 Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources live in each app project's namespace and are rendered by the routes-chart.
+
+### Single-replica invariant (do not raise `replicas` above 1)
+
+The app Deployment for both prod and staging MUST be kept at `replicas = 1`. The auth capability seals the session cookie with a password generated in-memory at pod start (`packages/runtime/src/auth/key.ts`); the password is not shared across pods. A second replica would sign cookies with a different password and requests that land on the pod that did not seal the cookie would fail to decrypt it, producing deterministic re-login loops.
+
+Raising the replica count requires migrating the sealing password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. Until that migration lands, operators MUST NOT scale the Deployment manually or add an HPA.
+
+References:
+- `SECURITY.md` §5 R-I13 ("App Deployment is locked to `replicas = 1`…") and §4 A15 (attack-path record).
+- `openspec/specs/auth/spec.md` "Single-replica invariant" requirement.
