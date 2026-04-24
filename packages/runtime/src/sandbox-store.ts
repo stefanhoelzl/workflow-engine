@@ -29,15 +29,14 @@ import wasiTelemetryPlugin from "./plugins/wasi-telemetry.ts?sandbox-plugin";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 
-// Per-(owner, sha) sandbox cache. Composes the production plugin list for
-// every entry: wasi → wasi-telemetry → web-platform → fetch → mail →
-// timers → console → host-call-action → sdk-support → trigger. Plugin
-// sources are pre-bundled at build time by `sandboxPlugins()` and loaded
-// via `data:` URI import.
-//
-// Sandboxes are held for the lifetime of the store. Re-upload on a changed
-// sha orphans the old `(owner, oldSha)` sandbox, which remains reachable
-// to any in-flight invocation until the process exits.
+// Per-(owner, sha) sandbox cache bounded by `maxCount` entries (soft cap).
+// LRU eviction is driven exclusively by creation-miss pressure: on hit the
+// entry is promoted to MRU; on miss a fresh entry is inserted at MRU and a
+// sweep tries to trim the cache from the LRU end, skipping entries whose
+// promise has not yet resolved and entries whose resolved sandbox is mid-run
+// (`sandbox.isActive === true`). If every candidate is busy or building the
+// cache is allowed to exceed `maxCount` temporarily — the next sweep
+// reclaims once something becomes evictable.
 
 interface SandboxStore {
 	get(
@@ -45,13 +44,27 @@ interface SandboxStore {
 		workflow: WorkflowManifest,
 		bundleSource: string,
 	): Promise<Sandbox>;
-	dispose(): void;
+	dispose(): Promise<void>;
 }
 
 interface SandboxStoreOptions {
 	readonly sandboxFactory: SandboxFactory;
 	readonly logger: Logger;
 	readonly keyStore: SecretsKeyStore;
+	readonly maxCount: number;
+}
+
+interface CacheEntry {
+	readonly key: string;
+	readonly owner: string;
+	readonly sha: string;
+	readonly createdAt: number;
+	readonly promise: Promise<Sandbox>;
+	// Populated when `promise` resolves; stays null for still-building entries
+	// and also if the build rejected (in which case the entry is removed from
+	// the cache anyway — see `build` below).
+	sandbox: Sandbox | null;
+	runCount: number;
 }
 
 function storeKey(owner: string, sha: string): string {
@@ -94,12 +107,13 @@ function buildPluginDescriptors(
 	];
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups cache LRU bookkeeping, eviction sweep, and dispose drain
 function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
-	const { sandboxFactory, keyStore } = options;
-	const cache = new Map<string, Promise<Sandbox>>();
+	const { sandboxFactory, keyStore, logger, maxCount } = options;
+	const cache = new Map<string, CacheEntry>();
+	const pendingDisposals = new Set<Promise<void>>();
 
 	function build(
-		_owner: string,
 		workflow: WorkflowManifest,
 		bundleSource: string,
 	): Promise<Sandbox> {
@@ -110,28 +124,111 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		});
 	}
 
+	function disposeEntry(entry: CacheEntry): void {
+		const sb = entry.sandbox;
+		if (!sb) {
+			return;
+		}
+		const p = Promise.resolve()
+			.then(() => sb.dispose())
+			.catch(() => {
+				/* ignore disposal errors */
+			})
+			.finally(() => {
+				pendingDisposals.delete(p);
+			});
+		pendingDisposals.add(p);
+	}
+
+	function sweep(): void {
+		if (cache.size <= maxCount) {
+			return;
+		}
+		// Map iteration is insertion-ordered: oldest first. Collect victims
+		// first to avoid deleting during iteration (safe in JS Maps, but
+		// collecting keeps the intent explicit).
+		const victims: CacheEntry[] = [];
+		let remaining = cache.size;
+		for (const entry of cache.values()) {
+			if (remaining <= maxCount) {
+				break;
+			}
+			if (entry.sandbox === null) {
+				// Still building — skip.
+				continue;
+			}
+			if (entry.sandbox.isActive) {
+				// Mid-run — skip; next sweep may reclaim.
+				continue;
+			}
+			victims.push(entry);
+			remaining--;
+		}
+		for (const victim of victims) {
+			cache.delete(victim.key);
+			const ageMs = Date.now() - victim.createdAt;
+			logger.info("sandbox evicted", {
+				owner: victim.owner,
+				sha: victim.sha,
+				reason: "lru",
+				ageMs,
+				runCount: victim.runCount,
+			});
+			disposeEntry(victim);
+		}
+	}
+
 	return {
 		get(owner, workflow, bundleSource) {
 			const key = storeKey(owner, workflow.sha);
 			const existing = cache.get(key);
 			if (existing) {
-				return existing;
+				// Move to MRU (re-insertion at the tail of the insertion order).
+				cache.delete(key);
+				cache.set(key, existing);
+				existing.runCount++;
+				return existing.promise;
 			}
-			const promise = build(owner, workflow, bundleSource);
-			cache.set(key, promise);
+			const promise = build(workflow, bundleSource);
+			const entry: CacheEntry = {
+				key,
+				owner,
+				sha: workflow.sha,
+				createdAt: Date.now(),
+				promise,
+				sandbox: null,
+				runCount: 1,
+			};
+			cache.set(key, entry);
+			promise
+				.then((sb) => {
+					entry.sandbox = sb;
+				})
+				.catch(() => {
+					// Build failed — remove the entry so the next get() retries.
+					// (Only remove if the map still points to this entry; a
+					// later re-upload may have replaced it.)
+					if (cache.get(key) === entry) {
+						cache.delete(key);
+					}
+				});
+			sweep();
 			return promise;
 		},
-		dispose() {
-			for (const promise of cache.values()) {
-				promise
+		async dispose() {
+			const remaining: Promise<void>[] = [];
+			for (const entry of cache.values()) {
+				const p = entry.promise
 					.then((sb) => {
 						sb.dispose();
 					})
 					.catch(() => {
 						/* ignore disposal errors */
 					});
+				remaining.push(p);
 			}
 			cache.clear();
+			await Promise.all([...pendingDisposals, ...remaining]);
 		},
 	};
 }

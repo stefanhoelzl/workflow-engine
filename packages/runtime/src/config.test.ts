@@ -40,6 +40,34 @@ describe("createConfig", () => {
 		expect(() => createConfig({ ...REQUIRED, PORT: "abc" })).toThrow();
 	});
 
+	it("SANDBOX_MAX_COUNT defaults to 10", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.sandboxMaxCount).toBe(10);
+	});
+
+	it("SANDBOX_MAX_COUNT parses explicit positive integer", () => {
+		const config = createConfig({ ...REQUIRED, SANDBOX_MAX_COUNT: "25" });
+		expect(config.sandboxMaxCount).toBe(25);
+	});
+
+	it("SANDBOX_MAX_COUNT rejects non-numeric", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_MAX_COUNT: "abc" }),
+		).toThrow();
+	});
+
+	it("SANDBOX_MAX_COUNT rejects zero", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_MAX_COUNT: "0" }),
+		).toThrow();
+	});
+
+	it("SANDBOX_MAX_COUNT rejects negative", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_MAX_COUNT: "-3" }),
+		).toThrow();
+	});
+
 	it("AUTH_ALLOW unset leaves authAllow undefined", () => {
 		const config = createConfig(REQUIRED);
 		expect(config.authAllow).toBeUndefined();

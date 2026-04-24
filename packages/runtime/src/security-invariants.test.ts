@@ -57,6 +57,7 @@ function makeStore(): SandboxStore {
 		sandboxFactory: factory,
 		logger,
 		keyStore: stubKeyStore,
+		maxCount: 100,
 	});
 }
 

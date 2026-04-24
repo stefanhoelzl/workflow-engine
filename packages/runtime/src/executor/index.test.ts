@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	InvocationEvent,
 	SandboxEvent,
@@ -47,25 +50,34 @@ interface FakeSandboxOptions {
 }
 
 function makeSandbox(options: FakeSandboxOptions = {}): Sandbox {
+	let active = false;
 	return {
 		run: vi.fn<Sandbox["run"]>().mockImplementation(async (exportName, ctx) => {
-			const result = options.onRun
-				? await options.onRun(exportName, ctx)
-				: { status: 200 };
-			return { ok: true, result };
+			active = true;
+			try {
+				const result = options.onRun
+					? await options.onRun(exportName, ctx)
+					: { status: 200 };
+				return { ok: true, result };
+			} finally {
+				active = false;
+			}
 		}),
 		onEvent: vi.fn<Sandbox["onEvent"]>().mockImplementation((cb) => {
 			options.capture?.eventCallbacks.push(cb);
 		}),
 		dispose: vi.fn(),
 		onDied: vi.fn(),
+		get isActive() {
+			return active;
+		},
 	};
 }
 
 function makeStore(sandbox: Sandbox): SandboxStore {
 	return {
 		get: vi.fn<SandboxStore["get"]>().mockResolvedValue(sandbox),
-		dispose: vi.fn(),
+		dispose: vi.fn<SandboxStore["dispose"]>().mockResolvedValue(undefined),
 	};
 }
 
@@ -213,6 +225,7 @@ describe("executor", () => {
 			onEvent: vi.fn(),
 			dispose: vi.fn(),
 			onDied: vi.fn(),
+			isActive: false,
 		};
 		const executor = createExecutor({
 			bus: createEventBus([]),
@@ -386,3 +399,120 @@ describe("executor", () => {
 // Decrypt coverage moved to packages/runtime/src/secrets/decrypt-workflow.test.ts
 // — sandbox-store now owns the decrypt step at construction time, not the
 // executor. Executor is crypto-agnostic after workflow-secrets.
+
+describe("executor: structural invariants", () => {
+	it("executor source has no string-keyed runQueue map", () => {
+		const here = dirname(fileURLToPath(import.meta.url));
+		const src = readFileSync(resolve(here, "index.ts"), "utf8");
+		// Old shape: `new Map<string, RunQueue>()` or `queues: Map<...`.
+		expect(src).not.toMatch(/Map<string,\s*RunQueue>/);
+		expect(src).not.toMatch(/\bqueueFor\s*\(/);
+		// Consolidated shape.
+		expect(src).toMatch(/WeakMap<Sandbox,\s*SandboxState>/);
+	});
+});
+
+describe("executor: per-sandbox state consolidation", () => {
+	it("uses a distinct runQueue per sandbox instance — re-emerging (owner, sha) after eviction gets a fresh queue", async () => {
+		// Simulate eviction: two distinct Sandbox instances returned across
+		// two store.get() calls for the same (owner, workflow.sha) key. The
+		// executor must treat them as independent sandboxes (no cross-queue
+		// serialization), which would be impossible under the old
+		// string-keyed `queues: Map<string, RunQueue>`.
+		const sandboxA = makeSandbox();
+		const sandboxB = makeSandbox();
+		const store: SandboxStore = {
+			get: vi
+				.fn<SandboxStore["get"]>()
+				.mockResolvedValueOnce(sandboxA)
+				.mockResolvedValueOnce(sandboxB),
+			dispose: vi.fn<SandboxStore["dispose"]>().mockResolvedValue(undefined),
+		};
+		const bus: EventBus = { emit: vi.fn().mockResolvedValue(undefined) };
+		const executor = createExecutor({ bus, sandboxStore: store });
+		const workflow = makeManifest("w");
+		const descriptor = makeDescriptor("t", "w");
+		const r1 = await executor.invoke("o", "r", workflow, descriptor, null, {
+			bundleSource: "x",
+		});
+		const r2 = await executor.invoke("o", "r", workflow, descriptor, null, {
+			bundleSource: "x",
+		});
+		expect(r1.ok).toBe(true);
+		expect(r2.ok).toBe(true);
+		// Each sandbox was subscribed to exactly once — no double-wire and no
+		// shared subscription across instances.
+		expect(
+			(sandboxA.onEvent as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(1);
+		expect(
+			(sandboxB.onEvent as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(1);
+		expect((sandboxA.run as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+			1,
+		);
+		expect((sandboxB.run as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+			1,
+		);
+	});
+
+	it("stamping still runs after the state refactor (R-8/R-9)", async () => {
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
+		const sandbox = makeSandbox({
+			capture,
+			onRun: () => {
+				// Fire a synthetic event during the run — the widener on the
+				// state-side onEvent must stamp invocation metadata onto it.
+				const event: SandboxEvent = {
+					kind: "trigger.request",
+					seq: 1,
+					ref: null,
+					at: "host",
+					ts: Date.now(),
+					name: "t",
+					input: { body: {} },
+				};
+				for (const cb of capture.eventCallbacks) {
+					cb(event);
+				}
+				return { status: 200 };
+			},
+		});
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
+			},
+		};
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
+		await executor.invoke(
+			"acme",
+			"demo",
+			makeManifest("w", "abc"),
+			makeDescriptor("t", "w"),
+			null,
+			{
+				bundleSource: "x",
+				dispatch: {
+					source: "manual",
+					user: { login: "alice", mail: "a@x" },
+				},
+			},
+		);
+		expect(seen).toHaveLength(1);
+		const e = seen[0];
+		expect(e?.id).toMatch(EVT_ID_RE);
+		expect(e?.owner).toBe("acme");
+		expect(e?.repo).toBe("demo");
+		expect(e?.workflow).toBe("w");
+		expect(e?.workflowSha).toBe("abc");
+		// `trigger.request` carries `meta.dispatch`.
+		expect(e?.meta?.dispatch).toEqual({
+			source: "manual",
+			user: { login: "alice", mail: "a@x" },
+		});
+	});
+});

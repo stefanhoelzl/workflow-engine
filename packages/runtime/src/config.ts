@@ -33,6 +33,8 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		FILE_IO_CONCURRENCY: z.coerce.number().default(10),
 		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_MAX_COUNT: z.coerce.number().int().positive().default(10),
+		// biome-ignore lint/style/useNamingConvention: env var name
 		AUTH_ALLOW: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		GITHUB_OAUTH_CLIENT_ID: z.exactOptional(z.string()),
@@ -83,6 +85,7 @@ const schema = z
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
 		fileIoConcurrency: env.FILE_IO_CONCURRENCY,
+		sandboxMaxCount: env.SANDBOX_MAX_COUNT,
 		authAllow: env.AUTH_ALLOW,
 		githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID,
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
