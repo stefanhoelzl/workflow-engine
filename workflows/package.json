@@ -3,6 +3,9 @@
 	"type": "module",
 	"version": "0.0.0",
 	"private": true,
+	"scripts": {
+		"build": "wfe build"
+	},
 	"dependencies": {
 		"@workflow-engine/sdk": "workspace:*"
 	}

@@ -34,7 +34,8 @@ jobs:
 
       - uses: opentofu/setup-opentofu@v2
 
-      - name: Tofu apply staging
+      - id: apply
+        name: Tofu apply staging
         working-directory: infrastructure/envs/staging
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -48,3 +49,23 @@ jobs:
         run: |
           tofu init
           tofu apply -auto-approve -var "image_digest=${{ steps.build.outputs.digest }}"
+
+      - id: url
+        name: Capture staging URL
+        working-directory: infrastructure/envs/staging
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+        run: |
+          echo "url=$(tofu output -raw url)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for /readyz
+        run: curl -fsS --retry 30 --retry-delay 5 "${{ steps.url.outputs.url }}/readyz"
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Upload workflows bundle
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_UPLOAD_TOKEN }}
+        run: pnpm --filter workflows exec wfe upload --url "${{ steps.url.outputs.url }}"

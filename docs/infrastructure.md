@@ -181,6 +181,20 @@ each prefix.
 
 Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources live in each app project's namespace and are rendered by the routes-chart.
 
+### Staging demo upload token rotation
+
+`.github/workflows/deploy-staging.yml` uploads `workflows/src/demo.ts` to the staging runtime after each `tofu apply`. The upload authenticates as `github:user:stefanhoelzl` using a fine-grained Personal Access Token stored in the repository secret `GH_UPLOAD_TOKEN`.
+
+- **Token owner:** `stefanhoelzl` (must match an entry in the `AUTH_ALLOW_STAGING` GitHub Actions variable — currently `github:user:stefanhoelzl`).
+- **Required scopes:** none. `GET /user` (the only endpoint the workflow-engine's github auth provider calls) works with any authenticated token.
+- **Expiry:** fine-grained PATs expire at most 1 year after issue. Note the expiry date when creating the token.
+- **Symptom of expiry:** `deploy-staging` fails at the `Upload workflows bundle` step with a `401 Unauthorized` from `/api/workflows/stefanhoelzl/workflow-engine`. The job is marked red; the freshly-deployed runtime is otherwise healthy.
+- **Rotation:**
+  1. Create a new fine-grained PAT on `github.com/settings/tokens?type=beta` under the `stefanhoelzl` account. Repository access: `stefanhoelzl/workflow-engine` only. No scopes beyond the default.
+  2. Update the repository secret: `Settings → Secrets and variables → Actions → GH_UPLOAD_TOKEN`.
+  3. Re-run the failed `deploy-staging` run (or push a no-op commit to `main`) to verify the new token works.
+  4. Revoke the old PAT.
+
 ### Single-replica invariant (do not raise `replicas` above 1)
 
 The app Deployment for both prod and staging MUST be kept at `replicas = 1`. The auth capability seals the session cookie with a password generated in-memory at pod start (`packages/runtime/src/auth/key.ts`); the password is not shared across pods. A second replica would sign cookies with a different password and requests that land on the pod that did not seal the cookie would fail to decrypt it, producing deterministic re-login loops.
