@@ -72,4 +72,7 @@ jobs:
         working-directory: workflows
         env:
           GITHUB_TOKEN: ${{ secrets.GH_UPLOAD_TOKEN }}
+          # Placeholder for demo's `env({ secret: true })` binding; demo only
+          # self-signs with it. Mirrors scripts/dev.ts's DEV_SECRET_DEFAULTS.
+          WEBHOOK_TOKEN: staging-webhook-token
         run: node ../packages/sdk/dist/cli/cli.js upload --url "${{ steps.url.outputs.url }}"
