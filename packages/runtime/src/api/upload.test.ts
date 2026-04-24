@@ -6,9 +6,20 @@ import { describe, expect, it, vi } from "vitest";
 import { buildRegistry } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
+import type { SecretsKeyStore } from "../secrets/index.js";
 import type { TriggerSource } from "../triggers/source.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
+
+const stubKeyStore: SecretsKeyStore = {
+	getPrimary: () => ({
+		keyId: "0000000000000000",
+		pk: new Uint8Array(32),
+		sk: new Uint8Array(32),
+	}),
+	lookup: () => undefined,
+	allKeyIds: () => ["0000000000000000"],
+};
 
 // ---------------------------------------------------------------------------
 // POST /api/workflows/:tenant error-classification tests
@@ -121,7 +132,12 @@ function mountWithBackends(backends: readonly TriggerSource[]) {
 		executor: stubExecutor,
 		backends,
 	});
-	const middleware = apiMiddleware({ authRegistry, registry, logger });
+	const middleware = apiMiddleware({
+		authRegistry,
+		registry,
+		logger,
+		keyStore: stubKeyStore,
+	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
 	return app;

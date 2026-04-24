@@ -17,6 +17,10 @@ terraform {
     restapi = {
       source = "Mastercard/restapi"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   backend "s3" {
@@ -184,6 +188,8 @@ module "app" {
     client_id     = var.github_oauth_client_id
     client_secret = var.github_oauth_client_secret
   }
+
+  secrets_private_keys = local.secrets_private_keys_csv
 
   network = {
     domain     = var.domain

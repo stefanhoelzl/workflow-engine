@@ -8,12 +8,14 @@ Define the external contract between the `@workflow-engine/sdk/plugin` Vite plug
 
 ### Requirement: Manifest JSON format (v1)
 
-The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`. The manifest SHALL NOT contain executable code or function references.
+The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`, and optionally `secrets` and `secretsKeyId`. The manifest SHALL NOT contain executable code or function references.
 
 The top-level fields:
 - `name`: string --- workflow name (`defineWorkflow({name})` if provided, otherwise the workflow file's filestem)
 - `module`: string --- relative path to the bundled workflow JS file (e.g., `"cronitor.js"`). One bundle per workflow.
-- `env`: `Record<string, string>` --- workflow-level resolved env values.
+- `env`: `Record<string, string>` --- workflow-level resolved env values (plaintext).
+- `secrets`: optional `Record<string, string>` --- base64-encoded libsodium `crypto_box_seal` ciphertexts keyed by envName. Each value is the result of sealing the plaintext env value with the server's primary X25519 public key. When present, `secretsKeyId` SHALL also be present.
+- `secretsKeyId`: optional `string` --- 16-character lowercase hex fingerprint (per `computeKeyId`) of the X25519 public key that sealed the `secrets` ciphertexts. Required when `secrets` is present, absent when `secrets` is absent.
 
 Each action entry SHALL have:
 - `name`: string --- derived from the workflow file's export name
@@ -30,6 +32,8 @@ Each trigger entry SHALL have:
 
 The manifest SHALL NOT contain an `events` array, action `on`/`emits` fields, per-action `module` field, per-action `env` field, or trigger `response` field.
 
+Secret envName keys in `secrets` SHALL be disjoint from `env` keys. A key appearing in `secrets` SHALL NOT also appear in `env`.
+
 #### Scenario: Manifest contains workflow-level fields and per-action input/output schemas
 
 - **GIVEN** a workflow named "cronitor" with one HTTP trigger `cronitorWebhook` and two actions
@@ -38,6 +42,20 @@ The manifest SHALL NOT contain an `events` array, action `on`/`emits` fields, pe
 - **AND** SHALL NOT contain an `events` array
 - **AND** action entries SHALL NOT contain `on`, `emits`, `module`, or `env` fields
 - **AND** trigger entries SHALL NOT contain `response`, `path`, `params`, or `query` fields
+
+#### Scenario: Manifest without secrets has no secrets fields
+
+- **GIVEN** a workflow with no `env({secret:true})` bindings (or a build produced before the workflow-secrets feature)
+- **WHEN** the build runs
+- **THEN** the resulting manifest SHALL NOT contain a `secrets` field
+- **AND** SHALL NOT contain a `secretsKeyId` field
+
+#### Scenario: Manifest with secrets has both fields
+
+- **GIVEN** a workflow with at least one sealed secret binding
+- **WHEN** the manifest is written
+- **THEN** the manifest SHALL contain `secrets: Record<string, base64>`
+- **AND** SHALL contain `secretsKeyId: <16-char-hex>`
 
 #### Scenario: Workflow name defaults to filestem
 
@@ -80,7 +98,11 @@ The manifest SHALL NOT contain an `events` array, action `on`/`emits` fields, pe
 
 ### Requirement: ManifestSchema validation (v1)
 
-The SDK SHALL export a `ManifestSchema` Zod object validating the v1 manifest shape. The schema SHALL require `name`, `module`, `env`, `actions`, `triggers` at the top level. Each action entry SHALL require `name`, `input`, `output`. Each trigger entry SHALL require `name`, `type` and the type-specific fields. The trigger `name` SHALL be validated against `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`; non-matching names SHALL fail validation.
+The SDK SHALL export a `ManifestSchema` Zod object validating the v1 manifest shape. The schema SHALL require `name`, `module`, `env`, `actions`, `triggers` at the top level. The schema SHALL accept optional `secrets: Record<string, string>` (each value validated as a base64 string) and optional `secretsKeyId: string` (validated against `/^[0-9a-f]{16}$/`).
+
+When `secrets` is present, `secretsKeyId` SHALL be required. When `secrets` is absent, `secretsKeyId` SHALL be absent. Violating this co-presence rule SHALL fail validation.
+
+Each action entry SHALL require `name`, `input`, `output`. Each trigger entry SHALL require `name`, `type` and the type-specific fields. The trigger `name` SHALL be validated against `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`; non-matching names SHALL fail validation.
 
 The `triggers[].type` discriminant SHALL accept the literals `"http"`, `"cron"`, and `"manual"`. HTTP entries SHALL require `name`, `method`, `body`, `inputSchema`, `outputSchema`; HTTP entries SHALL NOT accept `path`, `params`, or `query` (the Zod schema SHALL reject them as excess keys or by omission from the schema shape). Cron entries SHALL require `schedule` (validated against a standard 5-field cron regex), `tz` (validated against the host's IANA timezone set — see the "IANA timezone validation" requirement), `inputSchema`, and `outputSchema`. Manual entries SHALL require `name`, `type`, `inputSchema`, and `outputSchema`; manual entries SHALL NOT accept `method`, `body`, `schedule`, `tz`, `path`, `params`, or `query`.
 
@@ -95,6 +117,26 @@ The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid 
 
 - **WHEN** a manifest is missing `name`, `module`, or `actions`
 - **THEN** parsing through `ManifestSchema` SHALL throw a validation error
+
+#### Scenario: Manifest with secrets and matching secretsKeyId passes
+
+- **WHEN** a manifest has `secrets: {TOKEN: "<b64>"}` and `secretsKeyId: "a1b2c3d4e5f60718"`
+- **THEN** parsing SHALL succeed
+
+#### Scenario: Manifest with secrets but no secretsKeyId fails
+
+- **WHEN** a manifest has `secrets: {...}` but no `secretsKeyId` field
+- **THEN** parsing SHALL throw a validation error naming the missing `secretsKeyId`
+
+#### Scenario: Manifest with secretsKeyId but no secrets fails
+
+- **WHEN** a manifest has `secretsKeyId: "..."` but no `secrets` field
+- **THEN** parsing SHALL throw a validation error
+
+#### Scenario: secretsKeyId with wrong format fails
+
+- **WHEN** a manifest has `secretsKeyId: "TOO-LONG-OR-UPPERCASE"`
+- **THEN** parsing SHALL throw a validation error identifying the field
 
 #### Scenario: Action entry missing input schema fails
 
@@ -146,7 +188,7 @@ The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid 
 #### Scenario: Legacy events array rejected
 
 - **WHEN** a manifest contains an `events` array
-- **THEN** the field SHALL be ignored (extra fields stripped) and SHALL NOT appear on the parsed manifest type
+- **THEN** parsing through `ManifestSchema` SHALL throw a validation error
 
 ### Requirement: Manifest type exported from SDK
 

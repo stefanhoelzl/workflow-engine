@@ -1,4 +1,5 @@
 import type { ArgSpec, GuestValue, ResultSpec } from "./plugin-types.js";
+import type { WorkerToMain } from "./protocol.js";
 
 type SerializableConfig =
 	| null
@@ -145,6 +146,15 @@ interface WasiHooks {
 interface RunInput {
 	readonly name: string;
 	readonly input: unknown;
+	/**
+	 * Per-run plugin data. Opaque to the sandbox core; reserved as a
+	 * general-purpose channel for plugins that need per-invocation payloads
+	 * outside the `input` envelope. Callers pass this via the 3rd argument
+	 * to `sb.run(name, input, extras)`. Currently no in-repo plugin
+	 * consumes it (the secrets plugin bakes its plaintextStore into the
+	 * plugin config at sandbox construction instead).
+	 */
+	readonly extras?: unknown;
 }
 
 type RunResult =
@@ -160,6 +170,18 @@ interface PluginSetup {
 	readonly wasiHooks?: WasiHooks;
 	readonly onBeforeRunStarted?: (runInput: RunInput) => boolean | undefined;
 	readonly onRunFinished?: (result: RunResult, runInput: RunInput) => void;
+	/**
+	 * Invoked in the worker for every outbound message crossing the
+	 * worker→main boundary, before it is actually posted. Runs in plugin
+	 * topological order (same as other lifecycle hooks). Each hook receives
+	 * the (possibly already transformed) message from the previous hook and
+	 * returns the message to pass to the next hook — or to the actual post.
+	 *
+	 * Cross-cutting hook: every plugin's `onPost` sees every other plugin's
+	 * outbound traffic. Implementers MUST have a documented rationale
+	 * (SECURITY.md R-10).
+	 */
+	readonly onPost?: (msg: WorkerToMain) => WorkerToMain;
 }
 
 interface Plugin<Config extends SerializableConfig = SerializableConfig> {

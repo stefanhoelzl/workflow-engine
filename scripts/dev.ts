@@ -1,4 +1,5 @@
 import { type ChildProcess, execSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { watch } from "node:fs";
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
@@ -133,6 +134,19 @@ async function waitForPort(port: number, timeoutMs: number): Promise<void> {
 	);
 }
 
+// Dev defaults for every `env({ secret: true })` binding in the in-repo demo
+// workflow. The SDK CLI reads `process.env[name]` when sealing — if the
+// operator hasn't set one explicitly, fall back to a placeholder so
+// `pnpm dev` works end-to-end without requiring a shell-side export.
+// Operator overrides (e.g. `WEBHOOK_TOKEN=real-value pnpm dev`) take
+// precedence because the existing value is preserved.
+const DEV_SECRET_DEFAULTS: Record<string, string> = {
+	WEBHOOK_TOKEN: "dev-webhook-token",
+};
+for (const [envName, fallback] of Object.entries(DEV_SECRET_DEFAULTS)) {
+	process.env[envName] ??= fallback;
+}
+
 async function runUpload(port: number): Promise<void> {
 	try {
 		await upload({
@@ -148,6 +162,13 @@ async function runUpload(port: number): Promise<void> {
 	}
 }
 
+// Dev-only X25519 keypair: 32 random bytes generated once per dev-server
+// lifetime, CSV-formatted as `k1:<b64>` for SECRETS_PRIVATE_KEYS. A fresh
+// key is minted on every `pnpm dev` invocation; any previously sealed
+// tenant bundles would fail upload decrypt-verify, which is fine in dev
+// because workflows are re-uploaded by this script on source change.
+const DEV_SECRETS_PRIVATE_KEYS = `k1:${randomBytes(32).toString("base64")}`;
+
 function runtimeEnv(port: number): NodeJS.ProcessEnv {
 	return {
 		...process.env,
@@ -156,6 +177,7 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		BASE_URL: `http://localhost:${String(port)}`,
 		AUTH_ALLOW: "local:dev,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",
+		SECRETS_PRIVATE_KEYS: DEV_SECRETS_PRIVATE_KEYS,
 	};
 }
 

@@ -141,6 +141,10 @@ function createExecutor(options: ExecutorOptions): Executor {
 			workflowSha: workflow.sha,
 			dispatch: options.dispatch ?? { source: "trigger" },
 		});
+		// Secrets: manifest.secrets is decrypted once per sandbox by
+		// sandbox-store (see packages/runtime/src/secrets/decrypt-workflow.ts)
+		// and baked into the `secrets` plugin's config at construction. The
+		// executor has no per-invocation crypto responsibility.
 		let result: InvokeResult<unknown>;
 		try {
 			const runResult = await sb.run(descriptor.name, input);

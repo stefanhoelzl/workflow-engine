@@ -57,6 +57,10 @@ const schema = z
 		BASE_URL: z.string().optional(),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		LOCAL_DEPLOYMENT: z.string().optional(),
+		// CSV of `keyId:base64(sk)` entries; primary (active sealing) key first.
+		// See packages/runtime/src/secrets/parse-keys.ts for the grammar.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SECRETS_PRIVATE_KEYS: z.string().transform(createSecret),
 	})
 	.refine((env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET), {
 		message:
@@ -87,6 +91,7 @@ const schema = z
 		persistenceS3Region: env.PERSISTENCE_S3_REGION,
 		baseUrl: env.BASE_URL,
 		localDeployment: env.LOCAL_DEPLOYMENT,
+		secretsPrivateKeys: env.SECRETS_PRIVATE_KEYS,
 	}));
 
 export type { Secret };

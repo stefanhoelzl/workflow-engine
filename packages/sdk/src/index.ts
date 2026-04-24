@@ -1,6 +1,7 @@
 import type {
 	HttpTriggerPayload,
 	HttpTriggerResult,
+	RuntimeWorkflow,
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
 import { ManifestSchema, z } from "@workflow-engine/core";
@@ -48,9 +49,21 @@ const MANUAL_TRIGGER_BRAND: unique symbol = Symbol.for(
 );
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
+const SECRET_ENV_REF_BRAND: unique symbol = Symbol.for(
+	"@workflow-engine/secret-env-ref",
+);
+// Carries the list of envNames declared with `env({secret: true})` on the
+// returned Workflow at build-time discovery. Vite plugin reads this via
+// the same symbol key (cross-context-safe because Symbol.for).
+const WORKFLOW_SECRET_BINDINGS_KEY: unique symbol = Symbol.for(
+	"@workflow-engine/workflow-secret-bindings",
+);
 
 // ---------------------------------------------------------------------------
-// EnvRef
+// EnvRef — plaintext env binding (resolved at build time, stored in manifest.env)
+// SecretEnvRef — sealed env binding (routed to manifest.secretBindings; the CLI
+//                fetches the server public key, seals process.env[name], and
+//                writes the ciphertext into manifest.secrets at upload time).
 // ---------------------------------------------------------------------------
 
 interface EnvRef {
@@ -59,16 +72,40 @@ interface EnvRef {
 	readonly default: string | undefined;
 }
 
-function env(opts?: { name?: string; default?: string }): EnvRef {
+interface SecretEnvRef {
+	readonly [SECRET_ENV_REF_BRAND]: true;
+	readonly name: string | undefined;
+}
+
+// Overloads: `secret: true` is exclusive with `default`. The combined
+// signature below is the implementation; callers only see the overloads.
+function env(opts: { name?: string; secret: true }): SecretEnvRef;
+function env(opts?: { name?: string; default?: string }): EnvRef;
+function env(
+	opts?: { name?: string; default?: string } | { name?: string; secret: true },
+): EnvRef | SecretEnvRef {
+	if (opts && "secret" in opts && opts.secret === true) {
+		return {
+			[SECRET_ENV_REF_BRAND]: true,
+			name: opts.name,
+		};
+	}
+	const plainOpts = opts as { name?: string; default?: string } | undefined;
 	return {
 		[ENV_REF_BRAND]: true,
-		name: opts?.name,
-		default: opts?.default,
+		name: plainOpts?.name,
+		default: plainOpts?.default,
 	};
 }
 
 function isEnvRef(value: unknown): value is EnvRef {
 	return typeof value === "object" && value !== null && ENV_REF_BRAND in value;
+}
+
+function isSecretEnvRef(value: unknown): value is SecretEnvRef {
+	return (
+		typeof value === "object" && value !== null && SECRET_ENV_REF_BRAND in value
+	);
 }
 
 function getDefaultEnvSource(): Record<string, string | undefined> {
@@ -80,11 +117,18 @@ function getDefaultEnvSource(): Record<string, string | undefined> {
 }
 
 function resolveEnvRecord(
-	record: Record<string, string | EnvRef>,
+	record: Record<string, string | EnvRef | SecretEnvRef>,
 	envSource: Record<string, string | undefined>,
 ): Record<string, string> {
 	const resolved: Record<string, string> = {};
 	for (const [key, value] of Object.entries(record)) {
+		// SecretEnvRef entries are NOT resolved at build time — their values
+		// are sealed by the CLI at upload against the server public key.
+		// Excluded from manifest.env; the vite plugin routes them to
+		// manifest.secretBindings instead.
+		if (isSecretEnvRef(value)) {
+			continue;
+		}
 		if (!isEnvRef(value)) {
 			resolved[key] = value;
 			continue;
@@ -107,14 +151,15 @@ interface Workflow<
 	Env extends Readonly<Record<string, string>> = Readonly<
 		Record<string, string>
 	>,
-> {
+> extends RuntimeWorkflow<Env> {
 	readonly [WORKFLOW_BRAND]: true;
-	readonly name: string | undefined;
-	readonly env: Env;
 }
 
 interface DefineWorkflowConfig<
-	E extends Record<string, string | EnvRef> = Record<string, string | EnvRef>,
+	E extends Record<string, string | EnvRef | SecretEnvRef> = Record<
+		string,
+		string | EnvRef | SecretEnvRef
+	>,
 > {
 	name?: string;
 	env?: E;
@@ -122,20 +167,54 @@ interface DefineWorkflowConfig<
 	envSource?: Record<string, string | undefined>;
 }
 
-function defineWorkflow<E extends Record<string, string | EnvRef>>(
+function defineWorkflow<
+	E extends Record<string, string | EnvRef | SecretEnvRef>,
+>(
 	config?: DefineWorkflowConfig<E>,
 ): Workflow<Readonly<{ [K in keyof E]: string }>> {
+	type ExpectedEnv = Readonly<{ [K in keyof E]: string }>;
+	// Runtime path: the env-installer plugin installs globalThis.workflow at
+	// Phase 2, before user source runs. Read it and return. This is what
+	// authors see at invocation time.
+	const raw = globalThis.workflow as RuntimeWorkflow<ExpectedEnv> | undefined;
+	if (raw !== undefined) {
+		const workflow: Workflow<ExpectedEnv> = {
+			[WORKFLOW_BRAND]: true,
+			name: raw.name || config?.name || "",
+			env: raw.env,
+		};
+		return Object.freeze(workflow);
+	}
+	// Build-time discovery path: the Vite plugin evaluates the workflow IIFE
+	// in a Node vm context where globalThis.workflow is not installed. In
+	// that path we resolve config.env against process.env (or the injected
+	// test source) so the plugin can read the resolved values off the
+	// discovered workflow and write them into manifest.env.
 	const envSource = config?.envSource ?? getDefaultEnvSource();
 	const resolved = config?.env
-		? resolveEnvRecord(config.env as Record<string, string | EnvRef>, envSource)
+		? resolveEnvRecord(
+				config.env as Record<string, string | EnvRef | SecretEnvRef>,
+				envSource,
+			)
 		: {};
-	const frozenEnv = Object.freeze(resolved) as Readonly<{
-		[K in keyof E]: string;
-	}>;
-	const workflow: Workflow<Readonly<{ [K in keyof E]: string }>> = {
+	// Collect the envNames of every SecretEnvRef so the vite plugin can
+	// route them into manifest.secretBindings. The name is either
+	// `ref.name` (explicit) or the key the ref is assigned to.
+	const secretBindings: string[] = [];
+	if (config?.env) {
+		for (const [key, value] of Object.entries(config.env)) {
+			if (isSecretEnvRef(value)) {
+				secretBindings.push(value.name ?? key);
+			}
+		}
+	}
+	const workflow: Workflow<ExpectedEnv> & {
+		[WORKFLOW_SECRET_BINDINGS_KEY]?: readonly string[];
+	} = {
 		[WORKFLOW_BRAND]: true,
-		name: config?.name,
-		env: frozenEnv,
+		[WORKFLOW_SECRET_BINDINGS_KEY]: Object.freeze(secretBindings),
+		name: config?.name ?? "",
+		env: resolved as ExpectedEnv,
 	};
 	return Object.freeze(workflow);
 }
@@ -396,6 +475,29 @@ function cronTrigger<const S extends string>(config: {
 	return callable as unknown as CronTrigger;
 }
 
+// ---------------------------------------------------------------------------
+// secret(): runtime plaintext registration for the scrubber
+// ---------------------------------------------------------------------------
+//
+// Registers an author-computed string with the runtime's plaintext
+// scrubber so subsequent `WorkerToMain` messages have the literal value
+// replaced with "[secret]" before archive. Returns the input unchanged so
+// callers can inline it: `const sig = secret(computeSig(...))`.
+//
+// Behaviour depends on whether the runtime's `secrets` plugin has
+// installed `globalThis.$secrets`:
+//   - At invocation time in a production sandbox: $secrets is present;
+//     registration takes effect immediately for subsequent messages.
+//   - At build-time discovery (Node-VM context): $secrets is absent;
+//     the call is a no-op and returns the input unchanged.
+
+function secret(value: string): string {
+	const bridge = (globalThis as { $secrets?: { addSecret(v: string): void } })
+		.$secrets;
+	bridge?.addSecret(value);
+	return value;
+}
+
 function isCronTrigger(value: unknown): value is CronTrigger {
 	if (value === null || value === undefined) {
 		return false;
@@ -490,6 +592,7 @@ export type {
 	EnvRef,
 	HttpTrigger,
 	ManualTrigger,
+	SecretEnvRef,
 	Trigger,
 	Workflow,
 };
@@ -504,12 +607,16 @@ export {
 	httpTrigger,
 	isAction,
 	isCronTrigger,
+	isEnvRef,
 	isHttpTrigger,
 	isManualTrigger,
+	isSecretEnvRef,
 	isWorkflow,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
+	secret,
 	WORKFLOW_BRAND,
+	WORKFLOW_SECRET_BINDINGS_KEY,
 	z,
 };

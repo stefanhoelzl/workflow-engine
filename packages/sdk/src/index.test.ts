@@ -10,12 +10,15 @@ import {
 	httpTrigger,
 	isAction,
 	isCronTrigger,
+	isEnvRef,
 	isHttpTrigger,
 	isManualTrigger,
+	isSecretEnvRef,
 	isWorkflow,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
+	secret,
 	WORKFLOW_BRAND,
 	z,
 } from "./index.js";
@@ -422,9 +425,9 @@ describe("action callable without sandbox globals", () => {
 // ---------------------------------------------------------------------------
 
 describe("defineWorkflow", () => {
-	it("returns an object with name and empty env when no config is given", () => {
+	it("returns an object with empty name and empty env when no config is given", () => {
 		const w = defineWorkflow();
-		expect(w.name).toBeUndefined();
+		expect(w.name).toBe("");
 		expect(w.env).toEqual({});
 	});
 
@@ -433,22 +436,18 @@ describe("defineWorkflow", () => {
 		expect(w.name).toBe("cronitor");
 	});
 
-	it("freezes env so it is immutable", () => {
-		const w = defineWorkflow({
-			name: "x",
-			env: { A: "hello" },
-			envSource: {},
-		});
-		expect(Object.isFrozen(w.env)).toBe(true);
-	});
-
-	it("accepts plain string env values", () => {
+	it("accepts plain string env values (build-time discovery path)", () => {
 		const w = defineWorkflow({
 			name: "x",
 			env: { A: "hello" },
 			envSource: {},
 		});
 		expect(w.env.A).toBe("hello");
+	});
+
+	it("freezes the outer workflow object (env is mutable for in-place population)", () => {
+		const w = defineWorkflow({ name: "x", env: { A: "hello" }, envSource: {} });
+		expect(Object.isFrozen(w)).toBe(true);
 	});
 });
 
@@ -795,5 +794,73 @@ describe("ManifestSchema", () => {
 			events: [{ name: "ignored", schema: { type: "object" } }],
 		});
 		expect(parsed).not.toHaveProperty("events");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// env({ secret: true }) + secret() factory (workflow-secrets)
+// ---------------------------------------------------------------------------
+
+describe("env({ secret: true })", () => {
+	it("returns a SecretEnvRef distinct from EnvRef", () => {
+		const ref = env({ secret: true });
+		expect(isSecretEnvRef(ref)).toBe(true);
+		expect(isEnvRef(ref)).toBe(false);
+	});
+
+	it("captures the explicit name", () => {
+		const ref = env({ name: "TOKEN", secret: true });
+		expect(isSecretEnvRef(ref)).toBe(true);
+		if (isSecretEnvRef(ref)) {
+			expect(ref.name).toBe("TOKEN");
+		}
+	});
+
+	it("plain env() returns an EnvRef, not a SecretEnvRef", () => {
+		const ref = env({ default: "x" });
+		expect(isEnvRef(ref)).toBe(true);
+		expect(isSecretEnvRef(ref)).toBe(false);
+	});
+
+	it("resolveEnvRecord (via defineWorkflow build-time path) excludes secret bindings", () => {
+		const w = defineWorkflow({
+			name: "wf",
+			env: {
+				REGION: env({ default: "us-east-1" }),
+				TOKEN: env({ name: "TOKEN", secret: true }),
+			},
+			envSource: { TOKEN: "leaked-would-be-bad" },
+		});
+		expect(w.env).toEqual({ REGION: "us-east-1" });
+		// The secret value is NOT present in workflow.env at build time;
+		// the CLI seals from its own process.env at upload.
+		expect((w.env as Record<string, unknown>).TOKEN).toBeUndefined();
+	});
+});
+
+describe("secret()", () => {
+	afterEach(() => {
+		(globalThis as Record<string, unknown>).$secrets = undefined;
+	});
+
+	it("returns the input unchanged when $secrets is absent", () => {
+		const out = secret("hello");
+		expect(out).toBe("hello");
+	});
+
+	it("calls $secrets.addSecret when installed", () => {
+		const addSecret = vi.fn();
+		(globalThis as Record<string, unknown>).$secrets = { addSecret };
+		const out = secret("ghp_xxx");
+		expect(out).toBe("ghp_xxx");
+		expect(addSecret).toHaveBeenCalledWith("ghp_xxx");
+	});
+
+	it("multiple calls each invoke addSecret", () => {
+		const addSecret = vi.fn();
+		(globalThis as Record<string, unknown>).$secrets = { addSecret };
+		secret("a");
+		secret("b");
+		expect(addSecret).toHaveBeenCalledTimes(2);
 	});
 });

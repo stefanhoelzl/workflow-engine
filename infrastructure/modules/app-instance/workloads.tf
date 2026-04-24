@@ -61,6 +61,7 @@ resource "kubernetes_deployment_v1" "app" {
           for k, v in {
             "app-s3-credentials" = kubernetes_secret_v1.s3.data,
             "app-github-oauth"   = kubernetes_secret_v1.github_oauth.data,
+            "app-secrets-key"    = kubernetes_secret_v1.secrets_key.data,
             image                = var.image_hash,
             build                = var.image_build_id,
           } : "sha256/${k}" => sha256(jsonencode(v))
@@ -99,6 +100,10 @@ resource "kubernetes_deployment_v1" "app" {
 
           env_from {
             secret_ref { name = kubernetes_secret_v1.github_oauth.metadata[0].name }
+          }
+
+          env_from {
+            secret_ref { name = kubernetes_secret_v1.secrets_key.metadata[0].name }
           }
 
           env {

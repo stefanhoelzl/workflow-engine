@@ -65,27 +65,55 @@ The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `is
 
 ### Requirement: defineWorkflow factory
 
-The SDK SHALL export `defineWorkflow(config)` returning a `Workflow` object branded with `WORKFLOW_BRAND`. The config SHALL accept optional `name?: string` and optional `env?: Record<string, string | EnvRef>`. When `name` is omitted, the build system SHALL derive the workflow name from the file's filestem. The returned `Workflow.env` SHALL be a `Readonly<Record<string, string>>` with `EnvRef`s resolved at build time.
+The SDK SHALL export `defineWorkflow(config)` returning a `Workflow` object branded with `WORKFLOW_BRAND`. The config SHALL accept optional `name?: string` and optional `env?: Record<string, string | EnvRef>`. When `name` is omitted, the build system SHALL derive the workflow name from the file's filestem.
+
+The returned `Workflow<Env>` SHALL extend `RuntimeWorkflow<Env>` from `@workflow-engine/core`, so `Workflow.env` is a `Readonly<Record<string, string>>` typed to the author's declared env shape. The `Workflow` type SHALL add the brand symbol but otherwise inherit `name` and `env` from `RuntimeWorkflow`.
+
+```ts
+interface Workflow<
+  Env extends Readonly<Record<string, string>> = Readonly<Record<string, string>>,
+> extends RuntimeWorkflow<Env> {
+  readonly [WORKFLOW_BRAND]: true;
+}
+```
+
+At runtime inside the guest VM, `defineWorkflow` SHALL read `globalThis.workflow` (typed via the ambient augmentation in core). It SHALL narrow the retrieved value's env shape to match the author's declared env via a cast, and MUST NOT call `resolveEnvRecord` at runtime. The `name` field SHALL be taken from `globalThis.workflow.name` if present, falling back to `config.name` if the global is absent (defensive for build-time Node-VM discovery before the plugin installs the global).
+
+At build time inside the Vite plugin's Node-VM discovery context, the plugin SHALL pre-populate `globalThis.workflow = { name, env }` where `env` comes from `resolveEnvRecord(config.env, process.env)` before running the IIFE. `defineWorkflow` reads the same global consistently in both runtime and build-time contexts.
 
 #### Scenario: Workflow defined with explicit name and env
 
-- **WHEN** `defineWorkflow({ name: "cronitor", env: { URL: env({ default: "https://x" }) } })` is called
-- **THEN** the returned object SHALL have `name: "cronitor"`
-- **AND** SHALL have `env.URL: "https://x"`
+- **WHEN** `defineWorkflow({ name: "cronitor", env: { URL: env({ default: "https://x" }) } })` is called inside the guest VM at invocation
+- **THEN** the returned object SHALL have `name: "cronitor"` (from `globalThis.workflow.name`)
+- **AND** SHALL have `env.URL: "<runtime-supplied value>"`
 - **AND** SHALL be branded with `WORKFLOW_BRAND`
 
 #### Scenario: Workflow defined with no config
 
-- **WHEN** `defineWorkflow()` is called
+- **WHEN** `defineWorkflow()` is called at invocation
 - **THEN** the returned object SHALL be branded with `WORKFLOW_BRAND`
-- **AND** SHALL have `name: undefined` (build system fills in filestem)
-- **AND** SHALL have `env: {}`
+- **AND** SHALL have `name` equal to `globalThis.workflow.name` or `""` if absent
+- **AND** SHALL have `env` equal to `globalThis.workflow.env` or `{}` if absent
 
 #### Scenario: Multiple defineWorkflow calls in one file
 
 - **GIVEN** a workflow file with two `defineWorkflow(...)` exports
 - **WHEN** the build system processes the file
 - **THEN** the build system SHALL fail with an error indicating "at most one defineWorkflow per file"
+
+#### Scenario: Runtime env reflects build-time resolution
+
+- **GIVEN** a workflow declaring `env: { TOKEN: env({ name: "TOKEN" }) }` and a build run with `process.env.TOKEN = "real_value"`
+- **WHEN** the manifest is later loaded and the handler runs in the sandbox
+- **THEN** `workflow.env.TOKEN` inside the handler SHALL equal `"real_value"`
+- **AND** SHALL NOT equal any `default:` fallback
+
+#### Scenario: defineWorkflow does not call resolveEnvRecord at runtime
+
+- **GIVEN** the SDK's guest-side implementation of `defineWorkflow`
+- **WHEN** the code path executed inside the QuickJS VM is inspected
+- **THEN** there SHALL be no call to `resolveEnvRecord` or `getDefaultEnvSource` in the runtime path
+- **AND** `resolveEnvRecord` SHALL remain used only from the Vite plugin's Node-VM discovery context
 
 ### Requirement: action factory returns typed callable
 
@@ -144,31 +172,88 @@ A workflow file SHALL declare at most one workflow. The vite-plugin SHALL identi
 
 ### Requirement: env() helper for environment references
 
-The SDK SHALL export `env(opts?)` returning an `EnvRef` placeholder used in `defineWorkflow({ env })`. The opts SHALL accept optional `name?: string` (the env var name; defaults to the key it's assigned to) and optional `default?: string` (used when the env var is not set).
+The SDK SHALL export `env(opts?)` returning an `EnvRef` or `SecretEnvRef` depending on the `secret` flag. The opts SHALL accept:
+
+- `name?: string` — the env var name; defaults to the key it's assigned to.
+- `default?: string` — used when the env var is not set; INCOMPATIBLE with `secret: true`.
+- `secret?: true` — marks the binding as a secret; rejected alongside `default` at the type level.
+
+Function overloads SHALL make `env({ secret: true, default: "..." })` a TypeScript compile-time error.
+
+`EnvRef`s SHALL be resolved at build time by the Vite plugin against `process.env` and written to `manifest.env`. `SecretEnvRef`s SHALL NOT be resolved at build time; instead, the plugin records the envName in `manifest.secretBindings: string[]`. The CLI fetches the server public key, seals each secret plaintext from its own `process.env` at upload, and rewrites the manifest to replace `secretBindings` with `secrets: Record<string, base64>` and `secretsKeyId: string`.
+
+At invocation time, the runtime's secrets plugin decrypts `manifest.secrets` and merges the plaintexts into `workflow.env` alongside `manifest.env` values. Both secret and non-secret bindings appear as plain strings in `workflow.env`.
 
 #### Scenario: env() defaults to key as name
 
 - **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
 - **WHEN** the build resolves env
-- **THEN** the runtime SHALL read `process.env.API_KEY`
+- **THEN** the plugin SHALL read `process.env.API_KEY` and write the value to `manifest.env.API_KEY`
 
 #### Scenario: env() with explicit name
 
 - **GIVEN** `defineWorkflow({ env: { url: env({ name: "MY_URL" }) } })`
 - **WHEN** the build resolves env
-- **THEN** the runtime SHALL read `process.env.MY_URL` and assign it to `workflow.env.url`
+- **THEN** the plugin SHALL read `process.env.MY_URL` and write the value to `manifest.env.url`
 
 #### Scenario: env() with default
 
 - **GIVEN** `defineWorkflow({ env: { URL: env({ default: "https://x" }) } })`
-- **WHEN** `process.env.URL` is unset
-- **THEN** `workflow.env.URL` SHALL be `"https://x"`
+- **WHEN** `process.env.URL` is unset at build time
+- **THEN** `manifest.env.URL` SHALL be `"https://x"`
+
+#### Scenario: env() with secret true rejects default
+
+- **GIVEN** `env({ name: "TOKEN", secret: true, default: "fallback" })`
+- **WHEN** the workflow is type-checked
+- **THEN** TypeScript SHALL emit a compile-time error
+
+#### Scenario: env() with secret true routes to secretBindings
+
+- **GIVEN** `defineWorkflow({ env: { TOKEN: env({ name: "TOKEN", secret: true }) } })`
+- **WHEN** the build runs
+- **THEN** `manifest.secretBindings` SHALL include `"TOKEN"`
+- **AND** `manifest.env.TOKEN` SHALL NOT be present
+
+#### Scenario: Secret value reaches runtime
+
+- **GIVEN** `env({ name: "TOKEN", secret: true })` with `process.env.TOKEN = "ghp_xxx"` at CLI upload
+- **WHEN** the CLI seals and the runtime decrypts per invocation
+- **THEN** `workflow.env.TOKEN` inside the handler SHALL equal `"ghp_xxx"`
 
 #### Scenario: Missing env without default fails build
 
 - **GIVEN** `defineWorkflow({ env: { API_KEY: env() } })`
 - **WHEN** `process.env.API_KEY` is unset and no default is provided
 - **THEN** the build SHALL fail with `"Missing environment variable: API_KEY"`
+
+#### Scenario: Missing secret env at CLI time fails upload
+
+- **GIVEN** `env({ name: "TOKEN", secret: true })` and `process.env.TOKEN` is unset when `wfe upload` runs
+- **WHEN** the CLI attempts to seal
+- **THEN** upload SHALL fail with a clear error naming `TOKEN`
+
+### Requirement: secret() export from SDK
+
+The SDK SHALL export `secret(value: string): string`. The function SHALL invoke `globalThis.$secrets.addSecret(value)` and return `value` unchanged. Semantics:
+
+- Adds `value` to the runtime's plaintext scrubber set.
+- Subsequent outbound `WorkerToMain` messages SHALL have any literal occurrence of `value` replaced with `[secret]`.
+- The call is a no-op if the runtime's secrets plugin is not active (e.g., in build-time Node-VM discovery where `globalThis.$secrets` may be absent); in that case, the function SHALL return `value` without throwing.
+
+#### Scenario: secret called at runtime adds to scrubber
+
+- **GIVEN** a handler that calls `secret("abc123")`
+- **WHEN** the call completes
+- **THEN** `globalThis.$secrets.addSecret("abc123")` SHALL have been invoked
+- **AND** the return value SHALL equal `"abc123"`
+
+#### Scenario: secret called at build-time Node VM is a no-op
+
+- **GIVEN** the Vite plugin's Node-VM discovery context where `globalThis.$secrets` is undefined
+- **WHEN** a workflow module evaluates `secret("x")` at top-level
+- **THEN** the function SHALL return `"x"` without throwing
+- **AND** no error SHALL be logged
 
 ### Requirement: Zod re-export
 

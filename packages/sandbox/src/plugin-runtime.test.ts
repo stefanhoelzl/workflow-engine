@@ -15,6 +15,7 @@ import {
 	loadPluginModules,
 	type ModuleLoader,
 	runOnBeforeRunStarted,
+	runOnPost,
 	runOnRunFinished,
 	runPhasePrivateDelete,
 	runPhaseSourceEval,
@@ -22,6 +23,7 @@ import {
 	type SourceEvaluator,
 	truncateFinalRefStack,
 } from "./plugin-runtime.js";
+import type { WorkerToMain } from "./protocol.js";
 
 const noopCtx: SandboxContext = {
 	emit() {
@@ -632,5 +634,183 @@ describe("collectGuestFunctions", () => {
 			["a", "f1"],
 			["b", "f2"],
 		]);
+	});
+});
+
+describe("runOnPost", () => {
+	const EVENT_MSG: WorkerToMain = {
+		type: "event",
+		event: {
+			kind: "action.request",
+			seq: 1,
+			ref: null,
+			at: "2026-04-24T00:00:00.000Z",
+			ts: 1000,
+			name: "foo",
+			input: "hello world",
+		},
+	};
+	const READY_MSG: WorkerToMain = { type: "ready" };
+	const DONE_MSG: WorkerToMain = {
+		type: "done",
+		payload: { ok: true, result: "hello world" },
+	};
+	const LOG_MSG: WorkerToMain = {
+		type: "log",
+		level: "info",
+		message: "hello world",
+	};
+
+	it("passes the message through unchanged when no plugin has onPost", () => {
+		const map = setups({ a: {}, b: {} });
+		const result = runOnPost({
+			setups: map,
+			order: ["a", "b"],
+			msg: EVENT_MSG,
+		});
+		expect(result.msg).toBe(EVENT_MSG);
+		expect(result.errors).toHaveLength(0);
+	});
+
+	it("chains transforms through hooks in topological order", () => {
+		const map = setups({
+			a: {
+				onPost: (m) => {
+					if (m.type === "event") {
+						return {
+							...m,
+							event: { ...m.event, input: "step-a" },
+						};
+					}
+					return m;
+				},
+			},
+			b: {
+				onPost: (m) => {
+					if (m.type === "event") {
+						return {
+							...m,
+							event: { ...m.event, input: `${m.event.input}-step-b` },
+						};
+					}
+					return m;
+				},
+			},
+		});
+		const result = runOnPost({
+			setups: map,
+			order: ["a", "b"],
+			msg: EVENT_MSG,
+		});
+		expect(result.msg).toMatchObject({
+			type: "event",
+			event: { input: "step-a-step-b" },
+		});
+		expect(result.errors).toHaveLength(0);
+	});
+
+	it("skips plugins without onPost", () => {
+		const map = setups({
+			a: {},
+			b: {
+				onPost: (m) => {
+					if (m.type === "log") {
+						return { ...m, message: "touched" };
+					}
+					return m;
+				},
+			},
+		});
+		const result = runOnPost({
+			setups: map,
+			order: ["a", "b"],
+			msg: LOG_MSG,
+		});
+		expect(result.msg).toMatchObject({ type: "log", message: "touched" });
+	});
+
+	it("continues the chain when a hook throws, recording the error", () => {
+		const map = setups({
+			a: {
+				onPost: () => {
+					throw new Error("boom");
+				},
+			},
+			b: {
+				onPost: (m) => {
+					if (m.type === "done") {
+						return { ...m, payload: { ok: true, result: "from-b" } };
+					}
+					return m;
+				},
+			},
+		});
+		const result = runOnPost({
+			setups: map,
+			order: ["a", "b"],
+			msg: DONE_MSG,
+		});
+		expect(result.msg).toMatchObject({
+			type: "done",
+			payload: { ok: true, result: "from-b" },
+		});
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]?.message).toMatch(
+			/plugin "a" threw in onPost: boom/,
+		);
+		expect(
+			(result.errors[0] as Error & { pluginName?: string }).pluginName,
+		).toBe("a");
+	});
+
+	it("applies to every WorkerToMain kind (ready, event, done, log)", () => {
+		const map = setups({
+			touch: {
+				onPost: (m) => {
+					if (m.type === "ready") {
+						return m;
+					}
+					if (m.type === "event") {
+						return { ...m, event: { ...m.event, input: "touched" } };
+					}
+					if (m.type === "done") {
+						return { ...m, payload: { ok: true, result: "touched" } };
+					}
+					if (m.type === "log") {
+						return { ...m, message: "touched" };
+					}
+					return m;
+				},
+			},
+		});
+		expect(
+			runOnPost({ setups: map, order: ["touch"], msg: READY_MSG }).msg,
+		).toEqual(READY_MSG);
+		expect(
+			runOnPost({ setups: map, order: ["touch"], msg: EVENT_MSG }).msg,
+		).toMatchObject({ type: "event", event: { input: "touched" } });
+		expect(
+			runOnPost({ setups: map, order: ["touch"], msg: DONE_MSG }).msg,
+		).toMatchObject({ type: "done", payload: { result: "touched" } });
+		expect(
+			runOnPost({ setups: map, order: ["touch"], msg: LOG_MSG }).msg,
+		).toMatchObject({ type: "log", message: "touched" });
+	});
+
+	it("cannot observe messages emitted before its own registration window", () => {
+		// Sanity: runOnPost is stateless across calls; a plugin's onPost
+		// does not see prior calls' data unless the plugin itself retained it.
+		const seen: unknown[] = [];
+		const map = setups({
+			a: {
+				onPost: (m) => {
+					seen.push(m);
+					return m;
+				},
+			},
+		});
+		runOnPost({ setups: map, order: ["a"], msg: READY_MSG });
+		runOnPost({ setups: map, order: ["a"], msg: EVENT_MSG });
+		expect(seen).toEqual([READY_MSG, EVENT_MSG]);
 	});
 });

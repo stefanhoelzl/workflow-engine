@@ -44,7 +44,20 @@ const WORKFLOW: WorkflowManifest = {
 function makeStore(): SandboxStore {
 	const logger = makeLogger();
 	const factory = createSandboxFactory({ logger });
-	return createSandboxStore({ sandboxFactory: factory, logger });
+	const stubKeyStore = {
+		getPrimary: () => ({
+			keyId: "0000000000000000",
+			pk: new Uint8Array(32),
+			sk: new Uint8Array(32),
+		}),
+		lookup: () => undefined,
+		allKeyIds: () => ["0000000000000000"],
+	};
+	return createSandboxStore({
+		sandboxFactory: factory,
+		logger,
+		keyStore: stubKeyStore,
+	});
 }
 
 async function probe(code: string, store: SandboxStore): Promise<unknown> {

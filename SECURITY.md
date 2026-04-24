@@ -539,6 +539,44 @@ plugin, and every change that adds a guest-visible surface.
    sandbox and plugin code MUST NOT emit, read, or construct `meta` — it
    has no guest-side entry point by design. Parallels R-8; the dispatch
    source and dispatching user are runtime concerns, never guest-visible.
+10. **R-10 `onPost` requires cross-cutting rationale.** The
+    `PluginSetup.onPost` hook sees every outbound `WorkerToMain` message
+    from every plugin; implementing it widens the plugin's observation
+    and transformation surface across the whole composition. Plugins
+    implementing `onPost` MUST have a documented cross-cutting
+    rationale (e.g. uniform scrubbing, observability, PII redaction).
+    The `secrets` plugin (from the `workflow-secrets` change) implements
+    `onPost` for uniform literal-plaintext redaction: every outbound
+    message is walked and occurrences of any known plaintext
+    (manifest-sealed or runtime-registered via `secret()`) are replaced
+    with `"[secret]"`. The scrubber is best-effort — author-side
+    transformations (base64, hash, slice) evade it; `secret(derivedValue)`
+    is the documented escape hatch.
+
+    **Ordering invariant.** `worker.ts`'s `post()` threads each
+    outbound message through every plugin's `onPost` in topo order,
+    then `port.postMessage`s the result. If a plugin's `onPost`
+    throws, `runOnPost` collects the error and feeds the pre-call
+    message to the next plugin; `worker.ts` then posts a
+    `sandbox.plugin.onPost_failed` log entry directly via
+    `port.postMessage` — that log does NOT re-enter the scrubber
+    pipeline. For this bypass to be safe, the `secrets` plugin MUST
+    run before every other plugin that implements `onPost`, so each
+    downstream `onPost` only ever sees scrubbed input; a throwing
+    downstream plugin's `err.message` can therefore reference only
+    scrubbed values. Today `secrets` is the only `onPost` plugin —
+    the invariant is trivially met. Any future plugin adding `onPost`
+    MUST be ordered AFTER `secrets` in the descriptor list built in
+    `runtime/src/sandbox-store.ts#buildPluginDescriptors`. Reordering
+    is a security regression.
+
+    **`secrets.onPost` must never throw with plaintext.** The
+    scrubber's own `onPost` is wrapped in `try { walkStrings(...) }
+    catch { return placeholderLog }` — neither the original message
+    nor the caught error escapes the function on the exception path.
+    The placeholder drops the event content (acceptable — a throw
+    here is a scrubber bug we want to fix, not paper over). Any
+    future change to that body MUST preserve this containment.
 
 Additional standing rules that predate the plugin rewrite:
 
@@ -1333,11 +1371,25 @@ following as **must-have** before exposing to real traffic:
     subsystem — cookies sealed on one pod fail decryption on another,
     bouncing users through login on every alternating request.
 
+### Workflow secret-key management
+
+Tenant-authored workflows may declare sealed env bindings (`env({name, secret: true})` per the `workflow-secrets` change). The server holds an X25519 keypair list in the `SECRETS_PRIVATE_KEYS` env var; the public key is derivable from any secret key via `crypto_scalarmult_base` and is exposed by `GET /api/workflows/:tenant/public-key` so the CLI can seal values before upload. Decryption happens twice: once at upload for fail-fast validation, and once per invocation inside the executor to hand plaintexts to the future consumer plugin. Plaintext bytes are `fill(0)`-wiped after use and never logged.
+
+**Key location.**
+- **Prod:** keypair list lives in `envs/persistence/secrets.tf` (same blast radius as the prod S3 bucket — outlives cluster destroys). `envs/prod/` reads it via `terraform_remote_state` and creates the `app-secrets-key` K8s Secret in the prod namespace.
+- **Staging, local:** each generates its own keypair list in-project (`envs/staging/secrets.tf`, `envs/local/secrets.tf`). Losing staging or local state forces re-deployment but not tenant re-upload.
+
+**Rotation.** Prepend a new id to `var.secret_key_ids`, `tofu apply` persistence (prod) or the env-local secrets file (staging/local), redeploy. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when a tenant's bundle references a retired keyId.
+
+**Security property.** The app pod is the only place the secret key material exists. Storage (S3) sees only ciphertexts. Operators with S3/state-bucket access cannot unseal any secret without the K8s-secret-held private key. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
+
 ### File references
 
 - App deployment: `infrastructure/modules/app-instance/workloads.tf`
 - App-instance secrets: `infrastructure/modules/app-instance/secrets.tf`
 - App-instance NetworkPolicies: `infrastructure/modules/app-instance/netpol.tf`
+- Persistence-side keypair: `infrastructure/envs/persistence/secrets.tf`
+- Staging / local keypair: `infrastructure/envs/staging/secrets.tf`, `infrastructure/envs/local/secrets.tf`
 - Traefik: `infrastructure/modules/traefik/traefik.tf`
 - Baseline (namespaces, PSA, default-deny): `infrastructure/modules/baseline/baseline.tf`
 - NetworkPolicy factory: `infrastructure/modules/netpol/main.tf`
