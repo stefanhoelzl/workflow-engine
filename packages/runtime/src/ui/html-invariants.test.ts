@@ -104,8 +104,7 @@ describe("HTML CSP invariants", () => {
 				user: "user",
 				email: "user@example.com",
 				owners: ["acme"],
-				ownerSummaries: [{ owner: "acme", count: 0 }],
-				autoExpand: "acme",
+				rows: [],
 			})
 		).toString();
 		expect(html).not.toMatch(INLINE_SCRIPT_RE);

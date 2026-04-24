@@ -1,4 +1,5 @@
 import { html, raw } from "hono/html";
+import type { HtmlEscapedString } from "hono/utils/html";
 import { renderLayout } from "../layout.js";
 import { triggerKindIcon } from "../triggers.js";
 
@@ -6,7 +7,6 @@ const US_PER_MS = 1000;
 const US_PER_SECOND = 1_000_000;
 const US_PER_MINUTE = 60_000_000;
 const DURATION_FRACTION_DIGITS = 1;
-const SKELETON_CARD_COUNT = 3;
 
 interface InvocationRow {
 	readonly id: string;
@@ -19,29 +19,30 @@ interface InvocationRow {
 	readonly completedAt: string | Date | null;
 	readonly startedTs: number;
 	readonly completedTs: number | null;
-	// Optional trigger kind ("http" | "cron"). Resolved from the workflow
-	// registry at render time. May be undefined if the trigger was unloaded
-	// since the invocation was recorded.
 	readonly triggerKind?: string;
-	// Dispatch provenance parsed from the invocation's trigger.request event's
-	// meta.dispatch. Absent for legacy invocations archived before this
-	// feature. Only `user.login` is materialized on the list (mail stays in
-	// the flamegraph tooltip to keep list rows compact).
 	readonly dispatch?: {
 		readonly source: "manual" | "trigger";
 		readonly user?: { readonly login: string };
 	};
 }
 
-interface OwnerSummaryItem {
-	readonly owner: string;
-	readonly count: number;
-}
-
-interface RepoSummaryItem {
-	readonly owner: string;
-	readonly repo: string;
-	readonly count: number;
+// Flat-list sort order:
+//   1. pending rows first (newest-started on top)
+//   2. terminal rows after (newest-completed on top)
+// Rationale: a pending invocation is "live" and almost always the thing the
+// operator wants to see; completed rows decay into history.
+function sortInvocationRows(rows: readonly InvocationRow[]): InvocationRow[] {
+	return rows.slice().sort((a, b) => {
+		const aPending = a.status === "pending";
+		const bPending = b.status === "pending";
+		if (aPending !== bPending) {
+			return aPending ? -1 : 1;
+		}
+		if (aPending) {
+			return b.startedTs - a.startedTs;
+		}
+		return (b.completedTs ?? 0) - (a.completedTs ?? 0);
+	});
 }
 
 function toIsoString(ts: string | Date): string {
@@ -49,9 +50,6 @@ function toIsoString(ts: string | Date): string {
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
 }
 
-// SSR emits ISO in both the `datetime` attribute (machine-readable, stable)
-// and the initial text content (legible fallback for JS-disabled clients).
-// `/static/local-time.js` rewrites textContent to the viewer's locale.
 function renderTime(ts: string | Date, className: string) {
 	const iso = toIsoString(ts);
 	return html`<time class="${className}" datetime="${iso}">${iso}</time>`;
@@ -80,9 +78,6 @@ function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
 	if (!dispatch || dispatch.source !== "manual") {
 		return "";
 	}
-	// Label stays compact ("manual"); the tooltip surfaces just the user
-	// name when present, so hover attributes the fire without re-stating
-	// what the chip already shows.
 	const tooltip = dispatch.user?.login ?? "";
 	return html`<span class="entry-dispatch" title="${tooltip}">manual</span>`;
 }
@@ -100,6 +95,8 @@ function renderCardSummary(
       ${chevron}
       <div class="entry-identity">
         ${kindIcon}
+        <span class="entry-scope">${row.owner}/${row.repo}</span>
+        <span class="entry-identity-sep">›</span>
         <span class="entry-workflow">${row.workflow}</span>
         <span class="entry-identity-sep">›</span>
         <span class="entry-trigger">${row.trigger}</span>
@@ -146,144 +143,81 @@ function renderInvocationList(invocations: readonly InvocationRow[]) {
 		return html`<div class="empty-state" data-count="0">No invocations yet</div>`;
 	}
 	const nowIso = new Date().toISOString();
-	const count = invocations.length;
+	const sorted = sortInvocationRows(invocations);
+	const count = sorted.length;
 	const header = html`<div class="list-header" aria-label="Invocation list summary">
       <span class="list-header-count">${count} invocation${count === 1 ? "" : "s"}</span>
       <span class="entry-sep">·</span>
-      <span>newest first</span>
+      <span>pending first, then newest-completed</span>
       <span class="entry-sep">·</span>
       <span>updated ${renderTime(nowIso, "list-header-updated")}</span>
     </div>`;
 	return html`<div data-count="${String(count)}">
     ${header}
-    ${invocations.map(renderCard)}
+    ${sorted.map(renderCard)}
   </div>`;
 }
 
-function renderSkeletonCards() {
-	const placeholders = Array.from({ length: SKELETON_CARD_COUNT });
-	return html`${placeholders.map(
-		() => html`<div class="entry skeleton" aria-hidden="true"></div>`,
-	)}`;
-}
+// ---------------------------------------------------------------------------
+// Top-level page — always a flat list, titled by the active filter
+// ---------------------------------------------------------------------------
 
-function renderRepoList(
-	owner: string,
-	repos: readonly RepoSummaryItem[],
-	preloadedInvocations?: readonly InvocationRow[],
-	autoExpandRepo?: string,
-) {
-	if (repos.length === 0) {
-		return html`<div class="tree-empty" data-count="0">No repos registered</div>`;
-	}
-	return html`<ul class="tree-repos" data-owner="${owner}">
-    ${repos.map((r) => {
-			const open = autoExpandRepo === r.repo ? raw(" open") : "";
-			const invocationsUrl = `/dashboard/${owner}/${r.repo}/invocations`;
-			const slot =
-				autoExpandRepo === r.repo && preloadedInvocations
-					? renderInvocationList(preloadedInvocations)
-					: renderSkeletonCards();
-			return html`<li class="tree-repo">
-        <details${open}
-          hx-get="${invocationsUrl}"
-          hx-trigger="toggle once"
-          hx-target="find .tree-invocations"
-          hx-swap="innerHTML">
-          <summary>
-            <span class="tree-label">${r.repo}</span>
-            <span class="tree-count" aria-label="invocation count">${String(r.count)}</span>
-          </summary>
-          <div class="tree-invocations">${slot}</div>
-        </details>
-      </li>`;
-		})}
-  </ul>`;
-}
-
-// biome-ignore lint/complexity/useMaxParams: orthogonal rendering inputs — owners, summaries, pre-expansion state, preloaded fragments
-function renderOwnerTree(
-	owners: readonly OwnerSummaryItem[],
-	autoExpand: string | undefined,
-	autoExpandRepo: { owner: string; repo: string } | undefined,
-	preloadedRepos: Record<string, readonly RepoSummaryItem[]> | undefined,
-	preloadedInvocations: readonly InvocationRow[] | undefined,
-) {
-	if (owners.length === 0) {
-		return html`<div class="tree-empty" data-count="0">No owners available</div>`;
-	}
-	return html`<ul class="tree-owners">
-    ${owners.map((o) => {
-			const open = autoExpand === o.owner ? raw(" open") : "";
-			const reposUrl = `/dashboard/${o.owner}/repos`;
-			const preloaded =
-				autoExpand === o.owner && preloadedRepos
-					? preloadedRepos[o.owner]
-					: undefined;
-			const body = preloaded
-				? renderRepoList(
-						o.owner,
-						preloaded,
-						autoExpandRepo?.owner === o.owner
-							? preloadedInvocations
-							: undefined,
-						autoExpandRepo?.owner === o.owner ? autoExpandRepo.repo : undefined,
-					)
-				: renderSkeletonCards();
-			return html`<li class="tree-owner">
-        <details${open}
-          hx-get="${reposUrl}"
-          hx-trigger="toggle once"
-          hx-target="find .tree-owner-body"
-          hx-swap="innerHTML">
-          <summary>
-            <span class="tree-label">${o.owner}</span>
-            <span class="tree-count" aria-label="invocation count">${String(o.count)}</span>
-          </summary>
-          <div class="tree-owner-body">${body}</div>
-        </details>
-      </li>`;
-		})}
-  </ul>`;
+interface DashboardFilter {
+	readonly owner: string;
+	readonly repo?: string;
+	readonly workflow?: string;
+	readonly trigger?: string;
 }
 
 interface DashboardPageOptions {
 	readonly user: string;
 	readonly email: string;
 	readonly owners: readonly string[];
-	readonly ownerSummaries: readonly OwnerSummaryItem[];
-	readonly autoExpand?: string;
-	readonly autoExpandRepo?: { owner: string; repo: string };
-	readonly preloadedRepos?: Record<string, readonly RepoSummaryItem[]>;
-	readonly preloadedInvocations?: readonly InvocationRow[];
+	readonly rows: readonly InvocationRow[];
+	// The active filter, derived from the URL. `undefined` = show all scopes
+	// the user has access to.
+	readonly filter?: DashboardFilter;
+	readonly sidebarTree?: HtmlEscapedString | Promise<HtmlEscapedString>;
+}
+
+function renderScopeLabel(filter: DashboardPageOptions["filter"]) {
+	if (!filter) {
+		return html`<span class="scope-all">All invocations</span>`;
+	}
+	if (!filter.repo) {
+		return html`<a href="/dashboard">All</a>
+      <span class="breadcrumb-sep">/</span>
+      <span class="breadcrumb-current">${filter.owner}</span>`;
+	}
+	if (!(filter.workflow && filter.trigger)) {
+		return html`<a href="/dashboard">All</a>
+      <span class="breadcrumb-sep">/</span>
+      <a href="/dashboard/${filter.owner}">${filter.owner}</a>
+      <span class="breadcrumb-sep">/</span>
+      <span class="breadcrumb-current">${filter.repo}</span>`;
+	}
+	return html`<a href="/dashboard">All</a>
+    <span class="breadcrumb-sep">/</span>
+    <a href="/dashboard/${filter.owner}">${filter.owner}</a>
+    <span class="breadcrumb-sep">/</span>
+    <a href="/dashboard/${filter.owner}/${filter.repo}">${filter.repo}</a>
+    <span class="breadcrumb-sep">/</span>
+    <span class="breadcrumb-current">${filter.workflow} / ${filter.trigger}</span>`;
 }
 
 function renderDashboardPage(options: DashboardPageOptions) {
-	const {
-		user,
-		email,
-		owners,
-		ownerSummaries,
-		autoExpand,
-		autoExpandRepo,
-		preloadedRepos,
-		preloadedInvocations,
-	} = options;
+	const { user, email, owners, rows, filter, sidebarTree } = options;
 	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
-	const tree = renderOwnerTree(
-		ownerSummaries,
-		autoExpand,
-		autoExpandRepo,
-		preloadedRepos,
-		preloadedInvocations,
-	);
 	const content = html`
   <div class="page-header">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      ${renderScopeLabel(filter)}
+    </nav>
     <h1>Dashboard</h1>
   </div>
 
-  <div class="dashboard-tree">
-    ${tree}
+  <div class="list">
+    ${renderInvocationList(rows)}
   </div>`;
 
 	return renderLayout(
@@ -294,16 +228,16 @@ function renderDashboardPage(options: DashboardPageOptions) {
 			email,
 			owners,
 			head,
+			...(sidebarTree ? { sidebarTree } : {}),
 		},
 		content,
 	);
 }
 
-export type { InvocationRow, OwnerSummaryItem, RepoSummaryItem };
+export type { InvocationRow };
 export {
 	formatDurationUs,
 	renderDashboardPage,
 	renderInvocationList,
-	renderOwnerTree,
-	renderRepoList,
+	sortInvocationRows,
 };

@@ -328,6 +328,11 @@ document.addEventListener("DOMContentLoaded", () => {
 		details.addEventListener("toggle", () => {
 			initForm(details);
 		});
+		// Server-rendered `<details open>` (e.g. the single-trigger page)
+		// never fires `toggle` — initialize inline so the form appears.
+		if (details.open) {
+			initForm(details);
+		}
 	}
 	for (const btn of document.querySelectorAll(
 		".submit-btn[data-trigger-url]",

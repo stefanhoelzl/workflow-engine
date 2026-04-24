@@ -53,13 +53,18 @@ interface LayoutOptions {
 	// Retained for tests that supply it — the dashboard/trigger drill-down
 	// tree now surfaces owners in-page, so no topbar selector is rendered.
 	owners?: readonly string[];
+	// Optional pre-rendered sidebar tree (owner → repo links) for the
+	// active surface. Rendered below the top-level nav; see
+	// `ui/sidebar-tree.ts`.
+	sidebarTree?: HtmlEscapedString | Promise<HtmlEscapedString>;
 }
 
 function renderLayout(
 	options: LayoutOptions,
 	content: HtmlEscapedString | Promise<HtmlEscapedString>,
 ) {
-	const { title, activePath, user, email, head, bodyAttrs } = options;
+	const { title, activePath, user, email, head, bodyAttrs, sidebarTree } =
+		options;
 
 	const displayName = user || "anonymous";
 	const userSection = user
@@ -105,7 +110,11 @@ ${head ?? ""}
   </div>
 
   <nav class="sidebar">
-    ${renderNav(activePath)}
+    ${
+			sidebarTree
+				? html`<div class="sidebar-tree-wrap">${sidebarTree}</div>`
+				: html`<div class="sidebar-nav">${renderNav(activePath)}</div>`
+		}
   </nav>
 
   <div class="main-content">

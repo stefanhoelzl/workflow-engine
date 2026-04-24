@@ -11,21 +11,30 @@ The runtime SHALL resolve authenticated callers into a `UserContext` object with
 
 ```
 UserContext = {
-  name:  string   // GitHub login, from GET /user
+  login: string   // GitHub login handle (e.g. "alice"), from GET /user
   mail:  string   // GitHub email, from GET /user (may be "")
-  orgs:  string[] // GitHub org logins, from GET /user/orgs
+  orgs:  string[] // GitHub-identity namespaces the user can act as
 }
 ```
 
-`UserContext.teams` SHALL NOT exist. No capability consumes teams; `GET /user/teams` SHALL NOT be called on any auth code path. The field names `name`/`mail` are retained from the pre-existing runtime convention (where `UserContext.name` has always held the GitHub login string and `UserContext.mail` the verified email).
+`UserContext.orgs` SHALL contain the union of (a) the user's own `login` and (b) every GitHub org membership returned by `GET /user/orgs`. Authentication providers SHALL populate this list with the user's login included — callers (membership checks, UI selectors) SHALL treat the list as the authoritative set of owners the user can publish to or view, without special-casing the self-login separately.
 
-#### Scenario: UserContext carries name, mail, orgs only
+`UserContext.teams` SHALL NOT exist. No capability consumes teams; `GET /user/teams` SHALL NOT be called on any auth code path.
+
+#### Scenario: UserContext carries login, mail, and orgs including self
 
 - **GIVEN** a user whose GitHub profile is `{ login: "alice", email: "alice@acme.test" }` and whose `/user/orgs` returns `[{ login: "acme" }]`
 - **WHEN** the runtime resolves their `UserContext`
-- **THEN** it SHALL be `{ name: "alice", mail: "alice@acme.test", orgs: ["acme"] }`
+- **THEN** it SHALL be `{ login: "alice", mail: "alice@acme.test", orgs: ["alice", "acme"] }`
+- **AND** the `orgs` list SHALL contain `alice` even though GitHub's `/user/orgs` did not return it
 - **AND** the object SHALL NOT have a `teams` property
 
+#### Scenario: User with no org memberships
+
+- **GIVEN** a user whose GitHub profile is `{ login: "bob", email: "" }` and whose `/user/orgs` returns `[]`
+- **WHEN** the runtime resolves their `UserContext`
+- **THEN** it SHALL be `{ login: "bob", mail: "", orgs: ["bob"] }`
+- **AND** `orgs` SHALL contain exactly one element, the user's own login
 ### Requirement: AuthProvider interface
 
 The runtime SHALL expose an `AuthProvider` interface that captures every per-request behavior of an authentication provider:
@@ -296,95 +305,105 @@ The grammar SHALL NOT contain a sentinel for "auth disabled". Empty/unset `AUTH_
 - **WHEN** the runtime starts with `AUTH_ALLOW = "local:alice:acme,foo"`
 - **THEN** `buildRegistry` SHALL throw (via the local factory's `create`) an error containing `orgs use '|' separator`
 
-### Requirement: isMember tenant predicate
+### Requirement: isMember owner predicate
 
-The runtime SHALL expose an `isMember(user, tenant)` predicate that returns true if and only if the `tenant` string passes `validateTenant(tenant)` AND `tenant` is either `user.name` or an element of `user.orgs`. The tenant identifier regex is `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`.
+The runtime SHALL expose an `isMember(user, owner)` predicate that returns true if and only if the `owner` string passes `validateOwner(owner)` AND `owner` is an element of `user.orgs`. The owner identifier regex is `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`.
 
-This predicate scopes *which tenants an already-allowed user can act as*. It is orthogonal to `allow(user)` — both MUST pass for tenant-scoped write operations. Teams are NOT consulted.
+Because `UserContext.orgs` contains the user's own login, `isMember(user, user.login)` SHALL return true via the normal `orgs.includes(owner)` path. There SHALL NOT be a separate check against `user.login`.
+
+This predicate scopes *which owners an already-allowed user can act as*. It is orthogonal to `allow(user)` — both MUST pass for owner-scoped write operations. Teams are NOT consulted.
 
 #### Scenario: Personal namespace grants membership
 
-- **GIVEN** `user = { login: "alice", email: "", orgs: [] }`
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice"] }`
 - **WHEN** `isMember(user, "alice")` is called
-- **THEN** it SHALL return true
+- **THEN** it SHALL return true via the `orgs.includes` check
 
 #### Scenario: Org namespace grants membership
 
-- **GIVEN** `user = { login: "alice", email: "", orgs: ["acme"] }`
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice", "acme"] }`
 - **WHEN** `isMember(user, "acme")` is called
 - **THEN** it SHALL return true
 
 #### Scenario: Non-member denied
 
-- **GIVEN** `user = { login: "alice", email: "", orgs: ["acme"] }`
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice", "acme"] }`
 - **WHEN** `isMember(user, "victim")` is called
 - **THEN** it SHALL return false
 
-#### Scenario: Invalid tenant identifier denied regardless of membership
+#### Scenario: Invalid owner identifier denied regardless of membership
 
-- **GIVEN** `user = { login: "../etc/passwd", email: "", orgs: [] }`
+- **GIVEN** `user = { login: "../etc/passwd", mail: "", orgs: ["../etc/passwd"] }`
 - **WHEN** `isMember(user, "../etc/passwd")` is called
-- **THEN** it SHALL return false
+- **THEN** it SHALL return false because the regex validation rejects the identifier first
+### Requirement: Owner-authorization middleware
 
-### Requirement: Tenant-authorization middleware
-
-The runtime SHALL expose a `requireTenantMember()` Hono middleware factory in the `auth` capability. The middleware SHALL enforce the tenant-isolation invariant (SECURITY.md §4) for any route that accepts a `:tenant` path parameter, returning `404 Not Found` fail-closed on any failure mode (invalid identifier, non-member, or missing user).
+The runtime SHALL expose a `requireOwnerMember()` Hono middleware factory in the `auth` capability. The middleware SHALL enforce the owner/repo-isolation invariant (SECURITY.md §4) for any route that accepts a `:owner` path parameter (optionally followed by a `:repo` path parameter), returning `404 Not Found` fail-closed on any failure mode (invalid identifier, non-member, or missing user).
 
 Evaluation order inside the middleware:
 
-1. Read `c.req.param("tenant")`. If the value does not satisfy `validateTenant` (regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), respond with `c.notFound()`. This check SHALL run before any other check, because the regex is a path-safety guarantee, not an authorization check.
-2. If `user = c.get("user")` is set and `isMember(user, tenant)` returns true, call `next()`.
-3. Otherwise, respond with `c.notFound()`.
+1. Read `c.req.param("owner")`. If the value does not satisfy `validateOwner` (regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`), respond with `c.notFound()`. This check SHALL run before any other check, because the regex is a path-safety guarantee, not an authorization check.
+2. If the route also has a `:repo` parameter, read `c.req.param("repo")`. If the value does not satisfy `validateRepo` (regex `^[a-zA-Z0-9._-]{1,100}$`), respond with `c.notFound()`. A missing `:repo` parameter on a route that does not declare it is normal and SHALL NOT cause a 404.
+3. If `user = c.get("user")` is set and `isMember(user, owner)` returns true, call `next()`.
+4. Otherwise, respond with `c.notFound()`.
 
-The middleware SHALL NOT branch on any open-mode flag; the `authOpen` `ContextVariableMap` field SHALL NOT exist. Authentication is now binary: either a `UserContext` is set (by some provider) or it is not.
+The middleware SHALL NOT perform a separate per-`repo` authorization check; owner-membership implies access to all repos under that owner. Finer-grained repo-level access control is explicitly out of scope (see SECURITY.md non-goals).
 
 The middleware SHALL NOT hardcode a response body. Each Hono sub-app that mounts the middleware SHALL register an `app.notFound(c => c.json({error:"Not Found"}, 404))` handler so that 404 responses carry a uniform JSON body across `/api/*` and `/trigger/*`.
 
-The middleware SHALL read only the path parameter named `tenant`. It SHALL NOT accept configuration for a different parameter name or a custom accessor — all tenant-scoped routes SHALL use the path parameter name `tenant`.
+The following routes SHALL enforce owner membership by mounting `requireOwnerMember()` and SHALL NOT perform the regex + `isMember` check inline in their handlers:
 
-The following routes SHALL enforce tenant membership by mounting `requireTenantMember()` and SHALL NOT perform the `validateTenant` + `isMember` check inline in their handlers:
+- `POST /api/workflows/:owner/:repo` (mounted in `api/index.ts`).
+- `POST /trigger/:owner/:repo/:workflow/:trigger` (mounted in `ui/trigger/middleware.ts` on the `/trigger`-basePath sub-app).
 
-- `POST /api/workflows/:tenant` (mounted in `api/index.ts`).
-- `POST /trigger/:tenant/:workflow/:trigger` (mounted in `ui/trigger/middleware.ts` on the `/trigger`-basePath sub-app at `/:tenant/*`).
+Any future route that accepts `:owner` or `:owner/:repo` path parameters SHALL mount `requireOwnerMember()` on the corresponding subpath. Inline owner-authorization checks in individual route handlers SHALL be treated as a defect.
 
-Any future route that accepts a `:tenant` path parameter SHALL mount `requireTenantMember()` on the corresponding subpath. Inline tenant-authorization checks in individual route handlers SHALL be treated as a defect.
+#### Scenario: Invalid owner identifier returns 404
 
-#### Scenario: Invalid tenant identifier returns 404
-
-- **GIVEN** `requireTenantMember()` is mounted on `/workflows/:tenant` in the `/api` sub-app
-- **WHEN** a request arrives at `POST /api/workflows/../etc/passwd`
+- **GIVEN** `requireOwnerMember()` is mounted on `/workflows/:owner/:repo` in the `/api` sub-app
+- **WHEN** a request arrives at `POST /api/workflows/../etc/passwd/foo`
 - **THEN** the middleware SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
 - **AND** the handler SHALL NOT be invoked
-- **AND** the response SHALL be indistinguishable from the response for a non-existent tenant
+- **AND** the response SHALL be indistinguishable from the response for a non-existent owner
+
+#### Scenario: Invalid repo identifier returns 404
+
+- **WHEN** a request arrives at `POST /api/workflows/acme/..%2Fbad`
+- **THEN** the middleware SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
+- **AND** the handler SHALL NOT be invoked
 
 #### Scenario: Non-member returns 404
 
-- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
-- **WHEN** a request to `POST /api/workflows/victim` arrives from alice (who is not a member of victim)
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
-- **AND** the response SHALL be indistinguishable from the response for a tenant that does not exist
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice", "acme"] }` is set on the request context
+- **WHEN** a request to `POST /api/workflows/victim/foo` arrives from alice (who is not a member of victim)
+- **THEN** `requireOwnerMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
+- **AND** the response SHALL be indistinguishable from the response for an owner that does not exist
 
 #### Scenario: Member passes to handler
 
-- **GIVEN** `user = { name: "alice", mail: "", orgs: ["acme"] }` is set on the request context
-- **WHEN** a request to `POST /api/workflows/acme` arrives from alice
-- **THEN** `requireTenantMember()` SHALL call `next()` without modifying the response
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice", "acme"] }` is set on the request context
+- **WHEN** a request to `POST /api/workflows/acme/foo` arrives from alice
+- **THEN** `requireOwnerMember()` SHALL call `next()` without modifying the response
 - **AND** the upload handler SHALL receive the request
+
+#### Scenario: Owner membership covers all repos under that owner
+
+- **GIVEN** `user = { login: "alice", mail: "", orgs: ["alice", "acme"] }`
+- **WHEN** requests arrive at `POST /api/workflows/acme/foo` and `POST /api/workflows/acme/bar`
+- **THEN** both SHALL pass `requireOwnerMember()` (no per-repo check)
 
 #### Scenario: Missing user returns 404
 
-- **WHEN** a request to `POST /api/workflows/acme` arrives with no `user` on the context (e.g., authn middleware failed to populate it)
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
-- **AND** the middleware SHALL NOT fall through to the handler
+- **WHEN** a request to `POST /api/workflows/acme/foo` arrives with no `user` on the context
+- **THEN** `requireOwnerMember()` SHALL respond with `404 Not Found` and body `{"error":"Not Found"}`
 
 #### Scenario: Trigger POST uses same middleware
 
-- **GIVEN** `requireTenantMember()` is mounted on `/:tenant/*` of the `/trigger`-basePath sub-app
-- **AND** `user = { name: "alice", mail: "", orgs: [] }` is set
-- **WHEN** a request to `POST /trigger/victim/wf/tr` arrives from alice
-- **THEN** `requireTenantMember()` SHALL respond with `404 Not Found`
+- **GIVEN** `requireOwnerMember()` is mounted on the `/trigger`-basePath sub-app
+- **AND** `user = { login: "alice", mail: "", orgs: ["alice"] }` is set
+- **WHEN** a request to `POST /trigger/victim/repo/wf/tr` arrives from alice
+- **THEN** `requireOwnerMember()` SHALL respond with `404 Not Found`
 - **AND** the body SHALL be `{"error":"Not Found"}`
-
 ### Requirement: GitHub OAuth scope
 
 The runtime SHALL request GitHub OAuth scope `user:email read:org` when constructing the authorize URL. This scope set SHALL be sufficient to populate `UserContext.login`, `UserContext.email`, and `UserContext.orgs` including private-org memberships.
@@ -505,45 +524,48 @@ The `session` cookie SHALL have:
 - **Path**: `/`
 - **HttpOnly**: true
 - **Secure**: true (except when `LOCAL_DEPLOYMENT=1` is set, in which case Secure MAY be false)
-- **SameSite**: `Lax` (required for the OAuth redirect back from `github.com` to carry the cookie)
+- **SameSite**: `Lax`
 - **Max-Age**: 604800 (7 days hard TTL)
 - **Payload (sealed)**:
   ```
   {
-    provider:    "github" | "local"   // identifies which provider minted this session
-    name:        string
+    provider:    "github" | "local"
+    login:       string               // GitHub login, was `name` in the prior shape
     mail:        string
-    orgs:        string[]
-    accessToken: string               // GitHub OAuth access token; "" for local sessions
-    resolvedAt:  number               // ms since epoch of last refresh
-    exp:         number               // ms since epoch of hard expiry
+    orgs:        string[]             // includes the user's own login
+    accessToken: string
+    resolvedAt:  number
+    exp:         number
   }
   ```
 
-The `provider` field SHALL be required; sealed payloads lacking it SHALL fail to unseal and SHALL cause the request to be treated as unauthenticated. There SHALL NOT be an implicit default value.
+The `provider` field SHALL be required; sealed payloads lacking it SHALL fail to unseal and SHALL cause the request to be treated as unauthenticated.
+
+The `login` field SHALL be required; sealed payloads produced by a prior runtime version that carried `name` SHALL fail to unseal. Because the session seal password rotates on every pod restart (see "Session cookie sealing"), no backward-compat decoding SHALL be implemented — cookies minted by the old code are automatically invalidated when the pod restarts to the new code.
 
 The sealed cookie SHALL be no larger than 4096 bytes; if the payload would exceed that after sealing, the runtime SHALL log an error and abort the session.
 
-#### Scenario: github session payload carries provider field
+#### Scenario: github session payload carries provider and login
 
 - **GIVEN** a user who completes the github OAuth flow with `{ login: "alice", email: "a@x", orgs: ["acme"] }`
 - **WHEN** the github callback handler seals the session cookie
-- **THEN** the payload SHALL contain `provider: "github"`, `name`, `mail`, `orgs`, `accessToken`, `resolvedAt`, and `exp`
+- **THEN** the payload SHALL contain `provider: "github"`, `login: "alice"`, `mail`, `orgs: ["alice", "acme"]`, `accessToken`, `resolvedAt`, and `exp`
+- **AND** `orgs` SHALL include the user's own login `alice`
 
-#### Scenario: local session payload carries provider field
+#### Scenario: local session payload carries provider and login
 
 - **GIVEN** a local user `dev` selected via the local provider's signin form
 - **WHEN** `POST /auth/local/signin` seals the session cookie
-- **THEN** the payload SHALL contain `provider: "local"`, `name: "dev"`, `mail: "dev@dev.local"`, `orgs: []`, `accessToken: ""`, `resolvedAt`, and `exp`
+- **THEN** the payload SHALL contain `provider: "local"`, `login: "dev"`, `mail: "dev@dev.local"`, `orgs: ["dev"]`, `accessToken: ""`, `resolvedAt`, and `exp`
+- **AND** `orgs` SHALL include `dev` even when the local entry declared no additional memberships
 
-#### Scenario: Pre-migration session cookie fails to unseal
+#### Scenario: Pre-rename session cookie fails to unseal
 
-- **GIVEN** a session cookie sealed by a prior runtime version that did not include the `provider` field
-- **WHEN** the cookie is presented to `sessionMw`
-- **THEN** unsealing SHALL fail and the request SHALL be treated as unauthenticated
+- **GIVEN** a session cookie sealed by a prior runtime version that used `name` instead of `login`
+- **WHEN** the cookie is presented to `sessionMw` after a pod restart
+- **THEN** unsealing SHALL fail (new seal password invalidates the old cookie)
 - **AND** the session cookie SHALL be cleared
 - **AND** the response SHALL be `302 Found` with `Location: /login?returnTo=...`
-
 ### Requirement: State cookie contract
 
 The `auth_state` cookie carries CSRF protection and post-login redirect target for the OAuth handshake. It SHALL have:
@@ -938,4 +960,3 @@ Changes to this capability that introduce new threats, weaken or remove a docume
 - **WHEN** the change does not affect any item enumerated in `/SECURITY.md §4` or `/SECURITY.md §1`
 - **THEN** no update to `/SECURITY.md` is required
 - **AND** the proposal SHALL note that threat-model alignment was checked
-

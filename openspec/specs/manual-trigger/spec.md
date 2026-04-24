@@ -96,49 +96,44 @@ The HTTP trigger source SHALL continue to partition its registered entries by ki
 
 ### Requirement: Manual fire via /trigger UI dispatches through executor
 
-The trigger-ui middleware's `POST /trigger/<tenant>/<workflow>/<trigger-name>` handler SHALL resolve a manual `TriggerEntry` via `registry.getEntry(tenant, workflow, trigger)` and call `entry.fire(body)` with the JSON-decoded request body. The `buildFire` closure SHALL validate the body against `descriptor.inputSchema` and dispatch through the shared executor. Validation failures SHALL return `422 Unprocessable Entity` with the Zod issues; success SHALL return `200 OK` with `{ ok: true, output }`; internal errors SHALL return `500 Internal Server Error` with the error details.
+The `/trigger` UI SHALL dispatch manual fires via `POST /trigger/:owner/:repo/:workflow/:trigger` with a JSON body matching the trigger's `input` schema. The runtime SHALL:
 
-Concurrent fires for the same `(tenant, workflow.sha)` SHALL serialise through the existing `RunQueue` shared with HTTP and cron invocations; no coalescing or dropping SHALL occur.
+1. Validate `:owner` and `:repo` against their regexes; reject with `404` on failure.
+2. Enforce owner-membership via `requireOwnerMember()` middleware; reject with `404` on failure.
+3. Resolve the trigger entry via the manual trigger source's read-only accessor keyed by `(owner, repo, workflow, trigger)`; reject with `404` if no entry exists.
+4. Invoke the entry's `fire(input)` callback and respond with the resulting `InvokeResult`.
 
-#### Scenario: Manual fire produces an invocation via the executor
+The manual fire path SHALL NOT bypass owner-authorization. Two users belonging to different owners SHALL NOT be able to dispatch each other's triggers.
 
-- **GIVEN** a tenant `acme` with workflow `ops` containing `export const rerun = manualTrigger({ handler: async () => "done" })`
-- **AND** an authenticated session whose user is a member of `acme`
-- **WHEN** the client issues `POST /trigger/acme/ops/rerun` with body `{}`
-- **THEN** the trigger-ui middleware SHALL call `entry.fire({})` exactly once
-- **AND** the executor SHALL dispatch through the sandbox as an ordinary invocation
-- **AND** the response SHALL be `200 OK` with `{ ok: true, output: "done" }`
-- **AND** an `InvocationEvent` with `kind: "trigger.request"` (and subsequent `trigger.response`) SHALL be emitted with `tenant: "acme"`, `workflow: "ops"`, `name: "rerun"` stamped by the executor
+#### Scenario: Authorized user fires a manual trigger in their owner
 
-#### Scenario: Manual fire validates body against inputSchema
+- **GIVEN** user `alice` is a member of `acme`, and `(acme, foo)` has a manual trigger `runBatch`
+- **WHEN** alice posts to `POST /trigger/acme/foo/batchWorkflow/runBatch` with a valid body
+- **THEN** the runtime SHALL call the trigger's `fire(input)` and return its `InvokeResult`
 
-- **GIVEN** a manual trigger declared with `input: z.object({ id: z.string() })`
-- **WHEN** the client posts `{ id: 42 }` (wrong type) to `/trigger/<t>/<w>/<name>`
-- **THEN** the response SHALL be `422 Unprocessable Entity`
-- **AND** the body SHALL contain `{ error: "payload_validation_failed", issues: [...] }`
-- **AND** the handler SHALL NOT be invoked
+#### Scenario: Non-member is denied with 404
 
-#### Scenario: Manual fire serialises through the runQueue
+- **GIVEN** user `alice` is NOT a member of `victim-org`
+- **WHEN** alice posts to `POST /trigger/victim-org/foo/wf/tr` with any body
+- **THEN** the runtime SHALL respond `404 Not Found`
+- **AND** the response SHALL be indistinguishable from the response for a non-existent owner
 
-- **GIVEN** a workflow whose manual trigger is mid-invocation (holding the per-`(tenant, workflow.sha)` runQueue)
-- **WHEN** a second manual fire arrives for the same workflow
-- **THEN** the second fire SHALL enqueue on the runQueue
-- **AND** SHALL execute sequentially after the in-flight invocation completes
-- **AND** both invocations SHALL appear in the archive
+#### Scenario: Missing entry returns 404
 
+- **GIVEN** alice is a member of `acme` but `(acme, foo)` has no manual trigger named `ghost`
+- **WHEN** alice posts to `POST /trigger/acme/foo/wf/ghost`
+- **THEN** the runtime SHALL respond `404 Not Found`
 ### Requirement: Manual triggers carry no audit identity on events
 
-The runtime SHALL NOT stamp the firing user's identity (name, email, or OAuth subject) onto any event emitted during a manual-trigger invocation. `InvocationEvent`s for manual fires SHALL carry the same intrinsic metadata set as any other trigger kind: `id`, `tenant`, `workflow`, `workflowSha`, `kind`, `seq`, `ref`, `at`, `ts`, `name`, and the kind-appropriate `input`/`output`/`error` fields. No `firedBy` or equivalent field SHALL be added to `InvocationEvent` for this change.
+Manual fire invocations SHALL have their dispatching user identity captured via the `meta.dispatch.user` field on the `trigger.request` event (see `invocations` spec). The manual trigger source SHALL NOT stamp or embed any additional user identity into the `trigger.request` input or any subsequent event. Workflow handler code SHALL NOT see the dispatching user's identity directly — it reads only the `input` it was called with.
 
-The trigger-ui middleware SHALL NOT emit an additional structured log line attributing the fire to the session user. Authentication access logs remain the authoritative audit record for "who fired what, when."
+#### Scenario: Manual fire by authenticated user produces meta.dispatch
 
-#### Scenario: Event shape matches other trigger kinds
-
-- **GIVEN** a manual trigger fired by an authenticated user
-- **WHEN** the resulting `InvocationEvent`s are inspected
-- **THEN** no event SHALL contain a `firedBy`, `invokedBy`, `user`, or `email` field
-- **AND** the event shape SHALL be identical to the shape emitted by an equivalent cron-fired invocation
-
+- **GIVEN** authenticated user `alice` fires a manual trigger in `(acme, foo)`
+- **WHEN** the `trigger.request` event is emitted
+- **THEN** the event SHALL carry `meta.dispatch = { source: "manual", user: { login: "alice", mail } }`
+- **AND** `owner` SHALL be `acme` and `repo` SHALL be `foo` (stamped by the widener)
+- **AND** the `input` passed to the handler SHALL NOT contain `dispatch` or `user` fields
 ### Requirement: Trigger kind icon for manual triggers
 
 The trigger-ui page SHALL render a distinct icon for manual-kind trigger cards via the `KIND_ICONS` map. The icon SHALL be a person glyph (U+1F464 BUST IN SILHOUETTE) or an equivalent person-themed glyph that is visually distinct from the http (`🌐`) and cron (`⏰`) icons.

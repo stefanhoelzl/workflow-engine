@@ -10,22 +10,31 @@ import type {
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
-import { renderRepoTriggerPage, renderTriggerTreePage } from "./page.js";
+import { buildSidebarData, renderSidebarBoth } from "../sidebar-tree.js";
+import {
+	renderRepoTriggerCards,
+	renderRepoTriggerPage,
+	renderSingleTriggerPage,
+	renderTriggerIndexPage,
+} from "./page.js";
 
 // ---------------------------------------------------------------------------
 // /trigger/* — operator UI for manually firing registered triggers
 // ---------------------------------------------------------------------------
 //
 // Mirrors the dashboard's three-level drill-down:
-//   GET /trigger                        — owners the caller can see
-//   GET /trigger/:owner                 — repos under that owner
-//   GET /trigger/:owner/:repo           — trigger cards for that repo
+//   GET /trigger                        — tree of owners
+//   GET /trigger/:owner                 — owner expanded; repos inline-
+//                                         expandable (HTMX-lazy trigger cards)
+//   GET /trigger/:owner/:repo           — focused leaf page (trigger cards)
+//   GET /trigger/:owner/repos           — HTMX fragment: repo list
+//   GET /trigger/:owner/:repo/cards     — HTMX fragment: trigger cards
 //   POST /trigger/:owner/:repo/:workflow/:trigger
 //                                       — kind-agnostic manual fire
 //
-// HTTP-trigger cards still submit to `/trigger/:owner/:repo/<workflow>/
-// <trigger>` so the session user can be captured as dispatch provenance
-// (the public `/webhooks/...` URL remains the external entry point).
+// HTTP-trigger cards still submit to the kind-agnostic /trigger/* endpoint
+// so the session user is captured as dispatch provenance (the public
+// /webhooks/... URL remains the external ingress).
 //
 // SECURITY (§4): mounted under `/trigger/*`, which is protected by the
 // in-app `sessionMw` that reads the sealed session cookie set by the
@@ -94,7 +103,7 @@ function buildDispatch(c: Context): DispatchMeta {
 	return { source: "manual" };
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires four GET drill-down levels plus the kind-agnostic POST; splitting fragments the handler flow
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires four GET drill-down levels + two HTMX fragments + kind-agnostic POST; splitting fragments the handler flow
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
 	app.use("*", deps.sessionMw);
@@ -104,55 +113,137 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	app.use("/:owner/:repo", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 
+	// biome-ignore lint/complexity/useMaxParams: active-state fields are orthogonal URL facets
+	function buildSidebar(
+		owners: readonly string[],
+		activeOwner?: string,
+		activeRepo?: string,
+		activeWorkflow?: string,
+		activeTrigger?: string,
+	) {
+		const data = buildSidebarData(deps.registry, owners);
+		return renderSidebarBoth(data, {
+			surface: "/trigger",
+			...(activeOwner ? { owner: activeOwner } : {}),
+			...(activeRepo ? { repo: activeRepo } : {}),
+			...(activeWorkflow ? { workflow: activeWorkflow } : {}),
+			...(activeTrigger ? { trigger: activeTrigger } : {}),
+		});
+	}
+
+	// -- Root: /trigger ----------------------------------------------------
 	const renderRoot = (c: Context) => {
 		const user = c.get("user");
 		const owners = sortedOwners(c);
-		// Present each owner as a node; the repo list is lazy-loaded on
-		// expand via /trigger/:owner when the user navigates there. With one
-		// owner we send the operator straight to that owner's page for fewer
-		// clicks.
+		const reposByOwner: Record<string, readonly string[]> = {};
+		for (const o of owners) {
+			reposByOwner[o] = deps.registry.repos(o);
+		}
+		// Auto-expand when the user has exactly one non-empty owner.
+		const nonEmpty = owners.filter((o) => reposByOwner[o]?.length);
+		const autoExpand = nonEmpty.length === 1 ? nonEmpty[0] : undefined;
 		return c.html(
-			renderTriggerTreePage({
+			renderTriggerIndexPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				reposByOwner: {},
+				reposByOwner,
+				...(autoExpand ? { autoExpand } : {}),
+				sidebarTree: buildSidebar(owners, autoExpand),
 			}),
 		);
 	};
 	app.get("/", renderRoot);
 	app.get("", renderRoot);
 
+	// -- /trigger/:owner -- owner expanded; repos show trigger cards inline
 	app.get("/:owner", (c) => {
 		const owner = c.req.param("owner");
 		const user = c.get("user");
 		const owners = sortedOwners(c);
-		const repos = deps.registry.repos(owner);
+		const reposByOwner: Record<string, readonly string[]> = {};
+		for (const o of owners) {
+			reposByOwner[o] = deps.registry.repos(o);
+		}
+		const repos = reposByOwner[owner] ?? [];
+		// Pre-load the single-repo case so no skeleton flash.
+		const autoExpandRepo = repos.length === 1 ? repos[0] : undefined;
+		const preloadedEntries = autoExpandRepo
+			? deps.registry.list(owner, autoExpandRepo)
+			: undefined;
 		return c.html(
-			renderTriggerTreePage({
+			renderTriggerIndexPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				reposByOwner: { [owner]: repos },
+				reposByOwner,
 				autoExpand: owner,
+				...(autoExpandRepo ? { autoExpandRepo } : {}),
+				...(preloadedEntries ? { preloadedEntries } : {}),
+				sidebarTree: buildSidebar(owners, owner),
 			}),
 		);
 	});
 
+	// -- /trigger/:owner/repos -- HTMX fragment (repo list for owner) ----
+	app.get("/:owner/repos", (c) => {
+		const owner = c.req.param("owner");
+		const repos = deps.registry.repos(owner);
+		const fragment = renderTriggerIndexPage.repoListFragment(owner, repos);
+		return c.html(fragment);
+	});
+
+	// -- /trigger/:owner/:repo -- focused leaf page ----------------------
 	app.get("/:owner/:repo", (c) => {
 		const owner = c.req.param("owner");
 		const repo = c.req.param("repo");
 		const user = c.get("user");
-		const scopedEntries = deps.registry.list(owner, repo);
 		const owners = sortedOwners(c);
+		const entries = deps.registry.list(owner, repo);
 		return c.html(
 			renderRepoTriggerPage({
-				entries: scopedEntries,
+				entries,
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
 				owner,
 				repo,
+				sidebarTree: buildSidebar(owners, owner, repo),
+			}),
+		);
+	});
+
+	// -- /trigger/:owner/:repo/cards -- HTMX fragment (trigger cards) ----
+	app.get("/:owner/:repo/cards", (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const entries = deps.registry.list(owner, repo);
+		return c.html(renderRepoTriggerCards(entries));
+	});
+
+	// -- /trigger/:owner/:repo/:workflow/:trigger -- single-trigger page -
+	// Renders only the named trigger's card, pre-expanded. The same path
+	// also handles POST (manual fire) further down; Hono dispatches by
+	// method.
+	app.get("/:owner/:repo/:workflow/:trigger", (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const workflow = c.req.param("workflow");
+		const trigger = c.req.param("trigger");
+		const user = c.get("user");
+		const owners = sortedOwners(c);
+		const entries = deps.registry.list(owner, repo);
+		return c.html(
+			renderSingleTriggerPage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				owner,
+				repo,
+				workflow,
+				trigger,
+				entries,
+				sidebarTree: buildSidebar(owners, owner, repo, workflow, trigger),
 			}),
 		);
 	});
