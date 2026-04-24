@@ -616,7 +616,8 @@ runtime's internal scheduler (`packages/runtime/src/triggers/cron.ts`) —
 there is no external caller, no external URL, and no untrusted input crosses
 a network boundary at fire time (the handler receives an empty payload `{}`).
 Cron triggers are exposed only via the authenticated `/trigger` UI's
-"Run now" affordance, which sits behind oauth2-proxy + `isMember` (§4).
+"Run now" affordance, which sits behind `sessionMiddleware` +
+`requireTenantMember` (§4).
 
 ### Entry points
 
@@ -1427,7 +1428,6 @@ capabilities it does not need.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-H1 | `/oauth2/*` pages served by the sidecar do not carry our headers | Same-origin pages without our CSP | Accepted — minimal scripting surface, maintained upstream |
 | R-H2 | No CSP `report-to` / `report-uri` + ingestion endpoint | Violations surface only in browser devtools | Accepted — add only if repeated regressions motivate it |
 | R-H3 | Not on HSTS preload list | Browsers not pre-seeded with HTTPS-only must see one response first | Accepted — keeps a path to back out within a year |
 

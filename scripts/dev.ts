@@ -318,6 +318,7 @@ async function main(): Promise<void> {
 	}
 
 	await runUpload(port);
+	console.log(`Dev ready on http://localhost:${String(port)} (tenant=dev)`);
 	watchWorkflows(port);
 	watchRuntime(
 		port,
