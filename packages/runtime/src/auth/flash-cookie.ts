@@ -5,11 +5,9 @@ type FlashPayload =
 	| {
 			readonly kind: "denied";
 			readonly login: string;
-			readonly provider: "github" | "local";
 	  }
 	| {
 			readonly kind: "logged-out";
-			readonly provider?: "github" | "local";
 	  };
 
 const flashCookie = createSealedCookie<FlashPayload>(SIXTY_SECONDS_MS);

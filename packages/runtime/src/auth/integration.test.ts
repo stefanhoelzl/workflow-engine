@@ -158,7 +158,10 @@ describe("integration: github sign-in flow", () => {
 		const html = await login.text();
 		expect(html).toContain("Not authorized");
 		expect(html).toContain("eve");
-		expect(html).toContain("github.com/logout");
+		expect(html).toContain('href="https://github.com/logout"');
+		expect(html).toContain('target="_blank"');
+		expect(html).toContain('rel="noopener noreferrer"');
+		expect(html).not.toContain("btn--secondary");
 	});
 });
 

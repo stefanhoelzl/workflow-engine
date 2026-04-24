@@ -18,7 +18,9 @@ function bannerFor(flash: FlashPayload): BannerContent {
 			heading: "Not authorized.",
 			bodyBase: html`You signed in as <code>${flash.login}</code>, but
       this instance does not grant you access. Contact the administrator
-      if you believe this is an error.`,
+      if you believe this is an error. To try a different account,
+      <a href="https://github.com/logout" target="_blank"
+         rel="noopener noreferrer">sign out of GitHub</a> first.`,
 		};
 	}
 	return {
@@ -33,8 +35,6 @@ interface LoginPageProps {
 	readonly flash: FlashPayload | undefined;
 	readonly returnTo: string;
 	readonly sections: readonly LoginSection[];
-	readonly flashBody: LoginSection | undefined;
-	readonly flashAction: LoginSection | undefined;
 }
 
 function renderLoginPage(
@@ -61,13 +61,11 @@ function renderLoginPage(
 				? html`<div class="auth-card__banner" role="${banner.role}">
       <strong>${banner.heading}</strong>
       ${banner.bodyBase}
-      ${props.flashBody ?? ""}
     </div>`
 				: ""
 		}
     <div class="auth-card__actions">
       ${props.sections}
-      ${props.flashAction ?? ""}
     </div>
   </main>
 </body>

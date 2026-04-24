@@ -142,7 +142,6 @@ describe("GET /login", () => {
 		const flash = await sealFlash({
 			kind: "denied",
 			login: "eve",
-			provider: "github",
 		});
 		const res = await app.request("/login", {
 			headers: { cookie: `${FLASH_COOKIE}=${flash}` },
@@ -151,6 +150,10 @@ describe("GET /login", () => {
 		const html = await res.text();
 		expect(html).toContain("eve");
 		expect(html).toContain("Not authorized");
+		expect(html).toContain('href="https://github.com/logout"');
+		expect(html).toContain('target="_blank"');
+		expect(html).toContain('rel="noopener noreferrer"');
+		expect(html).not.toContain("btn--secondary");
 		const cleared = findCookie(getSetCookies(res), FLASH_COOKIE);
 		expect(cleared).toContain("Max-Age=0");
 	});
@@ -333,7 +336,7 @@ describe("/auth/logout", () => {
 		expect(res.status).toBe(405);
 	});
 
-	it("login page after github logout renders the GitHub-specific copy + secondary link", async () => {
+	it("login page after github logout renders a clean signed-out banner with no GitHub logout affordance", async () => {
 		const app = mount({ authAllow: GH_ALLOW });
 		const now = 1_700_000_000_000;
 		const sealedSession = await sealSession({
@@ -359,40 +362,12 @@ describe("/auth/logout", () => {
 		const html = await loginRes.text();
 		expect(html).toContain("Signed out");
 		expect(html).toContain("Sign in with GitHub");
-		expect(html).toContain("github.com/logout");
-		expect(html).toContain("GitHub may");
-	});
-
-	it("login page after local logout omits GitHub-specific copy and secondary link", async () => {
-		const app = mount({ authAllow: "local:dev" });
-		const now = 1_700_000_000_000;
-		const sealedSession = await sealSession({
-			provider: "local",
-			login: "dev",
-			mail: "dev@dev.local",
-			orgs: [],
-			accessToken: "",
-			resolvedAt: now,
-			exp: now + SEVEN_DAYS_MS,
-		} satisfies SessionPayload);
-		const logoutRes = await app.request("/auth/logout", {
-			method: "POST",
-			headers: { cookie: `${SESSION_COOKIE}=${sealedSession}` },
-		});
-		const flash = findCookie(getSetCookies(logoutRes), FLASH_COOKIE);
-		const flashValue =
-			flash?.split(";")[0]?.split("=").slice(1).join("=") ?? "";
-		const loginRes = await app.request("/login", {
-			headers: { cookie: `${FLASH_COOKIE}=${flashValue}` },
-		});
-		expect(loginRes.status).toBe(200);
-		const html = await loginRes.text();
-		expect(html).toContain("Signed out");
 		expect(html).not.toContain("github.com/logout");
+		expect(html).not.toContain("Sign out of GitHub");
 		expect(html).not.toContain("GitHub may");
 	});
 
-	it("login page after sessionless logout omits GitHub-specific copy", async () => {
+	it("login page after sessionless logout is a clean signed-out banner", async () => {
 		const app = mount({ authAllow: "local:dev" });
 		const logoutRes = await app.request("/auth/logout", { method: "POST" });
 		const flash = findCookie(getSetCookies(logoutRes), FLASH_COOKIE);

@@ -12,7 +12,6 @@ import {
 } from "./constants.js";
 import { sealFlash, unsealFlash } from "./flash-cookie.js";
 import type { ProviderRegistry } from "./providers/index.js";
-import { unsealSession } from "./session-cookie.js";
 import { sanitizeReturnTo } from "./state-cookie.js";
 
 interface LoginPageOptions {
@@ -56,14 +55,7 @@ function loginPageMiddleware(options: LoginPageOptions): Middleware {
 		const sections = options.registry.providers.map((p) =>
 			p.renderLoginSection(returnTo),
 		);
-		const flashProvider = flash?.provider
-			? options.registry.byId(flash.provider)
-			: undefined;
-		const flashBody = flashProvider?.renderFlashBody?.();
-		const flashAction = flashProvider?.renderFlashAction?.();
-		return c.html(
-			renderLoginPage({ flash, returnTo, sections, flashBody, flashAction }),
-		);
+		return c.html(renderLoginPage({ flash, returnTo, sections }));
 	});
 
 	return {
@@ -84,24 +76,9 @@ function authMiddleware(options: AuthRoutesOptions): Middleware {
 
 	// Logout is provider-agnostic: clear session, set logged-out flash, redirect
 	// to /login. See SECURITY.md §4 / spec for why we redirect to /login (not /).
-	// We tag the flash with the session's provider so the login page can omit
-	// the GitHub-specific "may still be signed in to github.com" copy when the
-	// session was local.
 	app.post("/logout", async (c) => {
-		const sessionRaw = getCookie(c, SESSION_COOKIE);
-		let provider: "github" | "local" | undefined;
-		if (sessionRaw !== undefined) {
-			try {
-				provider = (await unsealSession(sessionRaw)).provider;
-			} catch {
-				provider = undefined;
-			}
-		}
 		deleteCookie(c, SESSION_COOKIE, clearOpts("/", secure));
-		const flash = await sealFlash({
-			kind: "logged-out",
-			...(provider ? { provider } : {}),
-		});
+		const flash = await sealFlash({ kind: "logged-out" });
 		setCookie(c, FLASH_COOKIE, flash, writeOpts("/", secure, SIXTY_SECONDS));
 		return c.redirect(LOGIN_PATH);
 	});

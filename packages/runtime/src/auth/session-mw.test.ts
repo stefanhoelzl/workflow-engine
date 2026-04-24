@@ -205,7 +205,6 @@ describe("sessionMiddleware", () => {
 		await expect(unsealFlash(flashValue)).resolves.toEqual({
 			kind: "denied",
 			login: "alice",
-			provider: "github",
 		});
 	});
 

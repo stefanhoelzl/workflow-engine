@@ -204,7 +204,6 @@ function buildCallback(
 			const flash = await sealFlash({
 				kind: "denied",
 				login: user.login,
-				provider: "github",
 			});
 			setCookie(
 				c,
@@ -237,7 +236,6 @@ function buildCallback(
 	};
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory wires every public method of the AuthProvider; splitting fragments the contract
 function createGithubProvider(
 	rawEntries: readonly string[],
 	rawDeps: ProviderRouteDeps,
@@ -257,17 +255,6 @@ function createGithubProvider(
 		renderLoginSection(returnTo: string): LoginSection {
 			const href = `/auth/github/signin?returnTo=${encodeURIComponent(returnTo)}`;
 			return html`<a href="${href}" class="btn btn--primary">Sign in with GitHub</a>`;
-		},
-
-		renderFlashBody(): LoginSection {
-			return html`GitHub may still consider this browser signed in to your
-GitHub account — sign out of GitHub too if you want to fully end the
-session or switch accounts.`;
-		},
-
-		renderFlashAction(): LoginSection {
-			return html`<a href="https://github.com/logout" class="btn btn--secondary"
-   rel="noopener noreferrer" target="_blank">Sign out of GitHub</a>`;
 		},
 
 		mountAuthRoutes(app: Hono): void {
