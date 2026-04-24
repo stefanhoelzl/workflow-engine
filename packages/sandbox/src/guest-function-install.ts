@@ -334,19 +334,25 @@ function resolveLog(descriptor: GuestFunctionDescription): LogConfig {
  *   installed here. Plugin `source` (Phase 2) runs between — the capture
  *   window for private bindings.
  */
-function installGuestFunction(
+/**
+ * Build the host-callback closure for a guest-function descriptor. Both
+ * the init path (`vm.newFunction(name, fn)`) and the snapshot-restore
+ * rebind path (`vm.registerHostCallback(name, fn)`) construct the same
+ * closure shape via this helper — it captures `vm` + `ctx` so the
+ * restored VM's handlers see the fresh VM/bridge identities.
+ */
+function buildGuestFunctionHandler(
 	vm: QuickJS,
 	ctx: SandboxContext,
 	descriptor: GuestFunctionDescription,
-	target: JSValueHandle = vm.global,
-): void {
+): (...handles: JSValueHandle[]) => JSValueHandle {
 	const log = resolveLog(descriptor);
 	// Cast handler to a uniform unknown-arg signature — the descriptor's
 	// typed ArgSpec shape is enforced by the test harness/author, not the
 	// runtime, so the VM-side invocation path treats args as opaque values.
 	type AnyHandler = (...args: readonly unknown[]) => unknown;
 	const handler = descriptor.handler as unknown as AnyHandler;
-	const fn = vm.newFunction(descriptor.name, (...handles) => {
+	return (...handles) => {
 		const args = unmarshalArgs(vm, descriptor.name, descriptor.args, handles);
 		const invoke = () => handler(...args);
 		const eventName = descriptor.logName
@@ -372,7 +378,19 @@ function installGuestFunction(
 			invoke,
 		);
 		return marshalResult(vm, descriptor.name, descriptor.result, raw);
-	});
+	};
+}
+
+function installGuestFunction(
+	vm: QuickJS,
+	ctx: SandboxContext,
+	descriptor: GuestFunctionDescription,
+	target: JSValueHandle = vm.global,
+): void {
+	const fn = vm.newFunction(
+		descriptor.name,
+		buildGuestFunctionHandler(vm, ctx, descriptor),
+	);
 	vm.setProp(target, descriptor.name, fn);
 	fn.dispose();
 }
@@ -397,6 +415,7 @@ function installGuestFunctions(
 }
 
 export {
+	buildGuestFunctionHandler,
 	CallableDisposedError,
 	GuestArgTypeMismatchError,
 	GuestValidationError,
