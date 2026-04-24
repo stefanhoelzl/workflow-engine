@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { build } from "./build.js";
+import {
+	MissingSecretEnvError,
+	PublicKeyFetchError,
+	sealBundleIfNeeded,
+} from "./seal.js";
 
 const TRAILING_SLASHES = /\/+$/;
 const TENANT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
@@ -109,13 +114,12 @@ function formatFailure(failure: UploadFailure): string {
 	return lines.join("\n");
 }
 
-async function uploadBundle(
+async function uploadBundleBytes(
 	url: string,
 	tenant: string,
-	path: string,
+	body: Uint8Array,
 	auth: { user?: string | undefined; token?: string | undefined },
 ): Promise<UploadFailure | null> {
-	const body = await readFile(path);
 	const headers: Record<string, string> = {
 		"Content-Type": "application/gzip",
 	};
@@ -133,7 +137,7 @@ async function uploadBundle(
 			{
 				method: "POST",
 				headers,
-				body,
+				body: body as BodyInit,
 			},
 		);
 	} catch (error) {
@@ -152,6 +156,23 @@ async function uploadBundle(
 		: { tenant, status: response.status, error };
 }
 
+function sealFailureToUploadFailure(
+	err: unknown,
+	tenant: string,
+): UploadFailure {
+	if (err instanceof MissingSecretEnvError) {
+		return { tenant, status: "network-error", error: err.message };
+	}
+	if (err instanceof PublicKeyFetchError) {
+		return { tenant, status: err.status, error: err.message };
+	}
+	return {
+		tenant,
+		status: "network-error",
+		error: err instanceof Error ? err.message : String(err),
+	};
+}
+
 async function upload(options: UploadOptions): Promise<UploadResult> {
 	if (options.user !== undefined && options.token !== undefined) {
 		throw new Error(
@@ -168,8 +189,7 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 	await build({ cwd: options.cwd });
 
 	const bundlePath = join(options.cwd, "dist", "bundle.tar.gz");
-	// Throws if absent — build() above should have produced it.
-	await readFile(bundlePath);
+	const bundleBytes = await readFile(bundlePath);
 
 	let resolvedToken = options.token;
 	if (resolvedToken === undefined && options.user === undefined) {
@@ -178,10 +198,30 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 		resolvedToken = envToken && envToken.length > 0 ? envToken : undefined;
 	}
 
-	const failure = await uploadBundle(options.url, options.tenant, bundlePath, {
-		user: options.user,
-		token: resolvedToken,
-	});
+	const auth = { user: options.user, token: resolvedToken };
+
+	let toUpload: Uint8Array = bundleBytes;
+	try {
+		// Sealing fetches the public-key endpoint — server-side auth is the
+		// same bearer/user pair the upload will use.
+		toUpload = await sealBundleIfNeeded(bundleBytes, {
+			url: options.url,
+			tenant: options.tenant,
+			auth,
+		});
+	} catch (err) {
+		const failure = sealFailureToUploadFailure(err, options.tenant);
+		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+		console.error(formatFailure(failure));
+		return { uploaded: 0, failed: 1 };
+	}
+
+	const failure = await uploadBundleBytes(
+		options.url,
+		options.tenant,
+		toUpload,
+		auth,
+	);
 	if (failure === null) {
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
 		console.error(`✓ ${options.tenant}`);

@@ -306,6 +306,13 @@ interface BuiltManifest {
 	module: string;
 	sha: string;
 	env: Record<string, string>;
+	// Names of env bindings declared with `env({secret: true})`. The CLI
+	// fetches the server public key at upload, seals each value from its
+	// own `process.env[name]`, writes `manifest.secrets` + `secretsKeyId`,
+	// and DELETES `secretBindings` before POSTing. The server's
+	// `ManifestSchema` rejects bundles whose manifests still contain this
+	// field (it is an intermediate build-artifact key only).
+	secretBindings?: string[];
 	actions: ManifestActionEntry[];
 	triggers: ManifestTriggerEntry[];
 }
@@ -626,6 +633,7 @@ function buildManualTriggerEntry(
 	};
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: manifest assembly threads discovery → validation → per-kind entry builders; each step is already a named helper
 function buildManifest(
 	mod: Record<string, unknown>,
 	filestem: string,
@@ -647,8 +655,24 @@ function buildManifest(
 	}
 
 	const workflow = workflowEntries[0]?.[1];
-	const name = workflow?.name ?? filestem;
+	// Empty string means "no explicit name" — post-refactor, defineWorkflow
+	// returns `name: ""` rather than `undefined` when the config omits `name`,
+	// so we fall back to the filestem via a truthy check.
+	const name = workflow?.name || filestem;
 	const env: Record<string, string> = workflow ? { ...workflow.env } : {};
+
+	// Read the symbol-branded list of secret envNames the SDK's
+	// defineWorkflow attached to the workflow at build time. Cross-VM
+	// context safe because `Symbol.for` returns the same symbol across
+	// contexts in the same process.
+	const secretBindingsSymbol = Symbol.for(
+		"@workflow-engine/workflow-secret-bindings",
+	);
+	const secretBindings = workflow
+		? ((workflow as unknown as Record<symbol, unknown>)[secretBindingsSymbol] as
+				| readonly string[]
+				| undefined)
+		: undefined;
 
 	const actions = buildActionEntries(actionEntries, name, ctx);
 	const triggers: ManifestTriggerEntry[] = [
@@ -661,7 +685,7 @@ function buildManifest(
 		),
 	];
 
-	return {
+	const built: BuiltManifest = {
 		name,
 		module: `${name}.js`,
 		sha,
@@ -669,6 +693,10 @@ function buildManifest(
 		actions,
 		triggers,
 	};
+	if (secretBindings !== undefined && secretBindings.length > 0) {
+		built.secretBindings = [...secretBindings];
+	}
+	return built;
 }
 
 // Schema-like detection: Zod schemas have a `parse` function and a `_zod`

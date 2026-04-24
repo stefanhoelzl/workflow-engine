@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { InvocationEvent } from "@workflow-engine/core";
+import { computeKeyId, type InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
+import sodium from "libsodium-wrappers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -12,6 +13,7 @@ import { createExecutor, type Executor } from "./executor/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
+import { createKeyStore, readySodium } from "./secrets/index.js";
 import { createFsStorage } from "./storage/fs.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
@@ -86,6 +88,7 @@ describe("end-to-end event flow", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "integration-test-"));
+		await readySodium();
 	});
 
 	afterEach(async () => {
@@ -109,7 +112,20 @@ describe("end-to-end event flow", () => {
 		const bus = createEventBus([persistence, store]);
 
 		const sandboxFactory = createSandboxFactory({ logger });
-		sandboxStore = createSandboxStore({ sandboxFactory, logger });
+		const stubKeyStore = {
+			getPrimary: () => ({
+				keyId: "0000000000000000",
+				pk: new Uint8Array(32),
+				sk: new Uint8Array(32),
+			}),
+			lookup: () => undefined,
+			allKeyIds: () => ["0000000000000000"],
+		};
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore: stubKeyStore,
+		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
 		await registry.registerTenant(
@@ -206,7 +222,18 @@ describe("end-to-end event flow", () => {
 		const bus = createEventBus([persistence, store]);
 
 		const sandboxFactory = createSandboxFactory({ logger });
-		sandboxStore = createSandboxStore({ sandboxFactory, logger });
+		// Pre-existing integration test predates the secrets feature; wire in
+		// a dummy keyStore since sandbox-store now requires it (no manifest
+		// secrets are declared here, so the store is never consulted).
+		const integrationKp = sodium.crypto_box_keypair();
+		const integrationKeyStore = createKeyStore(
+			`k1:${Buffer.from(integrationKp.privateKey).toString("base64")}`,
+		);
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore: integrationKeyStore,
+		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
 		await registry.registerTenant(
@@ -771,5 +798,284 @@ describe("manual trigger integration", () => {
 		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeUndefined();
 
 		await manualSource.stop();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Workflow-secrets end-to-end: the plaintext of a manifest-sealed secret must
+// never leave the sandbox through any outbound `WorkerToMain` message. This
+// exercises the full pipeline — sandbox-store decrypt → secrets plugin
+// install of `globalThis.workflow.env.X` → guest reads the value and puts it
+// into the trigger response → `onPost` scrubber → done payload → archive.
+// A regression in any layer (scrubber not wired, wired but invoked after
+// event stamping, wrong plugin order, decrypt skipped, env not merged) will
+// leave the plaintext somewhere in the archived event list and fail this
+// test.
+// ---------------------------------------------------------------------------
+
+const SECRET_WORKFLOW_SHA = "2".repeat(64);
+const SECRET_PLAINTEXT = "super-secret-plaintext-value-do-not-leak";
+
+const LEAK_BUNDLE = `
+var __wfe_exports__ = (function(exports) {
+  exports.leak = Object.assign(
+    async () => ({
+      status: 200,
+      body: { value: globalThis.workflow.env.MY_SECRET },
+    }),
+    { body: { parse: (x) => x }, schema: { parse: (x) => x } },
+  );
+  return exports;
+})({});
+`;
+
+describe("workflow-secrets end-to-end scrubbing", () => {
+	let dir: string;
+	let registry: WorkflowRegistry;
+	let store: EventStore;
+	let sandboxStore: SandboxStore;
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "integration-secrets-"));
+		await readySodium();
+	});
+
+	afterEach(async () => {
+		registry?.dispose();
+		sandboxStore?.dispose();
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it("plaintext of a sealed secret is never emitted in archived events", async () => {
+		// Generate a real keypair and seal the plaintext with crypto_box_seal.
+		const kp = sodium.crypto_box_keypair();
+		const keyId = await computeKeyId(kp.publicKey);
+		const ciphertext = sodium.crypto_box_seal(SECRET_PLAINTEXT, kp.publicKey);
+		const ciphertextB64 = Buffer.from(ciphertext).toString("base64");
+		const skB64 = Buffer.from(kp.privateKey).toString("base64");
+
+		const manifest = {
+			workflows: [
+				{
+					name: "leak",
+					module: "leak.js",
+					sha: SECRET_WORKFLOW_SHA,
+					env: {},
+					secrets: { MY_SECRET: ciphertextB64 },
+					secretsKeyId: keyId,
+					actions: [],
+					triggers: [
+						{
+							name: "leak",
+							type: "http",
+							path: "leak",
+							method: "POST",
+							body: { type: "object" },
+							params: [],
+							inputSchema: { type: "object" },
+							outputSchema: { type: "object" },
+						},
+					],
+				},
+			],
+		};
+
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		store = await createEventStore({
+			persistence: { backend },
+			logger,
+		});
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		const sandboxFactory = createSandboxFactory({ logger });
+		const keyStore = createKeyStore(`primary:${skB64}`);
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore,
+		});
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({ logger, executor });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(manifest)],
+				["leak.js", LEAK_BUNDLE],
+			]),
+		);
+
+		const entry = registry.list("acme")[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "leak");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a leak trigger descriptor");
+		}
+
+		const result = await executor.invoke(
+			"acme",
+			entry.workflow,
+			descriptor,
+			{ body: {} },
+			{ bundleSource: entry.bundleSource },
+		);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) {
+			throw new Error("invoke failed");
+		}
+
+		// The `done` payload crosses worker→main via `post()`, which runs
+		// `onPost`. The scrubber must have replaced the plaintext returned
+		// from the guest with `[secret]` before we see it here.
+		const output = result.output as { status: number; body: { value: string } };
+		expect(output.body.value).toBe("[secret]");
+
+		// Settle any onEvent forwarding.
+		await new Promise((r) => setImmediate(r));
+
+		// Read the archive and verify: plaintext appears nowhere; `[secret]`
+		// appears at least once. Serializing the whole archive as a string
+		// is the tightest assertion — any plaintext in any field of any
+		// event (output, input, meta, error, whatever) would show up.
+		const archiveFiles: string[] = [];
+		for await (const p of backend.list("archive/")) {
+			archiveFiles.push(p);
+		}
+		expect(archiveFiles.length).toBeGreaterThan(0);
+		const archiveBlobs = await Promise.all(
+			archiveFiles.map((f) => backend.read(f)),
+		);
+		const allArchived = archiveBlobs.join("\n");
+		expect(allArchived).not.toContain(SECRET_PLAINTEXT);
+		expect(allArchived).toContain("[secret]");
+	});
+
+	// Exercises the runtime `$secrets.addSecret` path (SDK's `secret()` escape
+	// hatch) end-to-end through a real sandbox. Two regressions this guards:
+	//
+	//  1. Phase-3 delete of the private `$secrets/addSecret` global vs.
+	//     dynamic-vs-closure-capture in the Phase-2 wrapper: if the wrapper
+	//     loses the binding, `addSecret` silently no-ops and
+	//     `activePlaintexts` never grows, so the plaintext crosses the
+	//     boundary unredacted.
+	//
+	//  2. `.request` event fires BEFORE the handler appends to
+	//     `activePlaintexts`, so the input of `$secrets/addSecret.request`
+	//     would itself carry the plaintext unless the descriptor redacts
+	//     input via `logInput`.
+	const RUNTIME_SECRET_SHA = "3".repeat(64);
+	const RUNTIME_SECRET_PLAINTEXT = "runtime-minted-plaintext-do-not-leak";
+	const RUNTIME_SECRET_BUNDLE = `
+var __wfe_exports__ = (function(exports) {
+  exports.leak = Object.assign(
+    async () => {
+      const v = ${JSON.stringify(RUNTIME_SECRET_PLAINTEXT)};
+      globalThis.$secrets.addSecret(v);
+      console.log("minted", v);
+      return { status: 200, body: { value: v } };
+    },
+    { body: { parse: (x) => x }, schema: { parse: (x) => x } },
+  );
+  return exports;
+})({});
+`;
+
+	it("plaintext registered via $secrets.addSecret is never emitted in archived events", async () => {
+		const manifest = {
+			workflows: [
+				{
+					name: "leak",
+					module: "leak.js",
+					sha: RUNTIME_SECRET_SHA,
+					env: {},
+					actions: [],
+					triggers: [
+						{
+							name: "leak",
+							type: "http",
+							path: "leak",
+							method: "POST",
+							body: { type: "object" },
+							params: [],
+							inputSchema: { type: "object" },
+							outputSchema: { type: "object" },
+						},
+					],
+				},
+			],
+		};
+
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		store = await createEventStore({
+			persistence: { backend },
+			logger,
+		});
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		const sandboxFactory = createSandboxFactory({ logger });
+		// No sealed-secret manifest → any non-empty CSV satisfies config;
+		// generate one fresh keypair for the keyStore.
+		const kp = sodium.crypto_box_keypair();
+		const skB64 = Buffer.from(kp.privateKey).toString("base64");
+		const keyStore = createKeyStore(`primary:${skB64}`);
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore,
+		});
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({ logger, executor });
+		await registry.registerTenant(
+			"acme",
+			new Map([
+				["manifest.json", JSON.stringify(manifest)],
+				["leak.js", RUNTIME_SECRET_BUNDLE],
+			]),
+		);
+
+		const entry = registry.list("acme")[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "leak");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a leak trigger descriptor");
+		}
+
+		const result = await executor.invoke(
+			"acme",
+			entry.workflow,
+			descriptor,
+			{ body: {} },
+			{ bundleSource: entry.bundleSource },
+		);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) {
+			throw new Error("invoke failed");
+		}
+
+		const output = result.output as { status: number; body: { value: string } };
+		expect(output.body.value).toBe("[secret]");
+
+		await new Promise((r) => setImmediate(r));
+
+		const archiveFiles: string[] = [];
+		for await (const p of backend.list("archive/")) {
+			archiveFiles.push(p);
+		}
+		expect(archiveFiles.length).toBeGreaterThan(0);
+		const archiveBlobs = await Promise.all(
+			archiveFiles.map((f) => backend.read(f)),
+		);
+		const allArchived = archiveBlobs.join("\n");
+		expect(allArchived).not.toContain(RUNTIME_SECRET_PLAINTEXT);
+		expect(allArchived).toContain("[secret]");
 	});
 });

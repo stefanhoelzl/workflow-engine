@@ -716,3 +716,92 @@ export const bad = action({
 		).rejects.toThrow(ERR_NOT_ZOD_SCHEMA);
 	});
 });
+
+describe("workflowPlugin: secret bindings", () => {
+	const WITH_SECRETS = `
+import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow({
+	env: {
+		REGION: env({ default: "us-east-1" }),
+		TOKEN: env({ name: "TOKEN", secret: true }),
+		STRIPE_KEY: env({ secret: true }),
+	},
+});
+
+export const call = action({
+	input: z.object({}),
+	output: z.object({}),
+	handler: async () => ({}),
+});
+`;
+
+	const PLAINTEXT_ONLY = `
+import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow({
+	env: {
+		REGION: env({ default: "us-east-1" }),
+	},
+});
+
+export const call = action({
+	input: z.object({}),
+	output: z.object({}),
+	handler: async () => ({}),
+});
+`;
+
+	it("routes secret bindings into manifest.secretBindings, not manifest.env", async () => {
+		const { outDir } = await buildFixture({
+			files: { "s.ts": WITH_SECRETS },
+			workflows: ["./s.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "s")) as {
+			env: Record<string, string>;
+			secretBindings?: string[];
+		};
+		// Plaintext env stays in manifest.env.
+		expect(manifest.env).toEqual({ REGION: "us-east-1" });
+		// Secret envNames land in manifest.secretBindings (order not guaranteed).
+		expect(manifest.secretBindings).toBeDefined();
+		expect(new Set(manifest.secretBindings)).toEqual(
+			new Set(["TOKEN", "STRIPE_KEY"]),
+		);
+	});
+
+	it("does not include a secret's plaintext value anywhere in the bundle", async () => {
+		// Set a value in the host env that would be resolved for a plaintext
+		// binding but MUST be skipped for a secret binding.
+		// biome-ignore lint/style/noProcessEnv: test-only; restores below
+		process.env.TOKEN = "SHOULD_NOT_APPEAR";
+		try {
+			const { outDir } = await buildFixture({
+				files: { "s.ts": WITH_SECRETS },
+				workflows: ["./s.ts"],
+			});
+			const bundleSrc = await readWorkflowBundleSource(outDir, "s");
+			const manifestRaw = JSON.stringify(
+				await readWorkflowManifest(outDir, "s"),
+			);
+			expect(bundleSrc).not.toContain("SHOULD_NOT_APPEAR");
+			expect(manifestRaw).not.toContain("SHOULD_NOT_APPEAR");
+		} finally {
+			// biome-ignore lint/style/noProcessEnv: test-only restore
+			process.env.TOKEN = undefined;
+		}
+	});
+
+	it("omits secretBindings when no secret env is declared", async () => {
+		const { outDir } = await buildFixture({
+			files: { "p.ts": PLAINTEXT_ONLY },
+			workflows: ["./p.ts"],
+		});
+		const manifest = (await readWorkflowManifest(outDir, "p")) as {
+			env: Record<string, string>;
+			secretBindings?: string[];
+		};
+		expect(manifest.env).toEqual({ REGION: "us-east-1" });
+		expect(manifest.secretBindings).toBeUndefined();
+	});
+});

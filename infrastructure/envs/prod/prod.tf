@@ -176,6 +176,8 @@ module "app" {
     client_secret = var.github_oauth_client_secret
   }
 
+  secrets_private_keys = data.terraform_remote_state.persistence.outputs.secrets_private_keys
+
   network = {
     domain     = var.domain
     https_port = 443

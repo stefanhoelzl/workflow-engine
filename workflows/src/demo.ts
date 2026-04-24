@@ -5,12 +5,14 @@ import {
 	env,
 	httpTrigger,
 	manualTrigger,
+	secret,
 	z,
 } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow({
 	env: {
 		GREETING_PREFIX: env({ default: "Hello" }),
+		WEBHOOK_TOKEN: env({ secret: true }),
 	},
 });
 
@@ -73,6 +75,39 @@ export const parseUrl = action({
 	},
 });
 
+export const signedPing = action({
+	input: z.object({ subject: z.string() }),
+	output: z.object({ sig: z.string() }),
+	handler: async ({ subject }) => {
+		const hexRadix = 16;
+		const hexPad = 2;
+		const nonce = crypto.randomUUID();
+		const material = `${nonce}.${subject}`;
+		const key = await crypto.subtle.importKey(
+			"raw",
+			new TextEncoder().encode(workflow.env.WEBHOOK_TOKEN),
+			{ name: "HMAC", hash: "SHA-256" },
+			false,
+			["sign"],
+		);
+		const sigBytes = await crypto.subtle.sign(
+			"HMAC",
+			key,
+			new TextEncoder().encode(material),
+		);
+		const sig = secret(
+			Array.from(new Uint8Array(sigBytes))
+				.map((b) => b.toString(hexRadix).padStart(hexPad, "0"))
+				.join(""),
+		);
+		// biome-ignore lint/suspicious/noConsole: intentional — demo.ts exercises the scrubber by logging known plaintexts
+		console.log(
+			`signing ${subject} with ${workflow.env.WEBHOOK_TOKEN}; sig=${sig}`,
+		);
+		return { sig };
+	},
+});
+
 export const fetchEcho = action({
 	input: z.object({ payload: z.object({ hello: z.string() }) }),
 	output: z.object({ get: z.unknown(), post: z.unknown() }),
@@ -107,6 +142,7 @@ export const runDemo = action({
 			host: z.string(),
 			query: z.record(z.string(), z.string()),
 		}),
+		signed: z.object({ sig: z.string() }),
 		fetched: z.object({ get: z.unknown(), post: z.unknown() }),
 	}),
 	handler: async ({ name }) => {
@@ -118,6 +154,7 @@ export const runDemo = action({
 		const parsed = await parseUrl({
 			url: `https://example.com/path?who=${encodeURIComponent(name)}`,
 		});
+		const signed = await signedPing({ subject: name });
 		const fetched = await fetchEcho({ payload: { hello: name } });
 		return {
 			greeting,
@@ -126,6 +163,7 @@ export const runDemo = action({
 			uuid: uuidResult,
 			delay: delayed,
 			parsed,
+			signed,
 			fetched,
 		};
 	},

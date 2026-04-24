@@ -1,7 +1,12 @@
 import { constants } from "node:http2";
+import { ManifestSchema } from "@workflow-engine/core";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Logger } from "../logger.js";
+import {
+	type SecretsKeyStore,
+	verifyManifestSecrets,
+} from "../secrets/index.js";
 import {
 	extractTenantTarGz,
 	type RegisterResult,
@@ -48,6 +53,7 @@ const HTTP_INTERNAL_ERROR =
 interface UploadDeps {
 	readonly registry: WorkflowRegistry;
 	readonly logger: Logger;
+	readonly keyStore: SecretsKeyStore;
 }
 
 function failureResponse(
@@ -79,6 +85,47 @@ function failureResponse(
 	return c.json(payload, HTTP_UNPROCESSABLE_ENTITY);
 }
 
+/**
+ * Decrypt-verify any sealed workflow secrets before handing the bundle
+ * to the registry. Parses manifest.json here (duplicating one pass of the
+ * registry's manifest read) to keep crypto out of the registry module.
+ * Returns a 400-ready error payload, or null if secrets pass or aren't
+ * present. Errors unrelated to secrets (missing manifest.json, schema
+ * violation) fall through — the registry re-reports them uniformly.
+ */
+function verifySecretsIfPresent(
+	files: Map<string, string>,
+	tenant: string,
+	keyStore: SecretsKeyStore,
+): Record<string, unknown> | null {
+	const manifestRaw = files.get("manifest.json");
+	if (manifestRaw === undefined) {
+		return null;
+	}
+	const parsed = ManifestSchema.safeParse(JSON.parse(manifestRaw));
+	if (!parsed.success) {
+		return null;
+	}
+	const failure = verifyManifestSecrets(parsed.data, keyStore);
+	if (failure === null) {
+		return null;
+	}
+	if (failure.kind === "unknown_secret_key_id") {
+		return {
+			error: "unknown_secret_key_id",
+			tenant,
+			workflow: failure.workflow,
+			keyId: failure.keyId,
+		};
+	}
+	return {
+		error: "secret_decrypt_failed",
+		tenant,
+		workflow: failure.workflow,
+		envName: failure.envName,
+	};
+}
+
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
 		const tenant = c.req.param("tenant") ?? "";
@@ -93,6 +140,11 @@ function createUploadHandler(deps: UploadDeps) {
 				{ error: "Not a valid gzip/tar archive" },
 				HTTP_UNSUPPORTED_MEDIA_TYPE,
 			);
+		}
+
+		const secretsVerify = verifySecretsIfPresent(files, tenant, deps.keyStore);
+		if (secretsVerify !== null) {
+			return c.json(secretsVerify, HTTP_BAD_REQUEST);
 		}
 
 		const result = await deps.registry.registerTenant(tenant, files, {

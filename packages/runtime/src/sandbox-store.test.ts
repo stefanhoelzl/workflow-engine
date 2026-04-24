@@ -3,6 +3,17 @@ import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "./logger.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
+import type { SecretsKeyStore } from "./secrets/index.js";
+
+const stubKeyStore: SecretsKeyStore = {
+	getPrimary: () => ({
+		keyId: "0000000000000000",
+		pk: new Uint8Array(32),
+		sk: new Uint8Array(32),
+	}),
+	lookup: () => undefined,
+	allKeyIds: () => ["0000000000000000"],
+};
 
 function makeLogger(): Logger {
 	return {
@@ -67,7 +78,11 @@ var __wfe_exports__ = (function(exports) {
 function makeStore(): SandboxStore {
 	const logger = makeLogger();
 	const factory = createSandboxFactory({ logger });
-	return createSandboxStore({ sandboxFactory: factory, logger });
+	return createSandboxStore({
+		sandboxFactory: factory,
+		logger,
+		keyStore: stubKeyStore,
+	});
 }
 
 describe("sandbox-store: caching", () => {
@@ -321,5 +336,105 @@ describe("sandbox-store: orphan survives re-upload", () => {
 		// with the original sha returns the same instance.
 		const v1Again = await store.get("acme", WORKFLOW, BUNDLE_SOURCE);
 		expect(v1Again).toBe(v1);
+	});
+});
+
+describe("sandbox-store: secrets plugin end-to-end", () => {
+	let store: SandboxStore;
+
+	afterEach(() => {
+		store?.dispose();
+	});
+
+	it("populates workflow.env from manifest.env and redacts plaintexts in outbound events", async () => {
+		const sodium = (await import("libsodium-wrappers")).default;
+		await sodium.ready;
+		const sk = sodium.randombytes_buf(32);
+		const pk = sodium.crypto_scalarmult_base(sk);
+		const { createKeyStore, readySodium } = await import("./secrets/index.js");
+		await readySodium();
+		const realKeyStore = createKeyStore(
+			`k1:${Buffer.from(sk).toString("base64")}`,
+		);
+		const primary = realKeyStore.getPrimary();
+
+		const plaintext = "PLAINTEXT_SECRET_VALUE";
+		const ct = sodium.crypto_box_seal(new TextEncoder().encode(plaintext), pk);
+
+		const logger = makeLogger();
+		const factory = createSandboxFactory({ logger });
+		store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: realKeyStore,
+		});
+
+		const workflow = {
+			name: "sec",
+			module: "sec.js",
+			sha: "c".repeat(64),
+			env: { REGION: "us-east-1" },
+			secrets: { TOKEN: Buffer.from(ct).toString("base64") },
+			secretsKeyId: primary.keyId,
+			actions: [
+				{
+					name: "reveal",
+					input: { type: "object" },
+					output: { type: "object" },
+				},
+			],
+			triggers: [
+				{
+					name: "onPing",
+					type: "http" as const,
+					method: "POST",
+					body: { type: "object" },
+					inputSchema: { type: "object" },
+					outputSchema: { type: "object" },
+				},
+			],
+		};
+		const bundle = `
+var __wfe_exports__ = (function(exports) {
+  exports.reveal = async (input) => globalThis.__sdk.dispatchAction(
+    "reveal",
+    input,
+    async () => ({
+      region: globalThis.workflow.env.REGION,
+      token: globalThis.workflow.env.TOKEN,
+    }),
+    (raw) => raw,
+  );
+  exports.onPing = Object.assign(
+    async (payload) => {
+      const r = await exports.reveal({});
+      return {
+        status: 200,
+        body: { tokenSeen: r.token, region: r.region },
+      };
+    },
+    { body: { parse: (x) => x }, schema: { parse: (x) => x } },
+  );
+  return exports;
+})({});
+`;
+
+		const sb = await store.get("t", workflow, bundle);
+		const events: SandboxEvent[] = [];
+		sb.onEvent((e) => {
+			events.push(e);
+		});
+		const result = await sb.run("onPing", { body: {} });
+		expect(result.ok).toBe(true);
+
+		// Wait for onEvent settles
+		await new Promise((r) => setImmediate(r));
+
+		// The handler read workflow.env.TOKEN (which has the plaintext) — the
+		// scrubber's onPost redacts every occurrence before events leave the
+		// worker. No archived event should contain the plaintext.
+		const allEventJson = JSON.stringify(events);
+		expect(allEventJson).not.toContain(plaintext);
+		expect(allEventJson).toContain("[secret]");
 	});
 });

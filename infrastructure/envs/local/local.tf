@@ -157,6 +157,8 @@ module "app_instance" {
     client_secret = var.github_oauth_client_secret
   }
 
+  secrets_private_keys = local.secrets_private_keys_csv
+
   network = {
     domain     = each.value.domain
     https_port = each.value.https_port

@@ -36,6 +36,7 @@ export type {
 } from "./plugin-types.js";
 export { Guest } from "./plugin-types.js";
 export { name as WASI_PLUGIN_NAME } from "./plugins/wasi-plugin.js";
+export type { WorkerToMain } from "./protocol.js";
 export type { Logger, RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
 export { sandbox } from "./sandbox.js";
 export type { LifecycleError } from "./sandbox-context.js";

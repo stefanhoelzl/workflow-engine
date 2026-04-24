@@ -7,8 +7,19 @@ import {
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
+import type { SecretsKeyStore } from "../secrets/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
+
+const stubKeyStore: SecretsKeyStore = {
+	getPrimary: () => ({
+		keyId: "0000000000000000",
+		pk: new Uint8Array(32),
+		sk: new Uint8Array(32),
+	}),
+	lookup: () => undefined,
+	allKeyIds: () => ["0000000000000000"],
+};
 
 const logger = {
 	info: vi.fn(),
@@ -47,6 +58,7 @@ function mountApi(opts: MountOpts) {
 		authRegistry,
 		registry,
 		logger,
+		keyStore: stubKeyStore,
 	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);

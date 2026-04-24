@@ -21,6 +21,7 @@ import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createSandboxStore } from "./sandbox-store.js";
+import { createKeyStore, readySodium } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
@@ -89,6 +90,10 @@ async function init() {
 	// biome-ignore lint/style/noProcessEnv: entry-point config
 	const config = createConfig(process.env);
 
+	// libsodium is WASM-backed; initialise once before building the key-store.
+	await readySodium();
+	const keyStore = createKeyStore(config.secretsPrivateKeys.reveal());
+
 	const runtimeLogger = createLogger("runtime", { level: config.logLevel });
 	const httpLogger = createHttpLogger("http", { level: config.logLevel });
 	const eventLogger = createLogger("events", { level: config.logLevel });
@@ -154,6 +159,7 @@ async function init() {
 	const sandboxStore = createSandboxStore({
 		sandboxFactory,
 		logger: runtimeLogger,
+		keyStore,
 	});
 
 	// 5. Create the executor (serializes per-(tenant, sha) invocations;
@@ -225,6 +231,7 @@ async function init() {
 			authRegistry,
 			registry,
 			logger: runtimeLogger,
+			keyStore,
 		}),
 	);
 

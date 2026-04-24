@@ -21,8 +21,11 @@ import sdkSupportPlugin from "../../sdk/src/sdk-support/index.ts?sandbox-plugin"
 import { compileActionValidators } from "./host-call-action-config.js";
 import type { Logger } from "./logger.js";
 import hostCallActionPlugin from "./plugins/host-call-action.ts?sandbox-plugin";
+import secretsPlugin from "./plugins/secrets.ts?sandbox-plugin";
 import triggerPlugin from "./plugins/trigger.ts?sandbox-plugin";
 import wasiTelemetryPlugin from "./plugins/wasi-telemetry.ts?sandbox-plugin";
+import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
+import type { SecretsKeyStore } from "./secrets/index.js";
 
 // Per-(tenant, sha) sandbox cache. Composes the production plugin list for
 // every entry: wasi → wasi-telemetry → web-platform → fetch → timers →
@@ -46,6 +49,7 @@ interface SandboxStore {
 interface SandboxStoreOptions {
 	readonly sandboxFactory: SandboxFactory;
 	readonly logger: Logger;
+	readonly keyStore: SecretsKeyStore;
 }
 
 function storeKey(tenant: string, sha: string): string {
@@ -54,6 +58,7 @@ function storeKey(tenant: string, sha: string): string {
 
 function buildPluginDescriptors(
 	workflow: WorkflowManifest,
+	keyStore: SecretsKeyStore,
 ): readonly PluginDescriptor[] {
 	// Per-plugin `Config` interfaces are structurally JSON-serializable but
 	// TS can't prove they satisfy the index-signature constraint of
@@ -62,9 +67,19 @@ function buildPluginDescriptors(
 	const hostCallActionConfig = compileActionValidators(
 		workflow,
 	) as unknown as PluginDescriptor["config"];
+	// Decrypt manifest.secrets once per sandbox — plaintexts live for the
+	// sandbox's lifetime (which is scoped to (tenant, workflow.sha), so
+	// the ciphertexts on the manifest would be stable anyway).
+	const plaintextStore = decryptWorkflowSecrets(workflow, keyStore);
+	const secretsConfig = {
+		name: workflow.name,
+		env: workflow.env,
+		plaintextStore,
+	} as unknown as PluginDescriptor["config"];
 	return [
 		{ ...wasiPlugin },
 		{ ...wasiTelemetryPlugin },
+		{ ...secretsPlugin, config: secretsConfig },
 		{ ...webPlatformPlugin },
 		{ ...fetchPlugin },
 		{ ...timersPlugin },
@@ -76,7 +91,7 @@ function buildPluginDescriptors(
 }
 
 function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
-	const { sandboxFactory } = options;
+	const { sandboxFactory, keyStore } = options;
 	const cache = new Map<string, Promise<Sandbox>>();
 
 	function build(
@@ -87,7 +102,7 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		return sandboxFactory.create({
 			source: bundleSource,
 			filename: `${workflow.name}.js`,
-			plugins: buildPluginDescriptors(workflow),
+			plugins: buildPluginDescriptors(workflow, keyStore),
 		});
 	}
 

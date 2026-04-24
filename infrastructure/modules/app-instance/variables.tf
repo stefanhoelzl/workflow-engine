@@ -60,6 +60,16 @@ variable "github_oauth" {
   description = "GitHub OAuth App credentials. Required when auth_allow resolves to restricted mode."
 }
 
+# CSV of `keyId:base64(sk)` entries, primary first. Delivered to the app pod
+# as `SECRETS_PRIVATE_KEYS` via a K8s Secret (`app-secrets-key`). The runtime
+# parses the list, derives each public key on demand, and uses the primary
+# key for sealing at upload + any listed key for decryption at invocation.
+variable "secrets_private_keys" {
+  type        = string
+  sensitive   = true
+  description = "CSV of `keyId:base64(sk)` entries for `SECRETS_PRIVATE_KEYS`. Primary (active sealing) key first."
+}
+
 variable "network" {
   type = object({
     domain     = string

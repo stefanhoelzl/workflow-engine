@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { EventKind, InvocationEvent } from "./index.js";
-import { IIFE_NAMESPACE, ManifestSchema } from "./index.js";
+import {
+	computeKeyId,
+	IIFE_NAMESPACE,
+	ManifestSchema,
+	SECRETS_KEY_ID_BYTES,
+} from "./index.js";
 import { makeEvent } from "./test-utils.js";
 
 describe("IIFE_NAMESPACE", () => {
@@ -220,5 +225,133 @@ describe("ManifestSchema manual trigger", () => {
 	it("rejects a manual entry with a non-URL-safe name", () => {
 		const bad = { ...validManual, name: "$weird" };
 		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+});
+
+describe("ManifestSchema secrets + secretsKeyId", () => {
+	const base = (overrides: Record<string, unknown> = {}) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: { REGION: "us-east-1" },
+				actions: [],
+				triggers: [],
+				...overrides,
+			},
+		],
+	});
+	const validKeyId = "a1b2c3d4e5f60718";
+	const cipher = "Y3Q="; // base64("ct")
+
+	it("accepts a manifest with matching secrets and secretsKeyId", () => {
+		const parsed = ManifestSchema.parse(
+			base({ secrets: { TOKEN: cipher }, secretsKeyId: validKeyId }),
+		);
+		expect(parsed.workflows[0]?.secrets?.TOKEN).toBe(cipher);
+		expect(parsed.workflows[0]?.secretsKeyId).toBe(validKeyId);
+	});
+
+	it("accepts a manifest with neither secrets nor secretsKeyId", () => {
+		const parsed = ManifestSchema.parse(base());
+		expect(parsed.workflows[0]?.secrets).toBeUndefined();
+		expect(parsed.workflows[0]?.secretsKeyId).toBeUndefined();
+	});
+
+	it("rejects a manifest with secrets but no secretsKeyId", () => {
+		expect(() =>
+			ManifestSchema.parse(base({ secrets: { TOKEN: cipher } })),
+		).toThrow(/secretsKeyId/);
+	});
+
+	it("rejects a manifest with secretsKeyId but no secrets", () => {
+		expect(() =>
+			ManifestSchema.parse(base({ secretsKeyId: validKeyId })),
+		).toThrow(/secrets/);
+	});
+
+	it("rejects a secretsKeyId that does not match /^[0-9a-f]{16}$/", () => {
+		expect(() =>
+			ManifestSchema.parse(
+				base({
+					secrets: { TOKEN: cipher },
+					secretsKeyId: "TOO_LONG_12345678X",
+				}),
+			),
+		).toThrow();
+		expect(() =>
+			ManifestSchema.parse(
+				base({ secrets: { TOKEN: cipher }, secretsKeyId: "ABCDEF0123456789" }),
+			),
+		).toThrow(); // uppercase rejected
+		expect(() =>
+			ManifestSchema.parse(
+				base({ secrets: { TOKEN: cipher }, secretsKeyId: "short" }),
+			),
+		).toThrow();
+	});
+
+	it("rejects a manifest where secrets keys overlap with env keys", () => {
+		expect(() =>
+			ManifestSchema.parse(
+				base({
+					env: { TOKEN: "leaked" },
+					secrets: { TOKEN: cipher },
+					secretsKeyId: validKeyId,
+				}),
+			),
+		).toThrow(/disjoint/);
+	});
+
+	it("accepts disjoint env and secrets keys", () => {
+		const parsed = ManifestSchema.parse(
+			base({
+				env: { REGION: "us-east-1" },
+				secrets: { TOKEN: cipher },
+				secretsKeyId: validKeyId,
+			}),
+		);
+		expect(parsed.workflows[0]?.env.REGION).toBe("us-east-1");
+		expect(parsed.workflows[0]?.secrets?.TOKEN).toBe(cipher);
+	});
+
+	it("rejects a manifest containing secretBindings (must be sealed by wfe upload)", () => {
+		expect(() =>
+			ManifestSchema.parse(base({ secretBindings: ["TOKEN"] })),
+		).toThrow(/secretBindings/);
+	});
+});
+
+describe("computeKeyId", () => {
+	it("returns a 16-character lowercase hex string", async () => {
+		const pk = new Uint8Array(32).fill(0x42);
+		const id = await computeKeyId(pk);
+		expect(id).toMatch(/^[0-9a-f]{16}$/);
+	});
+
+	it("is deterministic for the same input", async () => {
+		const pk = new Uint8Array(32).fill(0x01);
+		const a = await computeKeyId(pk);
+		const b = await computeKeyId(pk);
+		expect(a).toBe(b);
+	});
+
+	it("produces different ids for different inputs", async () => {
+		const pk1 = new Uint8Array(32).fill(0x01);
+		const pk2 = new Uint8Array(32).fill(0x02);
+		const a = await computeKeyId(pk1);
+		const b = await computeKeyId(pk2);
+		expect(a).not.toBe(b);
+	});
+
+	it("takes first SECRETS_KEY_ID_BYTES bytes of the sha256 digest", async () => {
+		expect(SECRETS_KEY_ID_BYTES).toBe(8);
+		const pk = new Uint8Array(32);
+		const id = await computeKeyId(pk);
+		// sha256 of 32 zero bytes — first 8 bytes in hex:
+		// 66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925
+		//   → first 8 bytes: 66 68 7a ad f8 62 bd 77
+		expect(id).toBe("66687aadf862bd77");
 	});
 });

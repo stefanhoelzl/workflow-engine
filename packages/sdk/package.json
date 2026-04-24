@@ -31,6 +31,7 @@
 		"@workflow-engine/core": "workspace:*",
 		"@workflow-engine/sandbox": "workspace:*",
 		"citty": "^0.2.2",
+		"libsodium-wrappers": "^0.8.4",
 		"magic-string": "^0.30.21",
 		"tar-stream": "^3.1.8",
 		"ts-cron-validator": "^1.1.5",
@@ -40,6 +41,7 @@
 		"zod": "^4.0.0"
 	},
 	"devDependencies": {
+		"@types/libsodium-wrappers": "^0.8.2",
 		"@types/tar-stream": "^3.1.4"
 	}
 }

@@ -21,6 +21,7 @@ import {
 	type GlobalBinder,
 	loadPluginModules,
 	runOnBeforeRunStarted,
+	runOnPost,
 	runOnRunFinished,
 	runPhasePrivateDelete,
 	runPhaseSourceEval,
@@ -50,8 +51,42 @@ if (!parentPort) {
 }
 const port = parentPort;
 
+// Re-entrancy guard: if an onPost hook triggers post() (e.g. by emitting
+// a log inside the hook itself), we skip the hook pipeline on that nested
+// call so we don't recurse or deadlock. Nested messages go out raw.
+let inPostHooks = false;
+
 function post(msg: WorkerToMain): void {
-	port.postMessage(msg);
+	const lifecycle = state?.pluginLifecycle;
+	if (!lifecycle || inPostHooks) {
+		port.postMessage(msg);
+		return;
+	}
+	inPostHooks = true;
+	let finalMsg: WorkerToMain;
+	let hookErrors: readonly Error[];
+	try {
+		const result = runOnPost({
+			setups: lifecycle.setups,
+			order: lifecycle.order,
+			msg,
+		});
+		finalMsg = result.msg;
+		hookErrors = result.errors;
+	} finally {
+		inPostHooks = false;
+	}
+	port.postMessage(finalMsg);
+	for (const err of hookErrors) {
+		const pluginName =
+			(err as Error & { pluginName?: string }).pluginName ?? "<unknown>";
+		port.postMessage({
+			type: "log",
+			level: "error",
+			message: "sandbox.plugin.onPost_failed",
+			meta: { plugin: pluginName, error: err.message },
+		});
+	}
 }
 
 function serializeError(err: unknown): SerializedError {
@@ -471,6 +506,7 @@ async function handleRun(
 	const runInput: import("./plugin.js").RunInput = {
 		name: msg.exportName,
 		input: msg.ctx,
+		...(msg.extras === undefined ? {} : { extras: msg.extras }),
 	};
 	const tracker = bridgeFrameTracker(bridge);
 	runLifecycleBefore(pluginLifecycle, runInput, tracker);

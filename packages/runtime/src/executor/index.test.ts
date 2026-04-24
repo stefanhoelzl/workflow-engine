@@ -80,7 +80,10 @@ describe("executor", () => {
 				seen.push(e);
 			},
 		};
-		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
 
 		// Drive an event from the sandbox mid-invocation by intercepting `run`
 		// and firing the captured onEvent callback synchronously before
@@ -140,7 +143,10 @@ describe("executor", () => {
 				seen.push(e);
 			},
 		};
-		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
 		const wf = makeManifest("wf");
 
 		// Fire one event per invocation via the captured callback while a run
@@ -359,3 +365,7 @@ describe("executor", () => {
 		).toBeUndefined();
 	});
 });
+
+// Decrypt coverage moved to packages/runtime/src/secrets/decrypt-workflow.test.ts
+// — sandbox-store now owns the decrypt step at construction time, not the
+// executor. Executor is crypto-agnostic after workflow-secrets.

@@ -208,14 +208,60 @@ type CronTriggerManifest = z.infer<typeof cronTriggerManifestSchema>;
 type ManualTriggerManifest = z.infer<typeof manualTriggerManifestSchema>;
 type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 
-const workflowManifestSchema = z.object({
-	name: z.string(),
-	module: z.string(),
-	sha: z.string(),
-	env: z.record(z.string(), z.string()),
-	actions: z.array(actionManifestSchema),
-	triggers: z.array(triggerManifestSchema),
-});
+const SECRETS_KEY_ID_PATTERN = /^[0-9a-f]{16}$/;
+
+const workflowManifestSchema = z
+	.object({
+		name: z.string(),
+		module: z.string(),
+		sha: z.string(),
+		env: z.record(z.string(), z.string()),
+		// Sealed-box ciphertexts keyed by envName. Each value is a base64-
+		// encoded `crypto_box_seal` output against the server public key
+		// identified by `secretsKeyId`. When present, `secretsKeyId` is also
+		// required (and vice versa).
+		secrets: z.record(z.string(), z.string()).optional(),
+		// 16-character lowercase hex fingerprint (first 8 bytes of
+		// `sha256(publicKey)`) of the server public key that sealed the
+		// `secrets` entries. See `computeKeyId`.
+		secretsKeyId: z.string().regex(SECRETS_KEY_ID_PATTERN).optional(),
+		// `secretBindings` is an intermediate build-artifact field the Vite
+		// plugin emits and the CLI consumes (seals values + deletes the
+		// field) before POSTing. A bundle arriving at the server with this
+		// field present indicates a skipped or misconfigured CLI step; reject
+		// explicitly with a clear message.
+		secretBindings: z
+			.never({
+				error:
+					"manifest contains `secretBindings` — this is an intermediate build-artifact field that MUST be consumed by `wfe upload` (sealed into `secrets`) before POSTing",
+			})
+			.optional(),
+		actions: z.array(actionManifestSchema),
+		triggers: z.array(triggerManifestSchema),
+	})
+	.refine((w) => (w.secrets === undefined) === (w.secretsKeyId === undefined), {
+		error:
+			"workflow `secrets` and `secretsKeyId` must both be present or both absent",
+		path: ["secretsKeyId"],
+	})
+	.refine(
+		(w) => {
+			if (w.secrets === undefined) {
+				return true;
+			}
+			for (const envName of Object.keys(w.secrets)) {
+				if (envName in w.env) {
+					return false;
+				}
+			}
+			return true;
+		},
+		{
+			error:
+				"workflow `secrets` key names must be disjoint from `env` key names",
+			path: ["secrets"],
+		},
+	);
 
 const ManifestSchema = z
 	.object({
@@ -253,11 +299,86 @@ const IIFE_NAMESPACE = "__wfe_exports__";
 // Exports
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Secrets key identifier (secrets-crypto-foundation)
+// ---------------------------------------------------------------------------
+//
+// `keyId = sha256(publicKey).slice(0, 8)` as lowercase hex. 16 characters;
+// 64 bits of fingerprint — collision risk is negligible at the scale of
+// ~10 keys per environment. Shared helper so the runtime key-store, upload
+// handler, public-key endpoint, and future CLI sealing path compute it
+// identically.
+
+const SECRETS_KEY_ID_BYTES = 8;
+
+const HEX_RADIX = 16;
+const HEX_BYTE_WIDTH = 2;
+
+async function computeKeyId(publicKey: Uint8Array): Promise<string> {
+	const digest = await (
+		globalThis as unknown as { crypto: Crypto }
+	).crypto.subtle.digest("SHA-256", publicKey as unknown as BufferSource);
+	const bytes = new Uint8Array(digest).slice(0, SECRETS_KEY_ID_BYTES);
+	let hex = "";
+	for (const byte of bytes) {
+		hex += byte.toString(HEX_RADIX).padStart(HEX_BYTE_WIDTH, "0");
+	}
+	return hex;
+}
+
+// ---------------------------------------------------------------------------
+// Guest-globals contract (workflow-env-runtime-injection)
+// ---------------------------------------------------------------------------
+//
+// Types installed onto the guest VM's `globalThis` by runtime plugins and
+// read by SDK code (`defineWorkflow`, `secret()` factory). Inlined into
+// index.ts rather than split into a separate module so the esbuild bundler
+// used by the `?sandbox-plugin` transform can resolve the package without
+// hitting a `.js` fallback on an `.ts`-only sibling.
+
+interface RuntimeWorkflow<
+	Env extends Readonly<Record<string, string>> = Readonly<
+		Record<string, string>
+	>,
+> {
+	readonly name: string;
+	readonly env: Env;
+}
+
+interface RuntimeSecrets {
+	addSecret(value: string): void;
+}
+
+interface GuestGlobals {
+	workflow: RuntimeWorkflow;
+	$secrets: RuntimeSecrets;
+}
+
+declare global {
+	var workflow: GuestGlobals["workflow"];
+	var $secrets: GuestGlobals["$secrets"];
+}
+
+function installGuestGlobals(globals: Partial<GuestGlobals>): void {
+	for (const key of Object.keys(globals) as (keyof GuestGlobals)[]) {
+		Object.defineProperty(globalThis, key, {
+			value: globals[key],
+			writable: false,
+			configurable: false,
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
 export type {
 	ActionDispatcher,
 	CronTriggerManifest,
 	DispatchMeta,
 	EventKind,
+	GuestGlobals,
 	HttpTriggerManifest,
 	HttpTriggerPayload,
 	HttpTriggerResult,
@@ -265,9 +386,19 @@ export type {
 	InvocationEventError,
 	Manifest,
 	ManualTriggerManifest,
+	RuntimeSecrets,
+	RuntimeWorkflow,
 	SandboxEvent,
 	TriggerManifest,
 	WorkflowManifest,
 };
 
-export { dispatchAction, IIFE_NAMESPACE, ManifestSchema, z };
+export {
+	computeKeyId,
+	dispatchAction,
+	IIFE_NAMESPACE,
+	installGuestGlobals,
+	ManifestSchema,
+	SECRETS_KEY_ID_BYTES,
+	z,
+};

@@ -50,7 +50,11 @@ interface Sandbox {
 	// sandbox serves one run at a time. Callers (the runtime executor) are
 	// expected to serialize; a second call while one is active is a caller
 	// bug.
-	run(name: string, ctx: unknown): Promise<RunResult>;
+	//
+	// `extras` is an opaque per-run channel reserved for plugins that need
+	// per-invocation payloads outside the `ctx` envelope. Currently unused
+	// in-tree; see `RunInput.extras` in plugin.ts.
+	run(name: string, ctx: unknown, extras?: unknown): Promise<RunResult>;
 	// Subscriber receives `SandboxEvent` — the subset of event fields the
 	// sandbox owns (no tenant/workflow/workflowSha/id). The runtime widens
 	// to `InvocationEvent` by stamping invocation metadata in its own
@@ -198,7 +202,11 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	// while one is active rejects loudly rather than silently interleaving.
 	let runActive = false;
 
-	function run(name: string, ctx: unknown): Promise<RunResult> {
+	function run(
+		name: string,
+		ctx: unknown,
+		extras?: unknown,
+	): Promise<RunResult> {
 		if (disposed) {
 			return Promise.reject(new Error("Sandbox is disposed"));
 		}
@@ -253,6 +261,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 				type: "run",
 				exportName: name,
 				ctx,
+				...(extras === undefined ? {} : { extras }),
 			};
 			worker.postMessage(runMsg);
 		});

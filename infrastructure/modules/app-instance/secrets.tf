@@ -34,3 +34,21 @@ resource "kubernetes_secret_v1" "github_oauth" {
     GITHUB_OAUTH_CLIENT_SECRET = var.github_oauth.client_secret
   }
 }
+
+# Workflow-engine server-side X25519 secret keys, used to unseal tenant
+# workflow manifest secrets at upload and at invocation. Delivered as a
+# single CSV (`keyId:base64(sk),...`) so one env var covers rotation
+# windows without changing the Deployment spec. Primary key is first; the
+# runtime derives public keys on demand via `crypto_scalarmult_base`.
+resource "kubernetes_secret_v1" "secrets_key" {
+  depends_on = [terraform_data.namespace_ready]
+
+  metadata {
+    name      = "app-secrets-key"
+    namespace = var.namespace
+  }
+
+  data = {
+    SECRETS_PRIVATE_KEYS = var.secrets_private_keys
+  }
+}

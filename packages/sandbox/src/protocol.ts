@@ -30,6 +30,11 @@ type MainToWorker =
 			type: "run";
 			exportName: string;
 			ctx: unknown;
+			// Opaque per-run plugin data; surfaced to plugins via
+			// `RunInput.extras`. Reserved as a general-purpose channel —
+			// no in-repo plugin consumes it today (see `RunInput.extras`
+			// in plugin.ts for rationale).
+			extras?: unknown;
 	  };
 
 type WorkerToMain =

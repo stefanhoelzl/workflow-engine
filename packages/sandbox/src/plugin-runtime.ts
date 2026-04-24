@@ -10,6 +10,7 @@ import type {
 	SerializableConfig,
 } from "./plugin.js";
 import type { ArgSpec, ResultSpec } from "./plugin-types.js";
+import type { WorkerToMain } from "./protocol.js";
 
 /**
  * Phased init pipeline.
@@ -368,6 +369,49 @@ function truncateFinalRefStack(tracker: FrameTracker, warn?: WarnFn): number {
 	return dropped;
 }
 
+/**
+ * Runs every plugin's onPost hook in topological order, chaining the
+ * (possibly transformed) message through each hook. A hook throw is
+ * recorded and the previous message is passed to the next hook — the
+ * scrubber must not lose messages due to plugin misbehavior, but the
+ * sandbox needs to know hooks threw so it can surface them.
+ */
+interface OnPostArgs {
+	readonly setups: ReadonlyMap<string, PluginSetup>;
+	readonly order: readonly string[];
+	readonly msg: WorkerToMain;
+}
+
+function runOnPost(args: OnPostArgs): {
+	readonly msg: WorkerToMain;
+	readonly errors: readonly Error[];
+} {
+	const { setups, order } = args;
+	let current = args.msg;
+	const errors: Error[] = [];
+	for (const name of order) {
+		const setup = setups.get(name);
+		if (!setup?.onPost) {
+			continue;
+		}
+		try {
+			current = setup.onPost(current);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			const annotated = new Error(`plugin "${name}" threw in onPost: ${msg}`);
+			if (err instanceof Error) {
+				if (err.stack !== undefined) {
+					annotated.stack = err.stack;
+				}
+				(annotated as Error & { cause?: unknown }).cause = err;
+			}
+			(annotated as Error & { pluginName?: string }).pluginName = name;
+			errors.push(annotated);
+		}
+	}
+	return { msg: current, errors };
+}
+
 function annotateLifecycleError(
 	pluginName: string,
 	hook: "onBeforeRunStarted" | "onRunFinished",
@@ -415,6 +459,7 @@ export type {
 	LoadedPlugin,
 	ModuleLoader,
 	OnBeforeRunStartedArgs,
+	OnPostArgs,
 	OnRunFinishedArgs,
 	SourceEvaluator,
 	WarnFn,
@@ -423,6 +468,7 @@ export {
 	collectGuestFunctions,
 	loadPluginModules,
 	runOnBeforeRunStarted,
+	runOnPost,
 	runOnRunFinished,
 	runPhasePrivateDelete,
 	runPhaseSourceEval,

@@ -2,7 +2,11 @@ import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createConfig, createSecret } from "./config.js";
 
-const REQUIRED = {};
+// 32 bytes of base64 for a stub X25519 secret key used by SECRETS_PRIVATE_KEYS.
+// createConfig does NOT decode or validate shape — that's key-store's concern;
+// the config schema only stores the raw CSV inside a Secret wrapper.
+const STUB_SK_B64 = "A".repeat(44);
+const REQUIRED = { SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}` };
 
 describe("createConfig", () => {
 	it("parses valid values", () => {
@@ -37,29 +41,31 @@ describe("createConfig", () => {
 	});
 
 	it("AUTH_ALLOW unset leaves authAllow undefined", () => {
-		const config = createConfig({});
+		const config = createConfig(REQUIRED);
 		expect(config.authAllow).toBeUndefined();
 	});
 
 	it("AUTH_ALLOW empty leaves authAllow as empty string", () => {
-		const config = createConfig({ AUTH_ALLOW: "" });
+		const config = createConfig({ ...REQUIRED, AUTH_ALLOW: "" });
 		expect(config.authAllow).toBe("");
 	});
 
 	it("passes AUTH_ALLOW through unparsed (registry build is downstream)", () => {
 		const config = createConfig({
+			...REQUIRED,
 			AUTH_ALLOW: "github:user:alice,local:dev",
 		});
 		expect(config.authAllow).toBe("github:user:alice,local:dev");
 	});
 
 	it("LOCAL_DEPLOYMENT is exposed verbatim", () => {
-		const config = createConfig({ LOCAL_DEPLOYMENT: "1" });
+		const config = createConfig({ ...REQUIRED, LOCAL_DEPLOYMENT: "1" });
 		expect(config.localDeployment).toBe("1");
 	});
 
 	it("accepts github OAuth credentials when supplied", () => {
 		const config = createConfig({
+			...REQUIRED,
 			AUTH_ALLOW: "github:user:alice",
 			GITHUB_OAUTH_CLIENT_ID: "cid",
 			GITHUB_OAUTH_CLIENT_SECRET: "csecret",
@@ -72,6 +78,7 @@ describe("createConfig", () => {
 
 	it("redacts GITHUB_OAUTH_CLIENT_SECRET on JSON serialization", () => {
 		const config = createConfig({
+			...REQUIRED,
 			AUTH_ALLOW: "github:user:alice",
 			GITHUB_OAUTH_CLIENT_ID: "cid",
 			GITHUB_OAUTH_CLIENT_SECRET: "supersecret",
@@ -136,6 +143,21 @@ describe("createConfig", () => {
 				PERSISTENCE_S3_BUCKET: "my-bucket",
 			}),
 		).toThrow("mutually exclusive");
+	});
+
+	it("rejects missing SECRETS_PRIVATE_KEYS", () => {
+		// Pins the fail-fast contract: `SECRETS_PRIVATE_KEYS` is required at
+		// boot, not deferred to first decryption. Regressing this to
+		// `.optional()` would let the runtime come up without a key-store
+		// and fail later on upload.
+		expect(() => createConfig({})).toThrow();
+	});
+
+	it("redacts SECRETS_PRIVATE_KEYS when the config is JSON-serialized", () => {
+		const config = createConfig(REQUIRED);
+		const serialized = JSON.stringify(config);
+		expect(serialized).not.toContain(STUB_SK_B64);
+		expect(serialized).toContain("[redacted]");
 	});
 });
 
