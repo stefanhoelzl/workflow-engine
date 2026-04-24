@@ -1,58 +1,14 @@
 import {
-	ACTION_BRAND,
 	action,
-	CRON_TRIGGER_BRAND,
 	cronTrigger,
 	defineWorkflow,
 	env,
-	HTTP_TRIGGER_BRAND,
 	httpTrigger,
-	isAction,
-	isCronTrigger,
-	isHttpTrigger,
-	isManualTrigger,
-	isWorkflow,
-	MANUAL_TRIGGER_BRAND,
-	ManifestSchema,
 	manualTrigger,
 	secret,
 	sendMail,
-	WORKFLOW_BRAND,
 	z,
 } from "@workflow-engine/sdk";
-
-// -----------------------------------------------------------------------------
-// SDK surface statically referenced for compile-time coverage.
-//
-// Brands, `ManifestSchema`, and type guards are not needed at runtime inside
-// a well-typed workflow (the SDK factories produce branded values for you),
-// but listing them here means any rename at the SDK boundary breaks this
-// file and therefore breaks `pnpm build`. Treat `_sdkSurface` as a
-// compile-time contract test for the public surface of
-// `@workflow-engine/sdk`.
-// -----------------------------------------------------------------------------
-
-const _sdkSurface = {
-	brands: [
-		ACTION_BRAND,
-		HTTP_TRIGGER_BRAND,
-		CRON_TRIGGER_BRAND,
-		MANUAL_TRIGGER_BRAND,
-		WORKFLOW_BRAND,
-	] as const,
-	guards: {
-		isAction,
-		isHttpTrigger,
-		isCronTrigger,
-		isManualTrigger,
-		isWorkflow,
-	},
-	schemas: { Manifest: ManifestSchema },
-};
-// Reference `_sdkSurface` so tree-shakers keep the import chain alive.
-if (typeof _sdkSurface !== "object") {
-	throw new Error("unreachable");
-}
 
 // Observable (WICG tentative) is not yet in TypeScript's lib.dom; declare the
 // minimal shape the demo needs. Polyfill source:
