@@ -21,7 +21,7 @@ interface SealAuth {
 
 interface SealOptions {
 	url: string;
-	tenant: string;
+	owner: string;
 	auth: SealAuth;
 	// Injected env source; defaults to process.env.
 	env?: Record<string, string | undefined>;
@@ -51,13 +51,13 @@ class PublicKeyFetchError extends Error {
 
 async function fetchPublicKey(
 	url: string,
-	tenant: string,
+	owner: string,
 	auth: SealAuth,
 ): Promise<PublicKeyResponse> {
 	const endpoint = `${url.replace(
 		TRAILING_SLASHES,
 		"",
-	)}/api/workflows/${tenant}/public-key`;
+	)}/api/workflows/${owner}/public-key`;
 	const headers: Record<string, string> = {};
 	if (auth.user) {
 		headers["X-Auth-Provider"] = "local";
@@ -277,7 +277,7 @@ async function sealBundleIfNeeded(
 		return bundleBytes;
 	}
 	await sodium.ready;
-	const pkRes = await fetchPublicKey(options.url, options.tenant, options.auth);
+	const pkRes = await fetchPublicKey(options.url, options.owner, options.auth);
 	const pk = Uint8Array.from(Buffer.from(pkRes.publicKey, "base64"));
 	const env =
 		options.env ??

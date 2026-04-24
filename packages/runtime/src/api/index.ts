@@ -15,7 +15,8 @@ import { createUploadHandler } from "./upload.js";
 // ---------------------------------------------------------------------------
 //
 // `/api/*` is the authenticated management plane. v1 exposes:
-//   POST /api/workflows/:owner — upload a workflow bundle (see upload.ts).
+//   POST /api/workflows/:owner/:repo — upload a repo workflow bundle (see
+//       upload.ts).
 //   GET  /api/workflows/:owner/public-key — serve the current primary X25519
 //       public key so the `wfe upload` CLI can seal secrets before POSTing.
 //
@@ -36,11 +37,12 @@ function apiMiddleware(options: ApiOptions): Middleware {
 	app.use("/*", apiAuthMiddleware({ registry: options.authRegistry }));
 
 	app.use("/workflows/:owner", requireOwnerMember());
+	app.use("/workflows/:owner/:repo", requireOwnerMember());
 	app.use("/workflows/:owner/*", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 
 	app.post(
-		"/workflows/:owner",
+		"/workflows/:owner/:repo",
 		createUploadHandler({
 			registry: options.registry,
 			logger: options.logger,

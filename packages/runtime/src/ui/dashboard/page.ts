@@ -10,6 +10,8 @@ const SKELETON_CARD_COUNT = 3;
 
 interface InvocationRow {
 	readonly id: string;
+	readonly owner: string;
+	readonly repo: string;
 	readonly workflow: string;
 	readonly trigger: string;
 	readonly status: string;
@@ -29,6 +31,17 @@ interface InvocationRow {
 		readonly source: "manual" | "trigger";
 		readonly user?: { readonly login: string };
 	};
+}
+
+interface OwnerSummaryItem {
+	readonly owner: string;
+	readonly count: number;
+}
+
+interface RepoSummaryItem {
+	readonly owner: string;
+	readonly repo: string;
+	readonly count: number;
 }
 
 function toIsoString(ts: string | Date): string {
@@ -114,7 +127,7 @@ function renderCard(row: InvocationRow) {
 	}
 
 	const summary = renderCardSummary(row, duration, true);
-	const flamegraphUrl = `/dashboard/invocations/${row.id}/flamegraph`;
+	const flamegraphUrl = `/dashboard/${row.owner}/${row.repo}/invocations/${row.id}/flamegraph`;
 	return html`<details class="entry entry-expandable"
     id="inv-${row.id}"
     hx-get="${flamegraphUrl}"
@@ -154,32 +167,123 @@ function renderSkeletonCards() {
 	)}`;
 }
 
+function renderRepoList(
+	owner: string,
+	repos: readonly RepoSummaryItem[],
+	preloadedInvocations?: readonly InvocationRow[],
+	autoExpandRepo?: string,
+) {
+	if (repos.length === 0) {
+		return html`<div class="tree-empty" data-count="0">No repos registered</div>`;
+	}
+	return html`<ul class="tree-repos" data-owner="${owner}">
+    ${repos.map((r) => {
+			const open = autoExpandRepo === r.repo ? raw(" open") : "";
+			const invocationsUrl = `/dashboard/${owner}/${r.repo}/invocations`;
+			const slot =
+				autoExpandRepo === r.repo && preloadedInvocations
+					? renderInvocationList(preloadedInvocations)
+					: renderSkeletonCards();
+			return html`<li class="tree-repo">
+        <details${open}
+          hx-get="${invocationsUrl}"
+          hx-trigger="toggle once"
+          hx-target="find .tree-invocations"
+          hx-swap="innerHTML">
+          <summary>
+            <span class="tree-label">${r.repo}</span>
+            <span class="tree-count" aria-label="invocation count">${String(r.count)}</span>
+          </summary>
+          <div class="tree-invocations">${slot}</div>
+        </details>
+      </li>`;
+		})}
+  </ul>`;
+}
+
+// biome-ignore lint/complexity/useMaxParams: orthogonal rendering inputs — owners, summaries, pre-expansion state, preloaded fragments
+function renderOwnerTree(
+	owners: readonly OwnerSummaryItem[],
+	autoExpand: string | undefined,
+	autoExpandRepo: { owner: string; repo: string } | undefined,
+	preloadedRepos: Record<string, readonly RepoSummaryItem[]> | undefined,
+	preloadedInvocations: readonly InvocationRow[] | undefined,
+) {
+	if (owners.length === 0) {
+		return html`<div class="tree-empty" data-count="0">No owners available</div>`;
+	}
+	return html`<ul class="tree-owners">
+    ${owners.map((o) => {
+			const open = autoExpand === o.owner ? raw(" open") : "";
+			const reposUrl = `/dashboard/${o.owner}/repos`;
+			const preloaded =
+				autoExpand === o.owner && preloadedRepos
+					? preloadedRepos[o.owner]
+					: undefined;
+			const body = preloaded
+				? renderRepoList(
+						o.owner,
+						preloaded,
+						autoExpandRepo?.owner === o.owner
+							? preloadedInvocations
+							: undefined,
+						autoExpandRepo?.owner === o.owner ? autoExpandRepo.repo : undefined,
+					)
+				: renderSkeletonCards();
+			return html`<li class="tree-owner">
+        <details${open}
+          hx-get="${reposUrl}"
+          hx-trigger="toggle once"
+          hx-target="find .tree-owner-body"
+          hx-swap="innerHTML">
+          <summary>
+            <span class="tree-label">${o.owner}</span>
+            <span class="tree-count" aria-label="invocation count">${String(o.count)}</span>
+          </summary>
+          <div class="tree-owner-body">${body}</div>
+        </details>
+      </li>`;
+		})}
+  </ul>`;
+}
+
 interface DashboardPageOptions {
 	readonly user: string;
 	readonly email: string;
 	readonly owners: readonly string[];
-	readonly activeOwner: string | undefined;
+	readonly ownerSummaries: readonly OwnerSummaryItem[];
+	readonly autoExpand?: string;
+	readonly autoExpandRepo?: { owner: string; repo: string };
+	readonly preloadedRepos?: Record<string, readonly RepoSummaryItem[]>;
+	readonly preloadedInvocations?: readonly InvocationRow[];
 }
 
 function renderDashboardPage(options: DashboardPageOptions) {
-	const { user, email, owners, activeOwner } = options;
-	const invocationsUrl = activeOwner
-		? `/dashboard/invocations?owner=${encodeURIComponent(activeOwner)}`
-		: "/dashboard/invocations";
+	const {
+		user,
+		email,
+		owners,
+		ownerSummaries,
+		autoExpand,
+		autoExpandRepo,
+		preloadedRepos,
+		preloadedInvocations,
+	} = options;
 	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
+	const tree = renderOwnerTree(
+		ownerSummaries,
+		autoExpand,
+		autoExpandRepo,
+		preloadedRepos,
+		preloadedInvocations,
+	);
 	const content = html`
   <div class="page-header">
     <h1>Dashboard</h1>
   </div>
 
-  <div class="list">
-    <div id="invocation-list"
-         aria-busy="true"
-         hx-get="${invocationsUrl}"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-      ${renderSkeletonCards()}
-    </div>
+  <div class="dashboard-tree">
+    ${tree}
   </div>`;
 
 	return renderLayout(
@@ -190,11 +294,16 @@ function renderDashboardPage(options: DashboardPageOptions) {
 			email,
 			owners,
 			head,
-			...(activeOwner === undefined ? {} : { activeOwner }),
 		},
 		content,
 	);
 }
 
-export type { InvocationRow };
-export { formatDurationUs, renderDashboardPage, renderInvocationList };
+export type { InvocationRow, OwnerSummaryItem, RepoSummaryItem };
+export {
+	formatDurationUs,
+	renderDashboardPage,
+	renderInvocationList,
+	renderOwnerTree,
+	renderRepoList,
+};

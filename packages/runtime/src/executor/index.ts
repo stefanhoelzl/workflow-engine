@@ -12,6 +12,7 @@ import type { InvokeResult, TriggerDescriptor } from "./types.js";
 interface InvocationMeta {
 	readonly id: string;
 	readonly owner: string;
+	readonly repo: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 	// Dispatch provenance. Forwarded from fire()'s optional `dispatch` arg;
@@ -46,6 +47,7 @@ interface ExecutorOptions {
 interface Executor {
 	invoke(
 		owner: string,
+		repo: string,
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
@@ -102,6 +104,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 				...event,
 				id: meta.id,
 				owner: meta.owner,
+				repo: meta.repo,
 				workflow: meta.workflow,
 				workflowSha: meta.workflowSha,
 				// Dispatch provenance is stamped only onto the single
@@ -123,9 +126,10 @@ function createExecutor(options: ExecutorOptions): Executor {
 		wired.add(sb);
 	}
 
-	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — owner + workflow + descriptor + input + options are orthogonal and already packaged by the caller
+	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — owner, repo, workflow, descriptor, input, options are orthogonal and already packaged by the caller
 	async function runInvocation(
 		owner: string,
+		repo: string,
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
@@ -137,6 +141,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 		activeMeta.set(sb, {
 			id: invocationId,
 			owner,
+			repo,
 			workflow: workflow.name,
 			workflowSha: workflow.sha,
 			dispatch: options.dispatch ?? { source: "trigger" },
@@ -178,9 +183,9 @@ function createExecutor(options: ExecutorOptions): Executor {
 
 	return {
 		// biome-ignore lint/complexity/useMaxParams: matches Executor.invoke contract
-		invoke(owner, workflow, descriptor, input, options) {
-			return queueFor(`${owner}/${workflow.sha}`).run(() =>
-				runInvocation(owner, workflow, descriptor, input, options),
+		invoke(owner, repo, workflow, descriptor, input, options) {
+			return queueFor(`${owner}/${repo}/${workflow.sha}`).run(() =>
+				runInvocation(owner, repo, workflow, descriptor, input, options),
 			);
 		},
 	};

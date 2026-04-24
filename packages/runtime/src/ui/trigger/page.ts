@@ -13,13 +13,14 @@ import { triggerCardMeta, triggerKindIcon } from "../triggers.js";
 // Trigger UI — manual-fire form for registered triggers (any kind)
 // ---------------------------------------------------------------------------
 //
-// One collapsible card per registered trigger. Cards are grouped into
-// per-workflow sections. For HTTP kind the form is built from
-// `descriptor.body` (the body JSON Schema) and the Submit button POSTs to
-// the public webhook URL — the HTTP source fills in headers/url/method from
-// the real HTTP request. For non-HTTP kinds (cron, future mail) the form is
-// built from the full `descriptor.inputSchema` and POSTs to the
-// kind-agnostic `/trigger/<owner>/<workflow>/<trigger-name>` endpoint.
+// Two page shapes:
+//   - `renderTriggerTreePage` — index view at `/trigger` and
+//     `/trigger/:owner`; collapsible `<details>` per owner / repo.
+//   - `renderRepoTriggerPage` — leaf view at `/trigger/:owner/:repo`; one
+//     collapsible card per registered trigger, grouped into per-workflow
+//     sections. HTTP, cron, and manual cards all POST to the kind-agnostic
+//     `/trigger/:owner/:repo/:workflow/:trigger` endpoint so the session
+//     user can be captured as dispatch provenance.
 
 function prepareSchema(schema: unknown): unknown {
 	if (schema === null || typeof schema !== "object") {
@@ -75,6 +76,7 @@ function schemaHasNoInputs(schema: object): boolean {
 
 interface TriggerCardData {
 	readonly owner: string;
+	readonly repo: string;
 	readonly workflow: string;
 	readonly trigger: string;
 	readonly kind: string;
@@ -91,9 +93,10 @@ const chevronIconSvg = raw(
 
 function renderTriggerCard(data: TriggerCardData) {
 	const schemaJson = JSON.stringify(prepareSchema(data.schema));
-	const cardId = `trigger-${data.owner}-${data.workflow}-${data.trigger}`
-		.replace(/[^a-zA-Z0-9_-]/g, "-")
-		.toLowerCase();
+	const cardId =
+		`trigger-${data.owner}-${data.repo}-${data.workflow}-${data.trigger}`
+			.replace(/[^a-zA-Z0-9_-]/g, "-")
+			.toLowerCase();
 	const empty = schemaHasNoInputs(data.schema);
 	return html`<details class="trigger-details" id="${cardId}">
       <summary class="trigger-summary">
@@ -118,16 +121,22 @@ function renderTriggerCard(data: TriggerCardData) {
 
 function entryToCardDataList(entry: WorkflowEntry): TriggerCardData[] {
 	return entry.triggers.map((descriptor) =>
-		descriptorToCardData(entry.owner, entry.workflow.name, descriptor),
+		descriptorToCardData(
+			entry.owner,
+			entry.repo,
+			entry.workflow.name,
+			descriptor,
+		),
 	);
 }
 
 function descriptorToCardData(
 	owner: string,
+	repo: string,
 	workflow: string,
 	descriptor: TriggerDescriptor,
 ): TriggerCardData {
-	const meta = triggerCardMeta(descriptor, owner, workflow);
+	const meta = triggerCardMeta(descriptor, owner, repo, workflow);
 	if (descriptor.kind === "http") {
 		const http = descriptor as HttpTriggerDescriptor;
 		// UI fires route through the authenticated /trigger/* endpoint so
@@ -136,11 +145,12 @@ function descriptorToCardData(
 		// endpoint external callers use.
 		return {
 			owner,
+			repo,
 			workflow,
 			trigger: http.name,
 			kind: "http",
 			schema: (http.body ?? { type: "object" }) as object,
-			submitUrl: `/trigger/${owner}/${workflow}/${http.name}`,
+			submitUrl: `/trigger/${owner}/${repo}/${workflow}/${http.name}`,
 			submitMethod: "POST",
 			meta,
 		};
@@ -149,11 +159,12 @@ function descriptorToCardData(
 		const cron = descriptor as CronTriggerDescriptor;
 		return {
 			owner,
+			repo,
 			workflow,
 			trigger: cron.name,
 			kind: "cron",
 			schema: (cron.inputSchema ?? { type: "object" }) as object,
-			submitUrl: `/trigger/${owner}/${workflow}/${cron.name}`,
+			submitUrl: `/trigger/${owner}/${repo}/${workflow}/${cron.name}`,
 			submitMethod: "POST",
 			meta,
 		};
@@ -161,26 +172,28 @@ function descriptorToCardData(
 	const manual = descriptor as ManualTriggerDescriptor;
 	return {
 		owner,
+		repo,
 		workflow,
 		trigger: manual.name,
 		kind: "manual",
 		schema: (manual.inputSchema ?? { type: "object" }) as object,
-		submitUrl: `/trigger/${owner}/${workflow}/${manual.name}`,
+		submitUrl: `/trigger/${owner}/${repo}/${workflow}/${manual.name}`,
 		submitMethod: "POST",
 		meta,
 	};
 }
 
-interface TriggerPageOptions {
+interface RepoTriggerPageOptions {
 	readonly entries: readonly WorkflowEntry[];
 	readonly user: string;
 	readonly email: string;
 	readonly owners: readonly string[];
-	readonly activeOwner: string | undefined;
+	readonly owner: string;
+	readonly repo: string;
 }
 
-function renderTriggerPage(options: TriggerPageOptions) {
-	const { entries, user, email, owners, activeOwner } = options;
+function renderRepoTriggerPage(options: RepoTriggerPageOptions) {
+	const { entries, user, email, owners, owner, repo } = options;
 
 	// Group cards by workflow, alpha-sort groups and triggers within groups.
 	const byWorkflow = new Map<string, TriggerCardData[]>();
@@ -207,7 +220,7 @@ function renderTriggerPage(options: TriggerPageOptions) {
 
 	const content = html`
   <div class="page-header">
-    <h1>Trigger</h1>
+    <h1>Trigger — ${owner}/${repo}</h1>
   </div>
 
   <div class="trigger-content">
@@ -222,11 +235,71 @@ function renderTriggerPage(options: TriggerPageOptions) {
 			email,
 			head,
 			owners,
-			...(activeOwner === undefined ? {} : { activeOwner }),
 		},
 		content,
 	);
 }
 
+interface TriggerTreePageOptions {
+	readonly user: string;
+	readonly email: string;
+	readonly owners: readonly string[];
+	readonly reposByOwner: Record<string, readonly string[]>;
+	readonly autoExpand?: string;
+}
+
+function renderTriggerTreePage(options: TriggerTreePageOptions) {
+	const { user, email, owners, reposByOwner, autoExpand } = options;
+	const content =
+		owners.length === 0
+			? html`<div class="empty-state">No owners available</div>`
+			: html`<ul class="tree-owners">
+      ${owners.map((owner) => {
+				const open = autoExpand === owner ? raw(" open") : "";
+				const repos = reposByOwner[owner];
+				const body = repos
+					? html`<ul class="tree-repos">
+              ${repos.map(
+								(repo) =>
+									html`<li class="tree-repo">
+                    <a href="/trigger/${owner}/${repo}">${repo}</a>
+                  </li>`,
+							)}
+            </ul>`
+					: html`<div class="tree-placeholder"><a href="/trigger/${owner}">View repos</a></div>`;
+				return html`<li class="tree-owner">
+          <details${open}>
+            <summary><span class="tree-label">${owner}</span></summary>
+            <div class="tree-owner-body">${body}</div>
+          </details>
+        </li>`;
+			})}
+    </ul>`;
+
+	const head = html`  <link rel="stylesheet" href="/static/trigger.css">`;
+	const body = html`
+  <div class="page-header">
+    <h1>Trigger</h1>
+  </div>
+  <div class="trigger-content">${content}</div>`;
+
+	return renderLayout(
+		{
+			title: "Trigger",
+			activePath: "/trigger",
+			user,
+			email,
+			head,
+			owners,
+		},
+		body,
+	);
+}
+
 export type { TriggerCardData };
-export { prepareSchema, renderTriggerPage, schemaHasNoInputs };
+export {
+	prepareSchema,
+	renderRepoTriggerPage,
+	renderTriggerTreePage,
+	schemaHasNoInputs,
+};

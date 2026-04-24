@@ -10,9 +10,9 @@ import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 // shared deps, passes the list into the WorkflowRegistry, and manages
 // start()/stop() lifecycle.
 //
-// On every owner-upload the registry calls `reconfigure(owner, entries)`
-// on every backend in parallel. Each backend replaces its per-owner state
-// atomically; empty entries removes the owner. Backends never touch the
+// On every repo-upload the registry calls `reconfigure(owner, repo, entries)`
+// on every backend in parallel. Each backend replaces its per-(owner, repo)
+// state atomically; empty entries removes the repo. Backends never touch the
 // Executor — they invoke `entry.fire(input)` with a normalized protocol
 // input; the closure (constructed by the registry via `buildFire`) validates
 // input and dispatches through the executor.
@@ -53,6 +53,7 @@ interface TriggerSource<
 	stop(): Promise<void>;
 	reconfigure(
 		owner: string,
+		repo: string,
 		entries: readonly TriggerEntry<D>[],
 	): Promise<ReconfigureResult>;
 }

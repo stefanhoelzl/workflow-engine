@@ -126,17 +126,21 @@ for (const factory of KIND_FACTORIES) {
 
 		it("reconfigure replaces per-owner state atomically", async () => {
 			const source = factory.createSource();
-			const resA = await source.reconfigure("t0", [factory.makeEntry("a")]);
+			const resA = await source.reconfigure("t0", "r0", [
+				factory.makeEntry("a"),
+			]);
 			expect(resA.ok).toBe(true);
-			const resB = await source.reconfigure("t0", [factory.makeEntry("b")]);
+			const resB = await source.reconfigure("t0", "r0", [
+				factory.makeEntry("b"),
+			]);
 			expect(resB.ok).toBe(true);
-			const resEmpty = await source.reconfigure("t0", []);
+			const resEmpty = await source.reconfigure("t0", "r0", []);
 			expect(resEmpty.ok).toBe(true);
 		});
 
 		it("reconfigure with an empty entries array is a no-op on unknown owner", async () => {
 			const source = factory.createSource();
-			const res = await source.reconfigure("never-seen", []);
+			const res = await source.reconfigure("never-seen", "never-seen-repo", []);
 			expect(res.ok).toBe(true);
 		});
 	});

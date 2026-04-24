@@ -113,7 +113,7 @@ describe("sealBundleIfNeeded", () => {
 		try {
 			const out = await sealBundleIfNeeded(bundle, {
 				url: "http://localhost",
-				tenant: "t",
+				owner: "t",
 				auth: {},
 				env: {},
 			});
@@ -147,7 +147,7 @@ describe("sealBundleIfNeeded", () => {
 		try {
 			const out = await sealBundleIfNeeded(bundle, {
 				url: "http://localhost",
-				tenant: "t",
+				owner: "t",
 				auth: {},
 				env: { TOKEN: "ghp_example" },
 			});
@@ -200,7 +200,7 @@ describe("sealBundleIfNeeded", () => {
 			await expect(
 				sealBundleIfNeeded(bundle, {
 					url: "http://localhost",
-					tenant: "t",
+					owner: "t",
 					auth: {},
 					env: { STRIPE: "sk" }, // TOKEN missing
 				}),
@@ -235,7 +235,7 @@ describe("sealBundleIfNeeded", () => {
 		try {
 			const out = await sealBundleIfNeeded(bundle, {
 				url: "http://localhost",
-				tenant: "t",
+				owner: "t",
 				auth: {},
 				env: { TOKEN: "x" },
 			});

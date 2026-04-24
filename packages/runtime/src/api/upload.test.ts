@@ -151,25 +151,26 @@ const AUTH_HEADERS: Record<string, string> = {
 async function postUpload(
 	app: Hono,
 	owner: string,
+	repo: string,
 	body: Uint8Array,
 ): Promise<Response> {
-	return app.request(`/api/workflows/${owner}`, {
+	return app.request(`/api/workflows/${owner}/${repo}`, {
 		method: "POST",
 		body: body as unknown as BodyInit,
 		headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
 	});
 }
 
-describe("POST /api/workflows/:owner — error classification", () => {
+describe("POST /api/workflows/:owner/:repo — error classification", () => {
 	it("returns 204 on full-success across all backends", async () => {
 		const app = mountWithBackends([stubBackend("http", "ok")]);
-		const res = await postUpload(app, "acme", await validBundle());
+		const res = await postUpload(app, "acme", "demo", await validBundle());
 		expect(res.status).toBe(204);
 	});
 
 	it("returns 422 when the bundle is not a valid gzip/tar", async () => {
 		const app = mountWithBackends([stubBackend("http", "ok")]);
-		const res = await app.request("/api/workflows/acme", {
+		const res = await app.request("/api/workflows/acme/demo", {
 			method: "POST",
 			body: new Uint8Array([1, 2, 3]),
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
@@ -201,7 +202,7 @@ describe("POST /api/workflows/:owner — error classification", () => {
 				["demo.js", "/* bundle */"],
 			]),
 		);
-		const res = await postUpload(app, "acme", bundle);
+		const res = await postUpload(app, "acme", "demo", bundle);
 		expect(res.status).toBe(422);
 	});
 
@@ -230,7 +231,7 @@ describe("POST /api/workflows/:owner — error classification", () => {
 				["demo.js", "/* bundle */"],
 			]),
 		);
-		const res = await postUpload(app, "acme", bundle);
+		const res = await postUpload(app, "acme", "demo", bundle);
 		expect(res.status).toBe(422);
 		const body = (await res.json()) as { error?: string };
 		expect(body.error ?? "").toContain("unsupported trigger kind");
@@ -238,7 +239,7 @@ describe("POST /api/workflows/:owner — error classification", () => {
 
 	it("returns 400 with trigger_config_failed body when a backend reports user-config error", async () => {
 		const app = mountWithBackends([stubBackend("http", "userConfig")]);
-		const res = await postUpload(app, "acme", await validBundle());
+		const res = await postUpload(app, "acme", "demo", await validBundle());
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as {
 			error: string;
@@ -251,7 +252,7 @@ describe("POST /api/workflows/:owner — error classification", () => {
 
 	it("returns 500 with trigger_backend_failed body when a backend throws", async () => {
 		const app = mountWithBackends([stubBackend("http", "infra")]);
-		const res = await postUpload(app, "acme", await validBundle());
+		const res = await postUpload(app, "acme", "demo", await validBundle());
 		expect(res.status).toBe(500);
 		const body = (await res.json()) as {
 			error: string;
@@ -267,7 +268,7 @@ describe("POST /api/workflows/:owner — error classification", () => {
 			stubBackend("http", "userConfig"),
 			stubBackend("cron", "infra"),
 		]);
-		const res = await postUpload(app, "acme", await validBundle());
+		const res = await postUpload(app, "acme", "demo", await validBundle());
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as {
 			error: string;
@@ -279,5 +280,25 @@ describe("POST /api/workflows/:owner — error classification", () => {
 		expect(body.errors[0]?.backend).toBe("http");
 		expect(body.infra_errors.length).toBe(1);
 		expect(body.infra_errors[0]?.backend).toBe("cron");
+	});
+
+	it("returns 404 when an allow-listed user uploads to a non-member owner (cross-owner)", async () => {
+		const app = mountWithBackends([stubBackend("http", "ok")]);
+		// The local provider's allow-list ("local:acme") means the
+		// `acme` user's orgs are just [acme]. Uploading to `other` must fail
+		// closed with the same 404 shape that owner-missing returns.
+		const res = await postUpload(app, "other", "demo", await validBundle());
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 for a malformed repo identifier even when owner is valid", async () => {
+		const app = mountWithBackends([stubBackend("http", "ok")]);
+		const bundle = (await validBundle()) as unknown as BodyInit;
+		const res = await app.request("/api/workflows/acme/bad%20repo", {
+			method: "POST",
+			body: bundle,
+			headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
+		});
+		expect(res.status).toBe(404);
 	});
 });

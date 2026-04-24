@@ -1,9 +1,38 @@
 #!/usr/bin/env node
 import { defineCommand, runMain } from "citty";
 import { NoWorkflowsFoundError } from "./build.js";
+import { detectGitRemote } from "./git-remote.js";
 import { upload } from "./upload.js";
 
 const DEFAULT_URL = "https://workflow-engine.webredirect.org";
+const REPO_FLAG_RE = /^([^/]+)\/([^/]+)$/;
+
+interface ResolvedScope {
+	readonly owner: string;
+	readonly repo: string;
+}
+
+async function resolveScope(
+	cwd: string,
+	repoFlag: string | undefined,
+): Promise<ResolvedScope> {
+	if (repoFlag !== undefined) {
+		const match = REPO_FLAG_RE.exec(repoFlag);
+		if (!match) {
+			throw new Error(
+				`--repo must be in "owner/name" form (got "${repoFlag}")`,
+			);
+		}
+		return { owner: match[1] ?? "", repo: match[2] ?? "" };
+	}
+	const detected = await detectGitRemote(cwd);
+	if (detected) {
+		return detected;
+	}
+	throw new Error(
+		"could not determine owner/repo: pass --repo <owner>/<name> or run from a github.com checkout",
+	);
+}
 
 const uploadCommand = defineCommand({
 	meta: {
@@ -16,9 +45,10 @@ const uploadCommand = defineCommand({
 			description: "Target runtime URL",
 			default: DEFAULT_URL,
 		},
-		owner: {
+		repo: {
 			type: "string",
-			description: "Target owner (falls back to WFE_OWNER env var)",
+			description:
+				"Target owner/name (defaults to `git remote get-url origin` on github.com)",
 		},
 		user: {
 			type: "string",
@@ -27,18 +57,21 @@ const uploadCommand = defineCommand({
 		},
 	},
 	async run({ args }) {
-		// biome-ignore lint/style/noProcessEnv: reading WFE_OWNER is the documented fallback
-		const owner = args.owner ?? process.env.WFE_OWNER?.trim() ?? "";
-		if (!owner) {
+		const cwd = process.cwd();
+		let scope: ResolvedScope;
+		try {
+			scope = await resolveScope(cwd, args.repo);
+		} catch (err) {
 			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-			console.error("owner required: pass --owner <name> or set WFE_OWNER");
+			console.error(err instanceof Error ? err.message : String(err));
 			process.exit(1);
 		}
 		try {
 			const { failed } = await upload({
-				cwd: process.cwd(),
+				cwd,
 				url: args.url,
-				owner,
+				owner: scope.owner,
+				repo: scope.repo,
 				...(args.user ? { user: args.user } : {}),
 			});
 			process.exit(failed === 0 ? 0 : 1);

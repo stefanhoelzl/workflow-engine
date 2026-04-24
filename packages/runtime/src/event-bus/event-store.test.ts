@@ -30,7 +30,10 @@ describe("event store", () => {
 
 	it("inserts a row for each handled event", async () => {
 		await store.handle(event({ kind: "trigger.request", input: { x: 1 } }));
-		const rows = await store.query("t0").selectAll().execute();
+		const rows = await store
+			.query([{ owner: "t0", repo: "r0" }])
+			.selectAll()
+			.execute();
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({
 			id: "evt_a",
@@ -59,7 +62,10 @@ describe("event store", () => {
 		await store.handle(
 			event({ kind: "trigger.request", seq: 0, id: "evt_c", owner: "acme" }),
 		);
-		const rows = await store.query("acme").selectAll().execute();
+		const rows = await store
+			.query([{ owner: "acme", repo: "r0" }])
+			.selectAll()
+			.execute();
 		expect(rows.map((r) => r.id).sort()).toEqual(["evt_a", "evt_c"]);
 	});
 
@@ -68,7 +74,7 @@ describe("event store", () => {
 			event({ kind: "trigger.request", seq: 0, id: "evt_x", owner: "other" }),
 		);
 		const rows = await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.where("id", "=", "evt_x")
 			.selectAll()
 			.execute();
@@ -81,7 +87,7 @@ describe("event store", () => {
 			event({ kind: "trigger.response", seq: 1, ref: 0, output: "ok" }),
 		);
 		const rows = await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.selectAll()
 			.orderBy("seq", "asc")
 			.execute();
@@ -126,7 +132,7 @@ describe("event store", () => {
 		);
 
 		const requests = await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.where("kind", "=", "trigger.request")
 			.select(["id", "name"])
 			.orderBy("at", "asc")
@@ -135,7 +141,7 @@ describe("event store", () => {
 		expect(requests.map((r) => r.id)).toEqual(["evt_a", "evt_b"]);
 
 		const responses = await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.where("kind", "in", ["trigger.response", "trigger.error"])
 			.select(["id", "kind"])
 			.execute();
@@ -158,7 +164,7 @@ describe("event store", () => {
 			await s.initialized;
 
 			const rows = await s
-				.query("t0")
+				.query([{ owner: "t0", repo: "r0" }])
 				.selectAll()
 				.orderBy("seq", "asc")
 				.execute();
@@ -191,7 +197,7 @@ describe("event store", () => {
 		);
 		await store.handle(event({ kind: "trigger.response", seq: 1, ref: 0 }));
 		const rows = (await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.select(["kind", "meta"])
 			.orderBy("seq", "asc")
 			.execute()) as { kind: string; meta: unknown }[];
@@ -234,7 +240,7 @@ describe("event store", () => {
 			await s.initialized;
 
 			const rows = (await s
-				.query("t0")
+				.query([{ owner: "t0", repo: "r0" }])
 				.select(["seq", "meta"])
 				.orderBy("seq", "asc")
 				.execute()) as { seq: number; meta: unknown }[];
@@ -245,6 +251,10 @@ describe("event store", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("query([]) throws — empty scopes would leak cross-owner data", () => {
+		expect(() => store.query([])).toThrow(/non-empty/);
 	});
 
 	afterEach(() => {

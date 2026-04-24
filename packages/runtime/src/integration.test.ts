@@ -130,6 +130,7 @@ describe("end-to-end event flow", () => {
 		registry = createWorkflowRegistry({ logger, executor });
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(OWNER_MANIFEST)],
 				["demo.js", BUNDLE],
@@ -143,6 +144,7 @@ describe("end-to-end event flow", () => {
 		}
 		const result = await executor.invoke(
 			"acme",
+			"demo",
 			entry.workflow,
 			descriptor,
 			{ body: { msg: "hello" } },
@@ -161,7 +163,7 @@ describe("end-to-end event flow", () => {
 
 		// The events table should contain the full trace.
 		const rows = await store
-			.query("acme")
+			.query([{ owner: "acme", repo: "demo" }])
 			.selectAll()
 			.orderBy("seq", "asc")
 			.execute();
@@ -238,6 +240,7 @@ describe("end-to-end event flow", () => {
 		registry = createWorkflowRegistry({ logger, executor });
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(OWNER_MANIFEST)],
 				["demo.js", BUNDLE],
@@ -251,6 +254,7 @@ describe("end-to-end event flow", () => {
 		}
 		const result = await executor.invoke(
 			"acme",
+			"demo",
 			entry.workflow,
 			descriptor,
 			{ body: { msg: "hi" } },
@@ -267,7 +271,7 @@ describe("end-to-end event flow", () => {
 		await new Promise((r) => setImmediate(r));
 
 		const rows = await store
-			.query("acme")
+			.query([{ owner: "acme", repo: "demo" }])
 			.where("kind", "=", "trigger.request")
 			.selectAll()
 			.execute();
@@ -306,6 +310,7 @@ describe("end-to-end event flow", () => {
 			at: new Date().toISOString(),
 			ts: 0,
 			owner: "acme",
+			repo: "demo",
 			workflow: "demo",
 			workflowSha: WORKFLOW.sha,
 			name: "ping",
@@ -324,7 +329,7 @@ describe("end-to-end event flow", () => {
 
 		// The synthesized trigger.error should be in the events table.
 		const rows = await store
-			.query("acme")
+			.query([{ owner: "acme", repo: "demo" }])
 			.where("id", "=", "evt_crashed")
 			.selectAll()
 			.execute();
@@ -431,7 +436,7 @@ describe("end-to-end event flow", () => {
 		// Event store still holds exactly the archive rows — no duplicates, no
 		// synthetic trigger.error.
 		const rows = await store
-			.query("t0")
+			.query([{ owner: "t0", repo: "r0" }])
 			.where("id", "=", id)
 			.selectAll()
 			.orderBy("seq", "asc")
@@ -545,6 +550,7 @@ describe("cron trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(CRON_OWNER_MANIFEST)],
 				["cron-demo.js", CRON_BUNDLE],
@@ -557,10 +563,11 @@ describe("cron trigger integration", () => {
 		expect(invoke).toHaveBeenCalledTimes(1);
 		const call = invoke.mock.calls[0];
 		expect(call?.[0]).toBe("acme"); // owner
-		expect(call?.[1].name).toBe("cron-demo"); // workflow manifest
-		expect(call?.[2].name).toBe("every-minute"); // descriptor
-		expect(call?.[2].kind).toBe("cron");
-		expect(call?.[3]).toEqual({}); // payload
+		expect(call?.[1]).toBe("demo"); // repo
+		expect(call?.[2].name).toBe("cron-demo"); // workflow manifest
+		expect(call?.[3].name).toBe("every-minute"); // descriptor
+		expect(call?.[3].kind).toBe("cron");
+		expect(call?.[4]).toEqual({}); // payload
 
 		await cronSource.stop();
 	});
@@ -586,6 +593,7 @@ describe("cron trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(CRON_OWNER_MANIFEST)],
 				["cron-demo.js", CRON_BUNDLE],
@@ -595,6 +603,7 @@ describe("cron trigger integration", () => {
 		// Before the scheduled fire, replace with an empty owner (removes the cron).
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
 		);
 
@@ -672,13 +681,14 @@ describe("manual trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
 
-		const entry = registry.getEntry("acme", "manual-demo", "rerun");
+		const entry = registry.getEntry("acme", "demo", "manual-demo", "rerun");
 		expect(entry).toBeDefined();
 		expect(entry?.descriptor.kind).toBe("manual");
 
@@ -690,10 +700,11 @@ describe("manual trigger integration", () => {
 		expect(invoke).toHaveBeenCalledTimes(1);
 		const call = invoke.mock.calls[0];
 		expect(call?.[0]).toBe("acme"); // owner
-		expect(call?.[1].name).toBe("manual-demo"); // workflow manifest
-		expect(call?.[2].name).toBe("rerun"); // descriptor
-		expect(call?.[2].kind).toBe("manual");
-		expect(call?.[3]).toEqual({}); // validated payload
+		expect(call?.[1]).toBe("demo"); // repo
+		expect(call?.[2].name).toBe("manual-demo"); // workflow manifest
+		expect(call?.[3].name).toBe("rerun"); // descriptor
+		expect(call?.[3].kind).toBe("manual");
+		expect(call?.[4]).toEqual({}); // validated payload
 
 		await manualSource.stop();
 	});
@@ -714,13 +725,19 @@ describe("manual trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
 
-		const entry = registry.getEntry("acme", "manual-demo", "reprocessOrder");
+		const entry = registry.getEntry(
+			"acme",
+			"demo",
+			"manual-demo",
+			"reprocessOrder",
+		);
 		expect(entry).toBeDefined();
 		const result = await entry?.fire({ id: 42 });
 		expect(result?.ok).toBe(false);
@@ -750,6 +767,7 @@ describe("manual trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
@@ -759,9 +777,11 @@ describe("manual trigger integration", () => {
 		// The HTTP source must have no installed entry for the manual trigger —
 		// the registry partitions by kind and routes manual entries only to the
 		// manual backend. Webhook ingress therefore 404s for manual names.
-		expect(httpSource.getEntry("acme", "manual-demo", "rerun")).toBeUndefined();
 		expect(
-			httpSource.getEntry("acme", "manual-demo", "reprocessOrder"),
+			httpSource.getEntry("acme", "demo", "manual-demo", "rerun"),
+		).toBeUndefined();
+		expect(
+			httpSource.getEntry("acme", "demo", "manual-demo", "reprocessOrder"),
 		).toBeUndefined();
 
 		await httpSource.stop();
@@ -784,18 +804,24 @@ describe("manual trigger integration", () => {
 		});
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([
 				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
-		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeDefined();
+		expect(
+			registry.getEntry("acme", "demo", "manual-demo", "rerun"),
+		).toBeDefined();
 
 		await registry.registerOwner(
 			"acme",
+			"demo",
 			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
 		);
-		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeUndefined();
+		expect(
+			registry.getEntry("acme", "demo", "manual-demo", "rerun"),
+		).toBeUndefined();
 
 		await manualSource.stop();
 	});
@@ -901,15 +927,16 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
+			"r0",
 			new Map([
 				["manifest.json", JSON.stringify(manifest)],
 				["leak.js", LEAK_BUNDLE],
 			]),
 		);
 
-		const entry = registry.list("acme")[0];
+		const entry = registry.list("acme", "r0")[0];
 		const descriptor = entry?.triggers.find((t) => t.name === "leak");
 		if (!(entry && descriptor)) {
 			throw new Error("expected a leak trigger descriptor");
@@ -917,6 +944,7 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 
 		const result = await executor.invoke(
 			"acme",
+			"r0",
 			entry.workflow,
 			descriptor,
 			{ body: {} },
@@ -1034,15 +1062,16 @@ var __wfe_exports__ = (function(exports) {
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
+			"r0",
 			new Map([
 				["manifest.json", JSON.stringify(manifest)],
 				["leak.js", RUNTIME_SECRET_BUNDLE],
 			]),
 		);
 
-		const entry = registry.list("acme")[0];
+		const entry = registry.list("acme", "r0")[0];
 		const descriptor = entry?.triggers.find((t) => t.name === "leak");
 		if (!(entry && descriptor)) {
 			throw new Error("expected a leak trigger descriptor");
@@ -1050,6 +1079,7 @@ var __wfe_exports__ = (function(exports) {
 
 		const result = await executor.invoke(
 			"acme",
+			"r0",
 			entry.workflow,
 			descriptor,
 			{ body: {} },

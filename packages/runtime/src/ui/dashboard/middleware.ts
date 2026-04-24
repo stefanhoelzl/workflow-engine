@@ -1,15 +1,21 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { ownerSet, validateOwner } from "../../auth/owner.js";
-import type { EventStore } from "../../event-bus/event-store.js";
+import { ownerSet } from "../../auth/owner.js";
+import { requireOwnerMember } from "../../auth/owner-mw.js";
+import { resolveQueryScopes } from "../../auth/scopes.js";
+import type { EventStore, Scope } from "../../event-bus/event-store.js";
 import type { Logger } from "../../logger.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
-import { renderDashboardPage, renderInvocationList } from "./page.js";
+import {
+	renderDashboardPage,
+	renderInvocationList,
+	renderRepoList,
+} from "./page.js";
 
 const DEFAULT_LIMIT = 100;
 
@@ -57,43 +63,20 @@ function statusFromTerminal(kind: string | undefined): string {
 	return "pending";
 }
 
-function sortedOwners(c: Context, registry: WorkflowRegistry): string[] {
+function userOwners(c: Context): string[] {
 	const user = c.get("user");
-	if (user) {
-		return Array.from(ownerSet(user)).sort();
-	}
-	// Test fallback: show all owners the runtime knows about when no
-	// user is seeded on the context. In production, `sessionMw` mounted
-	// on `/dashboard/*` ensures a `UserContext` is always set (or
-	// redirects to `/login`); reaching this branch means a test invoked
-	// the middleware without a session middleware attached.
-	const fromRegistry = new Set<string>();
-	for (const owner of registry.owners()) {
-		if (validateOwner(owner)) {
-			fromRegistry.add(owner);
-		}
-	}
-	return Array.from(fromRegistry).sort();
+	return user ? Array.from(ownerSet(user)).sort() : [];
 }
 
-function resolveActiveOwner(c: Context, owners: string[]): string | undefined {
-	if (owners.length === 0) {
-		return;
-	}
-	const requested = c.req.query("owner");
-	if (requested && owners.includes(requested)) {
-		return requested;
-	}
-	return owners[0];
-}
-
+// biome-ignore lint/complexity/useMaxParams: lookup fans in on four orthogonal identifiers
 function lookupTriggerKind(
 	registry: WorkflowRegistry,
 	owner: string,
+	repo: string,
 	workflow: string,
 	triggerName: string,
 ): string | undefined {
-	for (const entry of registry.list(owner)) {
+	for (const entry of registry.list(owner, repo)) {
 		if (entry.workflow.name !== workflow) {
 			continue;
 		}
@@ -102,14 +85,17 @@ function lookupTriggerKind(
 	}
 }
 
+// biome-ignore lint/complexity/useMaxParams: scope + pagination metadata are orthogonal
 async function fetchInvocationRows(
 	eventStore: EventStore,
 	registry: WorkflowRegistry,
 	owner: string,
+	repo: string,
 	limit: number,
 ): Promise<InvocationRow[]> {
+	const scope: Scope = { owner, repo };
 	const requests = (await eventStore
-		.query(owner)
+		.query([scope])
 		.where("kind", "=", "trigger.request")
 		.select(["id", "workflow", "name", "at", "ts", "meta"])
 		.orderBy("at", "desc")
@@ -122,7 +108,7 @@ async function fetchInvocationRows(
 		ids.length === 0
 			? []
 			: ((await eventStore
-					.query(owner)
+					.query([scope])
 					.where("kind", "in", ["trigger.response", "trigger.error"])
 					.where("id", "in", ids)
 					.select(["id", "kind", "at", "ts", "error"])
@@ -135,10 +121,12 @@ async function fetchInvocationRows(
 
 	return requests.map((r) => {
 		const t = terminalById.get(r.id);
-		const kind = lookupTriggerKind(registry, owner, r.workflow, r.name);
+		const kind = lookupTriggerKind(registry, owner, repo, r.workflow, r.name);
 		const dispatch = extractDispatch(r.meta);
 		const row: InvocationRow = {
 			id: r.id,
+			owner,
+			repo,
 			workflow: r.workflow,
 			trigger: r.name,
 			status: statusFromTerminal(t?.kind),
@@ -180,9 +168,10 @@ async function fetchInvocationEvents(
 	eventStore: EventStore,
 	id: string,
 	owner: string,
+	repo: string,
 ): Promise<InvocationEvent[]> {
 	const rows = (await eventStore
-		.query(owner)
+		.query([{ owner, repo }])
 		.where("id", "=", id)
 		.selectAll()
 		.orderBy("seq", "asc")
@@ -195,6 +184,7 @@ function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 		kind: row.kind as InvocationEvent["kind"],
 		id: row.id as string,
 		owner: row.owner as string,
+		repo: row.repo as string,
 		seq: Number(row.seq),
 		ref: row.ref === null || row.ref === undefined ? null : Number(row.ref),
 		at: row.at as string,
@@ -232,55 +222,211 @@ function parseJsonField(value: unknown): unknown {
 	}
 }
 
+interface OwnerSummary {
+	readonly owner: string;
+	readonly count: number;
+}
+
+interface RepoSummary {
+	readonly owner: string;
+	readonly repo: string;
+	readonly count: number;
+}
+
+async function aggregateOwnerCounts(
+	eventStore: EventStore,
+	scopes: readonly Scope[],
+): Promise<OwnerSummary[]> {
+	if (scopes.length === 0) {
+		return [];
+	}
+	const rows = (await eventStore
+		.query(scopes)
+		.where("kind", "=", "trigger.request")
+		.select(["owner"])
+		.execute()) as Array<{ owner: string }>;
+	const counts = new Map<string, number>();
+	for (const r of rows) {
+		counts.set(r.owner, (counts.get(r.owner) ?? 0) + 1);
+	}
+	// Also ensure every scoped owner appears, even with zero invocations.
+	const owners = new Set<string>();
+	for (const s of scopes) {
+		owners.add(s.owner);
+	}
+	return Array.from(owners)
+		.sort()
+		.map((owner) => ({ owner, count: counts.get(owner) ?? 0 }));
+}
+
+async function aggregateRepoCounts(
+	eventStore: EventStore,
+	scopes: readonly Scope[],
+): Promise<RepoSummary[]> {
+	if (scopes.length === 0) {
+		return [];
+	}
+	const rows = (await eventStore
+		.query(scopes)
+		.where("kind", "=", "trigger.request")
+		.select(["owner", "repo"])
+		.execute()) as Array<{ owner: string; repo: string }>;
+	const counts = new Map<string, number>();
+	for (const r of rows) {
+		counts.set(
+			`${r.owner}/${r.repo}`,
+			(counts.get(`${r.owner}/${r.repo}`) ?? 0) + 1,
+		);
+	}
+	return scopes
+		.slice()
+		.sort((a, b) =>
+			a.owner === b.owner
+				? a.repo.localeCompare(b.repo)
+				: a.owner.localeCompare(b.owner),
+		)
+		.map((s) => ({
+			owner: s.owner,
+			repo: s.repo,
+			count: counts.get(`${s.owner}/${s.repo}`) ?? 0,
+		}));
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires the full three-level drill-down plus fragment endpoints and the flamegraph handler; splitting fragments the request flow
 function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/dashboard");
 	app.use("*", deps.sessionMw);
+	// Guard every sub-route that names an :owner (with optional :repo). The
+	// root /dashboard is intentionally unguarded: it just renders the shell
+	// scoped to the user's owner allow-set.
+	app.use("/:owner/*", requireOwnerMember());
+	app.use("/:owner", requireOwnerMember());
+	app.use("/:owner/:repo/*", requireOwnerMember());
+	app.use("/:owner/:repo", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 
-	const renderShell = (c: Context) => {
+	// -- Root: /dashboard --------------------------------------------------
+	const renderRoot = async (c: Context) => {
 		const user = c.get("user");
-		const owners = sortedOwners(c, deps.registry);
-		const activeOwner = resolveActiveOwner(c, owners);
+		const allScopes = resolveQueryScopes(user, deps.registry);
+		const owners = userOwners(c);
+		const ownerSummaries = await aggregateOwnerCounts(
+			deps.eventStore,
+			allScopes,
+		);
+		// Auto-expand when the user has exactly one owner.
+		const autoExpand =
+			ownerSummaries.length === 1 ? ownerSummaries[0]?.owner : undefined;
 		return c.html(
 			renderDashboardPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				activeOwner,
+				ownerSummaries,
+				...(autoExpand === undefined ? {} : { autoExpand }),
 			}),
 		);
 	};
+	app.get("/", renderRoot);
+	app.get("", renderRoot);
 
-	app.get("/", renderShell);
-	app.get("", renderShell);
-	app.get("/invocations", async (c) => {
-		const owners = sortedOwners(c, deps.registry);
-		const activeOwner = resolveActiveOwner(c, owners);
-		if (!activeOwner) {
-			return c.html(renderInvocationList([]));
-		}
+	// -- /dashboard/:owner -- owner page with pre-expanded repo list ------
+	app.get("/:owner", async (c) => {
+		const owner = c.req.param("owner");
+		const user = c.get("user");
+		const scopes = resolveQueryScopes(user, deps.registry, { owner });
+		const owners = userOwners(c);
+		const ownerSummaries = await aggregateOwnerCounts(
+			deps.eventStore,
+			resolveQueryScopes(user, deps.registry),
+		);
+		const repoSummaries = await aggregateRepoCounts(deps.eventStore, scopes);
+		return c.html(
+			renderDashboardPage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				ownerSummaries,
+				autoExpand: owner,
+				...(repoSummaries.length === 1
+					? { autoExpandRepo: { owner, repo: repoSummaries[0]?.repo ?? "" } }
+					: {}),
+				preloadedRepos: { [owner]: repoSummaries },
+			}),
+		);
+	});
+
+	// -- /dashboard/:owner/repos -- HTMX fragment -------------------------
+	app.get("/:owner/repos", async (c) => {
+		const owner = c.req.param("owner");
+		const user = c.get("user");
+		const scopes = resolveQueryScopes(user, deps.registry, { owner });
+		const repoSummaries = await aggregateRepoCounts(deps.eventStore, scopes);
+		return c.html(renderRepoList(owner, repoSummaries));
+	});
+
+	// -- /dashboard/:owner/:repo -- invocations list page ----------------
+	app.get("/:owner/:repo", async (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const user = c.get("user");
 		const rows = await fetchInvocationRows(
 			deps.eventStore,
 			deps.registry,
-			activeOwner,
+			owner,
+			repo,
+			limit,
+		);
+		const owners = userOwners(c);
+		const ownerSummaries = await aggregateOwnerCounts(
+			deps.eventStore,
+			resolveQueryScopes(user, deps.registry),
+		);
+		const repoSummaries = await aggregateRepoCounts(
+			deps.eventStore,
+			resolveQueryScopes(user, deps.registry, { owner }),
+		);
+		return c.html(
+			renderDashboardPage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				ownerSummaries,
+				autoExpand: owner,
+				autoExpandRepo: { owner, repo },
+				preloadedRepos: { [owner]: repoSummaries },
+				preloadedInvocations: rows,
+			}),
+		);
+	});
+
+	// -- /dashboard/:owner/:repo/invocations -- HTMX fragment ------------
+	app.get("/:owner/:repo/invocations", async (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const rows = await fetchInvocationRows(
+			deps.eventStore,
+			deps.registry,
+			owner,
+			repo,
 			limit,
 		);
 		return c.html(renderInvocationList(rows));
 	});
-	app.get("/invocations/:id/flamegraph", async (c) => {
+
+	// -- Flamegraph fragment: /dashboard/:owner/:repo/invocations/:id/flamegraph
+	app.get("/:owner/:repo/invocations/:id/flamegraph", async (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
 		const id = c.req.param("id");
-		const owners = sortedOwners(c, deps.registry);
-		const activeOwner = resolveActiveOwner(c, owners);
-		logger?.debug("dashboard.flamegraph.request", { id, owner: activeOwner });
-		if (!activeOwner) {
-			return c.html(renderFlamegraph([]));
-		}
+		logger?.debug("dashboard.flamegraph.request", { id, owner, repo });
 		const events = await fetchInvocationEvents(
 			deps.eventStore,
 			id,
-			activeOwner,
+			owner,
+			repo,
 		);
 		return c.html(renderFlamegraph(events));
 	});
@@ -291,5 +437,5 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 	};
 }
 
-export type { DashboardMiddlewareDeps };
+export type { DashboardMiddlewareDeps, OwnerSummary, RepoSummary };
 export { dashboardMiddleware };

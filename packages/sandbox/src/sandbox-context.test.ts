@@ -60,6 +60,7 @@ function createFakeBridge(): FakeBridge {
 				at: "1970-01-01T00:00:00.000Z",
 				ts: 0,
 				owner: "t",
+				repo: "r",
 				workflow: "w",
 				workflowSha: "s",
 				name,

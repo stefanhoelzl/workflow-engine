@@ -17,9 +17,10 @@ import type {
 // ---------------------------------------------------------------------------
 //
 // `createHttpTriggerSource` is the HTTP-kind protocol adapter. The source:
-//   - Owns a per-owner `Map` keyed by `(workflowName, triggerName)`.
-//   - Receives `reconfigure(owner, entries)` from the WorkflowRegistry on
-//     every owner upload; entries for other owners are untouched.
+//   - Owns a per-(owner, repo) `Map` keyed by `(workflowName, triggerName)`.
+//   - Receives `reconfigure(owner, repo, entries)` from the WorkflowRegistry
+//     on every repo upload; entries for other (owner, repo) pairs are
+//     untouched.
 //   - Exposes a Hono middleware mounted at `/webhooks/*` by `main.ts`.
 //   - Normalizes HTTP requests into `{body, headers, url, method}` and
 //     calls `entry.fire(input)`. Input-schema validation and executor
@@ -28,11 +29,12 @@ import type {
 //     422+issues when `error.issues` is set (validation failure); 500
 //     otherwise.
 //
-// The URL is mechanical: `/webhooks/<owner>/<workflow>/<trigger-name>`.
-// Three segments, each regex-constrained. No author-chosen path string, no
+// The URL is mechanical: `/webhooks/<owner>/<repo>/<workflow>/<trigger-name>`.
+// Four segments, each regex-constrained. No author-chosen path string, no
 // parameterized segments, no wildcards. Route collisions are impossible by
-// JS export-name uniqueness, so the source has no conflict-detection
-// pass on reconfigure. See the `http-trigger` capability spec.
+// JS export-name uniqueness inside a (owner, repo) scope, so the source has
+// no conflict-detection pass on reconfigure. See the `http-trigger`
+// capability spec.
 
 interface Middleware {
 	match: string;
@@ -49,10 +51,11 @@ const HTTP_UNPROCESSABLE_ENTITY =
 const DEFAULT_HTTP_STATUS = 200;
 const HTTP_INTERNAL_ERROR = 500;
 const OWNER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+const REPO_NAME_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
-// The webhook URL is exactly `/webhooks/<owner>/<workflow>/<trigger-name>`
-// — three segments after the prefix, no more, no less.
-const URL_SEGMENT_COUNT = 3;
+// The webhook URL is exactly `/webhooks/<owner>/<repo>/<workflow>/
+// <trigger-name>` — four segments after the prefix, no more, no less.
+const URL_SEGMENT_COUNT = 4;
 
 function headersToRecord(headers: Headers): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -117,6 +120,7 @@ interface HttpTriggerSource
 	readonly middleware: Middleware;
 	getEntry(
 		owner: string,
+		repo: string,
 		workflowName: string,
 		triggerName: string,
 	): TriggerEntry<HttpTriggerDescriptor> | undefined;
@@ -126,9 +130,15 @@ function triggerKey(workflowName: string, triggerName: string): string {
 	return `${workflowName}/${triggerName}`;
 }
 
+function pairKey(owner: string, repo: string): string {
+	// `/` cannot appear in either segment (validated by regexes) so this is
+	// injection-safe.
+	return `${owner}/${repo}`;
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, middleware handler, and TriggerSource lifecycle methods
 function createHttpTriggerSource(): HttpTriggerSource {
-	const owners = new Map<
+	const pairs = new Map<
 		string,
 		Map<string, TriggerEntry<HttpTriggerDescriptor>>
 	>();
@@ -136,22 +146,24 @@ function createHttpTriggerSource(): HttpTriggerSource {
 	const middleware: Middleware = {
 		match: `${WEBHOOKS_PREFIX}*`,
 		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the middleware handler fuses URL parsing, lookup, body parse, and dispatch in sequence — splitting fragments the request flow
+		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: same — single-request pipeline with four short phases
 		handler: async (c: Context) => {
 			const afterPrefix = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (afterPrefix === "" && c.req.method === "GET") {
-				const hasAny = [...owners.values()].some((m) => m.size > 0);
+				const hasAny = [...pairs.values()].some((m) => m.size > 0);
 				const status = hasAny ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
 				return c.body(null, status);
 			}
 
-			// Parse /webhooks/<owner>/<workflow-name>/<trigger-name> — exactly
-			// three segments, each regex-constrained. Any other shape → 404.
+			// Parse /webhooks/<owner>/<repo>/<workflow>/<trigger-name> — exactly
+			// four segments, each regex-constrained. Any other shape → 404.
 			const segments = afterPrefix.split("/");
 			if (segments.length !== URL_SEGMENT_COUNT) {
 				return c.notFound();
 			}
-			const [owner, workflowName, triggerName] = segments as [
+			const [owner, repo, workflowName, triggerName] = segments as [
+				string,
 				string,
 				string,
 				string,
@@ -159,6 +171,7 @@ function createHttpTriggerSource(): HttpTriggerSource {
 			if (
 				!(
 					OWNER_NAME_RE.test(owner) &&
+					REPO_NAME_RE.test(repo) &&
 					OWNER_NAME_RE.test(workflowName) &&
 					TRIGGER_NAME_RE.test(triggerName)
 				)
@@ -166,7 +179,7 @@ function createHttpTriggerSource(): HttpTriggerSource {
 				return c.notFound();
 			}
 
-			const byTrigger = owners.get(owner);
+			const byTrigger = pairs.get(pairKey(owner, repo));
 			const entry = byTrigger?.get(triggerKey(workflowName, triggerName));
 			if (!entry || entry.descriptor.method !== c.req.method) {
 				return c.notFound();
@@ -204,15 +217,17 @@ function createHttpTriggerSource(): HttpTriggerSource {
 			return Promise.resolve();
 		},
 		stop() {
-			owners.clear();
+			pairs.clear();
 			return Promise.resolve();
 		},
 		reconfigure(
 			owner: string,
+			repo: string,
 			entries: readonly TriggerEntry<HttpTriggerDescriptor>[],
 		): Promise<ReconfigureResult> {
+			const key = pairKey(owner, repo);
 			if (entries.length === 0) {
-				owners.delete(owner);
+				pairs.delete(key);
 				return Promise.resolve({ ok: true });
 			}
 			const byTrigger = new Map<string, TriggerEntry<HttpTriggerDescriptor>>();
@@ -222,11 +237,13 @@ function createHttpTriggerSource(): HttpTriggerSource {
 					e,
 				);
 			}
-			owners.set(owner, byTrigger);
+			pairs.set(key, byTrigger);
 			return Promise.resolve({ ok: true });
 		},
-		getEntry(owner, workflowName, triggerName) {
-			return owners.get(owner)?.get(triggerKey(workflowName, triggerName));
+		getEntry(owner, repo, workflowName, triggerName) {
+			return pairs
+				.get(pairKey(owner, repo))
+				?.get(triggerKey(workflowName, triggerName));
 		},
 		middleware,
 	};

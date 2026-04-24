@@ -95,6 +95,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			workflow,
 			descriptor,
 			"bundle-src",
@@ -110,10 +111,11 @@ describe("buildFire", () => {
 			throw new Error("invoke was not called");
 		}
 		expect(call[0]).toBe("acme");
-		expect(call[1]).toBe(workflow);
-		expect(call[2]).toBe(descriptor);
-		expect(call[3]).toEqual(input);
-		expect(call[4]).toEqual({ bundleSource: "bundle-src" });
+		expect(call[1]).toBe("repo1");
+		expect(call[2]).toBe(workflow);
+		expect(call[3]).toBe(descriptor);
+		expect(call[4]).toEqual(input);
+		expect(call[5]).toEqual({ bundleSource: "bundle-src" });
 	});
 
 	it("returns {ok:false} without calling executor on validation failure", async () => {
@@ -122,6 +124,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",
@@ -146,6 +149,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",
@@ -165,6 +169,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",
@@ -177,8 +182,8 @@ describe("buildFire", () => {
 			throw new Error("invoke was not called");
 		}
 		// validator returns a deep clone, so the reference must differ.
-		expect(call[3]).toEqual(input);
-		expect(call[3]).not.toBe(input);
+		expect(call[4]).toEqual(input);
+		expect(call[4]).not.toBe(input);
 	});
 
 	it("passes handler output through when it matches descriptor.outputSchema", async () => {
@@ -202,6 +207,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(outputSchema),
 			"bundle-src",
@@ -235,6 +241,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(outputSchema),
 			"bundle-src",
@@ -271,6 +278,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(outputSchema),
 			"bundle-src",
@@ -295,6 +303,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeCronDescriptor(),
 			"bundle-src",
@@ -315,6 +324,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",
@@ -330,7 +340,7 @@ describe("buildFire", () => {
 		if (!call) {
 			throw new Error("invoke was not called");
 		}
-		expect(call[4]).toEqual({
+		expect(call[5]).toEqual({
 			bundleSource: "bundle-src",
 			dispatch: {
 				source: "manual",
@@ -347,6 +357,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",
@@ -358,7 +369,7 @@ describe("buildFire", () => {
 		if (!call) {
 			throw new Error("invoke was not called");
 		}
-		expect(call[4]).toEqual({ bundleSource: "bundle-src" });
+		expect(call[5]).toEqual({ bundleSource: "bundle-src" });
 	});
 
 	it("does not call executor (and thus does not stamp dispatch) on validation failure", async () => {
@@ -367,6 +378,7 @@ describe("buildFire", () => {
 		const fire = buildFire(
 			executor,
 			"acme",
+			"repo1",
 			makeWorkflow(),
 			makeDescriptor(),
 			"bundle-src",

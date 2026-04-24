@@ -11,6 +11,7 @@ function makeEvent(overrides: Partial<InvocationEvent> = {}): InvocationEvent {
 		at: DEFAULT_AT,
 		ts: 0,
 		owner: "t0",
+		repo: "r0",
 		workflow: "w",
 		workflowSha: "sha",
 		name: "t",

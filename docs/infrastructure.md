@@ -152,6 +152,33 @@ Both phases are one `tofu apply` each; the label change is a namespace-metadata 
 - Prod: `https://workflow-engine.webredirect.org`
 - Staging: `https://staging.workflow-engine.webredirect.org`
 
+### One-shot deploy steps
+
+**`scripts/prune-legacy-storage.ts` — (owner, repo) split cleanup.** Required
+before the first deploy of the `add-per-repo-workflows` change (see
+`openspec/changes/add-per-repo-workflows/proposal.md` §9). Wipes
+`workflows/`, `archive/`, and `pending/` prefixes on the configured
+persistence backend; the new schema keys bundles by `(owner, repo)` and
+gives events mandatory `owner` / `repo` columns, so legacy single-owner
+records would fail to decode on startup.
+
+Run against each environment's backend before rolling out the new image:
+
+```
+# staging: point at staging's S3
+STORAGE_ENDPOINT=<staging-endpoint> STORAGE_BUCKET=<staging-bucket> \
+STORAGE_ACCESS_KEY_ID=... STORAGE_SECRET_ACCESS_KEY=... \
+pnpm tsx scripts/prune-legacy-storage.ts
+
+# prod: point at prod's S3
+STORAGE_ENDPOINT=<prod-endpoint> STORAGE_BUCKET=<prod-bucket> \
+STORAGE_ACCESS_KEY_ID=... STORAGE_SECRET_ACCESS_KEY=... \
+pnpm tsx scripts/prune-legacy-storage.ts
+```
+
+Idempotent: re-running on an already-pruned backend reports `0 key(s)` for
+each prefix.
+
 Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources live in each app project's namespace and are rendered by the routes-chart.
 
 ### Single-replica invariant (do not raise `replicas` above 1)

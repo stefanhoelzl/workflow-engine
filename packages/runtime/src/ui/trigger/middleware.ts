@@ -1,7 +1,7 @@
 import type { DispatchMeta } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { ownerSet, validateOwner } from "../../auth/owner.js";
+import { ownerSet } from "../../auth/owner.js";
 import { requireOwnerMember } from "../../auth/owner-mw.js";
 import type {
 	BaseTriggerDescriptor,
@@ -10,20 +10,22 @@ import type {
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
-import { renderTriggerPage } from "./page.js";
+import { renderRepoTriggerPage, renderTriggerTreePage } from "./page.js";
 
 // ---------------------------------------------------------------------------
 // /trigger/* — operator UI for manually firing registered triggers
 // ---------------------------------------------------------------------------
 //
-// Renders a GET page listing every registered trigger (any kind) scoped to
-// the user's active owner. HTTP triggers submit directly to their public
-// webhook URL (`/webhooks/<owner>/<workflow>/<trigger-name>`) — the HTTP
-// source fills in headers/url/method from the real HTTP
-// request. Non-HTTP kinds (future cron/mail) submit to the kind-agnostic
-// POST `/trigger/<owner>/<workflow>/<trigger-name>` endpoint served here;
-// this endpoint validates the body against `descriptor.inputSchema` via the
-// shared `validate()` and dispatches through the shared executor.
+// Mirrors the dashboard's three-level drill-down:
+//   GET /trigger                        — owners the caller can see
+//   GET /trigger/:owner                 — repos under that owner
+//   GET /trigger/:owner/:repo           — trigger cards for that repo
+//   POST /trigger/:owner/:repo/:workflow/:trigger
+//                                       — kind-agnostic manual fire
+//
+// HTTP-trigger cards still submit to `/trigger/:owner/:repo/<workflow>/
+// <trigger>` so the session user can be captured as dispatch provenance
+// (the public `/webhooks/...` URL remains the external entry point).
 //
 // SECURITY (§4): mounted under `/trigger/*`, which is protected by the
 // in-app `sessionMw` that reads the sealed session cookie set by the
@@ -44,23 +46,9 @@ interface TriggerMiddlewareDeps {
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 const HTTP_INTERNAL_ERROR = 500;
 
-function sortedOwners(c: Context, registry: WorkflowRegistry): string[] {
+function sortedOwners(c: Context): string[] {
 	const user = c.get("user");
-	if (user) {
-		return Array.from(ownerSet(user)).sort();
-	}
-	// Test fallback: show owners present in the registry when no user is
-	// seeded on the context. In production, `sessionMw` mounted on
-	// `/trigger/*` ensures a `UserContext` is always set (or redirects to
-	// `/login`); reaching this branch means a test invoked the middleware
-	// without a session middleware attached.
-	const fromRegistry = new Set<string>();
-	for (const owner of registry.owners()) {
-		if (validateOwner(owner)) {
-			fromRegistry.add(owner);
-		}
-	}
-	return Array.from(fromRegistry).sort();
+	return user ? Array.from(ownerSet(user)).sort() : [];
 }
 
 // biome-ignore lint/complexity/useMaxParams: wraps posted body into the kind-specific input shape; parts are already available at the call site
@@ -68,6 +56,7 @@ function wrapInputForDescriptor(
 	descriptor: BaseTriggerDescriptor<string>,
 	body: unknown,
 	owner: string,
+	repo: string,
 	workflowName: string,
 	triggerName: string,
 ): unknown {
@@ -81,7 +70,7 @@ function wrapInputForDescriptor(
 		return {
 			body,
 			headers: {},
-			url: `/webhooks/${owner}/${workflowName}/${triggerName}`,
+			url: `/webhooks/${owner}/${repo}/${workflowName}/${triggerName}`,
 			method: http.method,
 		};
 	}
@@ -105,52 +94,85 @@ function buildDispatch(c: Context): DispatchMeta {
 	return { source: "manual" };
 }
 
-function resolveActiveOwner(c: Context, owners: string[]): string | undefined {
-	if (owners.length === 0) {
-		return;
-	}
-	const requested = c.req.query("owner");
-	if (requested && owners.includes(requested)) {
-		return requested;
-	}
-	return owners[0];
-}
-
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires page-render GET and kind-agnostic POST dispatch; splitting fragments the handler flow
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires four GET drill-down levels plus the kind-agnostic POST; splitting fragments the handler flow
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
 	app.use("*", deps.sessionMw);
 	app.use("/:owner/*", requireOwnerMember());
+	app.use("/:owner", requireOwnerMember());
+	app.use("/:owner/:repo/*", requireOwnerMember());
+	app.use("/:owner/:repo", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 
-	const render = (c: Context) => {
+	const renderRoot = (c: Context) => {
 		const user = c.get("user");
-		const owners = sortedOwners(c, deps.registry);
-		const activeOwner = resolveActiveOwner(c, owners);
-		const scopedEntries = activeOwner ? deps.registry.list(activeOwner) : [];
+		const owners = sortedOwners(c);
+		// Present each owner as a node; the repo list is lazy-loaded on
+		// expand via /trigger/:owner when the user navigates there. With one
+		// owner we send the operator straight to that owner's page for fewer
+		// clicks.
 		return c.html(
-			renderTriggerPage({
+			renderTriggerTreePage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				reposByOwner: {},
+			}),
+		);
+	};
+	app.get("/", renderRoot);
+	app.get("", renderRoot);
+
+	app.get("/:owner", (c) => {
+		const owner = c.req.param("owner");
+		const user = c.get("user");
+		const owners = sortedOwners(c);
+		const repos = deps.registry.repos(owner);
+		return c.html(
+			renderTriggerTreePage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				reposByOwner: { [owner]: repos },
+				autoExpand: owner,
+			}),
+		);
+	});
+
+	app.get("/:owner/:repo", (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const user = c.get("user");
+		const scopedEntries = deps.registry.list(owner, repo);
+		const owners = sortedOwners(c);
+		return c.html(
+			renderRepoTriggerPage({
 				entries: scopedEntries,
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				activeOwner,
+				owner,
+				repo,
 			}),
 		);
-	};
-	app.get("/", render);
-	app.get("", render);
+	});
 
-	// POST /trigger/<owner>/<workflow>/<triggerName> — kind-agnostic manual
-	// fire. Validates JSON body against descriptor.inputSchema and dispatches
-	// via the shared executor. Response returns `{ ok, output }` on success
-	// or `{ error: "internal_error" }` on failure.
-	app.post("/:owner/:workflow/:trigger", async (c) => {
+	// POST /trigger/<owner>/<repo>/<workflow>/<triggerName> — kind-agnostic
+	// manual fire. Validates JSON body against descriptor.inputSchema and
+	// dispatches via the shared executor. Response returns `{ ok, output }`
+	// on success or `{ error: "internal_error" }` on failure.
+	app.post("/:owner/:repo/:workflow/:trigger", async (c) => {
 		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
 		const workflowName = c.req.param("workflow");
 		const triggerName = c.req.param("trigger");
 
-		const entry = deps.registry.getEntry(owner, workflowName, triggerName);
+		const entry = deps.registry.getEntry(
+			owner,
+			repo,
+			workflowName,
+			triggerName,
+		);
 		if (!entry) {
 			return c.notFound();
 		}
@@ -172,6 +194,7 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 			entry.descriptor,
 			body,
 			owner,
+			repo,
 			workflowName,
 			triggerName,
 		);
