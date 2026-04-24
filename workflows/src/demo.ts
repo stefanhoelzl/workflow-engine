@@ -3,6 +3,7 @@ import {
 	cronTrigger,
 	defineWorkflow,
 	env,
+	executeSql,
 	httpTrigger,
 	manualTrigger,
 	secret,
@@ -36,10 +37,25 @@ const MEASURE_DELAY_MS = 5;
 // `250 Accepted` response string (matches nodemailer's own getTestMessageUrl).
 const ETHEREAL_MSGID_RE = /MSGID=([^\s\]]+)/;
 
+// Length filter for the parameterized sample query — picks a non-empty slice
+// of the `rna` table without relying on its exact contents.
+const SAMPLE_RNA_LEN = 100;
+
 export const workflow = defineWorkflow({
 	env: {
 		GREETING_PREFIX: env({ default: "Hello" }),
 		WEBHOOK_TOKEN: env({ secret: true }),
+		// RNAcentral's public read-only Postgres. All five fields are plain
+		// config with defaults baked in; the "password" is a publicly
+		// published credential (https://rnacentral.org/help/public-database)
+		// and is not treated as a secret so the workflow can self-bootstrap
+		// without operator-side env exports.
+		RNACENTRAL_HOST: env({ default: "hh-pgsql-public.ebi.ac.uk" }),
+		RNACENTRAL_PORT: env({ default: "5432" }),
+		RNACENTRAL_USER: env({ default: "reader" }),
+		RNACENTRAL_DB: env({ default: "pfmegrnargs" }),
+		// biome-ignore lint/security/noSecrets: RNAcentral publishes this credential publicly; see RNACENTRAL_HOST comment above
+		RNACENTRAL_PASSWORD: env({ default: "NWDMCE5xdipIjRrp" }),
 	},
 });
 
@@ -261,6 +277,41 @@ export const observeTicks = action({
 	},
 });
 
+// executeSql against a public read-only Postgres (RNAcentral's public EBI
+// instance). Credentials are published by EMBL-EBI and exist for exactly this
+// kind of demo. The DSN is assembled from `workflow.env` at handler time
+// rather than stashed at module scope so each run re-reads the
+// (operator-overridable) values.
+export const querySql = action({
+	input: z.object({}),
+	output: z.object({
+		greeting: z.number(),
+		sampleCount: z.number(),
+		syntaxErrorObserved: z.boolean(),
+	}),
+	handler: async () => {
+		const dsn = `postgres://${workflow.env.RNACENTRAL_USER}:${workflow.env.RNACENTRAL_PASSWORD}@${workflow.env.RNACENTRAL_HOST}:${workflow.env.RNACENTRAL_PORT}/${workflow.env.RNACENTRAL_DB}`;
+		const ping = await executeSql(dsn, "SELECT 1 AS greeting");
+		const sample = await executeSql(
+			dsn,
+			"SELECT upi FROM rna WHERE len = $1 LIMIT 5",
+			[SAMPLE_RNA_LEN],
+		);
+		// Deliberate failure path to exercise sql.error events.
+		let syntaxErrorObserved = false;
+		try {
+			await executeSql(dsn, "SELECT bogus FROM nope");
+		} catch {
+			syntaxErrorObserved = true;
+		}
+		return {
+			greeting: Number(ping.rows[0]?.greeting ?? 0),
+			sampleCount: sample.rowCount,
+			syntaxErrorObserved,
+		};
+	},
+});
+
 export const runDemo = action({
 	input: z.object({ name: z.string() }),
 	output: z.object({
@@ -280,6 +331,12 @@ export const runDemo = action({
 		cancelled: z.object({ aborted: z.boolean(), reason: z.string() }),
 		scheduled: z.object({ doubled: z.number() }),
 		observed: z.object({ values: z.array(z.number()) }),
+		sql: z.object({
+			greeting: z.number(),
+			sampleCount: z.number(),
+			syntaxErrorObserved: z.boolean(),
+		}),
+		mail: z.object({ messageId: z.string(), viewUrl: z.string() }),
 	}),
 	handler: async ({ name }) => {
 		const greeting = await greet({ name });
@@ -297,6 +354,8 @@ export const runDemo = action({
 		const cancelled = await cancellable({});
 		const scheduled = await scheduleTask({ value: name.length });
 		const observed = await observeTicks({ count: 3 });
+		const sql = await querySql({});
+		const mail = await sendDemo({ to: `demo+${name}@example.com` });
 		return {
 			greeting,
 			shouted,
@@ -311,6 +370,8 @@ export const runDemo = action({
 			cancelled,
 			scheduled,
 			observed,
+			sql,
+			mail,
 		};
 	},
 });
@@ -385,8 +446,8 @@ export const run = manualTrigger({
 // bootstrap throwaway SMTP credentials via the public nodemailer REST endpoint,
 // then send a tiny message through them. Ethereal captures the message and
 // returns a `viewUrl` the operator can click to see it — nothing is actually
-// delivered. Kept out of `runDemo` so a transient outage of
-// `api.nodemailer.com` cannot break every other demo trigger.
+// delivered. Invoked from `runDemo` alongside `querySql` so every trigger
+// exercises the mail path.
 export const sendDemo = action({
 	input: z.object({ to: z.string() }),
 	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
@@ -435,14 +496,6 @@ export const sendDemo = action({
 			: `${creds.web}/messages`;
 		return { messageId: result.messageId, viewUrl };
 	},
-});
-
-export const sendMailDemo = manualTrigger({
-	input: z.object({
-		to: z.string().meta({ example: "demo@example.com" }),
-	}),
-	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
-	handler: async ({ to }) => sendDemo({ to }),
 });
 
 export const boom = action({

@@ -8,6 +8,8 @@ import { encodeSentinel, ManifestSchema, z } from "@workflow-engine/core";
 import type { StandardCRON } from "ts-cron-validator";
 // biome-ignore lint/style/noExportedImports: sendMail is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
 import { sendMail } from "./mail.js";
+// biome-ignore lint/style/noExportedImports: executeSql is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
+import { executeSql } from "./sql.js";
 
 // ---------------------------------------------------------------------------
 // Action dispatch (routed through the sdk-support plugin's locked __sdk)
@@ -608,6 +610,18 @@ export type {
 	SendMailSmtp,
 } from "./mail.js";
 export type {
+	SqlColumnMeta,
+	SqlConnection,
+	SqlConnectionObject,
+	SqlError,
+	SqlOptions,
+	SqlParam,
+	SqlResult,
+	SqlRow,
+	SqlSsl,
+	SqlValue,
+} from "./sql.js";
+export type {
 	Action,
 	CronTrigger,
 	EnvRef,
@@ -624,6 +638,7 @@ export {
 	cronTrigger,
 	defineWorkflow,
 	env,
+	executeSql,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
 	isAction,

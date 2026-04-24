@@ -16,6 +16,7 @@ import wasiPlugin from "../../sandbox/src/plugins/wasi-plugin.ts?sandbox-plugin"
 import consolePlugin from "../../sandbox-stdlib/src/console/index.ts?sandbox-plugin";
 import fetchPlugin from "../../sandbox-stdlib/src/fetch/index.ts?sandbox-plugin";
 import mailPlugin from "../../sandbox-stdlib/src/mail/index.ts?sandbox-plugin";
+import sqlPlugin from "../../sandbox-stdlib/src/sql/index.ts?sandbox-plugin";
 import timersPlugin from "../../sandbox-stdlib/src/timers/index.ts?sandbox-plugin";
 import webPlatformPlugin from "../../sandbox-stdlib/src/web-platform/index.ts?sandbox-plugin";
 import sdkSupportPlugin from "../../sdk/src/sdk-support/index.ts?sandbox-plugin";
@@ -84,6 +85,7 @@ function buildPluginDescriptors(
 		{ ...webPlatformPlugin },
 		{ ...fetchPlugin },
 		{ ...mailPlugin },
+		{ ...sqlPlugin },
 		{ ...timersPlugin },
 		{ ...consolePlugin },
 		{ ...hostCallActionPlugin, config: hostCallActionConfig },
