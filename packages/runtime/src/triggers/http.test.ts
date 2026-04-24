@@ -419,7 +419,7 @@ describe("createHttpTriggerSource: dispatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("createHttpTriggerSource: webhooks health probe", () => {
-	it("returns 503 when no trigger is registered", async () => {
+	it("returns 503 before markReady() — startup phases incomplete", async () => {
 		const source = createHttpTriggerSource();
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
@@ -428,8 +428,9 @@ describe("createHttpTriggerSource: webhooks health probe", () => {
 		expect(res.status).toBe(503);
 	});
 
-	it("returns 204 when at least one trigger is registered", async () => {
-		const { source } = await mount({});
+	it("returns 204 after markReady() — regardless of trigger count", async () => {
+		const source = createHttpTriggerSource();
+		source.markReady();
 		const app = new Hono();
 		app.all(source.middleware.match, source.middleware.handler);
 		app.all(source.middleware.match.slice(0, -2), source.middleware.handler);

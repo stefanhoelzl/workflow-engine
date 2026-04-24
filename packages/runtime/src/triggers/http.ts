@@ -124,6 +124,7 @@ interface HttpTriggerSource
 		workflowName: string,
 		triggerName: string,
 	): TriggerEntry<HttpTriggerDescriptor> | undefined;
+	markReady(): void;
 }
 
 function triggerKey(workflowName: string, triggerName: string): string {
@@ -142,6 +143,7 @@ function createHttpTriggerSource(): HttpTriggerSource {
 		string,
 		Map<string, TriggerEntry<HttpTriggerDescriptor>>
 	>();
+	let ready = false;
 
 	const middleware: Middleware = {
 		match: `${WEBHOOKS_PREFIX}*`,
@@ -151,8 +153,7 @@ function createHttpTriggerSource(): HttpTriggerSource {
 			const afterPrefix = c.req.path.slice(WEBHOOKS_PREFIX.length);
 
 			if (afterPrefix === "" && c.req.method === "GET") {
-				const hasAny = [...pairs.values()].some((m) => m.size > 0);
-				const status = hasAny ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
+				const status = ready ? HTTP_NO_CONTENT : HTTP_SERVICE_UNAVAILABLE;
 				return c.body(null, status);
 			}
 
@@ -244,6 +245,9 @@ function createHttpTriggerSource(): HttpTriggerSource {
 			return pairs
 				.get(pairKey(owner, repo))
 				?.get(triggerKey(workflowName, triggerName));
+		},
+		markReady() {
+			ready = true;
 		},
 		middleware,
 	};
