@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Testing Setup Specification
+
+## Purpose
+
+Own the test-harness configuration (Vitest) at the repo root, the `pnpm test` / `pnpm test:wpt` scripts, and the split between the core test suite and the WPT compliance suite (separate config at `packages/sandbox-stdlib/test/wpt/vitest.config.ts`).
+
+## Requirements
 
 ### Requirement: Vitest root configuration
 A `vitest.config.ts` at the repository root SHALL configure Vitest for the entire monorepo.

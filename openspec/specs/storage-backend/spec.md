@@ -1,3 +1,11 @@
+# Storage Backend Specification
+
+## Purpose
+
+Define the `StorageBackend` interface (FS-backed and S3-backed implementations) that the runtime uses for: tenant bundle persistence under `workflows/<tenant>.tar.gz`, append-only event files under `pending/<invocationId>.ndjson` (live in-flight) and `archive/<tenant>/<invocationId>.json` (sealed). Owns atomicity, path sanitization, and the backend-selection logic driven by `PERSISTENCE_PATH` vs `PERSISTENCE_S3_*` env vars.
+
+## Requirements
+
 ### Requirement: StorageBackend interface
 
 The system SHALL expose a `StorageBackend` interface with the following methods:

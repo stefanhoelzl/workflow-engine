@@ -178,14 +178,22 @@ The sandbox SHALL NOT expose host object references, closures, proxies, or any h
 
 ### Requirement: Isolation — no Node.js surface
 
-The sandbox SHALL install no Node.js-specific globals. Node core modules (fs, net, http, process, etc.) SHALL NOT be reachable from guest code. All guest-visible globals SHALL come from: (a) web-platform polyfills installed by the web-platform plugin, (b) WASM-native WHATWG APIs (URL, TextEncoder, TextDecoder, crypto, atob, btoa, structuredClone), (c) public-descriptor guest functions registered by plugins (fetch, setTimeout, console.*, reportError). The sandbox core SHALL install nothing directly on `globalThis`.
+The sandbox SHALL install no Node.js-specific globals. Node core modules (`fs`, `net`, `http`, `process`, etc.) SHALL NOT be reachable from guest code. The sandbox core SHALL install no plugin-style host descriptors on `globalThis` — every guest-visible global comes from one of two sources:
 
-#### Scenario: Node core modules absent
+1. **VM-level extensions** loaded by `worker.ts` into the QuickJS runtime via `extensions: [base64Extension, cryptoExtension, encodingExtension, headersExtension, structuredCloneExtension, urlExtension]` (see "VM-level web-platform surface via quickjs-wasi extensions" requirement). These provide `atob`, `btoa`, `TextEncoder`, `TextDecoder`, `Headers`, `URL`, `URLSearchParams`, native `crypto.getRandomValues`, native `crypto.subtle`, and native `DOMException`.
+2. **Plugin-installed globals** from `sandbox-stdlib` (web-platform, fetch, timers, console plugins) and from runtime/sdk plugins (sdk-support installs `__sdk`; trigger and host-call-action install no guest functions; wasi-telemetry installs none). Each comes with an explicit `GuestFunctionDescription` or an in-source IIFE that runs at Phase 2.
 
-- **GIVEN** any composition of plugins (including full runtime stack)
-- **WHEN** user source evaluates `typeof require, typeof process, typeof Buffer`
-- **THEN** all three SHALL be `"undefined"`
-- **AND** `import("fs")` or dynamic import of any Node module SHALL fail
+#### Scenario: Node.js core modules unreachable
+
+- **GIVEN** a sandbox post-init
+- **WHEN** guest code evaluates `typeof require`, `typeof process`, `typeof Buffer`, `typeof global`
+- **THEN** each SHALL be `"undefined"`
+
+#### Scenario: Sandbox-core install set is documented
+
+- **GIVEN** a production sandbox composition
+- **WHEN** auditing every global installed before Phase 2 plugin source evaluation
+- **THEN** the set SHALL equal the union of the VM-level extensions listed in the "VM-level web-platform surface via quickjs-wasi extensions" requirement
 
 ### Requirement: Source evaluated as IIFE script
 
@@ -256,46 +264,15 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 - **WHEN** `sb.dispose()` is called before the worker posts `done`
 - **THEN** the pending `run()` promise SHALL reject with a disposal error
 
-### Requirement: Safe globals — console
-
-Console (log, info, warn, error, debug) SHALL be installed by the `createConsolePlugin()` from `@workflow-engine/sandbox-stdlib`. Each method SHALL emit a `console.<method>` leaf event with `input: [args...]`. The `console` object SHALL be installed as a writable, configurable global per WebIDL.
-
-#### Scenario: console.log emits a leaf
-
-- **GIVEN** guest code calls `console.log("hello", { x: 1 })`
-- **WHEN** the call returns
-- **THEN** a leaf event with kind `console.log` and `input: ["hello", { x: 1 }]` SHALL be emitted
-
-### Requirement: Safe globals — timers
-
-Timers (setTimeout, setInterval, clearTimeout, clearInterval) SHALL be installed by the `createTimersPlugin()` from `@workflow-engine/sandbox-stdlib`. Each SHALL be a public guest function descriptor (writable, configurable per WebIDL). `setTimeout` and `setInterval` SHALL emit a `timer.set` leaf event at scheduling time. `clearTimeout` and `clearInterval` SHALL emit a `timer.clear` leaf event. When a scheduled timer fires host-side, the plugin SHALL wrap the captured callable invocation in `ctx.request("timer", name, { input: { timerId } }, () => callable())`, producing `timer.request`/`timer.response`/`timer.error` around the callback. Unfired timers still live at run end SHALL be cleared by the plugin's `onRunFinished` hook via the same code path as guest-initiated `clearTimeout`, emitting a `timer.clear` event for each.
-
-#### Scenario: setTimeout emits timer.set and wraps callback with timer.request/response
-
-- **GIVEN** guest code calls `setTimeout(cb, 100)` and the timer fires
-- **WHEN** observing the event stream
-- **THEN** `timer.set` SHALL be emitted at scheduling time (leaf, with `{ delay, timerId }`)
-- **AND** `timer.request` SHALL be emitted when the timer fires (createsFrame, with `{ timerId }`)
-- **AND** the captured callable SHALL run
-- **AND** `timer.response` SHALL be emitted with `closesFrame: true` after callable returns
-
-#### Scenario: Unfired timer cleared at run end
-
-- **GIVEN** `setTimeout(cb, 30000)` scheduled during a run that completes in 1s
-- **WHEN** the run ends
-- **THEN** the plugin's `onRunFinished` SHALL clear the host timer and emit `timer.clear`
-- **AND** the timer's callable SHALL be disposed
-- **AND** no callback SHALL fire during subsequent runs against the same sandbox
-
 ### Requirement: Safe globals — performance.now
 
-The sandbox SHALL expose `performance.now()` via the QuickJS performance intrinsic, which reads time through the WASI `clock_time_get` syscall with `clockId = CLOCK_MONOTONIC`. The worker's `CLOCK_MONOTONIC` override SHALL return `(performance.now() × 1_000_000 ns) − anchorNs` where `anchorNs` is the sandbox's monotonic anchor, which is re-set at every `bridge.setRunContext`. Guest `performance.now()` SHALL therefore start near zero at the beginning of each run and increase monotonically within that run.
+The sandbox SHALL expose `performance.now()` via the QuickJS performance intrinsic, which reads time through the WASI `clock_time_get` syscall with `clockId = CLOCK_MONOTONIC`. The worker's `CLOCK_MONOTONIC` override SHALL return `perfNowNs() − anchorNs` where `anchorNs` is the shared monotonic anchor (`wasiState.anchor.ns`). The anchor is seeded at worker init BEFORE `QuickJS.create` (so the cached reference that QuickJS takes for `performance.now()` starts near zero during VM init) and is re-anchored for each run by the plugin-lifecycle's `onBeforeRunStarted` hook on the trigger plugin. Guest `performance.now()` SHALL therefore start near zero at the beginning of each run and increase monotonically within that run.
 
 #### Scenario: performance.now returns monotonically increasing values within a run
 
 - **GIVEN** a sandbox in an active run
 - **WHEN** guest code calls `performance.now()` twice in sequence
-- **THEN** the second value SHALL be greater than or equal to the first value
+- **THEN** the second value SHALL be greater than or equal to the first
 
 #### Scenario: performance.now starts near zero at the start of each run
 
@@ -303,254 +280,51 @@ The sandbox SHALL expose `performance.now()` via the QuickJS performance intrins
 - **WHEN** a new run begins and guest code calls `performance.now()` as the first monotonic read of that run
 - **THEN** the returned value SHALL be within a small epsilon of `0`
 
-### Requirement: Safe globals — self
-
-The sandbox SHALL expose `globalThis.self` as a reference to `globalThis` itself. The identity `self === globalThis` is preserved by reference assignment. `globalThis` additionally inherits `EventTarget.prototype` (see `Safe globals — EventTarget`), making `self instanceof EventTarget === true` and giving `self.addEventListener`/`self.removeEventListener`/`self.dispatchEvent` functional access via non-enumerable own-properties. This global is required by the WinterCG Minimum Common API for feature-detection compatibility with npm libraries.
-
-#### Scenario: self reflects globalThis
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `self === globalThis`
-- **THEN** the result SHALL be `true`
-
-#### Scenario: self is an EventTarget
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `self instanceof EventTarget`
-- **THEN** the result SHALL be `true`
-
-#### Scenario: EventTarget methods on self are non-enumerable own-properties
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `Object.keys(globalThis)`
-- **THEN** the result SHALL NOT include `addEventListener`, `removeEventListener`, or `dispatchEvent`
-- **AND** `Object.getOwnPropertyNames(globalThis)` SHALL include all three
-
-#### Scenario: self.addEventListener receives dispatched events
-
-- **GIVEN** a listener registered via `self.addEventListener("x", cb)`
-- **WHEN** guest code calls `self.dispatchEvent(new Event("x"))`
-- **THEN** `cb` SHALL be invoked exactly once
-
-### Requirement: Safe globals — navigator
-
-The sandbox SHALL expose `globalThis.navigator` as a frozen object containing a single string property `userAgent` whose value SHALL be `` `WorkflowEngine/${VERSION}` `` where `VERSION` is the `@workflow-engine/sandbox` package version. The object SHALL carry no methods, no other properties, and SHALL be non-extensible.
-
-#### Scenario: navigator.userAgent is a version-stamped string
-
-- **GIVEN** a sandbox constructed from `@workflow-engine/sandbox` version X
-- **WHEN** guest code reads `navigator.userAgent`
-- **THEN** the value SHALL be the string `` `WorkflowEngine/${X}` ``
-
-#### Scenario: navigator is frozen
-
-- **GIVEN** a sandbox
-- **WHEN** guest code attempts `navigator.foo = "x"` or `Object.defineProperty(navigator, "foo", …)`
-- **THEN** the assignment SHALL fail (silently in non-strict or with TypeError in strict)
-
-### Requirement: Safe globals — reportError
-
-`reportError` SHALL be installed by the `createWebPlatformPlugin()` from `@workflow-engine/sandbox-stdlib`. The polyfill SHALL dispatch a cancelable `ErrorEvent` on `globalThis`; if not default-prevented, it SHALL forward a serialized payload to the plugin's captured private `__reportErrorHost` reference. The `__reportErrorHost` descriptor SHALL emit an `uncaught-error` leaf event. The raw `__reportErrorHost` SHALL NOT be visible to user source (auto-deleted after phase 2).
-
-#### Scenario: Uncaught exception in microtask routes through reportError
-
-- **GIVEN** guest code calls `queueMicrotask(() => { throw new Error("boom") })`
-- **WHEN** the microtask fires
-- **THEN** `reportError` SHALL be invoked with the thrown error
-- **AND** an `uncaught-error` leaf event SHALL be emitted unless a listener called `preventDefault()` on the dispatched ErrorEvent
-
-### Requirement: Safe globals — EventTarget
-
-The sandbox SHALL expose `globalThis.EventTarget` as a WHATWG EventTarget implementation, provided by the `event-target-shim` npm package (v6.x) compiled into the sandbox polyfill IIFE. No host-bridge method is used; all listener state lives in the QuickJS heap. This global is required by the WinterCG Minimum Common API.
-
-#### Scenario: new EventTarget() is constructible
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new EventTarget() instanceof EventTarget`
-- **THEN** the result SHALL be `true`
-
-#### Scenario: addEventListener delivers dispatched events
-
-- **GIVEN** a fresh `EventTarget` with a listener registered via `et.addEventListener("x", cb)`
-- **WHEN** guest code calls `et.dispatchEvent(new Event("x"))`
-- **THEN** `cb` SHALL be invoked with an `Event` whose `type === "x"` and whose `target === et` and `currentTarget === et`
-
-#### Scenario: once option auto-removes the listener after first dispatch
-
-- **GIVEN** a listener registered via `et.addEventListener("x", cb, { once: true })`
-- **WHEN** `et.dispatchEvent(new Event("x"))` is called twice
-- **THEN** `cb` SHALL be invoked exactly once
-
-#### Scenario: signal option auto-removes the listener on signal abort
-
-- **GIVEN** a listener registered via `et.addEventListener("x", cb, { signal })`
-- **WHEN** `signal` aborts and then `et.dispatchEvent(new Event("x"))` is called
-- **THEN** `cb` SHALL NOT be invoked
-
-#### Scenario: dispatchEvent re-entrancy uses a listener snapshot
-
-- **GIVEN** a listener that calls `et.addEventListener("x", otherCb)` for a new listener during dispatch
-- **WHEN** the current dispatch completes
-- **THEN** `otherCb` SHALL NOT be invoked for the current dispatch (it becomes eligible for the next dispatch)
-
-### Requirement: Safe globals — Event
-
-The sandbox SHALL expose `globalThis.Event` as a constructible class from the same `event-target-shim` source. All guest-constructed Events SHALL have `isTrusted === false`.
-
-#### Scenario: Event constructor accepts type and init dictionary
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new Event("x", { cancelable: true, bubbles: true })`
-- **THEN** the result SHALL have `type === "x"`, `cancelable === true`, `bubbles === true`, `isTrusted === false`, `defaultPrevented === false`
-
-#### Scenario: preventDefault honors cancelable flag
-
-- **GIVEN** a cancelable Event being dispatched
-- **WHEN** a listener calls `event.preventDefault()`
-- **THEN** `dispatchEvent` SHALL return `false` and `event.defaultPrevented` SHALL be `true`
-
-#### Scenario: preventDefault on non-cancelable Event has no effect
-
-- **GIVEN** a non-cancelable Event
-- **WHEN** a listener calls `event.preventDefault()`
-- **THEN** `event.defaultPrevented` SHALL remain `false`
-
-#### Scenario: stopImmediatePropagation prevents subsequent listeners
-
-- **GIVEN** two listeners for the same event type
-- **WHEN** the first listener calls `event.stopImmediatePropagation()`
-- **THEN** the second listener SHALL NOT be invoked
-
-### Requirement: Safe globals — ErrorEvent
-
-The sandbox SHALL expose `globalThis.ErrorEvent` as a constructible class extending `Event`, with readonly `message`, `filename`, `lineno`, `colno`, and `error` properties initialised from the constructor init dictionary. ErrorEvent is dispatched by the evolved `reportError` shim and by the `queueMicrotask` wrap.
-
-#### Scenario: ErrorEvent carries error and message
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new ErrorEvent("error", { error: new Error("boom"), message: "boom" })`
-- **THEN** the result SHALL have `type === "error"`, `error.message === "boom"`, `message === "boom"`, and `isTrusted === false`
-
-### Requirement: Safe globals — AbortController
-
-The sandbox SHALL expose `globalThis.AbortController` as a hand-written pure-JS class whose `signal` property is a fresh `AbortSignal` instance. `abort(reason?)` SHALL set `signal.aborted === true`, record the reason (defaulting to `new DOMException("signal is aborted without reason", "AbortError")` when none given), and dispatch an `abort` Event on the signal. Subsequent `abort()` calls SHALL be no-ops.
-
-#### Scenario: new AbortController().signal is an AbortSignal instance
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new AbortController().signal`
-- **THEN** the result SHALL be an `AbortSignal` instance whose `aborted === false`
-
-#### Scenario: abort(reason) sets aborted and reason, dispatches abort event
-
-- **GIVEN** an `AbortController` with a listener on `controller.signal`
-- **WHEN** guest code calls `controller.abort(new Error("test"))`
-- **THEN** `controller.signal.aborted` SHALL be `true`, `controller.signal.reason.message === "test"`, and the listener SHALL have been invoked exactly once
-
-#### Scenario: abort without reason uses DOMException AbortError
-
-- **GIVEN** a fresh `AbortController`
-- **WHEN** guest code calls `controller.abort()`
-- **THEN** `controller.signal.reason` SHALL be a `DOMException` with `name === "AbortError"`
-
-#### Scenario: abort is idempotent
-
-- **GIVEN** an `AbortController` that has already been aborted
-- **WHEN** guest code calls `controller.abort(anotherReason)`
-- **THEN** `controller.signal.reason` SHALL remain the original reason and no additional `abort` Event SHALL fire
-
-### Requirement: Safe globals — AbortSignal
-
-The sandbox SHALL expose `globalThis.AbortSignal` as a hand-written class extending `EventTarget`. Instances SHALL expose `aborted`, `reason`, and `throwIfAborted()`. The class SHALL provide three static factories: `AbortSignal.abort(reason?)`, `AbortSignal.timeout(ms)`, and `AbortSignal.any(signals)`. Direct instantiation via `new AbortSignal()` is permitted but only useful for subclassing — `AbortController` is the normal construction path. `AbortSignal.timeout` uses the allowlisted `setTimeout` bridge; no new host surface is introduced.
-
-#### Scenario: throwIfAborted throws the stored reason
-
-- **GIVEN** an aborted signal with `reason === someError`
-- **WHEN** guest code calls `signal.throwIfAborted()`
-- **THEN** the call SHALL throw exactly `someError`
-
-#### Scenario: AbortSignal.abort(reason) returns a pre-aborted signal
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `AbortSignal.abort(new Error("x"))`
-- **THEN** the result SHALL have `aborted === true` and `reason.message === "x"`
-
-#### Scenario: AbortSignal.timeout(ms) aborts after the delay with TimeoutError
-
-- **GIVEN** `const s = AbortSignal.timeout(50)`
-- **WHEN** 50ms elapse
-- **THEN** `s.aborted` SHALL be `true` and `s.reason` SHALL be a `DOMException` with `name === "TimeoutError"`
-
-#### Scenario: AbortSignal.any composes; aborts when any input aborts
-
-- **GIVEN** three signals `a`, `b`, `c` and `const composite = AbortSignal.any([a, b, c])`
-- **WHEN** `b` aborts with reason `R`
-- **THEN** `composite.aborted === true` and `composite.reason === R`
-
-#### Scenario: AbortSignal.any returns a pre-aborted signal when any input is already aborted
-
-- **GIVEN** signal `a` that is already aborted with reason `R`
-- **WHEN** guest code evaluates `AbortSignal.any([a, b])`
-- **THEN** the returned signal SHALL already have `aborted === true` and `reason === R`
-
 ### Requirement: Safe globals — DOMException
 
-The sandbox SHALL expose `globalThis.DOMException` as provided natively by the `quickjs-wasi` WASM extension (no polyfill). DOMException SHALL construct with `(message, name)` and provide `name` and `message` properties; instances SHALL satisfy `instanceof Error` and `instanceof DOMException`. DOMException is consumed by `AbortController`/`AbortSignal` for default abort and timeout reasons.
+The sandbox SHALL expose `globalThis.DOMException` as the class installed by the quickjs-wasi `structuredCloneExtension` (see "VM-level web-platform surface via quickjs-wasi extensions"). The class SHALL construct with `(message, name)` and provide `name` and `message` properties; instances SHALL satisfy `instanceof Error` and `instanceof DOMException`.
 
-#### Scenario: DOMException is a constructible function
+The final guest-visible `DOMException` is a construct-trap `Proxy` wrapper installed by `sandbox-stdlib`'s web-platform plugin (`idb-domexception-fix.ts`) to make fake-indexeddb's subclass `throw new DataError()` land as a plain DOMException instance. See `sandbox-stdlib` for the wrapper.
 
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `typeof DOMException`
-- **THEN** the result SHALL be `"function"`
+#### Scenario: DOMException instances pass instanceof checks
 
-#### Scenario: DOMException instances carry name and message
+- **GIVEN** a sandbox post-init
+- **WHEN** guest code evaluates `new DOMException("oops", "DataError") instanceof DOMException` and `... instanceof Error`
+- **THEN** both SHALL be `true`
 
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const e = new DOMException("oops", "AbortError")`
-- **THEN** `e.name === "AbortError"`, `e.message === "oops"`, `e instanceof Error === true`, `e instanceof DOMException === true`
+#### Scenario: DOMException is consumed by AbortController / AbortSignal
 
-### Requirement: Guest-side microtask exception routing
-
-The sandbox SHALL wrap `globalThis.queueMicrotask` so that an exception thrown by the queued callback is caught and forwarded to `globalThis.reportError(err)`. This routes microtask errors through the same `ErrorEvent`/`__reportError` pipeline as any other reported error.
-
-#### Scenario: exception in microtask dispatches ErrorEvent to global listener
-
-- **GIVEN** a listener registered via `self.addEventListener("error", handler)`
-- **WHEN** guest code calls `queueMicrotask(() => { throw new Error("boom"); })` and the microtask drains
-- **THEN** `handler` SHALL be invoked with an `ErrorEvent` whose `error.message === "boom"`
-
-#### Scenario: reportError is a no-op when no host bridge was provided
-
-- **GIVEN** a sandbox constructed without a `__reportError` entry in `methods`
-- **WHEN** guest code calls `reportError(new Error("oops"))`
-- **THEN** the call SHALL complete without throwing
-- **AND** no host-side capture SHALL occur
+- **GIVEN** an AbortController from the web-platform plugin
+- **WHEN** guest code calls `controller.abort()` without an explicit reason
+- **THEN** `controller.signal.reason` SHALL be a DOMException with `name === "AbortError"`
 
 ### Requirement: WebCrypto surface
 
-The sandbox SHALL expose the W3C WebCrypto API: `crypto.randomUUID`, `crypto.getRandomValues`, and the `crypto.subtle` surface (`digest`, `importKey`, `exportKey`, `sign`, `verify`, `encrypt`, `decrypt`, `generateKey`, `deriveBits`, `deriveKey`, `wrapKey`, `unwrapKey`).
+The sandbox SHALL expose the native WebCrypto handles provided by the quickjs-wasi `cryptoExtension`:
 
-WebCrypto SHALL be implemented by the WASM crypto extension running natively inside the QuickJS WASM context. A JS shim SHALL wrap all `crypto.subtle` methods to return Promises (via `Promise.resolve()`) for compatibility with the standard WebCrypto API.
+- `crypto.getRandomValues(typedArray)` — synchronous CSPRNG fill.
+- `crypto.subtle` — PSA-backed subtle crypto handle with digest, key generation, sign/verify, import/export, encrypt/decrypt operations.
 
-`crypto.subtle.exportKey` SHALL support `"raw"`, `"pkcs8"`, and `"spki"` formats. `"jwk"` format SHALL NOT be supported in this version.
+The final guest-visible `crypto.subtle` is wrapped by `sandbox-stdlib`'s web-platform plugin (`subtle-crypto.ts`) to add argument validation, sync-to-promise wrapping (the native methods are synchronous; WHATWG SubtleCrypto returns Promises), and DOMException-name normalization. See `sandbox-stdlib` for the wrapper.
 
-#### Scenario: crypto globals available
+Native key material SHALL remain inside WASM linear memory; `CryptoKey` objects SHALL expose read-only `type`, `algorithm`, `extractable`, `usages` but SHALL NOT cross the host/guest boundary. No opaque reference store SHALL be used for crypto keys.
 
-- **GIVEN** a sandbox
-- **WHEN** guest code invokes `crypto.randomUUID()`, `crypto.getRandomValues(new Uint8Array(16))`, and `await crypto.subtle.digest("SHA-256", data)`
-- **THEN** each call SHALL return a result consistent with the W3C WebCrypto specification
+#### Scenario: getRandomValues fills buffer
 
-#### Scenario: crypto.subtle methods return Promises
+- **WHEN** guest code calls `crypto.getRandomValues(new Uint8Array(32))`
+- **THEN** the typed array SHALL be returned with 32 random bytes
 
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const p = crypto.subtle.digest("SHA-256", data); typeof p.then`
-- **THEN** the result SHALL be `"function"` (the return value is a Promise)
+#### Scenario: CryptoKey metadata readable
 
-#### Scenario: JWK export is not supported
+- **GIVEN** a CryptoKey generated inside the sandbox
+- **WHEN** guest code reads `key.type`, `key.algorithm`, `key.extractable`, `key.usages`
+- **THEN** the values SHALL match the generation parameters
 
-- **GIVEN** a sandbox
-- **WHEN** guest code calls `crypto.subtle.exportKey("jwk", key)`
-- **THEN** the call SHALL reject with an error indicating unsupported format
+#### Scenario: Non-extractable key cannot be exported
+
+- **GIVEN** a CryptoKey with `extractable: false`
+- **WHEN** guest code calls `crypto.subtle.exportKey(format, key)`
+- **THEN** the promise SHALL reject
 
 ### Requirement: Key material lives in WASM
 
@@ -772,39 +546,6 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 - **WHEN** it needs a `Sandbox` for a `(tenant, workflow)` pair
 - **THEN** it SHALL obtain the sandbox via `SandboxStore.get(tenant, workflow, bundleSource)`
 - **AND** it SHALL NOT call `SandboxFactory.create` directly
-
-### Requirement: Action call host wiring
-
-The runtime SHALL register `__hostCallAction` per-workflow at sandbox construction time by passing it in `methods` to `sandbox(source, methods, options)`. The host implementation SHALL look up the called action by name in the workflow's manifest, validate the input against the JSON Schema from the manifest, audit-log the invocation, and return. The host SHALL NOT invoke the handler --- dispatch is performed by the runtime-appended dispatcher shim inside the sandbox.
-
-The runtime SHALL append JS source to the workflow bundle (evaluated after the bundle IIFE) that runs as an IIFE and performs the following operations in order:
-
-1. Capture `globalThis.__hostCallAction` into a closure-local variable.
-2. Capture `globalThis.__emitEvent` into a closure-local variable.
-3. Install `globalThis.__dispatchAction` via `Object.defineProperty` with `value: dispatch`, `writable: false`, `configurable: false`, where `dispatch(name, input, handler, outputSchema)` uses only the closure-captured references to emit `action.*` events, validate input via the captured host bridge, invoke the handler in-sandbox, and validate the handler's return via the output schema.
-4. `delete globalThis.__hostCallAction` and `delete globalThis.__emitEvent`.
-
-After this IIFE completes, guest code SHALL NOT be able to read, reassign, or delete `globalThis.__dispatchAction` — the only legal use is to call it.
-
-#### Scenario: Unknown action name throws
-
-- **GIVEN** a workflow whose manifest does not contain an action named `"missing"`
-- **WHEN** the dispatcher's captured `__hostCallAction("missing", input)` reference is invoked
-- **THEN** the host SHALL throw an error indicating the action is not declared in the manifest
-
-#### Scenario: Dispatcher cannot be replaced by guest
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code attempts `globalThis.__dispatchAction = myFn`
-- **THEN** the assignment SHALL be rejected (TypeError in strict mode, silent no-op in sloppy mode)
-- **AND** subsequent action calls SHALL continue to route through the original dispatcher
-
-#### Scenario: Dispatcher cannot be deleted by guest
-
-- **GIVEN** a sandbox whose dispatcher shim has evaluated
-- **WHEN** guest code attempts `delete globalThis.__dispatchAction`
-- **THEN** the delete SHALL be rejected (TypeError in strict mode, `false` in sloppy mode)
-- **AND** subsequent action calls SHALL continue to route through the original dispatcher
 
 ### Requirement: Memory limit configuration
 
@@ -1149,459 +890,6 @@ The `Logger` interface exposed at `packages/sandbox/src/factory.ts` SHALL define
 - **WHEN** the factory calls `logger.debug(msg, meta)` on its injected logger
 - **THEN** the injected implementation SHALL handle the call without throwing
 
-### Requirement: Safe globals — URLPattern
-
-The sandbox SHALL expose `globalThis.URLPattern` as a WHATWG URLPattern implementation, provided by the `urlpattern-polyfill` npm package (exact version pinned in `packages/sandbox-stdlib/package.json`) and compiled into the web-platform plugin's guest IIFE by the `?sandbox-plugin` vite transform's guest pass. No host-bridge method is used; all pattern state lives in the QuickJS heap. This global is required by the WinterCG Minimum Common API.
-
-The polyfill's own `index.js` self-installs the class on `globalThis` behind a feature-detect guard (`if (!globalThis.URLPattern) globalThis.URLPattern = URLPattern;`) when the web-platform plugin's guest IIFE runs in Phase 2. Adding `URLPattern` to `RESERVED_BUILTIN_GLOBALS` in `packages/sandbox/src/index.ts` SHALL make the name collide at sandbox-construction time if a host passes `extraMethods: { URLPattern: … }`, matching every other shim-installed global.
-
-#### Scenario: URLPattern is a constructible function
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `typeof URLPattern`
-- **THEN** the result SHALL be `"function"`
-- **AND** `new URLPattern("/foo") instanceof URLPattern` SHALL evaluate to `true`
-
-#### Scenario: URLPattern.exec returns named groups for a matching URL
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new URLPattern({ pathname: "/users/:id" }).exec({ pathname: "/users/42" })`
-- **THEN** the result SHALL be a match object whose `pathname.groups.id === "42"`
-
-#### Scenario: URLPattern.test returns false for a non-matching URL
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new URLPattern({ pathname: "/users/:id" }).test({ pathname: "/posts/42" })`
-- **THEN** the result SHALL be `false`
-
-#### Scenario: Host extraMethods cannot shadow URLPattern
-
-- **GIVEN** a sandbox factory invoked with `extraMethods: { URLPattern: someHostFn }`
-- **WHEN** sandbox construction runs the reserved-globals collision check
-- **THEN** construction SHALL throw with a message naming `URLPattern` as a reserved global
-
-### Requirement: Safe globals — fetch
-
-The sandbox SHALL expose `globalThis.fetch` as a WHATWG-compatible `fetch` function installed via `Object.defineProperty` with `writable: false, configurable: false, enumerable: true`. The implementation SHALL be the pure-JS fetch shim compiled into the sandbox polyfill IIFE from `packages/sandbox/src/polyfills/fetch.ts`, which routes all calls through the `__hostFetch` bridge captured at init time. The shim SHALL accept `(input, init?)` where `input` is a `RequestInfo | URL` and SHALL return a `Promise<Response>`. Request bodies SHALL be drained to a UTF-8 string before crossing the host bridge; streaming and binary bodies SHALL be decoded as UTF-8 via the `Body` mixin's `.text()` method. The `Request.signal` property SHALL be preserved on the guest `Request` per spec but SHALL NOT be propagated to the host bridge in this revision of the sandbox.
-
-Egress policy (scheme allowlist, DNS resolution, IP blocklist, redirect handling, timeout, error shape, observability) SHALL be governed by the `Hardened outbound fetch` requirement. The guest-facing shim itself performs no validation beyond normalizing input to the bridge wire format.
-
-The `fetch` global SHALL be non-writable and non-configurable. Guest assignment `globalThis.fetch = myFn` SHALL throw a `TypeError` in strict mode or be silently ignored in sloppy mode; in neither case SHALL subsequent `fetch()` calls route to the guest-provided function.
-
-#### Scenario: fetch is a non-writable function
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `typeof fetch`
-- **THEN** the result SHALL be `"function"`
-- **AND** `Object.getOwnPropertyDescriptor(globalThis, 'fetch').writable` SHALL be `false`
-- **AND** `Object.getOwnPropertyDescriptor(globalThis, 'fetch').configurable` SHALL be `false`
-
-#### Scenario: fetch accepts a Request object as input
-
-- **GIVEN** a sandbox and a guest-constructed `new Request("https://example.com", { method: "POST", body: "x" })`
-- **WHEN** guest code calls `fetch(req)`
-- **THEN** the underlying bridge call SHALL receive the method, URL, headers, and drained body from that Request
-- **AND** the returned Response SHALL be a constructible WHATWG `Response`
-
-#### Scenario: Guest cannot replace fetch
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `globalThis.fetch = () => "pwned"` in strict mode
-- **THEN** a `TypeError` SHALL be thrown
-- **AND** subsequent `fetch("https://example.com")` calls SHALL route to the shim installed at init time
-
-### Requirement: Safe globals — Request
-
-The sandbox SHALL expose `globalThis.Request` as a hand-rolled WHATWG-compatible `Request` class compiled into the sandbox polyfill IIFE from `packages/sandbox/src/polyfills/request.ts`. The class SHALL support construction via `new Request(input, init?)` where `input` is `RequestInfo | URL` and `init` is a `RequestInit`-shaped dictionary. The class SHALL mix in the shared `Body` mixin from `packages/sandbox/src/polyfills/body-mixin.ts`, providing `.text()`, `.json()`, `.arrayBuffer()`, `.blob()`, `.formData()`, and `.bytes()` body-consumer methods, plus the `bodyUsed` boolean and `body` `ReadableStream` accessors. `Request.signal` SHALL be an `AbortSignal` stored per spec (not propagated to the host bridge). No host bridge SHALL back this class — all state lives in the QuickJS heap.
-
-#### Scenario: Request is constructible
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new Request("https://example.com", { method: "POST", body: "x" })`
-- **THEN** the returned object SHALL be an instance of `Request`
-- **AND** its `method` SHALL be `"POST"`
-- **AND** its `url` SHALL be `"https://example.com/"`
-
-#### Scenario: Request body can be read as text
-
-- **GIVEN** a `new Request("https://example.com", { method: "POST", body: "hello" })`
-- **WHEN** guest code awaits `req.text()`
-- **THEN** the result SHALL be `"hello"`
-- **AND** `req.bodyUsed` SHALL be `true`
-
-### Requirement: Safe globals — Response
-
-The sandbox SHALL expose `globalThis.Response` as a hand-rolled WHATWG-compatible `Response` class compiled into the sandbox polyfill IIFE from `packages/sandbox/src/polyfills/response.ts`. The class SHALL support construction via `new Response(body?, init?)` with body types `null | string | Blob | ArrayBuffer | TypedArray | URLSearchParams | FormData | ReadableStream`. The class SHALL mix in the shared `Body` mixin, providing the same body-consumer surface as `Request`. Static factories `Response.error()`, `Response.redirect(url, status?)`, and `Response.json(data, init?)` SHALL be present. The class SHALL expose `status`, `statusText`, `ok`, `type`, `url`, `redirected`, and `headers` accessors per spec. A `.clone()` method SHALL produce a body-independent copy. No host bridge SHALL back this class.
-
-#### Scenario: Response is constructible
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new Response("hello", { status: 201 })`
-- **THEN** the returned object SHALL be an instance of `Response`
-- **AND** its `status` SHALL be `201`
-- **AND** its `ok` SHALL be `true`
-- **AND** `await res.text()` SHALL be `"hello"`
-
-#### Scenario: Response.json produces a JSON response
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `Response.json({ a: 1 })`
-- **THEN** the result SHALL be a `Response` with `headers.get("content-type")` equal to `"application/json"`
-- **AND** `await res.json()` SHALL deep-equal `{ a: 1 }`
-
-### Requirement: Safe globals — Blob
-
-The sandbox SHALL expose `globalThis.Blob` as the WHATWG `Blob` implementation from the `fetch-blob` npm package (pinned major version 4, pinned in `packages/sandbox/package.json`) compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/blob.ts`. No host bridge SHALL be used; all blob state lives in the QuickJS heap and does not outlive one sandbox run. `Blob` SHALL support the spec constructor, `.size`, `.type`, `.slice()`, `.stream()`, `.arrayBuffer()`, `.text()`, and `.bytes()`.
-
-`Blob.stream()` SHALL return a `ReadableStream<Uint8Array>` created via `globalThis.ReadableStream`; the `blob.ts` polyfill runs after `streams.ts` has installed that global, and the `fetch-blob` top-level `if (!globalThis.ReadableStream)` fallback that dynamic-imports `node:stream/web` SHALL be stripped by the vite plugin's polyfill transform to keep the bundle IIFE-compatible.
-
-#### Scenario: Blob is constructible
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new Blob(["hello"], { type: "text/plain" })`
-- **THEN** the returned object SHALL be an instance of `Blob`
-- **AND** its `size` SHALL be `5`
-- **AND** its `type` SHALL be `"text/plain"`
-
-#### Scenario: Blob can be read as text
-
-- **GIVEN** `const b = new Blob(["a", "b", "c"])`
-- **WHEN** guest code awaits `b.text()`
-- **THEN** the result SHALL be `"abc"`
-
-### Requirement: Safe globals — File
-
-The sandbox SHALL expose `globalThis.File` as the `File` subclass from `fetch-blob/file.js` compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/blob.ts`. `File` SHALL extend `Blob` and add `.name`, `.lastModified`, and `.webkitRelativePath` accessors per spec.
-
-#### Scenario: File extends Blob
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const f = new File(["x"], "a.txt", { type: "text/plain", lastModified: 1000 })`
-- **THEN** `f instanceof File` SHALL be `true`
-- **AND** `f instanceof Blob` SHALL be `true`
-- **AND** `f.name` SHALL be `"a.txt"`
-- **AND** `f.lastModified` SHALL be `1000`
-
-### Requirement: Safe globals — FormData
-
-The sandbox SHALL expose `globalThis.FormData` as the `FormData` implementation from the `formdata-polyfill` npm package (pinned major version 4, pinned in `packages/sandbox/package.json`) compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/form-data.ts`. The polyfill depends on `globalThis.Blob` and `globalThis.File` being installed first. No host bridge is used. `FormData` SHALL support `.append()`, `.set()`, `.get()`, `.getAll()`, `.has()`, `.delete()`, `.entries()`, `.keys()`, `.values()`, and iteration.
-
-#### Scenario: FormData supports append and get
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const fd = new FormData(); fd.append("k", "v"); fd.get("k")`
-- **THEN** the result SHALL be `"v"`
-
-#### Scenario: FormData accepts File entries
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const fd = new FormData(); fd.append("f", new File(["x"], "a.txt")); fd.get("f").name`
-- **THEN** the result SHALL be `"a.txt"`
-
-### Requirement: Safe globals — ReadableStream / WritableStream / TransformStream
-
-The sandbox SHALL expose `globalThis.ReadableStream`, `globalThis.WritableStream`, and `globalThis.TransformStream` as the implementations from the `web-streams-polyfill` npm package (pinned major version 4, pinned in `packages/sandbox/package.json`) compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/streams.ts`. Alongside these three base classes, the sandbox SHALL also expose `ReadableByteStreamController`, `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest`, `ReadableStreamDefaultController`, `ReadableStreamDefaultReader`, `TransformStreamDefaultController`, `WritableStreamDefaultController`, and `WritableStreamDefaultWriter` — all pulled from the same ponyfill export. No host bridge is used.
-
-`ReadableStream.prototype.tee()`, `ReadableStream.prototype.pipeTo()`, `ReadableStream.prototype.pipeThrough()`, and `ReadableStream.prototype.getReader({ mode: "byob" })` SHALL be supported. `TransformStream` SHALL accept a custom `transformer` with `start`, `transform`, and `flush` callbacks.
-
-#### Scenario: ReadableStream can be read via a default reader
-
-- **GIVEN** a sandbox
-- **WHEN** guest code runs `const s = new ReadableStream({ start(c) { c.enqueue("a"); c.close(); } }); const r = s.getReader(); await r.read()`
-- **THEN** the read result SHALL have `{ value: "a", done: false }`
-- **AND** a subsequent `r.read()` SHALL resolve with `{ value: undefined, done: true }`
-
-#### Scenario: TransformStream chains readable and writable
-
-- **GIVEN** a sandbox
-- **WHEN** guest code constructs `const ts = new TransformStream({ transform(chunk, c) { c.enqueue(chunk.toUpperCase()); } })` and writes `"a"` through it
-- **THEN** reading from `ts.readable` SHALL yield `"A"`
-
-### Requirement: Safe globals — Queuing strategies
-
-The sandbox SHALL expose `globalThis.ByteLengthQueuingStrategy` and `globalThis.CountQueuingStrategy` as the implementations from `web-streams-polyfill`, compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/streams.ts`. Both classes SHALL be constructible with `{ highWaterMark: number }` and SHALL expose the spec-required `size()` method.
-
-#### Scenario: CountQueuingStrategy returns size 1
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new CountQueuingStrategy({ highWaterMark: 3 }).size()`
-- **THEN** the result SHALL be `1`
-
-### Requirement: Safe globals — TextEncoderStream / TextDecoderStream
-
-The sandbox SHALL expose `globalThis.TextEncoderStream` and `globalThis.TextDecoderStream` as hand-rolled `TransformStream` wrappers around the WASM-native `TextEncoder` / `TextDecoder`, compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/streams.ts`. `TextDecoderStream` SHALL accept `(label?, options?)` matching the `TextDecoder` constructor and SHALL expose `encoding`, `fatal`, and `ignoreBOM` accessors. Both classes SHALL expose `readable` and `writable` accessors. State SHALL be held in a module-scope `WeakMap` keyed by the instance; calling an accessor on a non-instance receiver SHALL throw a `TypeError("Illegal invocation")`.
-
-#### Scenario: TextDecoderStream decodes streamed UTF-8
-
-- **GIVEN** a sandbox
-- **WHEN** guest code pipes the bytes `[0x68, 0x69]` through a `new TextDecoderStream()`
-- **THEN** reading from its `readable` SHALL yield `"hi"`
-
-### Requirement: Safe globals — CompressionStream / DecompressionStream
-
-The sandbox SHALL expose `globalThis.CompressionStream` and `globalThis.DecompressionStream` as pure-JS `TransformStream` wrappers around the streaming compressors from the `fflate` npm package, compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/compression.ts`. The `format` constructor argument SHALL accept exactly `"gzip"` (RFC 1952), `"deflate"` (RFC 1950 zlib), and `"deflate-raw"` (RFC 1951 raw); any other value SHALL throw a `TypeError`. Chunks written to the writable side MUST be `BufferSource` (`ArrayBuffer` or `ArrayBufferView`); non-BufferSource chunks and chunks backed by `SharedArrayBuffer` SHALL reject with a `TypeError`. `DecompressionStream` SHALL report `TypeError` on additional input received after the compressed stream terminated and on flush when no input was received or the input did not terminate.
-
-#### Scenario: Unsupported compression format throws
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `new CompressionStream("brotli")`
-- **THEN** a `TypeError` SHALL be thrown naming the supported formats
-
-#### Scenario: gzip round-trip
-
-- **GIVEN** a sandbox
-- **WHEN** guest code compresses UTF-8 bytes for `"hello"` through `new CompressionStream("gzip")` and pipes the output through `new DecompressionStream("gzip")`
-- **THEN** the final decoded bytes SHALL equal the original UTF-8 bytes for `"hello"`
-
-### Requirement: Safe globals — Observable
-
-The sandbox SHALL expose `globalThis.Observable` and `globalThis.Subscriber`, and SHALL patch `EventTarget.prototype.when`, using the `observable-polyfill` npm package (pinned major version 0.0.29, pinned in `packages/sandbox/package.json`) compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/observable.ts`. The polyfill SHALL be force-applied via the `/fn` entry point to bypass upstream browser-context detection (the sandbox is not a browser context because `globalThis.Window` is `undefined`). The polyfill depends on already-allowlisted globals: `EventTarget`, `AbortController`, `AbortSignal`, `Promise`, and `queueMicrotask`. No host bridge is used.
-
-#### Scenario: Observable is constructible
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `typeof Observable`
-- **THEN** the result SHALL be `"function"`
-- **AND** `new Observable(subscriber => subscriber.complete()) instanceof Observable` SHALL be `true`
-
-#### Scenario: EventTarget.prototype.when returns an Observable
-
-- **GIVEN** a sandbox and `const et = new EventTarget()`
-- **WHEN** guest code evaluates `et.when("custom") instanceof Observable`
-- **THEN** the result SHALL be `true`
-
-### Requirement: Safe globals — scheduler
-
-The sandbox SHALL expose `globalThis.scheduler` as a `Scheduler` instance, plus `globalThis.TaskController`, `globalThis.TaskSignal`, and `globalThis.TaskPriorityChangeEvent`, using the `scheduler-polyfill` npm package (pinned major version 1.3, pinned in `packages/sandbox/package.json`) compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/scheduler.ts`. The polyfill is a side-effect import that self-installs on `globalThis` when `scheduler` is absent. The implementation SHALL fall back to `setTimeout` (already allowlisted) because `MessageChannel` and `requestIdleCallback` are absent; this fallback SHALL be transparent to guest code. No host bridge is used.
-
-`scheduler.postTask(callback, options?)` SHALL accept `priority` of `"user-blocking" | "user-visible" | "background"` and SHALL accept `signal` as an `AbortSignal` or `TaskSignal`. `scheduler.yield()` SHALL return a `Promise<void>` that resolves on the next macrotask.
-
-#### Scenario: scheduler.postTask returns a Promise
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `scheduler.postTask(() => 42) instanceof Promise`
-- **THEN** the result SHALL be `true`
-- **AND** awaiting the promise SHALL yield `42`
-
-### Requirement: Safe globals — structuredClone
-
-The sandbox SHALL expose `globalThis.structuredClone` as a pure-JS implementation compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/structured-clone.ts`. The polyfill SHALL use the `@ungap/structured-clone` npm package to run the WHATWG structured-clone algorithm, overriding the quickjs-wasi native implementation that drops wrapper objects, sparse-array length, and non-index array properties. The shim SHALL throw a `DataCloneError` `DOMException` for non-cloneable inputs (matching spec) and SHALL reject any non-empty `transfer` option with `DataCloneError` because QuickJS does not support `ArrayBuffer` detachment. Errors thrown from user code during serialization (e.g., throwing getters) SHALL propagate unchanged.
-
-#### Scenario: Deep clone of nested object
-
-- **GIVEN** a sandbox and `const src = { a: [1, { b: "x" }] }`
-- **WHEN** guest code evaluates `const c = structuredClone(src); c.a[1].b`
-- **THEN** the result SHALL be `"x"`
-- **AND** `c !== src` SHALL be `true`
-- **AND** `c.a !== src.a` SHALL be `true`
-
-#### Scenario: Transfer option throws DataCloneError
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `structuredClone({}, { transfer: [new ArrayBuffer(8)] })`
-- **THEN** a `DOMException` with `name === "DataCloneError"` SHALL be thrown
-
-### Requirement: Safe globals — queueMicrotask
-
-The sandbox SHALL expose `globalThis.queueMicrotask` as a wrapper that routes uncaught exceptions from the callback through `reportError` (which dispatches an `ErrorEvent` on `globalThis`), compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/microtask.ts`. The wrapper SHALL delegate to the native implementation for argument validation (non-callable `cb` SHALL throw a `TypeError` whose message and constructor match the native behaviour).
-
-#### Scenario: Uncaught microtask exception routes through reportError
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `queueMicrotask(() => { throw new Error("boom"); })`
-- **THEN** within one microtask, `globalThis.dispatchEvent` SHALL be invoked with an `ErrorEvent` whose `error.message` is `"boom"`
-- **AND** the uncaught exception SHALL NOT crash the guest
-
-#### Scenario: Non-callable input throws TypeError
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `queueMicrotask(null)`
-- **THEN** a `TypeError` SHALL be thrown by the native implementation
-
-### Requirement: Safe globals — indexedDB
-
-The sandbox SHALL expose `globalThis.indexedDB` as an in-memory `IDBFactory` and SHALL expose the WebIDL interface classes `IDBFactory`, `IDBDatabase`, `IDBTransaction`, `IDBObjectStore`, `IDBIndex`, `IDBCursor`, `IDBCursorWithValue`, `IDBKeyRange`, `IDBRequest`, `IDBOpenDBRequest`, and `IDBVersionChangeEvent`. The implementation SHALL be the `fake-indexeddb` npm package compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/indexed-db.ts`; class names from `fake-indexeddb` (prefixed `FDB`) SHALL be rewritten to the WebIDL prefix `IDB` on `globalThis`. State SHALL live in a module singleton that does not outlive one sandbox run — each QuickJS VM gets a fresh module evaluation, so databases are ephemeral per-invocation. No host bridge is used; no data is persisted to disk.
-
-The polyfill depends on `globalThis.structuredClone`. A `DOMException`-wrapping polyfill in `packages/sandbox/src/polyfills/idb-domexception-fix.ts` SHALL run before `indexed-db.ts` so `fake-indexeddb`'s subclass-`throw new DataError()` calls surface as plain `DOMException` instances. `instanceof Event` / `instanceof EventTarget` checks on `FDB`-sourced events are NOT guaranteed due to `event-target-shim` prototype conflicts; WPT subtests asserting those checks remain skipped.
-
-#### Scenario: indexedDB is an IDBFactory
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `indexedDB instanceof IDBFactory`
-- **THEN** the result SHALL be `true`
-
-#### Scenario: Database opens and persists for the run
-
-- **GIVEN** a sandbox
-- **WHEN** guest code opens `indexedDB.open("db", 1)` with an `upgradeneeded` handler that creates an object store `"s"`, then (in a separate transaction) puts `{k:"v"}` and reads it back by key
-- **THEN** the read SHALL resolve with `{k:"v"}`
-
-### Requirement: Safe globals — User Timing (performance.mark / measure)
-
-The sandbox SHALL extend `globalThis.performance` with `mark(name, options?)`, `measure(name, startOrOptions?, endMark?)`, `clearMarks(name?)`, `clearMeasures(name?)`, `getEntries()`, `getEntriesByType(type)`, and `getEntriesByName(name, type?)`, and SHALL expose the classes `globalThis.PerformanceEntry`, `globalThis.PerformanceMark`, and `globalThis.PerformanceMeasure`. The implementation SHALL be the pure-JS User Timing Level 3 polyfill compiled into the sandbox polyfill IIFE via `packages/sandbox/src/polyfills/user-timing.ts`, built on top of the native `performance.now` provided by the quickjs-wasi monotonic-clock extension. Timeline buffers SHALL be in-process arrays scoped to the VM lifetime. `PerformanceObserver` is NOT in scope.
-
-The `detail` option on `mark()` and `measure()` SHALL be deep-cloned via `structuredClone` at entry-creation time (so subsequent mutations by the caller do not affect the stored entry). Invalid arguments (negative `startTime`, unresolvable mark name, `duration` conflicting with both `start` and `end`) SHALL throw a `TypeError` or `SyntaxError` `DOMException` per spec.
-
-#### Scenario: mark records entry with startTime
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `const m = performance.mark("x"); m.name`
-- **THEN** the result SHALL be `"x"`
-- **AND** `m.entryType` SHALL be `"mark"`
-- **AND** `m.startTime` SHALL be a number greater than or equal to zero
-
-#### Scenario: measure between two named marks
-
-- **GIVEN** a sandbox with `performance.mark("a"); performance.mark("b");`
-- **WHEN** guest code evaluates `const m = performance.measure("ab", "a", "b"); m.entryType`
-- **THEN** the result SHALL be `"measure"`
-- **AND** `m.duration` SHALL be a non-negative number
-
-#### Scenario: Unknown mark reference throws
-
-- **GIVEN** a sandbox
-- **WHEN** guest code evaluates `performance.measure("m", "nope")`
-- **THEN** a `DOMException` with `name === "SyntaxError"` SHALL be thrown
-
-### Requirement: Hardened outbound fetch
-
-The sandbox SHALL route outbound HTTP from `__hostFetch` through a hardened fetch implementation provided by `packages/sandbox/src/hardened-fetch.ts`. `hardenedFetch` SHALL be used as the default value of `SandboxOptions.fetch` whenever the caller omits an explicit override; a single process-wide `undici.Agent` instance SHALL back all sandboxes and SHALL be lazily created on first use. The `ipaddr.js` and `undici` npm packages SHALL be declared as explicit direct dependencies of `packages/sandbox/package.json`.
-
-For every outbound request (initial URL and each redirect hop), `hardenedFetch` SHALL apply the following pipeline in order:
-
-1. **Scheme allowlist.** The request URL's scheme SHALL be one of `http`, `https`, or `data`. Any other scheme SHALL throw `FetchBlockedError("bad-scheme", …)`. Any port number is permitted on http/https. `data:` URLs short-circuit steps 2–6 entirely: they carry no network component (the URL IS the payload per RFC 2397), so there is no DNS resolution, no TCP connection, and no SSRF or exfiltration vector. `data:` URLs SHALL be resolved by undici's native `fetch()` handler, which performs base64 decoding and content-type parsing per spec.
-
-2. **DNS resolution.** The hostname SHALL be resolved via `dns.lookup(host, { all: true })`, returning the complete set of A and AAAA records without any caching layer introduced by this module.
-
-3. **Address normalization.** Each returned address SHALL be parsed via `ipaddr.js`. IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) SHALL be unwrapped via `ipaddr.js` and re-classified as IPv4 before the blocklist check. IPv6 zone identifiers (`fe80::1%eth0` and similar) SHALL cause `FetchBlockedError("zone-id", …)`; zone IDs are meaningful only for link-local addresses which are blocked regardless.
-
-4. **IANA special-use blocklist.** If any normalized address falls inside any of the following CIDRs, `hardenedFetch` SHALL throw `FetchBlockedError("private-ip", …)` without attempting the connection:
-
-   - IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`, `192.0.2.0/24`, `192.88.99.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`, `255.255.255.255/32`.
-   - IPv6: `::1/128`, `::/128`, `fe80::/10`, `fc00::/7`, `100::/64`.
-
-   The check SHALL fail-closed: if **any** returned address is in the blocklist, the entire request SHALL be refused — no attempt SHALL be made to pick a public address from the set.
-
-5. **IP-bound connection.** The TCP connection SHALL be opened by passing the resolved IP address directly to the socket. For HTTPS, the TLS `servername` SHALL be the original hostname (preserving SNI and cert validation). For HTTP, the `Host` header SHALL remain the original hostname. No second DNS lookup SHALL occur between validation and connection — the resolved address set reached in step 2 is the address set used in step 5.
-
-6. **Manual redirect handling.** Requests SHALL be issued with `redirect: "manual"`. On a 3xx response carrying a `Location` header, `hardenedFetch` SHALL parse the new URL against the previous URL, re-run the full pipeline (steps 1–5) on the resolved URL, and re-issue the request. The redirect chain SHALL be capped at **5 hops**; exceeding the cap SHALL throw `FetchBlockedError("redirect-to-private", …)` (or another reason if the subsequent hop fails validation). Cross-origin redirects SHALL strip the `Authorization` header before re-issuing.
-
-7. **Timeout.** The total wall-clock time per top-level `fetch` call SHALL be capped at **30 seconds** via `AbortSignal.timeout(30000)`, composed with any caller-supplied `AbortSignal` via `AbortSignal.any([…])`. Exceeding either signal SHALL cancel the request.
-
-**Error surface.** `hardenedFetch` SHALL export a `FetchBlockedError` class extending `Error` with a `reason` field of type `"bad-scheme" | "private-ip" | "redirect-to-private" | "zone-id"`. The main-thread `forwardFetch` handler in `packages/sandbox/src/index.ts` SHALL catch errors from the underlying fetch call, discriminate `FetchBlockedError`, and emit a pino warn log (see **Observability** below).
-
-When the hardened default is in use (no `SandboxOptions.fetch` override was supplied), the handler SHALL sanitize the error reply returned to the worker to exactly `{ name: "TypeError", message: "fetch failed", stack: "" }` for every failure mode (policy block, DNS failure, TCP/TLS error, timeout, `AbortError`). Guest code SHALL NOT be able to distinguish a policy block from an unrelated network failure via the error object visible to it.
-
-When a caller supplies `SandboxOptions.fetch` as a test override, the handler SHALL NOT sanitize: the raw error thrown by the custom fetch SHALL be serialized and delivered to the guest unchanged, so test-authored mocks can exercise specific error-path assertions. Custom overrides are a test-only surface; the security invariant (guest cannot probe private networks) holds because the caller of `sandbox(...)` with a custom fetch is not running adversarial workflow code.
-
-**Observability.** When the main-thread `forwardFetch` handler catches a failure and a `SandboxOptions.logger` was injected at sandbox construction, the handler SHALL emit a warn-level log with message `"sandbox.fetch.blocked"` and meta fields `{ invocationId, tenant, workflow, workflowSha, url, reason }`. The `invocationId`, `tenant`, `workflow`, and `workflowSha` fields SHALL come from the enriched `__hostFetchForward` envelope sent by the worker (the worker already holds these from the `run` init message). The `reason` field SHALL be one of `"bad-scheme"`, `"private-ip"`, `"redirect-to-private"`, `"zone-id"`, or `"network-error"` (the last being a catch-all for non-`FetchBlockedError` failures). The URL field SHALL be the request URL at the point of failure (for redirect-to-private, the offending `Location` URL).
-
-**No new invocation-event kind.** `hardenedFetch` failures SHALL NOT emit a new `InvocationEvent` kind. The existing `system.request host.fetch` event (with the URL captured in `input`) and the existing `system.error host.fetch` event (with the sanitized `TypeError`) SHALL continue to be emitted by the bridge-factory unchanged. The block reason SHALL appear only in the pino warn log.
-
-**Test override.** A caller that passes a custom `SandboxOptions.fetch` SHALL bypass `hardenedFetch` entirely. Custom fetch implementations MAY throw `FetchBlockedError` to exercise the sanitization and logging paths; they MAY also throw any other error to exercise the network-error path.
-
-#### Scenario: Private IPv4 address is blocked
-
-- **GIVEN** a sandbox constructed without overriding `options.fetch`
-- **AND** the hostname `internal.local` resolves to `10.0.0.1`
-- **WHEN** guest code calls `fetch("http://internal.local/foo")`
-- **THEN** the fetch SHALL reject with a `TypeError` whose `message` is `"fetch failed"`
-- **AND** no TCP connection SHALL be opened to `10.0.0.1`
-- **AND** if `options.logger` was provided, a warn log `"sandbox.fetch.blocked"` SHALL be emitted with `reason: "private-ip"`
-
-#### Scenario: Cloud metadata endpoint is blocked
-
-- **GIVEN** a sandbox constructed without overriding `options.fetch`
-- **WHEN** guest code calls `fetch("http://169.254.169.254/latest/meta-data")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the ops warn log SHALL record `reason: "private-ip"` and the full URL
-
-#### Scenario: IPv4-mapped IPv6 address is blocked after unwrap
-
-- **GIVEN** a sandbox
-- **AND** the hostname `spoof.example` resolves to `::ffff:169.254.169.254`
-- **WHEN** guest code calls `fetch("http://spoof.example/")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the warn log SHALL record `reason: "private-ip"`
-
-#### Scenario: IPv6 zone identifier is rejected
-
-- **GIVEN** a sandbox
-- **WHEN** guest code calls `fetch("http://[fe80::1%eth0]/")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the warn log SHALL record `reason: "zone-id"`
-
-#### Scenario: Non-http/https/data scheme is rejected
-
-- **GIVEN** a sandbox
-- **WHEN** guest code calls `fetch("file:///etc/passwd")` or `fetch("ftp://example.com/")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the warn log SHALL record `reason: "bad-scheme"`
-
-#### Scenario: data: URL resolves inline without network egress
-
-- **GIVEN** a sandbox
-- **WHEN** guest code calls `fetch("data:text/plain,hello")`
-- **THEN** the fetch SHALL resolve with a `Response` whose `status` is `200`
-- **AND** the response body SHALL be `"hello"`
-- **AND** no DNS lookup or TCP connection SHALL be performed
-- **AND** no `sandbox.fetch.blocked` warn log SHALL be emitted
-
-#### Scenario: Redirect to private address is blocked
-
-- **GIVEN** a sandbox
-- **AND** `https://public.example/` responds `302 Location: http://127.0.0.1/admin`
-- **WHEN** guest code calls `fetch("https://public.example/")`
-- **THEN** the redirect SHALL be followed manually with validation re-run
-- **AND** the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the warn log SHALL record `reason: "redirect-to-private"` and `url: "http://127.0.0.1/admin"`
-
-#### Scenario: Redirect cap blocks runaway chains
-
-- **GIVEN** a sandbox
-- **AND** a redirect chain of 6 hops, all to public addresses
-- **WHEN** guest code calls `fetch("https://chain.example/")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")` after 5 hops
-
-#### Scenario: Public hostname resolves to mixed private and public addresses
-
-- **GIVEN** a sandbox
-- **AND** `dual.example` resolves to `[203.0.113.10, 8.8.8.8]`
-- **WHEN** guest code calls `fetch("https://dual.example/")`
-- **THEN** the fetch SHALL reject with `TypeError("fetch failed")` because the first address is in the IANA blocklist (TEST-NET-3)
-- **AND** no connection SHALL be attempted to either address
-
-#### Scenario: Request exceeds 30s timeout
-
-- **GIVEN** a sandbox
-- **AND** a public server that never responds
-- **WHEN** guest code calls `fetch("https://slow.example/")`
-- **THEN** within 30 seconds the fetch SHALL reject with `TypeError("fetch failed")`
-- **AND** the warn log SHALL record `reason: "network-error"`
-
-#### Scenario: Test override bypasses hardenedFetch
-
-- **GIVEN** a sandbox constructed with `options.fetch = (url, init) => new Response("ok")`
-- **WHEN** guest code calls `fetch("http://127.0.0.1/")`
-- **THEN** the custom fetch SHALL receive the URL
-- **AND** the returned `Response` body SHALL be `"ok"`
-- **AND** no policy block SHALL fire
-
-#### Scenario: hardenedFetch is the default when options.fetch is omitted
-
-- **GIVEN** `sandbox(source, methods)` called without `options.fetch`
-- **WHEN** the sandbox-package default is installed on the main-thread forwardFetch handler
-- **THEN** subsequent guest `fetch(url)` calls SHALL route through `hardenedFetch`
-- **AND** a single process-wide `undici.Agent` SHALL be shared across all sandboxes
-
-#### Scenario: Reason is not visible to guest code
-
-- **GIVEN** a sandbox where `fetch("http://127.0.0.1/")` is about to be blocked
-- **WHEN** guest code catches the rejection
-- **THEN** the caught error SHALL be `TypeError`
-- **AND** `err.message` SHALL be `"fetch failed"`
-- **AND** the string `"private-ip"` SHALL NOT appear in `err.message`, `err.stack`, or any enumerable property on `err`
-
 ### Requirement: Plugin composition per sandbox
 
 The sandbox SHALL accept a `plugins: Plugin[]` array at construction. Plugins SHALL be topo-sorted by `dependsOn` (cycles throw, unsatisfied dependencies throw). Plugin `worker()` functions SHALL execute in topo order; `onRunFinished` SHALL execute in reverse topo order. Plugin name collisions and guest-function name collisions SHALL throw at construction time. (Detailed plugin contract: see sandbox-plugin capability.)
@@ -1672,4 +960,157 @@ The sandbox SHALL instantiate WASI imports with mutable callback slots for `cloc
 - **GIVEN** a plugin with `clockTimeGet: () => ({ ns: 0n })`
 - **WHEN** guest triggers a WASI clock call
 - **THEN** `0n` SHALL be returned to WASM in place of the real clock value
+
+### Requirement: VM-level web-platform surface via quickjs-wasi extensions
+
+The sandbox core's `worker.ts` SHALL load the following six `quickjs-wasi` extensions into the QuickJS runtime at Phase 1, via the `extensions` option of `QuickJS.create()`:
+
+| Extension | Guest-visible globals |
+|---|---|
+| `base64Extension` | `atob`, `btoa` |
+| `encodingExtension` | `TextEncoder`, `TextDecoder` |
+| `headersExtension` | `Headers` |
+| `urlExtension` | `URL`, `URLSearchParams` |
+| `cryptoExtension` | `crypto.getRandomValues`, `crypto.subtle` (native handle) |
+| `structuredCloneExtension` | `DOMException` (native class; also provides native `structuredClone` which is overridden at Phase 2 by the stdlib web-platform plugin) |
+
+These extensions are the ONLY guest-visible globals installed by the sandbox core before plugin source evaluation (Phase 2). Every other guest-visible global comes from a plugin in `sandbox-stdlib`, the runtime, or the SDK.
+
+The `TextEncoderStream` / `TextDecoderStream` classes, the overriding `structuredClone`, and the wrapped forms of `crypto.subtle` / `DOMException` come from the `sandbox-stdlib` web-platform plugin at Phase 2; they are NOT VM-level.
+
+#### Scenario: VM-level globals exist before Phase 2
+
+- **GIVEN** a sandbox composition with NO plugins (empty `plugins: []`)
+- **WHEN** post-init guest code evaluates `typeof URL`, `typeof URLSearchParams`, `typeof Headers`, `typeof TextEncoder`, `typeof TextDecoder`, `typeof atob`, `typeof btoa`, `typeof crypto.getRandomValues`, `typeof crypto.subtle`, `typeof DOMException`
+- **THEN** each SHALL be `"function"` (or `"object"` for `crypto.subtle`)
+
+#### Scenario: Adding a new VM-level global requires extending this list
+
+- **WHEN** a future change adds a new `quickjs-wasi` extension to `createOptions.extensions` in `worker.ts`
+- **THEN** this requirement's table SHALL be extended in the same change
+- **AND** SECURITY.md §2 "Globals surface" SHALL be extended in the same change
+
+### Requirement: SandboxStore provides per-`(tenant, sha)` sandbox access
+
+The runtime SHALL provide a `SandboxStore` component that maps `(tenant, workflow.sha)` pairs to `Sandbox` instances. The store SHALL be the sole runtime-internal accessor for workflow sandboxes. The store SHALL build sandboxes lazily on the first `get` for a given key and SHALL hold them for the lifetime of the store.
+
+```ts
+interface SandboxStore {
+  get(
+    tenant: string,
+    workflow: WorkflowManifest,
+    bundleSource: string,
+  ): Promise<Sandbox>;
+  dispose(): void;
+}
+```
+
+Different tenants with identical `workflow.sha` values SHALL get distinct sandbox instances (per `SECURITY.md §1 I-T2` — tenant isolation). Different shas within a tenant SHALL get distinct sandboxes; the old sandbox SHALL remain until `dispose()` is called.
+
+#### Scenario: First get for a key builds a new sandbox
+
+- **GIVEN** a freshly constructed `SandboxStore`
+- **WHEN** `store.get(tenant, workflow, bundleSource)` is called for the first time
+- **THEN** the store SHALL construct a new sandbox via the injected `SandboxFactory`
+- **AND** retain a reference keyed on `(tenant, workflow.sha)`
+
+#### Scenario: Subsequent get for the same key reuses the sandbox
+
+- **GIVEN** a store with a cached sandbox for `(tenant, workflow.sha)`
+- **WHEN** `store.get(tenant, workflow, bundleSource)` is called with matching tenant + sha
+- **THEN** the store SHALL resolve to the same sandbox reference
+- **AND** it SHALL NOT invoke the factory
+
+#### Scenario: Different tenants with identical shas get distinct sandboxes
+
+- **GIVEN** two tenants `A` and `B` registering workflows with byte-identical bundles
+- **WHEN** `store.get("A", workflow, ...)` and `store.get("B", workflow, ...)` are both called
+- **THEN** the store SHALL return two distinct sandbox instances
+- **AND** module-scope mutations in `A`'s sandbox SHALL NOT be observable from `B`'s sandbox
+
+### Requirement: SandboxStore composes the production plugin catalog
+
+The SandboxStore SHALL compose a standard plugin catalog for every production sandbox, in a fixed order compatible with plugin `dependsOn` declarations:
+
+```ts
+plugins: [
+  createWasiPlugin(runtimeWasiTelemetry),   // sandbox package (WASI routing)
+  createWebPlatformPlugin(),                // sandbox-stdlib (all safe-globals)
+  createFetchPlugin(),                      // sandbox-stdlib (hardenedFetch default)
+  createTimersPlugin(),                     // sandbox-stdlib
+  createConsolePlugin(),                    // sandbox-stdlib
+  createHostCallActionPlugin({ manifest }), // runtime (Ajv validators from manifest)
+  createSdkSupportPlugin(),                 // sdk (__sdk.dispatchAction)
+  createTriggerPlugin(),                    // runtime (trigger.* lifecycle emission)
+]
+```
+
+`runtimeWasiTelemetry` SHALL be a setup function exported by the runtime that emits `wasi.clock_time_get` / `wasi.random_get` / `wasi.fd_write` leaf events. The store SHALL NOT append any dispatcher source to the workflow bundle; the SDK's `createSdkSupportPlugin` owns dispatcher logic.
+
+Test compositions MAY omit the trigger plugin and wasi-telemetry when a silent sandbox is desired; that concern lives at the test-fixture layer, not in the production store.
+
+#### Scenario: Production composition loads all eight plugins
+
+- **WHEN** a production sandbox is constructed
+- **THEN** the plugin list SHALL include the eight plugins named above
+- **AND** the plugin composition's topological sort SHALL be valid
+- **AND** sandbox construction SHALL complete without error
+
+#### Scenario: No dispatcher source is appended
+
+- **GIVEN** a tenant workflow bundle
+- **WHEN** the SandboxStore constructs the sandbox
+- **THEN** `sandbox({source: <bundle>, plugins: [...]})` SHALL be called with `source` unmodified
+- **AND** no runtime-side source SHALL be concatenated, prepended, or appended
+
+### Requirement: SandboxStore lifetime is the process lifetime
+
+The `SandboxStore` SHALL NOT dispose individual sandboxes during normal operation. The store SHALL provide a public `dispose()` method that disposes every cached sandbox; this method SHALL be invoked only on process shutdown. The store SHALL NOT expose any public API for per-key eviction.
+
+Re-upload of a workflow with a new `sha` SHALL NOT dispose the old-sha sandbox. In-flight invocations dispatched to the old-sha sandbox SHALL complete against it; new invocations after re-upload SHALL dispatch to the new-sha sandbox (built on demand if not yet cached).
+
+#### Scenario: Re-upload preserves the old sandbox
+
+- **GIVEN** a store holding a sandbox for `(tenant, oldSha)`
+- **WHEN** the same tenant re-registers the workflow with a new sha
+- **THEN** the `(tenant, oldSha)` sandbox SHALL remain
+- **AND** SHALL NOT be disposed
+
+#### Scenario: In-flight invocation completes on the orphaned sandbox
+
+- **GIVEN** an in-flight invocation dispatched to the `(tenant, oldSha)` sandbox
+- **WHEN** the tenant re-uploads with a new sha before the invocation completes
+- **THEN** the in-flight invocation SHALL complete against `(tenant, oldSha)`
+- **AND** the next invocation post-reupload SHALL dispatch to `(tenant, newSha)`
+
+#### Scenario: Process shutdown disposes every cached sandbox
+
+- **GIVEN** a store holding multiple cached sandboxes
+- **WHEN** `store.dispose()` is called
+- **THEN** every cached sandbox SHALL have its `dispose()` called
+- **AND** all references SHALL be released
+
+### Requirement: SandboxStore factory shape
+
+The `SandboxStore` SHALL be constructed via `createSandboxStore({ sandboxFactory, logger })`. The store SHALL delegate sandbox construction to `sandboxFactory.create(source, options)` and SHALL emit info-level log entries on cache miss (sandbox constructed).
+
+#### Scenario: Factory delegation
+
+- **WHEN** `createSandboxStore({sandboxFactory, logger})` is called
+- **THEN** the returned store SHALL retain both dependencies
+- **AND** every cache-miss `get` SHALL call `sandboxFactory.create(source, options)` exactly once
+
+### Requirement: SandboxStore onEvent stamps runtime metadata
+
+On every sandbox creation, the SandboxStore SHALL register an `onEvent` callback that stamps `tenant`, `workflow`, `workflowSha`, and `invocationId` onto every incoming event before forwarding it to the bus. The metadata SHALL come from the "current run" state tracked by the store (populated when `sandbox.run()` is invoked, cleared after it returns).
+
+This stamping is the load-bearing point for `SECURITY.md §2 R-8` (tenant/workflow/workflowSha/invocationId never stamped from inside sandbox or plugin code) and `SECURITY.md §1 I-T2` (tenant isolation invariant on invocation-event writes). `meta.dispatch` is separately stamped by the executor's `sb.onEvent` widener, gated on `event.kind === "trigger.request"` per SECURITY.md §2 R-9 (scope of `cleanup-specs-content`).
+
+#### Scenario: Metadata stamping on event forward
+
+- **GIVEN** a sandbox emitting events during an active run
+- **WHEN** any event flows from the sandbox to the store's `onEvent` callback
+- **THEN** the callback SHALL attach `tenant` / `workflow` / `workflowSha` / `invocationId` from the current run context
+- **AND** the stamped event SHALL reach `bus.emit`
+- **AND** `tenant` SHALL match the tenant that owns the cached sandbox (invariant I-T2)
 

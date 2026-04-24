@@ -1,7 +1,8 @@
 # sandbox-plugin Specification
 
 ## Purpose
-TBD - created by archiving change sandbox-plugin-architecture. Update Purpose after archive.
+
+Define the Plugin contract that every host-callable surface inside the sandbox uses: the `Plugin` type (name, `dependsOn`, `worker(ctx, deps, config)` setup returning `PluginSetup`, optional `guest()` bundled into guest IIFE source), the composition mechanism (topological sort across `dependsOn`, deterministic ordering), the boot-phase sequence (Phase 0 module load → Phase 1 WASM instantiate + VM-level extensions → Phase 1a `worker()` iteration → Phase 2 plugin source eval → Phase 3 private-descriptor auto-delete → Phase 4 user source eval), the guest-function descriptor shape (`GuestFunctionDescription` with `name`, `args`, `result`, `handler`, `log`, optional `public: true`), and the security discipline rules R-1 through R-9 in `SECURITY.md §2`. This capability owns the mechanism; `sandbox-stdlib` owns the plugin catalogue that builds on it.
 ## Requirements
 ### Requirement: Plugin type
 

@@ -1,3 +1,11 @@
+# Workflow Manifest Specification
+
+## Purpose
+
+Define the external contract between the `@workflow-engine/sdk/plugin` Vite plugin (producer) and the runtime `WorkflowRegistry` + executor + trigger backends (consumers): the `manifest.json` JSON schema. Owns top-level fields (`name`, `module`, `env`, `actions`, `triggers`), the trigger discriminant union (`http` / `cron` / `manual`), per-action schema shape (JSON-Schema-only, no Zod at runtime), and trigger-specific fields (`method`, `body`, `inputSchema`, `outputSchema`, `responseBody`, `schedule`, `tz`).
+
+## Requirements
+
 ### Requirement: Manifest JSON format (v1)
 
 The build output for each workflow SHALL include a `manifest.json` file containing serializable metadata: `name`, `module`, `env`, `actions`, `triggers`. The manifest SHALL NOT contain executable code or function references.

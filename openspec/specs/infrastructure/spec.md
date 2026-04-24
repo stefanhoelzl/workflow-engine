@@ -41,7 +41,9 @@ The dev root SHALL use `backend "local" {}`. The state file SHALL be gitignored.
 
 ### Requirement: Module wiring
 
-The local root (`envs/local/local.tf`) SHALL instantiate five modules: `kubernetes/kind`, `image/build`, `object-storage/s2`, `baseline`, `cert-manager`, `traefik`, and `app-instance` (via `for_each`). The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The traefik module SHALL receive service configuration and error page HTML. The app-instance module SHALL receive baseline, traefik readiness, and per-instance config from the `for_each` map.
+The local root (`envs/local/local.tf`) SHALL instantiate the following modules: `kubernetes/kind`, `image/build`, `object-storage/s2`, `baseline`, `cert-manager`, `traefik`, and `app-instance`. The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The traefik module SHALL receive service configuration. The app-instance module SHALL receive baseline, traefik readiness, and per-instance config.
+
+Local stack SHALL NOT include an oauth2-proxy workload — that sidecar was removed by `replace-oauth2-proxy` and replaced by in-app OAuth (see the `auth` capability). Authentication is end-to-end in-app; no sidecar proxies forward-auth.
 
 #### Scenario: Single apply creates everything
 
@@ -49,25 +51,29 @@ The local root (`envs/local/local.tf`) SHALL instantiate five modules: `kubernet
 - **THEN** a kind cluster SHALL be created
 - **AND** the app image SHALL be built and loaded
 - **AND** workload namespaces SHALL be created with PSA labels
-- **AND** S2, app, and oauth2-proxy SHALL be deployed in their respective namespaces
+- **AND** S2 SHALL be deployed in the `persistence` namespace and the app in its namespace
 - **AND** the Traefik Helm release SHALL be deployed in `ns/traefik`
+- **AND** cert-manager SHALL be deployed in `ns/cert-manager` with a selfsigned CA ClusterIssuer
 - **AND** per-instance routes Helm releases SHALL be deployed
-- **AND** cert-manager SHALL be deployed with selfsigned CA
 
 ### Requirement: Non-secret variables in terraform.tfvars
 
-The local root SHALL load non-secret configuration from `terraform.tfvars` (committed): `domain`, `https_port`, `oauth2_github_users`, `s2_access_key`, `s2_secret_key`, `s2_bucket`. The `oauth2_github_users` variable SHALL be a string containing a comma-separated list of GitHub logins and SHALL feed both the oauth2-proxy allow-list and the app's `AUTH_ALLOW` environment variable so a single source of truth governs who may access the workflow engine.
+The local root SHALL load non-secret configuration from `terraform.tfvars` (committed): `domain`, `https_port`, `auth_allow`, `s2_bucket`. The `auth_allow` variable SHALL be a string matching the grammar defined in the `auth` capability (comma-separated `provider:rest` entries) and SHALL be passed to the app module as the `AUTH_ALLOW` runtime environment variable.
+
+The legacy `oauth2_github_users` variable SHALL NOT exist; it was removed by `replace-oauth2-proxy` along with the oauth2-proxy sidecar.
 
 #### Scenario: Default local values
 
 - **WHEN** `terraform.tfvars` is read
 - **THEN** `domain` SHALL be `"localhost"`
 - **AND** `https_port` SHALL be `8443`
-- **AND** `oauth2_github_users` SHALL be a comma-separated list of allowed GitHub logins (default `"stefanhoelzl"`)
+- **AND** `auth_allow` SHALL be a comma-separated `AUTH_ALLOW` string (e.g., `"github:user:stefanhoelzl,local:dev"`)
 
 ### Requirement: Secret variables in local.secrets.auto.tfvars
 
-The local root SHALL load secrets from `local.secrets.auto.tfvars` (gitignored): `oauth2_client_id`, `oauth2_client_secret`. These SHALL be declared as `sensitive = true` variables.
+The local root SHALL load secrets from `local.secrets.auto.tfvars` (gitignored): `github_oauth_client_id`, `github_oauth_client_secret`. These SHALL be declared as `sensitive = true` variables in `envs/local/local.tf` and fed to the app module's in-app OAuth wiring.
+
+The legacy variable names `oauth2_client_id` / `oauth2_client_secret` SHALL NOT exist — they belonged to the deleted oauth2-proxy sidecar.
 
 #### Scenario: Secrets gitignored
 
@@ -77,7 +83,7 @@ The local root SHALL load secrets from `local.secrets.auto.tfvars` (gitignored):
 #### Scenario: Missing secrets file fails
 
 - **WHEN** `tofu apply` is run without `local.secrets.auto.tfvars`
-- **THEN** it SHALL fail requesting values for `oauth2_client_id` and `oauth2_client_secret`
+- **THEN** it SHALL fail requesting values for `github_oauth_client_id` and `github_oauth_client_secret`
 
 ### Requirement: URL output
 
@@ -458,90 +464,42 @@ The Helm release SHALL NOT declare any `experimental.plugins` or `experimental.l
 
 ### Requirement: App workload network allow-rules
 
-The `app` submodule SHALL create a `NetworkPolicy` selecting the app Deployment's pods (`podSelector` matching the app's Deployment labels, e.g. `app=workflow-engine`) with `policyTypes: ["Ingress", "Egress"]`. The policy SHALL express:
+The app pod SHALL be protected by a `NetworkPolicy` that denies all inbound traffic except from Traefik pods on TCP 8080, and denies all outbound traffic except to:
 
-**Egress allow-rules**:
-- `to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"] } }]` with no port restriction — covers UpCloud Object Storage, `api.github.com`, and sandboxed-action `__hostFetch` destinations.
-- `to: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } }, podSelector: { matchLabels: { "k8s-app": "coredns" } } }]` on `UDP :53` and `TCP :53` — DNS resolution via CoreDNS.
+- CoreDNS on TCP/UDP 53 (cluster DNS resolution).
+- Persistence object store (either the S2 pod in local dev or UpCloud S3 API endpoints in production) on TCP 443.
+- GitHub API (`api.github.com`) on TCP 443 for in-app OAuth + `/user` + `/user/orgs` reads — since the fix is DNS-resolved, the NetworkPolicy SHALL express the allow rule as egress to `0.0.0.0/0` TCP 443 with an explicit FQDN policy if supported, or as a CIDR-free egress rule if not.
+- Outbound workflow `fetch()` calls per `hardenedFetch` pipeline (allowed egress to public IPs only, enforced host-side; the NetworkPolicy does not further restrict these because IANA-range filtering is a runtime concern).
 
-**Ingress allow-rules**:
-- `from: [{ podSelector: { matchLabels: { "app.kubernetes.io/name": "traefik" } } }]` on `TCP :8080` — only Traefik pods may reach the app's HTTP port.
-- `from: [{ ipBlock: { cidr: "172.24.1.0/24" } }]` on `TCP :8080` — node CIDR allows kubelet liveness/readiness probes.
+The NetworkPolicy SHALL NOT allow inbound from any oauth2-proxy pod — that sidecar no longer exists. The NetworkPolicy remains load-bearing as defence-in-depth per `SECURITY.md §5 R-I1`.
 
-#### Scenario: App reaches UpCloud Object Storage over the public Internet
+#### Scenario: Non-Traefik inbound rejected
 
-- **WHEN** the app issues an HTTPS request to `7aqmi.upcloudobjects.com` (public IPs)
-- **THEN** the egress ipBlock rule SHALL permit the connection
+- **WHEN** any pod other than Traefik attempts to connect to the app on `:8080`
+- **THEN** the connection SHALL be refused by the NetworkPolicy
 
-#### Scenario: App reaches api.github.com for token validation
+#### Scenario: Traefik inbound permitted
 
-- **WHEN** the app calls `api.github.com/user` during API auth
-- **THEN** the egress ipBlock rule SHALL permit the connection
-
-#### Scenario: App cannot reach cloud metadata endpoint
-
-- **WHEN** a sandboxed action attempts to fetch `http://169.254.169.254/`
-- **THEN** the egress ipBlock `except` on `169.254.0.0/16` SHALL cause the packet to be dropped
-
-#### Scenario: App cannot reach other in-cluster pods directly
-
-- **WHEN** a sandboxed action attempts to fetch any in-cluster Service or pod IP (within `10.0.0.0/8` or `172.16.0.0/12`)
-- **THEN** the egress ipBlock `except` SHALL cause the packet to be dropped
-
-#### Scenario: App resolves DNS via CoreDNS
-
-- **WHEN** the app resolves a hostname
-- **THEN** the egress DNS rule SHALL permit the query to CoreDNS pods in `kube-system`
-
-#### Scenario: Non-Traefik pod cannot reach app:8080
-
-- **WHEN** any pod other than Traefik (for example oauth2-proxy) attempts to connect to the app on `:8080`
-- **THEN** the ingress rule restricting to `app.kubernetes.io/name=traefik` SHALL cause the connection to be dropped
-
-#### Scenario: Kubelet probes reach app
-
-- **WHEN** the kubelet (from the node at an IP in `172.24.1.0/24`) issues a readiness or liveness probe to the app's `:8080`
-- **THEN** the ingress node-CIDR rule SHALL permit the probe
+- **GIVEN** a request reaching the app from a Traefik pod via Traefik's IngressRoute
+- **WHEN** the app receives the request
+- **THEN** the NetworkPolicy SHALL permit the connection
 
 ### Requirement: Traefik workload network allow-rules
 
-The routing module SHALL declare the Traefik NetworkPolicy as a first-class `kubernetes_network_policy_v1` Terraform resource (not via Helm `extraObjects`) and make `helm_release.traefik` explicitly depend on it. This ordering ensures the NP is created and enforced by the CNI before the Traefik pod boots; otherwise ACME resolver initialization can race with NP enforcement and fail to reach Let's Encrypt at startup, leaving the resolver permanently unavailable.
+The Traefik pod SHALL be protected by a `NetworkPolicy` that allows inbound LoadBalancer traffic on :80 and :443 and allows outbound to:
 
-The policy SHALL select pods with label `app.kubernetes.io/name=traefik` and set `policyTypes: ["Ingress", "Egress"]`. It SHALL express:
+- The app pod on TCP 8080 (the sole upstream).
+- ACME HTTP-01 solver pods on TCP 8089 (during certificate issuance) — expressed as egress to pods matching the label `acme.cert-manager.io/http01-solver=true` across all namespaces.
+- CoreDNS on TCP/UDP 53.
 
-**Egress allow-rules**:
-- `to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"] } }]` — covers Let's Encrypt ACME directory endpoints for cert issuance/renewal.
-- DNS rule identical to the app workload's (CoreDNS on UDP+TCP `:53`).
-- `to: [{ podSelector: { matchLabels: { "app": "workflow-engine" } } }]` on `TCP :8080` — backend to the app.
-- `to: [{ podSelector: { matchLabels: { "app": "oauth2-proxy" } } }]` on `TCP :4180` — forward-auth to oauth2-proxy.
+Traefik SHALL NOT perform forward-auth to any oauth2-proxy sidecar (that sidecar was removed by `replace-oauth2-proxy`); authentication is entirely in-app on the app pod. The NetworkPolicy SHALL therefore NOT allow outbound to any `oauth2-proxy` pod-selector.
 
-**Ingress allow-rules**:
-- Node CIDR `172.24.1.0/24` on TCP `:8000` (web entrypoint), `:8443` (websecure entrypoint), `:8080` (admin/ping for kubelet probes). With `externalTrafficPolicy=Cluster`, kube-proxy SNATs external client IP to the receiving node IP before DNAT to the pod, so at the pod's NP enforcement point the source IP is always in the node CIDR. Ports are the pod's internal `containerPort` values (chart convention: service port `:80` → pod port `:8000`, service port `:443` → pod port `:8443`), NOT the service-level `:80`/`:443`. Cilium evaluates NP ports against the post-DNAT destination port on the pod. Cilium additionally treats `ipBlock: 0.0.0.0/0` as the "world" identity which excludes "host"/"remote-node" traffic, so an explicit node CIDR rule is required even though `0.0.0.0/0` would include it in principle.
+#### Scenario: Traefik forwards to app, not to a proxy
 
-#### Scenario: Traefik reaches Let's Encrypt for ACME
-
-- **WHEN** Traefik's cert resolver initiates an ACME order against `acme-v02.api.letsencrypt.org` (or staging)
-- **THEN** the egress ipBlock rule SHALL permit the connection
-
-#### Scenario: Traefik reaches app backend
-
-- **WHEN** Traefik routes a request to the app's `:8080`
-- **THEN** the egress pod-selector rule SHALL permit the connection
-
-#### Scenario: Traefik performs forward-auth against oauth2-proxy
-
-- **WHEN** Traefik makes a forward-auth call to oauth2-proxy on `:4180`
-- **THEN** the egress pod-selector rule SHALL permit the connection
-
-#### Scenario: Public traffic reaches Traefik on 443
-
-- **WHEN** an external client connects to the UpCloud LoadBalancer which forwards to Traefik on `:443`
-- **THEN** the ingress rule from `0.0.0.0/0` SHALL permit the connection
-
-#### Scenario: Pods cannot reach Traefik admin or dashboard ports
-
-- **WHEN** another pod attempts to connect to Traefik on any port other than `:80` or `:443`
-- **THEN** the default-deny SHALL cause the connection to be dropped
+- **GIVEN** a request reaching Traefik on :443
+- **WHEN** Traefik's IngressRoute resolves to the app service
+- **THEN** Traefik SHALL open a connection directly to the app pod on :8080
+- **AND** no forward-auth hop to any intermediate proxy SHALL occur
 
 ### Requirement: IngressRoute for routing
 
@@ -616,66 +574,6 @@ The prod project SHALL read persistence project outputs via `terraform_remote_st
 - **WHEN** `tofu apply` is run in `envs/staging/`
 - **THEN** the staging app SHALL receive S3 credentials scoped to the bucket created in the staging project
 
-### Requirement: Container image from ghcr.io
-
-The production composition root SHALL construct the image reference as `ghcr.io/stefanhoelzl/workflow-engine:${var.image_tag}`. The `image_tag` variable SHALL default to `"latest"`. The `image_pull_policy` SHALL be `"IfNotPresent"`.
-
-#### Scenario: Default image tag
-
-- **WHEN** `tofu apply` is run without setting `image_tag`
-- **THEN** the app SHALL use `ghcr.io/stefanhoelzl/workflow-engine:latest`
-
-#### Scenario: Pinned image tag
-
-- **WHEN** `tofu apply` is run with `image_tag = "v2026.04.11"`
-- **THEN** the app SHALL use `ghcr.io/stefanhoelzl/workflow-engine:v2026.04.11`
-
-### Requirement: Traefik with LoadBalancer and TLS-ALPN-01
-
-The routing module SHALL receive `traefik_helm_sets` configuring: `service.type = LoadBalancer`, Let's Encrypt ACME certificate resolver with TLS-ALPN-01 challenge, `persistence.enabled = true`, `persistence.existingClaim` bound to the tofu-managed `traefik-certs` PVC, and the ACME email from `var.acme_email`. The `wait` variable SHALL be `true`. The Helm chart SHALL NOT create its own PVC (size and storageClass SHALL NOT be set on the Helm release).
-
-#### Scenario: ACME staging server
-
-- **WHEN** `tofu apply` is run with `letsencrypt_staging = true`
-- **THEN** the ACME caServer SHALL be `https://acme-staging-v02.api.letsencrypt.org/directory`
-
-#### Scenario: ACME production server
-
-- **WHEN** `tofu apply` is run with `letsencrypt_staging = false`
-- **THEN** the ACME caServer SHALL be `https://acme-v02.api.letsencrypt.org/directory`
-
-#### Scenario: Traefik uses tofu-managed cert PVC
-
-- **WHEN** Traefik is deployed
-- **THEN** it SHALL mount the `traefik-certs` PVC at `/data` for ACME cert storage
-- **AND** the Helm chart SHALL NOT create its own PVC (no keep-policy-annotated PVC exists)
-
-### Requirement: Tofu-managed Traefik cert PVC
-
-The main project SHALL create a `kubernetes_persistent_volume_claim_v1` named `traefik-certs` in namespace `default` with access mode `ReadWriteOnce`, storage class `upcloud-block-storage-standard`, storage request 1 GB, and `wait_until_bound = false`.
-
-#### Scenario: PVC created by tofu
-
-- **WHEN** `tofu apply` is run
-- **THEN** a PVC named `traefik-certs` SHALL exist in the `default` namespace
-- **AND** its storage class SHALL be `upcloud-block-storage-standard`
-- **AND** its size SHALL be 1 GB
-
-#### Scenario: PVC has no keep-policy annotation
-
-- **WHEN** the PVC is inspected
-- **THEN** it SHALL NOT have the annotation `helm.sh/resource-policy: keep`
-
-### Requirement: Clean destroy of Traefik cert storage
-
-Running `tofu destroy` on the main project SHALL delete the `traefik-certs` PVC. The CSI driver SHALL automatically delete the underlying PersistentVolume and UpCloud block storage disk as a consequence.
-
-#### Scenario: Destroy removes PVC and disk
-
-- **WHEN** `tofu destroy` completes in `infrastructure/upcloud/`
-- **THEN** no `traefik-certs` PVC SHALL exist in the cluster
-- **AND** the underlying UpCloud block storage disk SHALL be removed (dynamic provisioning reclaim)
-
 ### Requirement: CI validates all OpenTofu projects
 
 The CI workflow SHALL run `tofu init -backend=false && tofu validate` for `infrastructure/envs/local/`, `infrastructure/envs/persistence/`, `infrastructure/envs/cluster/`, `infrastructure/envs/prod/`, and `infrastructure/envs/staging/`. The `tofu fmt -check -recursive infrastructure/` check SHALL cover all projects.
@@ -685,20 +583,6 @@ The CI workflow SHALL run `tofu init -backend=false && tofu validate` for `infra
 - **WHEN** a pull request is opened
 - **THEN** `tofu validate` SHALL run for all five OpenTofu projects
 - **AND** `tofu fmt -check` SHALL cover all `.tf` files
-
-### Requirement: CLAUDE.md production documentation
-
-CLAUDE.md SHALL include a production deployment section documenting prerequisites, per-project environment variables, one-time setup steps, the four-project apply order (persistence → cluster → prod → staging), and the distinction between operator-driven first-time setup and CI-driven ongoing deploys. The subsequent-deploy documentation SHALL describe: (1) staging auto-deploys on push to `main` via `deploy-staging.yml`; (2) prod auto-deploys on push to `release` via `deploy-prod.yml` behind a required-reviewer gate on the `production` GitHub Environment; (3) the `release` branch is the source of truth for what is deployed to prod; (4) rollback = `git revert` on `release` followed by push.
-
-#### Scenario: Documentation complete
-
-- **WHEN** a developer reads CLAUDE.md
-- **THEN** they SHALL find the per-project env-var matrix
-- **AND** they SHALL find the apply order
-- **AND** they SHALL find the staging-via-CI deploy note
-- **AND** they SHALL find the prod-via-CI deploy note describing the `release` branch trigger and approval gate
-- **AND** they SHALL find the `git revert` rollback instruction
-- **AND** they SHALL find an Upgrade Note describing the one-time migration (destroy + rebuild) required to adopt the four-project layout
 
 ### Requirement: Namespace isolation
 
@@ -813,16 +697,6 @@ Every `kubernetes_deployment_v1` SHALL declare `depends_on` on its corresponding
 - **WHEN** `tofu apply` runs on a clean state
 - **THEN** the app's NetworkPolicy SHALL be created before the app Deployment
 - **AND** the baseline default-deny NetworkPolicy SHALL be created before any workload Deployment
-
-### Requirement: Persistence project path
-
-The persistence project SHALL live at `infrastructure/envs/persistence/` (moved from `infrastructure/envs/upcloud/persistence/`). Its S3 backend key SHALL remain `persistence`. Module source paths inside the project SHALL be updated to `../../modules/...` (reflecting the one-level-shallower directory depth).
-
-#### Scenario: State continuity after path move
-
-- **WHEN** `tofu init` is run in the new path
-- **THEN** it SHALL pull the same state from the S3 backend (key `persistence`)
-- **AND** `tofu plan` SHALL show no changes
 
 ### Requirement: Security context
 
@@ -1155,4 +1029,159 @@ Each app project SHALL output `url = "https://${var.domain}"`. The cluster proje
 
 - **WHEN** `tofu apply` completes in `envs/staging/`
 - **THEN** the output SHALL include `url = "https://staging.workflow-engine.webredirect.org"`
+
+### Requirement: Drift guard via plan-infra.yml
+
+The repository SHALL maintain `.github/workflows/plan-infra.yml` running on every pull request targeting `main`. The workflow SHALL execute `tofu plan -detailed-exitcode -lock=false -no-color` against each operator-driven project in a matrix strategy. The matrix SHALL currently include `cluster` and `persistence`. A non-empty plan from any matrix entry SHALL fail the corresponding check; the check name SHALL be `plan (<project>)`.
+
+The `main` branch ruleset SHALL declare `plan (cluster)` and `plan (persistence)` in its `required_status_checks` list alongside `ci` and any other required checks. `bypass_actors` SHALL be `[]` — no per-PR admin bypass. The `strict_required_status_checks_policy` SHALL be `true` so a PR must be up-to-date with `main` before merging.
+
+The `release` branch SHALL have its own protection ruleset preventing force-push and deletion (not covered by the `main` ruleset since `release` is the prod deployment source).
+
+Operator flow for drift-guarded projects (`envs/cluster/` + `envs/persistence/`):
+
+1. `git pull --rebase origin main` — required before local `tofu apply` to avoid reverting another operator's in-flight work.
+2. Edit `.tf` files locally.
+3. `tofu -chdir=infrastructure/envs/<project> apply` — updates state to match the edited config.
+4. Commit edits, push, open PR to `main`.
+5. `plan (cluster)` and `plan (persistence)` both report empty plans → green → merge.
+
+#### Scenario: Empty plan passes the check
+
+- **GIVEN** a PR that changed only comments in `envs/cluster/*.tf`
+- **WHEN** `plan-infra.yml` runs
+- **THEN** `tofu plan -detailed-exitcode` SHALL return exit code 0 for cluster
+- **AND** the `plan (cluster)` check SHALL pass
+
+#### Scenario: Non-empty plan blocks merge
+
+- **GIVEN** a PR that added a resource to `envs/cluster/*.tf` without the operator having run `tofu apply` first
+- **WHEN** `plan-infra.yml` runs
+- **THEN** `tofu plan -detailed-exitcode` SHALL return exit code 2 for cluster
+- **AND** the `plan (cluster)` check SHALL fail
+- **AND** the PR SHALL be blocked from merging by the `main` ruleset's required-status-checks rule
+
+#### Scenario: No admin bypass
+
+- **GIVEN** a repository admin opening a PR whose `plan (cluster)` check is failing
+- **WHEN** they attempt to merge
+- **THEN** the merge SHALL be blocked
+- **AND** the only recovery SHALL be to fix the drift or to temporarily flip the ruleset's `enforcement` field to `disabled` via `gh api PUT`
+
+### Requirement: Helm-rendered-object drift blind spot
+
+Operators SHALL NOT bypass Helm for drift-guard-protected workloads. The drift guard (`plan-infra.yml`) detects drift only in Terraform-managed fields: Helm chart versions, module arguments, K8s manifests declared directly by Terraform. Raw `kubectl edit` on an object rendered *inside* a Helm release (e.g., hand-editing the Traefik Deployment rendered by the Traefik Helm chart) produces drift the gate cannot see, because Terraform tracks the Helm release version, not its rendered objects.
+
+This is a documented operational norm, not a physical constraint — Terraform has no way to enforce it. The project's policy is: anything that should be drift-protected SHALL be expressed through Terraform (either as a Helm release module argument or as a direct Terraform-managed Kubernetes resource); anything hand-edited via `kubectl` is explicitly unguarded and SHALL be returned to its desired state promptly.
+
+#### Scenario: Helm rendered Traefik Deployment is not drift-guarded
+
+- **GIVEN** an operator runs `kubectl edit deployment traefik -n traefik` and changes the replica count
+- **WHEN** `plan-infra.yml` runs on any subsequent PR
+- **THEN** the plan SHALL show zero changes (Terraform tracks the Helm release version, not its rendered Deployment)
+- **AND** the edit SHALL be recorded as an operational mistake, not an infra-as-code change
+
+### Requirement: auth_allow sourced from GitHub repo variables
+
+The `auth_allow` tfvar for prod and staging SHALL NOT be committed in `infrastructure/envs/prod/terraform.tfvars` or `infrastructure/envs/staging/terraform.tfvars`. It SHALL be sourced from GitHub repository variables (not secrets — the allowlist is not confidential):
+
+- `AUTH_ALLOW_PROD` → fed to `envs/prod/` via `TF_VAR_auth_allow` in `deploy-prod.yml`.
+- `AUTH_ALLOW_STAGING` → fed to `envs/staging/` via `TF_VAR_auth_allow` in `deploy-staging.yml`.
+
+The TF variable SHALL remain required (no default). An unset GitHub variable SHALL expand to empty string at apply time, which the runtime's `createConfig` maps to the empty provider-registry posture (every protected route SHALL respond 401/302 — fail-closed at runtime, not at apply).
+
+`infrastructure/envs/local/terraform.tfvars` SHALL continue to commit `auth_allow` inline (developer-operated).
+
+#### Scenario: GH variable feeds TF_VAR
+
+- **GIVEN** `AUTH_ALLOW_PROD = "github:user:alice,github:org:acme"` is set as a GitHub repo variable
+- **WHEN** `deploy-prod.yml` runs
+- **THEN** the `apply` job SHALL export `TF_VAR_auth_allow` to that value before running `tofu apply`
+- **AND** the rendered app Deployment SHALL have `AUTH_ALLOW = "github:user:alice,github:org:acme"` in its env
+
+#### Scenario: Unset GH variable yields empty-registry runtime posture
+
+- **GIVEN** `AUTH_ALLOW_PROD` is unset
+- **WHEN** `deploy-prod.yml` runs
+- **THEN** `TF_VAR_auth_allow` SHALL expand to empty string
+- **AND** `tofu apply` SHALL succeed (no validation error — the variable is declared but optional at the runtime layer)
+- **AND** the app SHALL start successfully but respond 401/302 on every protected route
+
+### Requirement: Release branch powers automated prod deploys
+
+Production deploys SHALL run via `.github/workflows/deploy-prod.yml` triggered on push to the long-lived `release` branch. The workflow SHALL be split into two jobs:
+
+1. `plan` — builds + pushes `ghcr.io/stefanhoelzl/workflow-engine:release`, captures the image digest from the `docker/build-push-action` output, and renders `tofu plan` into the GitHub run summary. Outputs the digest.
+2. `apply` — declares `environment: production` to trigger the required-reviewer gate; on approval, runs `tofu apply -var image_digest=<digest>` against `envs/prod/`; fetches kubeconfig via `upctl`; blocks on `kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m`.
+
+Operator rollback flow: `git revert <bad-sha>` on the `release` branch, then `git push origin release` — the workflow rebuilds the previous code and redeploys.
+
+Required repo secrets for prod: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `GH_APP_CLIENT_ID_PROD`, `GH_APP_CLIENT_SECRET_PROD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+
+#### Scenario: Push to release triggers plan + approval + apply
+
+- **WHEN** a commit is pushed to the `release` branch
+- **THEN** `deploy-prod.yml` SHALL start
+- **AND** the `plan` job SHALL complete automatically, producing a digest output
+- **AND** the `apply` job SHALL enter a "waiting for approval" state
+- **AND** the configured reviewers SHALL be notified
+- **AND** on approval, `tofu apply -var image_digest=<digest>` SHALL run
+- **AND** the apply SHALL block on `kubectl wait` for the prod Certificate to become Ready
+
+#### Scenario: Release branch is protected
+
+- **WHEN** any user attempts `git push --force origin release`
+- **THEN** the push SHALL be rejected by branch protection
+- **AND** deletion of the `release` branch SHALL also be rejected
+
+### Requirement: Staging auto-deploys on push to main
+
+Staging deploys SHALL run via `.github/workflows/deploy-staging.yml` triggered on push to `main`. The workflow SHALL build + push `ghcr.io/stefanhoelzl/workflow-engine:main`, capture the digest from `docker/build-push-action`, and run `tofu apply -var image_digest=<digest>` against `envs/staging/`.
+
+Required repo secrets for staging: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `TF_VAR_OAUTH2_CLIENT_ID`, `TF_VAR_OAUTH2_CLIENT_SECRET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+
+The first staging deploy SHALL be bootstrapped via `workflow_dispatch`: an operator triggers the workflow manually to capture a digest, then runs `tofu -chdir=infrastructure/envs/staging apply -var image_digest=sha256:...` locally to establish initial state.
+
+#### Scenario: Push to main triggers staging deploy
+
+- **WHEN** a commit is pushed to `main`
+- **THEN** `deploy-staging.yml` SHALL run
+- **AND** the build SHALL produce a digest
+- **AND** `tofu apply` SHALL run against `envs/staging/` with that digest
+- **AND** no approval gate SHALL block the apply (staging is unattended)
+
+### Requirement: cert-manager Helm chart CRD upgrade caveat
+
+cert-manager SHALL be installed via Helm release by the `modules/cert-manager/` module. The Helm release SHALL be configured with `installCRDs=true`, which installs CRDs only on FIRST-release install (not on subsequent `helm upgrade` calls). When bumping the cert-manager chart version in the module, operators SHALL manually apply the new CRDs before running `tofu apply`:
+
+```
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/<new-version>/cert-manager.crds.yaml
+tofu -chdir=infrastructure/envs/cluster apply
+```
+
+Failure to apply CRDs before apply SHALL produce a Helm upgrade error if the new chart references CRD fields not present in the live API surface.
+
+#### Scenario: CRD-first upgrade flow
+
+- **GIVEN** an operator bumping cert-manager from vA to vB in `infrastructure/modules/cert-manager/cert-manager.tf`
+- **WHEN** they run `kubectl apply -f .../releases/download/vB/cert-manager.crds.yaml` against the cluster
+- **AND** then run `tofu -chdir=infrastructure/envs/cluster apply`
+- **THEN** the Helm upgrade SHALL succeed
+
+### Requirement: Cert readiness verification
+
+After `tofu apply` on an app project completes, operators SHALL verify ACME HTTP-01 issuance has produced a served certificate. `tofu apply` returns once K8s resources are created; ACME issuance happens asynchronously over ~30-90 s. The verification command SHALL be:
+
+- Prod: `kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m`
+- Staging: `kubectl wait --for=condition=Ready certificate/staging-workflow-engine -n staging --timeout=5m`
+
+Failure of that wait SHALL indicate a misconfiguration — DNS resolution, port 80 reachability, CAA records, or ClusterIssuer state. Operators SHALL inspect via `kubectl describe certificate <name> -n <ns>` and `kubectl describe challenge -n <ns>` to diagnose.
+
+The `deploy-prod.yml` `apply` job SHALL embed the prod `kubectl wait` command as its final step so CI failure signals cert-readiness failure, not just apply failure.
+
+#### Scenario: Cert ready after prod apply
+
+- **GIVEN** `deploy-prod.yml`'s `apply` job has just run `tofu apply`
+- **WHEN** the `kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m` step runs
+- **THEN** it SHALL complete within 5 minutes when DNS + port 80 + CAA are correctly configured
 

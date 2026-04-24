@@ -1,3 +1,11 @@
+# HTTP Security Specification
+
+## Purpose
+
+Define the baseline HTTP-level security controls applied uniformly to every response from the runtime: response-header middleware (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` gated on non-local deployments), bot-mitigation signals, and the CSP constraints enforced on every HTML surface by the runtime's `secure-headers.ts` middleware. Cross-references `SECURITY.md §6`.
+
+## Requirements
+
 ### Requirement: Every HTTP response MUST carry baseline security headers
 
 The runtime SHALL attach the following response headers to every response emitted by the Hono app, regardless of route, status code, or content type:

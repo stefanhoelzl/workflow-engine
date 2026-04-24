@@ -103,8 +103,8 @@ sections must append (§7 and onward), not renumber.
 
 | # | Surface | Trust level | Entry points | Auth mechanism | Section |
 |---|---------|-------------|--------------|----------------|---------|
-| 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox(source, methods).run(handlerName, payload)` | Isolation, not auth | §2 |
-| 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/{name}` | None — payload-schema validation only | §3 |
+| 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox({source, plugins}).run(handlerName, payload)` | Isolation, not auth | §2 |
+| 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/<tenant>/<workflow>/<trigger>` | None — payload-schema validation only | §3 |
 | 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/login`, `/auth/*`, `/api/*` | In-app OAuth (sealed session cookie) for UI; Bearer (GitHub) for API. Both gated by `AUTH_ALLOW`. `/login` is the provider-agnostic sign-in page; `/auth/github/*` is the GitHub-specific handshake. | §4 |
 | 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Traefik | K8s RBAC, pod network | §5 |
 
