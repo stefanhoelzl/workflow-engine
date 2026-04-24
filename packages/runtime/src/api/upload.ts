@@ -63,6 +63,14 @@ function failureResponse(
 	c: Context,
 	result: Extract<RegisterResult, { ok: false }>,
 ): Response {
+	// Unresolved secret references (sentinels in trigger configs that point
+	// at names absent from `manifest.secrets`) -> 400.
+	if (result.secretFailures) {
+		return c.json(
+			{ error: result.error, failures: result.secretFailures },
+			HTTP_BAD_REQUEST,
+		);
+	}
 	// User-config errors from backend reconfigure -> 400.
 	if (result.userErrors) {
 		const body: Record<string, unknown> = {

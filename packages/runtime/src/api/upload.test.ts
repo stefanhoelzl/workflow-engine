@@ -131,6 +131,7 @@ function mountWithBackends(backends: readonly TriggerSource[]) {
 		logger,
 		executor: stubExecutor,
 		backends,
+		keyStore: stubKeyStore,
 	});
 	const middleware = apiMiddleware({
 		authRegistry,

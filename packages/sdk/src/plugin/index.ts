@@ -659,7 +659,6 @@ function buildManifest(
 	// returns `name: ""` rather than `undefined` when the config omits `name`,
 	// so we fall back to the filestem via a truthy check.
 	const name = workflow?.name || filestem;
-	const env: Record<string, string> = workflow ? { ...workflow.env } : {};
 
 	// Read the symbol-branded list of secret envNames the SDK's
 	// defineWorkflow attached to the workflow at build time. Cross-VM
@@ -673,6 +672,24 @@ function buildManifest(
 				| readonly string[]
 				| undefined)
 		: undefined;
+
+	// Copy plaintext env entries into the manifest's `env` record, but
+	// EXCLUDE secret bindings. At build time `wf.env.SECRET_X` is a sentinel
+	// string (emitted by `resolveEnvRecord`) so author trigger-config code
+	// can reference secrets before the CLI seals them. Those sentinels must
+	// not land in `manifest.env` — the manifest schema requires `secrets`
+	// keys to be disjoint from `env` keys, and `manifest.env` is
+	// plaintext-only. Sentinels survive in trigger descriptor fields.
+	const secretBindingSet = new Set(secretBindings ?? []);
+	const env: Record<string, string> = {};
+	if (workflow) {
+		for (const [key, value] of Object.entries(workflow.env)) {
+			if (secretBindingSet.has(key)) {
+				continue;
+			}
+			env[key] = value;
+		}
+	}
 
 	const actions = buildActionEntries(actionEntries, name, ctx);
 	const triggers: ManifestTriggerEntry[] = [

@@ -1,3 +1,4 @@
+import { encodeSentinel } from "@workflow-engine/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ACTION_BRAND,
@@ -822,7 +823,7 @@ describe("env({ secret: true })", () => {
 		expect(isSecretEnvRef(ref)).toBe(false);
 	});
 
-	it("resolveEnvRecord (via defineWorkflow build-time path) excludes secret bindings", () => {
+	it("resolveEnvRecord (via defineWorkflow build-time path) emits sentinels for secret bindings", () => {
 		const w = defineWorkflow({
 			name: "wf",
 			env: {
@@ -831,10 +832,61 @@ describe("env({ secret: true })", () => {
 			},
 			envSource: { TOKEN: "leaked-would-be-bad" },
 		});
-		expect(w.env).toEqual({ REGION: "us-east-1" });
-		// The secret value is NOT present in workflow.env at build time;
-		// the CLI seals from its own process.env at upload.
-		expect((w.env as Record<string, unknown>).TOKEN).toBeUndefined();
+		// Plaintext entries keep their resolved value at build time.
+		expect(w.env.REGION).toBe("us-east-1");
+		// Secret entries resolve to a sentinel string — NOT to the CLI-env
+		// plaintext. The sentinel references the effective manifest name.
+		expect(w.env.TOKEN).toBe(encodeSentinel("TOKEN"));
+		expect(w.env.TOKEN).not.toContain("leaked-would-be-bad");
+	});
+
+	it("resolveEnvRecord uses the property key as the sentinel name when no override given", () => {
+		const w = defineWorkflow({
+			name: "wf",
+			env: {
+				PROP_KEY: env({ secret: true }),
+			},
+		});
+		expect(w.env.PROP_KEY).toBe(encodeSentinel("PROP_KEY"));
+	});
+
+	it("resolveEnvRecord honours ref.name override for the sentinel", () => {
+		const w = defineWorkflow({
+			name: "wf",
+			env: {
+				LOCAL: env({ secret: true, name: "MANIFEST_NAME" }),
+			},
+		});
+		// The sentinel carries the manifest-visible name, not the property key.
+		expect(w.env.LOCAL).toBe(encodeSentinel("MANIFEST_NAME"));
+	});
+
+	it("sentinel composes cleanly inside template literals", () => {
+		const w = defineWorkflow({
+			name: "wf",
+			env: { T: env({ secret: true }) },
+		});
+		const composed = `Bearer ${w.env.T}`;
+		expect(composed).toBe(`Bearer ${encodeSentinel("T")}`);
+	});
+
+	it("runtime branch reads from globalThis.workflow.env (plaintext) and ignores sentinel emission", () => {
+		const g = globalThis as Record<string, unknown>;
+		const prev = g.workflow;
+		g.workflow = Object.freeze({
+			name: "wf",
+			env: Object.freeze({ TOKEN: "real_plaintext" }),
+		});
+		try {
+			const w = defineWorkflow({
+				name: "wf",
+				env: { TOKEN: env({ secret: true }) },
+			});
+			expect(w.env.TOKEN).toBe("real_plaintext");
+			expect(w.env.TOKEN).not.toContain("\x00secret:");
+		} finally {
+			g.workflow = prev;
+		}
 	});
 });
 

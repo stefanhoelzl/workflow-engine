@@ -53,7 +53,11 @@ function mountApi(opts: MountOpts) {
 			baseUrl: "http://test",
 		},
 	);
-	const registry = createWorkflowRegistry({ logger, executor: stubExecutor });
+	const registry = createWorkflowRegistry({
+		logger,
+		executor: stubExecutor,
+		keyStore: stubKeyStore,
+	});
 	const middleware = apiMiddleware({
 		authRegistry,
 		registry,

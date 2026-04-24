@@ -19,8 +19,11 @@ import type {
 	TriggerDescriptor,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
+import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
+import type { SecretsKeyStore } from "./secrets/index.js";
 import type { StorageBackend } from "./storage/index.js";
 import { buildFire } from "./triggers/build-fire.js";
+import { resolveSecretSentinels } from "./triggers/resolve-secret-sentinels.js";
 import type {
 	ReconfigureResult,
 	TriggerConfigError,
@@ -145,9 +148,16 @@ function buildManualDescriptor(
 function buildDescriptors(
 	workflow: WorkflowManifest,
 	allowedKinds: ReadonlySet<string> | undefined,
+	keyStore: SecretsKeyStore,
 ):
 	| { ok: true; descriptors: TriggerDescriptor[] }
-	| { ok: false; error: string } {
+	| { ok: false; error: string }
+	| { ok: false; error: "secret_ref_unresolved"; missing: string[] } {
+	// Decrypt sealed secrets once per workflow-load. Plaintext lives for the
+	// duration of this function call plus whatever `TriggerSource.reconfigure`
+	// retains; see SECURITY.md §5 "Plaintext confinement within engine code".
+	const plaintextStore = decryptWorkflowSecrets(workflow, keyStore);
+	const missing = new Set<string>();
 	const descriptors: TriggerDescriptor[] = [];
 	for (const entry of workflow.triggers) {
 		if (allowedKinds && !allowedKinds.has(entry.type)) {
@@ -163,12 +173,13 @@ function buildDescriptors(
 					'")',
 			};
 		}
+		let descriptor: TriggerDescriptor;
 		if (entry.type === "http") {
-			descriptors.push(buildHttpDescriptor(workflow.name, entry));
+			descriptor = buildHttpDescriptor(workflow.name, entry);
 		} else if (entry.type === "cron") {
-			descriptors.push(buildCronDescriptor(workflow.name, entry));
+			descriptor = buildCronDescriptor(workflow.name, entry);
 		} else if (entry.type === "manual") {
-			descriptors.push(buildManualDescriptor(workflow.name, entry));
+			descriptor = buildManualDescriptor(workflow.name, entry);
 		} else {
 			// Shouldn't happen — allowedKinds is derived from registered backends
 			// and the parser's union covers every registered kind. Guard anyway.
@@ -180,6 +191,20 @@ function buildDescriptors(
 					'"',
 			};
 		}
+		// Substitute `\x00secret:NAME\x00` sentinel substrings with decrypted
+		// plaintext BEFORE adding to the descriptor list. Every `TriggerSource`
+		// implementation receives resolved plaintext via `reconfigure`; sources
+		// MUST NOT parse sentinels themselves (see SECURITY.md §5).
+		descriptors.push(
+			resolveSecretSentinels(descriptor, plaintextStore, missing),
+		);
+	}
+	if (missing.size > 0) {
+		return {
+			ok: false,
+			error: "secret_ref_unresolved",
+			missing: [...missing].sort(),
+		};
 	}
 	return { ok: true, descriptors };
 }
@@ -197,27 +222,51 @@ interface OwnerRepoState {
 	readonly entries: Map<string, TriggerEntry>;
 }
 
-// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (owner, repo, manifest, files, executor, allowedKinds, logger); packaging would just shuffle the same fields
+interface BuildStateDeps {
+	readonly executor: Executor;
+	readonly allowedKinds: ReadonlySet<string> | undefined;
+	readonly logger: Logger;
+	readonly keyStore: SecretsKeyStore;
+}
+
+interface UnresolvedSecretFailure {
+	readonly workflow: string;
+	readonly missing: readonly string[];
+}
+
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (owner, repo, manifest, files, deps); packaging would just shuffle the same fields
 function buildOwnerRepoState(
 	owner: string,
 	repo: string,
 	manifest: Manifest,
 	files: Map<string, string>,
-	executor: Executor,
-	allowedKinds: ReadonlySet<string> | undefined,
-	logger: Logger,
-): { ok: true; state: OwnerRepoState } | { ok: false; error: string } {
+	deps: BuildStateDeps,
+):
+	| { ok: true; state: OwnerRepoState }
+	| { ok: false; error: string }
+	| {
+			ok: false;
+			error: "secret_ref_unresolved";
+			failures: UnresolvedSecretFailure[];
+	  } {
 	const workflows = new Map<string, WorkflowManifest>();
 	const bundleSources = new Map<string, string>();
 	const descriptorsByWf = new Map<string, TriggerDescriptor[]>();
 	const entries = new Map<string, TriggerEntry>();
+	const secretFailures: UnresolvedSecretFailure[] = [];
 	for (const wf of manifest.workflows) {
 		const bundleSource = files.get(wf.module);
 		if (bundleSource === undefined) {
 			continue;
 		}
-		const built = buildDescriptors(wf, allowedKinds);
+		const built = buildDescriptors(wf, deps.allowedKinds, deps.keyStore);
 		if (!built.ok) {
+			if ("missing" in built) {
+				// Accumulate across workflows so the caller can report every
+				// broken workflow in a single failure response.
+				secretFailures.push({ workflow: wf.name, missing: built.missing });
+				continue;
+			}
 			return { ok: false, error: built.error };
 		}
 		workflows.set(wf.name, wf);
@@ -225,16 +274,23 @@ function buildOwnerRepoState(
 		descriptorsByWf.set(wf.name, built.descriptors);
 		for (const descriptor of built.descriptors) {
 			const fire = buildFire(
-				executor,
+				deps.executor,
 				owner,
 				repo,
 				wf,
 				descriptor,
 				bundleSource,
-				logger,
+				deps.logger,
 			);
 			entries.set(`${wf.name}/${descriptor.name}`, { descriptor, fire });
 		}
+	}
+	if (secretFailures.length > 0) {
+		return {
+			ok: false,
+			error: "secret_ref_unresolved",
+			failures: secretFailures,
+		};
 	}
 	return {
 		ok: true,
@@ -254,6 +310,13 @@ function buildOwnerRepoState(
 interface WorkflowRegistryOptions {
 	readonly logger: Logger;
 	readonly executor: Executor;
+	// Keystore for decrypting `manifest.secrets` at workflow-registration
+	// time. The registry uses plaintext to substitute `\x00secret:…\x00`
+	// sentinels inside trigger descriptor string fields before dispatching
+	// entries to `TriggerSource.reconfigure`. The sandbox store independently
+	// re-decrypts at sandbox spawn for handler-body secret access; no cache
+	// is shared between the two paths.
+	readonly keyStore: SecretsKeyStore;
 	readonly storageBackend?: StorageBackend;
 	// TriggerSource backends. On every successful repo upload the registry
 	// calls `backend.reconfigure(owner, repo, entries)` on every backend in
@@ -557,16 +620,29 @@ function createWorkflowRegistry(
 		if (modulesCheck) {
 			return { ok: false, result: modulesCheck };
 		}
-		const built = buildOwnerRepoState(
-			owner,
-			repo,
-			manifest,
-			files,
-			options.executor,
+		const built = buildOwnerRepoState(owner, repo, manifest, files, {
+			executor: options.executor,
 			allowedKinds,
-			options.logger,
-		);
+			logger: options.logger,
+			keyStore: options.keyStore,
+		});
 		if (!built.ok) {
+			if ("failures" in built) {
+				options.logger.warn("workflow-registry.register-failed", {
+					owner,
+					repo,
+					error: "secret_ref_unresolved",
+					failures: built.failures,
+				});
+				return {
+					ok: false,
+					result: {
+						ok: false,
+						error: "secret_ref_unresolved",
+						secretFailures: built.failures,
+					},
+				};
+			}
 			options.logger.warn("workflow-registry.register-failed", {
 				owner,
 				repo,
@@ -773,6 +849,11 @@ type RegisterResult =
 			issues?: ManifestIssue[];
 			userErrors?: readonly TriggerConfigError[];
 			infraErrors?: readonly BackendInfraError[];
+			// Populated when `error === "secret_ref_unresolved"`: one entry per
+			// workflow that referenced a secret name not present in its
+			// decrypted `manifest.secrets` store. Surfaces as HTTP 400 in the
+			// upload handler.
+			secretFailures?: readonly UnresolvedSecretFailure[];
 	  };
 
 function mapAggregateToResult(aggregate: ReconfigureAggregate): RegisterResult {
@@ -847,6 +928,7 @@ export type {
 	OwnerRepoPair,
 	RegisterOwnerOptions,
 	RegisterResult,
+	UnresolvedSecretFailure,
 	WorkflowEntry,
 	WorkflowRegistry,
 	WorkflowRegistryOptions,
