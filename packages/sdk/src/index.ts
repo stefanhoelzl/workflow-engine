@@ -4,7 +4,7 @@ import type {
 	RuntimeWorkflow,
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
-import { ManifestSchema, z } from "@workflow-engine/core";
+import { encodeSentinel, ManifestSchema, z } from "@workflow-engine/core";
 import type { StandardCRON } from "ts-cron-validator";
 // biome-ignore lint/style/noExportedImports: sendMail is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
 import { sendMail } from "./mail.js";
@@ -124,11 +124,21 @@ function resolveEnvRecord(
 ): Record<string, string> {
 	const resolved: Record<string, string> = {};
 	for (const [key, value] of Object.entries(record)) {
-		// SecretEnvRef entries are NOT resolved at build time — their values
-		// are sealed by the CLI at upload against the server public key.
-		// Excluded from manifest.env; the vite plugin routes them to
-		// manifest.secretBindings instead.
+		// SecretEnvRef entries: the real plaintext is not available at build
+		// time (sealed by the CLI at upload against the server public key;
+		// decrypted at workflow load). Emit a sentinel string so author code
+		// like `cronTrigger({ schedule: wf.env.X })` and
+		// `` `Bearer ${wf.env.T}` `` embeds a placeholder that survives
+		// through trigger descriptors into the manifest. The workflow
+		// registry substitutes these for decrypted plaintext before calling
+		// `TriggerSource.reconfigure`. At runtime (sandbox), this branch
+		// is skipped — defineWorkflow reads plaintext from
+		// `globalThis.workflow.env` directly.
+		// `secretBindings` collection below (unchanged) still enumerates
+		// the same names using the same `ref.name ?? key` fallback, so the
+		// sentinel references a name that will appear in `manifest.secrets`.
 		if (isSecretEnvRef(value)) {
+			resolved[key] = encodeSentinel(value.name ?? key);
 			continue;
 		}
 		if (!isEnvRef(value)) {

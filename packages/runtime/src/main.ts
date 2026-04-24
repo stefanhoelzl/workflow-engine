@@ -183,6 +183,7 @@ async function init() {
 	const registry = createWorkflowRegistry({
 		logger: runtimeLogger,
 		executor,
+		keyStore,
 		backends: triggerBackends,
 		...(storageBackend ? { storageBackend } : {}),
 	});

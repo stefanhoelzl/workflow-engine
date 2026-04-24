@@ -49,7 +49,11 @@ describe("GET /api/workflows/:owner/public-key", () => {
 	});
 
 	function mount(keyStore: ReturnType<typeof createKeyStore>) {
-		const registry = createWorkflowRegistry({ logger, executor: stubExecutor });
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: stubExecutor,
+			keyStore,
+		});
 		const middleware = apiMiddleware({
 			authRegistry: openAuthRegistry(),
 			registry,

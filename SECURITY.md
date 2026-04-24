@@ -1496,6 +1496,38 @@ Owner-authored workflows may declare sealed env bindings (`env({name, secret: tr
 
 **Security property.** The app pod is the only place the secret key material exists. Storage (S3) sees only ciphertexts. Operators with S3/state-bucket access cannot unseal any secret without the K8s-secret-held private key. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
 
+### Trigger-config secret references
+
+Workflow authors may reference a sealed secret inside a trigger's configuration (e.g. `cronTrigger({ schedule: wf.env.SECRET_SCHEDULE })`, or future consumers like IMAP credentials, HMAC-webhook signing keys). At build time the SDK's `resolveEnvRecord` emits a shared-format sentinel string `\x00secret:NAME\x00` (from `@workflow-engine/core`'s `encodeSentinel`) wherever `wf.env.<SECRET>` appears in author source. The sentinel survives the `wf.env` record into trigger descriptors and through the manifest serialization; `wfe upload` seals the corresponding env values into `manifest.secrets` exactly as it does for handler-body secrets.
+
+At workflow-registration time, the runtime registry decrypts `manifest.secrets` (via the existing `decryptWorkflowSecrets` helper) and walks every trigger descriptor, replacing every `\x00secret:NAME\x00` occurrence with the corresponding plaintext before dispatching entries to each `TriggerSource.reconfigure(owner, repo, entries)`. A sentinel whose name is not present in the decrypted store fails the entire workflow's registration with a structured `secret_ref_unresolved` error — HTTP 400 at upload, per-workflow skip during persistence replay (other workflows recover normally).
+
+**Plaintext surface.** This flow places decrypted secret plaintext on the **main thread**, not only inside the sandbox worker. Plaintext lives:
+
+- transiently inside `packages/runtime/src/triggers/resolve-secret-sentinels.ts`'s deep-walk call stack,
+- inside the resolved descriptor objects passed to `TriggerSource.reconfigure`,
+- inside each `TriggerSource` implementation's long-lived in-memory state (e.g. the cron source's schedule string bound into its timer, a future IMAP source's credentials held by an open connection, a future HMAC verifier's signing key in a closure),
+- and — unavoidably — wherever a third-party trigger-backend library stashes it (socket buffers, connection objects, internal caches).
+
+Engine-level lifetime guarantees end at the `TriggerSource` → third-party-library boundary; memory handling inside a library is out-of-scope.
+
+The worker-side `secrets` plugin's outbound scrubber (§2) continues to redact plaintext literals from `WorkerToMain` messages, but does not help here: `TriggerSource` implementations run main-side and never cross that boundary. The invariants below are therefore enforced only by code review and by the confinement rule.
+
+### Rules for AI agents
+
+Additional main-thread secrets rules on top of the K8s-centric rules above:
+
+10. **NEVER log, emit, serialise, or include decrypted secret plaintext on the main thread** in:
+    - log lines (any level, any logger),
+    - event payloads published on the bus (including `trigger.request`, `trigger.response`, `trigger.error`),
+    - error messages, `Error.cause` chains, or stack traces formatted for user display,
+    - HTTP response bodies, headers, or server-sent-event streams,
+    - dashboard rendered output,
+    - any code path whose purpose is not to implement a `TriggerSource` backend.
+    Plaintext is permitted (a) transiently inside `resolveSecretSentinels` and the resolved entries it hands to `reconfigure`; (b) inside `TriggerSource` instance state set via `reconfigure`; (c) at the boundary where a `TriggerSource` hands a value to a third-party library — memory-lifetime past that boundary is explicitly out-of-scope.
+11. **NEVER call `TriggerSource.reconfigure` with entries that contain unresolved `\x00secret:NAME\x00` sentinels.** Resolution SHALL go through `packages/runtime/src/triggers/resolve-secret-sentinels.ts`. `TriggerSource` implementations MUST NOT parse or pattern-match sentinels themselves.
+12. **NEVER re-implement the `\x00secret:NAME\x00` encoding.** All producers (the SDK's build-time env resolver) and all consumers (the runtime's main-side trigger-config resolver) MUST import `encodeSentinel` and `SENTINEL_SUBSTRING_RE` from `@workflow-engine/core`. The worker-side plaintext scrubber is a separate mechanism keyed on plaintext bytes (not sentinels) and is not a consumer of this format.
+
 ### File references
 
 - App deployment: `infrastructure/modules/app-instance/workloads.tf`

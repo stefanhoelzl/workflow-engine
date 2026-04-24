@@ -188,14 +188,31 @@ function isValidTimezone(tz: string): boolean {
 	return ok;
 }
 
+// A string that either matches its inner validator directly OR contains at
+// least one `\x00secret:NAME\x00` sentinel substring. Sentinel-bearing
+// values are accepted at schema time because the workflow registry
+// resolves them to plaintext before handing the descriptor to the trigger
+// source, which performs its own format validation on the resolved value
+// (e.g. the cron source re-parses the schedule via
+// `CronExpressionParser.parse`).
+//
+// biome-ignore lint/suspicious/noControlCharactersInRegex: NUL bytes are the intentional sentinel terminators (see `encodeSentinel` below); the regex matches them by design
+const CONTAINS_SENTINEL_RE = /\x00secret:[A-Za-z_][A-Za-z0-9_]*\x00/;
+function containsSentinel(value: string): boolean {
+	return CONTAINS_SENTINEL_RE.test(value);
+}
+
 const cronTriggerManifestSchema = z.object({
 	name: z.string(),
 	type: z.literal("cron"),
-	schedule: z.string().regex(STANDARD_CRON_RE, {
-		error: "must be a standard 5-field cron expression",
-	}),
-	tz: z.string().refine(isValidTimezone, {
-		error: "must be a supported IANA timezone",
+	schedule: z
+		.string()
+		.refine((v) => containsSentinel(v) || STANDARD_CRON_RE.test(v), {
+			error:
+				"must be a standard 5-field cron expression, or a workflow-secret reference",
+		}),
+	tz: z.string().refine((v) => containsSentinel(v) || isValidTimezone(v), {
+		error: "must be a supported IANA timezone, or a workflow-secret reference",
 	}),
 	inputSchema: jsonSchemaValidator,
 	outputSchema: jsonSchemaValidator,
@@ -381,6 +398,37 @@ function installGuestGlobals(globals: Partial<GuestGlobals>): void {
 }
 
 // ---------------------------------------------------------------------------
+// Secret sentinels (trigger-config secrets)
+// ---------------------------------------------------------------------------
+//
+// `\x00secret:NAME\x00` sentinel strings reference a workflow-declared secret
+// by name inside trigger descriptor string fields. The SDK's build-time env
+// resolver emits them (via `encodeSentinel`); the runtime's workflow registry
+// substitutes them for decrypted plaintext (via `SENTINEL_SUBSTRING_RE`)
+// before handing descriptors to `TriggerSource.reconfigure`. No other code
+// path produces or consumes this format — scrubbing of plaintext literals on
+// outbound worker messages is a separate mechanism keyed on plaintext bytes,
+// not sentinels.
+//
+// Inlined here (rather than a sibling module) because the `?sandbox-plugin`
+// esbuild transform resolves `@workflow-engine/core` directly to `index.ts`
+// and does not reliably pick up sibling `.ts` files — same reason the
+// guest-globals contract above lives here.
+
+const SECRET_SENTINEL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: NUL bytes are the intentional sentinel terminators — the whole point of this regex is to match them
+const SENTINEL_SUBSTRING_RE = /\x00secret:([A-Za-z_][A-Za-z0-9_]*)\x00/g;
+
+function encodeSentinel(name: string): string {
+	if (!SECRET_SENTINEL_NAME_RE.test(name)) {
+		throw new Error(
+			`invalid secret name (must match ${SECRET_SENTINEL_NAME_RE.source}): ${JSON.stringify(name)}`,
+		);
+	}
+	return `\x00secret:${name}\x00`;
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -407,9 +455,11 @@ export type {
 export {
 	computeKeyId,
 	dispatchAction,
+	encodeSentinel,
 	IIFE_NAMESPACE,
 	installGuestGlobals,
 	ManifestSchema,
 	SECRETS_KEY_ID_BYTES,
+	SENTINEL_SUBSTRING_RE,
 	z,
 };

@@ -32,6 +32,20 @@ function makeLogger(): Logger {
 	} as unknown as Logger;
 }
 
+// Shared dummy keystore for tests whose fixture manifests declare no
+// `secrets` — the registry threads a keystore for trigger-config sentinel
+// resolution, but `decryptWorkflowSecrets` short-circuits to `{}` when
+// `workflow.secrets` is absent, so the store is never consulted.
+const dummyKeyStore = {
+	getPrimary: () => ({
+		keyId: "0000000000000000",
+		pk: new Uint8Array(32),
+		sk: new Uint8Array(32),
+	}),
+	lookup: () => undefined,
+	allKeyIds: () => ["0000000000000000"],
+};
+
 const WORKFLOW = {
 	name: "demo",
 	module: "demo.js",
@@ -127,7 +141,11 @@ describe("end-to-end event flow", () => {
 			keyStore: stubKeyStore,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
-		registry = createWorkflowRegistry({ logger, executor });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore: stubKeyStore,
+		});
 		await registry.registerOwner(
 			"acme",
 			"demo",
@@ -237,7 +255,11 @@ describe("end-to-end event flow", () => {
 			keyStore: integrationKeyStore,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
-		registry = createWorkflowRegistry({ logger, executor });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore: integrationKeyStore,
+		});
 		await registry.registerOwner(
 			"acme",
 			"demo",
@@ -547,6 +569,7 @@ describe("cron trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [cronSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -590,6 +613,7 @@ describe("cron trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [cronSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -678,6 +702,7 @@ describe("manual trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [manualSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -722,6 +747,7 @@ describe("manual trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [manualSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -764,6 +790,7 @@ describe("manual trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [httpSource, manualSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -801,6 +828,7 @@ describe("manual trigger integration", () => {
 			logger,
 			executor: { invoke },
 			backends: [manualSource],
+			keyStore: dummyKeyStore,
 		});
 		await registry.registerOwner(
 			"acme",
@@ -926,7 +954,11 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 			keyStore,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
-		registry = createWorkflowRegistry({ logger, executor });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore,
+		});
 		await registry.registerOwner(
 			"acme",
 			"r0",
@@ -1061,7 +1093,11 @@ var __wfe_exports__ = (function(exports) {
 			keyStore,
 		});
 		const executor = createExecutor({ bus, sandboxStore });
-		registry = createWorkflowRegistry({ logger, executor });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore,
+		});
 		await registry.registerOwner(
 			"acme",
 			"r0",
