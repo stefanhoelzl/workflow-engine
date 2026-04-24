@@ -14,9 +14,9 @@ const emptyRegistry: WorkflowRegistry = {
 	get size(): number {
 		return 0;
 	},
-	tenants: () => [],
+	owners: () => [],
 	list: () => [],
-	registerTenant: async () => ({ ok: false, error: "unused" }),
+	registerOwner: async () => ({ ok: false, error: "unused" }),
 	recover: async () => undefined,
 	getEntry: () => undefined,
 	dispose: () => undefined,
@@ -40,14 +40,14 @@ function event(
 	});
 }
 
-// Events written via makeEvent() carry tenant "t0" by default; inject a user
-// whose orgs include "t0" so the active-tenant selector resolves and the
+// Events written via makeEvent() carry owner "t0" by default; inject a user
+// whose orgs include "t0" so the active-owner selector resolves and the
 // scoped query returns the seeded rows. User name is "user" so alphabetical
-// sort of (orgs ∪ {name}) = ["t0","user"] → active tenant defaults to "t0".
+// sort of (orgs ∪ {name}) = ["t0","user"] → active owner defaults to "t0".
 const TEST_USER: UserContext = {
-	name: "user",
+	login: "user",
 	mail: "user@example.test",
-	orgs: ["t0"],
+	orgs: ["t0", "user"],
 };
 
 async function mount(
@@ -96,7 +96,7 @@ describe("dashboard middleware — shell", () => {
 		// Loading-state skeleton placeholders are present
 		expect(html).toContain('class="entry skeleton"');
 		// Fragment is wired to load via HTMX
-		expect(html).toContain('hx-get="/dashboard/invocations?tenant=t0"');
+		expect(html).toContain('hx-get="/dashboard/invocations?owner=t0"');
 		expect(html).toContain('hx-trigger="load"');
 		// No invocation data is rendered into the shell
 		expect(html).not.toContain("on-push");
@@ -375,22 +375,22 @@ describe("dashboard middleware — fragment", () => {
 		expect(html).toContain('class="flame-empty"');
 	});
 
-	it("flamegraph fragment does not leak events from another tenant", async () => {
+	it("flamegraph fragment does not leak events from another owner", async () => {
 		await store.handle(
 			event({
 				id: "evt_xyz",
 				kind: "trigger.request",
-				tenant: "other",
+				owner: "other",
 				seq: 0,
 				ts: 0,
-				input: { secretFromOtherTenant: "leaked-input-marker" },
+				input: { secretFromOtherOwner: "leaked-input-marker" },
 			}),
 		);
 		await store.handle(
 			event({
 				id: "evt_xyz",
 				kind: "trigger.response",
-				tenant: "other",
+				owner: "other",
 				seq: 1,
 				ref: 0,
 				ts: 1000,
@@ -409,18 +409,18 @@ describe("dashboard middleware — fragment", () => {
 		expect(html).not.toContain("leaked-output-marker");
 	});
 
-	it("flamegraph fragment returns empty state when there is no active tenant", async () => {
+	it("flamegraph fragment returns empty state when there is no active owner", async () => {
 		await store.handle(
 			event({
 				id: "evt_anything",
 				kind: "trigger.request",
 				seq: 0,
 				ts: 0,
-				input: { shouldNotAppear: "no-tenant-leak-marker" },
+				input: { shouldNotAppear: "no-owner-leak-marker" },
 			}),
 		);
 		const app = await mount(store);
-		// No AUTH_HEADERS — registry is empty so sortedTenants returns [].
+		// No AUTH_HEADERS — registry is empty so sortedOwners returns [].
 		const res = await app.request(
 			"/dashboard/invocations/evt_anything/flamegraph",
 		);
@@ -428,7 +428,7 @@ describe("dashboard middleware — fragment", () => {
 		const html = await res.text();
 		expect(html).toContain('class="flame-empty"');
 		expect(html).not.toContain('class="flame-graph"');
-		expect(html).not.toContain("no-tenant-leak-marker");
+		expect(html).not.toContain("no-owner-leak-marker");
 	});
 
 	it("formatDurationUs renders smart-unit bands at the four boundaries", async () => {
@@ -506,7 +506,7 @@ describe("dashboard middleware — dispatch chip", () => {
 				meta: {
 					dispatch: {
 						source: "manual",
-						user: { name: "Jane Doe", mail: "jane@example.com" },
+						user: { login: "Jane Doe", mail: "jane@example.com" },
 					},
 				},
 			}),

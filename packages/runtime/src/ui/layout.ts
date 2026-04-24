@@ -50,33 +50,33 @@ interface LayoutOptions {
 	email: string;
 	head?: HtmlEscapedString | Promise<HtmlEscapedString>;
 	bodyAttrs?: string;
-	tenants?: readonly string[];
-	activeTenant?: string;
+	owners?: readonly string[];
+	activeOwner?: string;
 }
 
-function renderTenantSelector(
-	tenants: readonly string[],
-	activeTenant: string | undefined,
+function renderOwnerSelector(
+	owners: readonly string[],
+	activeOwner: string | undefined,
 	activePath: string,
 ) {
-	if (tenants.length === 0) {
-		return html`<div class="topbar-tenant empty" aria-label="No tenants available">
-      <span class="topbar-tenant-label">Tenant</span>
-      <span class="topbar-tenant-empty">(none)</span>
+	if (owners.length === 0) {
+		return html`<div class="topbar-owner empty" aria-label="No owners available">
+      <span class="topbar-owner-label">Owner</span>
+      <span class="topbar-owner-empty">(none)</span>
     </div>`;
 	}
-	const options = tenants.map(
+	const options = owners.map(
 		(t) =>
-			html`<option value="${t}"${t === activeTenant ? raw(" selected") : ""}>${t}</option>`,
+			html`<option value="${t}"${t === activeOwner ? raw(" selected") : ""}>${t}</option>`,
 	);
-	// No inline handlers (CSP §6). The `data-tenant-selector` hook in
-	// /static/tenant-selector.js wires auto-submit on change.
-	return html`<form class="topbar-tenant" method="get" action="${activePath}" data-tenant-selector>
-      <label class="topbar-tenant-label" for="tenant-select">Tenant</label>
-      <select id="tenant-select" name="tenant">
+	// No inline handlers (CSP §6). The `data-owner-selector` hook in
+	// /static/owner-selector.js wires auto-submit on change.
+	return html`<form class="topbar-owner" method="get" action="${activePath}" data-owner-selector>
+      <label class="topbar-owner-label" for="owner-select">Owner</label>
+      <select id="owner-select" name="owner">
         ${options}
       </select>
-      <button class="topbar-tenant-go" type="submit">Go</button>
+      <button class="topbar-owner-go" type="submit">Go</button>
     </form>`;
 }
 
@@ -91,12 +91,12 @@ function renderLayout(
 		email,
 		head,
 		bodyAttrs,
-		tenants,
-		activeTenant,
+		owners,
+		activeOwner,
 	} = options;
 
-	const tenantSection = tenants
-		? renderTenantSelector(tenants, activeTenant, activePath)
+	const ownerSection = owners
+		? renderOwnerSelector(owners, activeOwner, activePath)
 		: "";
 
 	const displayName = user || "anonymous";
@@ -127,7 +127,7 @@ function renderLayout(
   <script defer src="/static/alpine.js"></script>
   <script src="/static/htmx.js"></script>
   <script defer src="/static/result-dialog.js"></script>
-  <script defer src="/static/tenant-selector.js"></script>
+  <script defer src="/static/owner-selector.js"></script>
   <script defer src="/static/local-time.js"></script>
 ${head ?? ""}
 </head>
@@ -139,7 +139,7 @@ ${head ?? ""}
       Workflow Engine
     </div>
     <div class="topbar-right">
-      ${tenantSection}
+      ${ownerSection}
       ${userSection}
     </div>
   </div>

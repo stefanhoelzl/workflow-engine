@@ -76,7 +76,7 @@ See design §7 for the rationale against kind-suffix auto-detection.
 
 ## 4. `public: true` vs `public: false`
 
-Descriptors default to `public: false` — the sandbox deletes `globalThis[name]` after Phase-2 source eval runs. Tenant code never sees the binding. Set `public: true` only to expose a name directly to tenant code (timers, `console`, the WHATWG polyfill's entry points).
+Descriptors default to `public: false` — the sandbox deletes `globalThis[name]` after Phase-2 source eval runs. Owner code never sees the binding. Set `public: true` only to expose a name directly to owner code (timers, `console`, the WHATWG polyfill's entry points).
 
 ```ts
 // timers — directly user-visible

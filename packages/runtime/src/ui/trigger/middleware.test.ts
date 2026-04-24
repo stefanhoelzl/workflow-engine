@@ -22,7 +22,7 @@ type Fire = (
 ) => Promise<InvokeResult<unknown>>;
 
 interface StubEntry {
-	readonly tenant: string;
+	readonly owner: string;
 	readonly workflowName: string;
 	readonly triggerName: string;
 	readonly triggerEntry: TriggerEntry;
@@ -32,15 +32,15 @@ interface StubEntry {
 function makeStubRegistry(entries: StubEntry[]): WorkflowRegistry {
 	const byKey = new Map<string, TriggerEntry>();
 	for (const e of entries) {
-		byKey.set(`${e.tenant}/${e.workflowName}/${e.triggerName}`, e.triggerEntry);
+		byKey.set(`${e.owner}/${e.workflowName}/${e.triggerName}`, e.triggerEntry);
 	}
 	const flatWorkflowEntries = entries.map((e) => e.workflowEntry);
-	// De-duplicate by (tenant, workflow.name) so list() returns one entry
+	// De-duplicate by (owner, workflow.name) so list() returns one entry
 	// per workflow even if the workflow has multiple stub triggers.
 	const deduped: WorkflowEntry[] = [];
 	const seen = new Set<string>();
 	for (const we of flatWorkflowEntries) {
-		const key = `${we.tenant}/${we.workflow.name}`;
+		const key = `${we.owner}/${we.workflow.name}`;
 		if (seen.has(key)) {
 			continue;
 		}
@@ -51,21 +51,21 @@ function makeStubRegistry(entries: StubEntry[]): WorkflowRegistry {
 		get size() {
 			return entries.length;
 		},
-		tenants: () => Array.from(new Set(entries.map((e) => e.tenant))),
-		list: (tenant?: string) =>
-			tenant === undefined
+		owners: () => Array.from(new Set(entries.map((e) => e.owner))),
+		list: (owner?: string) =>
+			owner === undefined
 				? deduped
-				: deduped.filter((we) => we.tenant === tenant),
-		registerTenant: async () => ({ ok: false, error: "unused" }),
+				: deduped.filter((we) => we.owner === owner),
+		registerOwner: async () => ({ ok: false, error: "unused" }),
 		recover: async () => undefined,
-		getEntry: (tenant, workflowName, triggerName) =>
-			byKey.get(`${tenant}/${workflowName}/${triggerName}`),
+		getEntry: (owner, workflowName, triggerName) =>
+			byKey.get(`${owner}/${workflowName}/${triggerName}`),
 		dispose: () => undefined,
 	};
 }
 
 function makeHttpStub(
-	tenant: string,
+	owner: string,
 	workflowName: string,
 	spec: {
 		name: string;
@@ -103,12 +103,12 @@ function makeHttpStub(
 		fire: fire ?? defaultFire,
 	};
 	return {
-		tenant,
+		owner,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
-			tenant,
+			owner,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -124,7 +124,7 @@ function makeHttpStub(
 }
 
 function makeCronStub(
-	tenant: string,
+	owner: string,
 	workflowName: string,
 	spec: { name: string; schedule: string; tz: string },
 	fire?: Fire,
@@ -152,12 +152,12 @@ function makeCronStub(
 		fire: fire ?? defaultFire,
 	};
 	return {
-		tenant,
+		owner,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
-			tenant,
+			owner,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -173,7 +173,7 @@ function makeCronStub(
 }
 
 function makeManualStub(
-	tenant: string,
+	owner: string,
 	workflowName: string,
 	spec: {
 		name: string;
@@ -212,12 +212,12 @@ function makeManualStub(
 		fire: fire ?? defaultFire,
 	};
 	return {
-		tenant,
+		owner,
 		workflowName,
 		triggerName: spec.name,
 		triggerEntry,
 		workflowEntry: {
-			tenant,
+			owner,
 			workflow: {
 				name: workflowName,
 				module: `${workflowName}.js`,
@@ -233,11 +233,15 @@ function makeManualStub(
 }
 
 function mount(registry: WorkflowRegistry) {
-	// Stub session middleware: seeds `user` so `requireTenantMember()` accepts
-	// requests to tenant "t0" (mirrors the pre-refactor behaviour where tests
+	// Stub session middleware: seeds `user` so `requireOwnerMember()` accepts
+	// requests to owner "t0" (mirrors the pre-refactor behaviour where tests
 	// ran without authn and the inline check bypassed on missing user).
 	const sessionMw: MiddlewareHandler = async (c, next) => {
-		c.set("user", { name: "user", mail: "user@example.test", orgs: ["t0"] });
+		c.set("user", {
+			login: "user",
+			mail: "user@example.test",
+			orgs: ["t0", "user"],
+		});
 		await next();
 	};
 	const m = triggerMiddleware({ registry, sessionMw });
@@ -411,7 +415,7 @@ describe("triggerMiddleware: POST dispatch", () => {
 		// Authenticated session → dispatch.source = "manual" with user.
 		expect(fire.mock.calls[0]?.[1]).toEqual({
 			source: "manual",
-			user: { name: "user", mail: "user@example.test" },
+			user: { login: "user", mail: "user@example.test" },
 		});
 	});
 
@@ -546,13 +550,13 @@ describe("triggerMiddleware: cron trigger rendering + dispatch", () => {
 		expect(res.status).toBe(200);
 		expect(fire.mock.calls[0]?.[1]).toEqual({
 			source: "manual",
-			user: { name: "user", mail: "user@example.test" },
+			user: { login: "user", mail: "user@example.test" },
 		});
 	});
 });
 
-describe("triggerMiddleware: cross-tenant authorization", () => {
-	it("returns 404 without calling fire when user is not a member of the target tenant", async () => {
+describe("triggerMiddleware: cross-owner authorization", () => {
+	it("returns 404 without calling fire when user is not a member of the target owner", async () => {
 		const fire = vi.fn<Fire>(async () => ({ ok: true, output: undefined }));
 		const registry = makeStubRegistry([
 			makeCronStub(
@@ -563,8 +567,8 @@ describe("triggerMiddleware: cross-tenant authorization", () => {
 			),
 		]);
 		const app = mount(registry);
-		// AUTH_HEADERS seed `orgs: ["t0"]` in the stub sessionMw; tenant
-		// "other" is not in that set so requireTenantMember must 404.
+		// AUTH_HEADERS seed `orgs: ["t0"]` in the stub sessionMw; owner
+		// "other" is not in that set so requireOwnerMember must 404.
 		const res = await app.request("/trigger/other/billing/daily", {
 			method: "POST",
 			headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
@@ -635,12 +639,12 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 			makeManualStub("t0", "ops", { name: "rerun" }, fire),
 		]);
 		// Session middleware that seeds a user with membership in a different
-		// tenant, so `requireTenantMember("t0")` rejects with 404.
+		// owner, so `requireOwnerMember("t0")` rejects with 404.
 		const nonMemberSessionMw: MiddlewareHandler = async (c, next) => {
 			c.set("user", {
-				name: "intruder",
+				login: "intruder",
 				mail: "intruder@example.test",
-				orgs: ["other-tenant"],
+				orgs: ["intruder", "other-owner"],
 			});
 			await next();
 		};

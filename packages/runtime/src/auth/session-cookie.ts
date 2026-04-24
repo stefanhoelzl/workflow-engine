@@ -6,7 +6,7 @@ type SessionProvider = "github" | "local";
 
 interface SessionPayload {
 	readonly provider: SessionProvider;
-	readonly name: string;
+	readonly login: string;
 	readonly mail: string;
 	readonly orgs: readonly string[];
 	readonly accessToken: string;
@@ -39,7 +39,7 @@ async function unsealSession(raw: string): Promise<SessionPayload> {
 }
 
 function userFromPayload(payload: SessionPayload): UserContext {
-	return { name: payload.name, mail: payload.mail, orgs: payload.orgs };
+	return { login: payload.login, mail: payload.mail, orgs: payload.orgs };
 }
 
 function isStale(payload: SessionPayload, now: number): boolean {

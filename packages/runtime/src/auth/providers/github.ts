@@ -91,7 +91,7 @@ function isAllowed(
 	users: ReadonlySet<string>,
 	orgs: ReadonlySet<string>,
 ): boolean {
-	if (users.has(user.name)) {
+	if (users.has(user.login)) {
 		return true;
 	}
 	for (const o of user.orgs) {
@@ -203,7 +203,7 @@ function buildCallback(
 		if (!isAllowed(user, users, orgs)) {
 			const flash = await sealFlash({
 				kind: "denied",
-				login: user.name,
+				login: user.login,
 				provider: "github",
 			});
 			setCookie(
@@ -219,7 +219,7 @@ function buildCallback(
 		const now = deps.nowFn();
 		const payload: SessionPayload = {
 			provider: "github",
-			name: user.name,
+			login: user.login,
 			mail: user.mail,
 			orgs: [...user.orgs],
 			accessToken: tokenRes.data.accessToken,

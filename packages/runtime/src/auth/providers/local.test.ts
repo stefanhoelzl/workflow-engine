@@ -116,9 +116,9 @@ describe("mountAuthRoutes", () => {
 		expect(session).toBeDefined();
 		const payload = await unsealSession(cookieValue(session ?? ""));
 		expect(payload.provider).toBe("local");
-		expect(payload.name).toBe("dev");
+		expect(payload.login).toBe("dev");
 		expect(payload.mail).toBe("dev@dev.local");
-		expect(payload.orgs).toEqual([]);
+		expect(payload.orgs).toEqual(["dev"]);
 		expect(payload.accessToken).toBe("");
 	});
 
@@ -150,7 +150,11 @@ describe("resolveApiIdentity", () => {
 			headers: { authorization: "User dev" },
 		});
 		const user = await provider.resolveApiIdentity(req);
-		expect(user).toEqual({ name: "dev", mail: "dev@dev.local", orgs: [] });
+		expect(user).toEqual({
+			login: "dev",
+			mail: "dev@dev.local",
+			orgs: ["dev"],
+		});
 	});
 
 	it("returns user with orgs when entry declares orgs", async () => {
@@ -160,9 +164,9 @@ describe("resolveApiIdentity", () => {
 		});
 		const user = await provider.resolveApiIdentity(req);
 		expect(user).toEqual({
-			name: "alice",
+			login: "alice",
 			mail: "alice@dev.local",
-			orgs: ["acme", "foo"],
+			orgs: ["alice", "acme", "foo"],
 		});
 	});
 
@@ -205,7 +209,7 @@ describe("refreshSession", () => {
 	function mkPayload(): SessionPayload {
 		return {
 			provider: "local",
-			name: "dev",
+			login: "dev",
 			mail: "dev@dev.local",
 			orgs: ["acme"],
 			accessToken: "",
@@ -218,7 +222,7 @@ describe("refreshSession", () => {
 		const provider = localProviderFactory.create(["dev"], DEPS);
 		const user = await provider.refreshSession(mkPayload());
 		expect(user).toEqual({
-			name: "dev",
+			login: "dev",
 			mail: "dev@dev.local",
 			orgs: ["acme"],
 		});

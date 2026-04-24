@@ -165,7 +165,7 @@ describe("mountAuthRoutes", () => {
 			session?.split(";")[0]?.split("=").slice(1).join("=") ?? "";
 		const payload = await unsealSession(rawValue);
 		expect(payload.provider).toBe("github");
-		expect(payload.name).toBe("alice");
+		expect(payload.login).toBe("alice");
 		expect(payload.mail).toBe("alice@example.com");
 		expect(payload.accessToken).toBe("gho_xxx");
 	});
@@ -185,7 +185,7 @@ describe("resolveApiIdentity", () => {
 			headers: { authorization: "Bearer gho_xxx" },
 		});
 		const user = await provider.resolveApiIdentity(req);
-		expect(user).toEqual({ name: "alice", mail: "", orgs: [] });
+		expect(user).toEqual({ login: "alice", mail: "", orgs: ["alice"] });
 	});
 
 	it("returns undefined when Authorization header missing", async () => {
@@ -248,7 +248,7 @@ describe("refreshSession", () => {
 	function mkPayload(): SessionPayload {
 		return {
 			provider: "github",
-			name: "alice",
+			login: "alice",
 			mail: "alice@example.com",
 			orgs: [],
 			accessToken: "gho_xxx",
@@ -268,9 +268,9 @@ describe("refreshSession", () => {
 		);
 		const user = await provider.refreshSession(mkPayload());
 		expect(user).toEqual({
-			name: "alice",
+			login: "alice",
 			mail: "alice@example.com",
-			orgs: ["acme"],
+			orgs: ["alice", "acme"],
 		});
 	});
 

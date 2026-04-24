@@ -86,14 +86,14 @@ async function startMockRuntime(): Promise<MockRuntime> {
 	};
 }
 
-async function createProjectWithTenantBundle(): Promise<{
+async function createProjectWithOwnerBundle(): Promise<{
 	cwd: string;
 	cleanup: () => Promise<void>;
 }> {
 	const cwd = await mkdtemp(join(tmpdir(), "wfe-cli-upload-"));
 	const distDir = join(cwd, "dist");
 	await mkdir(distDir);
-	await writeFile(join(distDir, "bundle.tar.gz"), "tenant-bundle-contents");
+	await writeFile(join(distDir, "bundle.tar.gz"), "owner-bundle-contents");
 	await writeFile(
 		join(cwd, "package.json"),
 		JSON.stringify({ type: "module", name: "wfe-cli-upload-test" }),
@@ -126,11 +126,11 @@ describe("upload", () => {
 		delete process.env.GITHUB_TOKEN;
 	});
 
-	it("uploads the tenant bundle and reports success", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+	it("uploads the owner bundle and reports success", async () => {
+		const { cwd } = await createProjectWithOwnerBundle();
 		runtime.setResponder(() => ({ status: 204 }));
 
-		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
+		const result = await upload({ cwd, url: runtime.url, owner: "acme" });
 
 		expect(result).toEqual({ uploaded: 1, failed: 0 });
 		expect(runtime.requests).toHaveLength(1);
@@ -143,25 +143,25 @@ describe("upload", () => {
 	});
 
 	it("sends github provider + Bearer Authorization when GITHUB_TOKEN is set", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		// biome-ignore lint/style/noProcessEnv: test needs to manipulate the CLI's documented env var
 		process.env.GITHUB_TOKEN = "ghp_test";
 		runtime.setResponder(() => ({ status: 204 }));
 
-		await upload({ cwd, url: runtime.url, tenant: "acme" });
+		await upload({ cwd, url: runtime.url, owner: "acme" });
 
 		expect(runtime.requests[0]?.headers.authorization).toBe("Bearer ghp_test");
 		expect(runtime.requests[0]?.headers["x-auth-provider"]).toBe("github");
 	});
 
 	it("sends github provider + Bearer Authorization when token option is set", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		runtime.setResponder(() => ({ status: 204 }));
 
 		await upload({
 			cwd,
 			url: runtime.url,
-			tenant: "acme",
+			owner: "acme",
 			token: "ghp_opt",
 		});
 
@@ -170,13 +170,13 @@ describe("upload", () => {
 	});
 
 	it("sends local provider + User Authorization when user option is set", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		runtime.setResponder(() => ({ status: 204 }));
 
 		await upload({
 			cwd,
 			url: runtime.url,
-			tenant: "acme",
+			owner: "acme",
 			user: "dev",
 		});
 
@@ -185,13 +185,13 @@ describe("upload", () => {
 	});
 
 	it("rejects when both user and token are supplied without making any request", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 
 		await expect(
 			upload({
 				cwd,
 				url: runtime.url,
-				tenant: "acme",
+				owner: "acme",
 				user: "dev",
 				token: "ghp_both",
 			}),
@@ -215,19 +215,19 @@ describe("upload", () => {
 	});
 
 	it("surfaces 401 as a failure", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		runtime.setResponder(() => ({
 			status: 401,
 			body: { error: "Unauthorized" },
 		}));
 
-		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
+		const result = await upload({ cwd, url: runtime.url, owner: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 	});
 
 	it("surfaces 422 with issues as a failure and formats them", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		runtime.setResponder(() => ({
 			status: 422,
@@ -246,7 +246,7 @@ describe("upload", () => {
 			},
 		}));
 
-		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
+		const result = await upload({ cwd, url: runtime.url, owner: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 		const joined = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -258,18 +258,18 @@ describe("upload", () => {
 	});
 
 	it("reports network errors without retrying", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+		const { cwd } = await createProjectWithOwnerBundle();
 		await runtime.close();
 
-		const result = await upload({ cwd, url: runtime.url, tenant: "acme" });
+		const result = await upload({ cwd, url: runtime.url, owner: "acme" });
 
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 	});
 
-	it("rejects invalid tenant names client-side", async () => {
-		const { cwd } = await createProjectWithTenantBundle();
+	it("rejects invalid owner names client-side", async () => {
+		const { cwd } = await createProjectWithOwnerBundle();
 		await expect(
-			upload({ cwd, url: runtime.url, tenant: "bad/name" }),
+			upload({ cwd, url: runtime.url, owner: "bad/name" }),
 		).rejects.toThrow(MUST_MATCH_RE);
 		expect(runtime.requests).toHaveLength(0);
 	});

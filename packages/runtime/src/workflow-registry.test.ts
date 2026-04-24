@@ -10,7 +10,7 @@ import type { Logger } from "./logger.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
 	createWorkflowRegistry,
-	extractTenantTarGz,
+	extractOwnerTarGz,
 	type WorkflowRegistry,
 } from "./workflow-registry.js";
 
@@ -55,18 +55,18 @@ const VALID_WORKFLOW = {
 	],
 };
 
-const VALID_TENANT_MANIFEST = { workflows: [VALID_WORKFLOW] };
+const VALID_OWNER_MANIFEST = { workflows: [VALID_WORKFLOW] };
 
 const BUNDLE_SOURCE = "/* bundle placeholder */";
 
-function tenantFiles(): Map<string, string> {
+function ownerFiles(): Map<string, string> {
 	return new Map([
-		["manifest.json", JSON.stringify(VALID_TENANT_MANIFEST)],
+		["manifest.json", JSON.stringify(VALID_OWNER_MANIFEST)],
 		["demo.js", BUNDLE_SOURCE],
 	]);
 }
 
-async function packTenantBundle(
+async function packOwnerBundle(
 	files: Map<string, string>,
 ): Promise<Uint8Array> {
 	const packer = tarPack();
@@ -89,16 +89,16 @@ describe("workflow registry", () => {
 		registry?.dispose();
 	});
 
-	it("registers a tenant and exposes its metadata via list()", async () => {
+	it("registers a owner and exposes its metadata via list()", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
-		const result = await registry.registerTenant("acme", tenantFiles());
+		const result = await registry.registerOwner("acme", ownerFiles());
 		expect(result.ok).toBe(true);
-		expect(registry.tenants()).toEqual(["acme"]);
+		expect(registry.owners()).toEqual(["acme"]);
 
 		const entries = registry.list("acme");
 		expect(entries).toHaveLength(1);
-		expect(entries[0]?.tenant).toBe("acme");
+		expect(entries[0]?.owner).toBe("acme");
 		expect(entries[0]?.workflow.name).toBe("demo");
 		expect(entries[0]?.bundleSource).toBe(BUNDLE_SOURCE);
 		const triggers = entries[0]?.triggers ?? [];
@@ -107,27 +107,27 @@ describe("workflow registry", () => {
 		expect(triggers[0]?.name).toBe("onPing");
 	});
 
-	it("same workflow name in two tenants is isolated by tenant", async () => {
+	it("same workflow name in two owners is isolated by owner", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
-		await registry.registerTenant("acme", tenantFiles());
-		await registry.registerTenant("contoso", tenantFiles());
-		expect(registry.tenants().sort()).toEqual(["acme", "contoso"]);
+		await registry.registerOwner("acme", ownerFiles());
+		await registry.registerOwner("contoso", ownerFiles());
+		expect(registry.owners().sort()).toEqual(["acme", "contoso"]);
 		expect(registry.list("acme")).toHaveLength(1);
 		expect(registry.list("contoso")).toHaveLength(1);
 		expect(registry.list("other")).toHaveLength(0);
 	});
 
-	it("re-registering a tenant atomically replaces its workflow set", async () => {
+	it("re-registering a owner atomically replaces its workflow set", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
-		await registry.registerTenant("acme", tenantFiles());
+		await registry.registerOwner("acme", ownerFiles());
 		expect(registry.list("acme")).toHaveLength(1);
-		// Re-upload with an empty workflow set clears the tenant's workflows.
+		// Re-upload with an empty workflow set clears the owner's workflows.
 		const empty = new Map([
 			["manifest.json", JSON.stringify({ workflows: [] })],
 		]);
-		await registry.registerTenant("acme", empty);
+		await registry.registerOwner("acme", empty);
 		expect(registry.list("acme")).toHaveLength(0);
 	});
 
@@ -135,7 +135,7 @@ describe("workflow registry", () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
 		// First upload succeeds
-		await registry.registerTenant("acme", tenantFiles());
+		await registry.registerOwner("acme", ownerFiles());
 
 		// Second upload has a broken workflow — entire upload must fail,
 		// existing state must survive
@@ -147,7 +147,7 @@ describe("workflow registry", () => {
 				}),
 			],
 		]);
-		const result = await registry.registerTenant("acme", broken);
+		const result = await registry.registerOwner("acme", broken);
 		expect(result.ok).toBe(false);
 		expect(registry.list("acme")).toHaveLength(1);
 		expect(registry.list("acme")[0]?.workflow.name).toBe("demo");
@@ -156,14 +156,14 @@ describe("workflow registry", () => {
 	it("rejects upload with missing manifest.json", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
-		const result = await registry.registerTenant("acme", new Map());
+		const result = await registry.registerOwner("acme", new Map());
 		expect(result.ok).toBe(false);
 	});
 
 	it("rejects upload with invalid manifest", async () => {
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({ logger, executor: makeExecutor() });
-		const result = await registry.registerTenant(
+		const result = await registry.registerOwner(
 			"acme",
 			new Map([["manifest.json", "{ not json"]]),
 		);
@@ -190,7 +190,7 @@ describe("workflow registry", () => {
 				},
 			],
 		};
-		const result = await registry.registerTenant(
+		const result = await registry.registerOwner(
 			"acme",
 			new Map([
 				["manifest.json", JSON.stringify(badManifest)],
@@ -220,7 +220,7 @@ describe("workflow registry", () => {
 				},
 			],
 		};
-		const result = await registry.registerTenant(
+		const result = await registry.registerOwner(
 			"acme",
 			new Map([
 				["manifest.json", JSON.stringify(badManifest)],
@@ -250,7 +250,7 @@ describe("workflow registry", () => {
 				},
 			],
 		};
-		const result = await registry.registerTenant(
+		const result = await registry.registerOwner(
 			"acme",
 			new Map([
 				["manifest.json", JSON.stringify(goodManifest)],
@@ -262,21 +262,21 @@ describe("workflow registry", () => {
 	});
 });
 
-describe("extractTenantTarGz: decompressed size cap", () => {
+describe("extractOwnerTarGz: decompressed size cap", () => {
 	it("rejects tarballs whose decompressed content exceeds the cap", async () => {
 		// Highly compressible payload (~11 MiB of zero bytes) compresses to ~10 KiB
 		// but decompresses past the 10 MiB cap.
 		const BYTES_PER_MIB = 1024 * 1024;
 		const bigFile = Buffer.alloc(11 * BYTES_PER_MIB, 0);
-		const packed = await packTenantBundle(
+		const packed = await packOwnerBundle(
 			new Map<string, string>([
-				["manifest.json", JSON.stringify(VALID_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(VALID_OWNER_MANIFEST)],
 				["demo.js", BUNDLE_SOURCE],
 				["big.bin", bigFile.toString("utf-8")],
 			]),
 		);
 
-		await expect(extractTenantTarGz(packed)).rejects.toThrow();
+		await expect(extractOwnerTarGz(packed)).rejects.toThrow();
 	});
 });
 
@@ -293,7 +293,7 @@ describe("workflow registry: persistence and recovery", () => {
 		await rm(storageDir, { recursive: true, force: true });
 	});
 
-	it("persists the tenant tarball to workflows/<tenant>.tar.gz when tarballBytes are provided", async () => {
+	it("persists the owner tarball to workflows/<owner>.tar.gz when tarballBytes are provided", async () => {
 		const logger = makeLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
@@ -303,9 +303,9 @@ describe("workflow registry: persistence and recovery", () => {
 			storageBackend: backend,
 		});
 
-		const files = tenantFiles();
-		const tarballBytes = await packTenantBundle(files);
-		const result = await registry.registerTenant("acme", files, {
+		const files = ownerFiles();
+		const tarballBytes = await packOwnerBundle(files);
+		const result = await registry.registerOwner("acme", files, {
 			tarballBytes,
 		});
 		expect(result.ok).toBe(true);
@@ -317,13 +317,13 @@ describe("workflow registry: persistence and recovery", () => {
 		expect(keys).toEqual(["workflows/acme.tar.gz"]);
 	});
 
-	it("recover() loads persisted tenants from storage at startup", async () => {
+	it("recover() loads persisted owners from storage at startup", async () => {
 		const logger = makeLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
 
-		const files = tenantFiles();
-		const tarballBytes = await packTenantBundle(files);
+		const files = ownerFiles();
+		const tarballBytes = await packOwnerBundle(files);
 		await backend.writeBytes("workflows/acme.tar.gz", tarballBytes);
 
 		registry = createWorkflowRegistry({
@@ -333,7 +333,7 @@ describe("workflow registry: persistence and recovery", () => {
 		});
 		await registry.recover();
 
-		expect(registry.tenants()).toEqual(["acme"]);
+		expect(registry.owners()).toEqual(["acme"]);
 		expect(registry.list("acme")).toHaveLength(1);
 	});
 
@@ -342,8 +342,8 @@ describe("workflow registry: persistence and recovery", () => {
 		const backend = createFsStorage(storageDir);
 		await backend.init();
 
-		const validFiles = tenantFiles();
-		const validBytes = await packTenantBundle(validFiles);
+		const validFiles = ownerFiles();
+		const validBytes = await packOwnerBundle(validFiles);
 		await backend.writeBytes("workflows/acme.tar.gz", validBytes);
 		await backend.writeBytes(
 			"workflows/broken.tar.gz",
@@ -359,7 +359,7 @@ describe("workflow registry: persistence and recovery", () => {
 		});
 		await registry.recover();
 
-		expect(registry.tenants()).toEqual(["acme"]);
+		expect(registry.owners()).toEqual(["acme"]);
 	});
 });
 
@@ -370,7 +370,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	interface StubBackend {
 		readonly source: import("./triggers/source.js").TriggerSource;
 		readonly calls: Array<{
-			tenant: string;
+			owner: string;
 			entries: readonly import("./triggers/source.js").TriggerEntry[];
 		}>;
 	}
@@ -384,8 +384,8 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			kind,
 			async start() {},
 			async stop() {},
-			async reconfigure(tenant, entries) {
-				calls.push({ tenant, entries });
+			async reconfigure(owner, entries) {
+				calls.push({ owner, entries });
 				if (mode === "infra") {
 					throw new Error("backend unreachable");
 				}
@@ -416,7 +416,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			backends: [http.source, cron.source],
 		});
-		await registry.registerTenant("acme", tenantFiles());
+		await registry.registerOwner("acme", ownerFiles());
 		expect(http.calls).toHaveLength(1);
 		expect(cron.calls).toHaveLength(1);
 		// Cron gets an empty slice since the fixture has only http triggers.
@@ -433,7 +433,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			backends: [http.source, cron.source],
 		});
-		const result = await registry.registerTenant("acme", tenantFiles());
+		const result = await registry.registerOwner("acme", ownerFiles());
 		expect(result.ok).toBe(false);
 		if (result.ok) {
 			throw new Error("expected failure");
@@ -452,7 +452,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			backends: [http.source, cron.source],
 		});
-		const result = await registry.registerTenant("acme", tenantFiles());
+		const result = await registry.registerOwner("acme", ownerFiles());
 		expect(result.ok).toBe(false);
 		if (result.ok) {
 			throw new Error("expected failure");
@@ -471,7 +471,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			backends: [http.source, cron.source],
 		});
-		const result = await registry.registerTenant("acme", tenantFiles());
+		const result = await registry.registerOwner("acme", ownerFiles());
 		expect(result.ok).toBe(false);
 		if (result.ok) {
 			throw new Error("expected failure");
@@ -504,7 +504,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 				},
 			],
 		};
-		const result = await registry.registerTenant(
+		const result = await registry.registerOwner(
 			"acme",
 			new Map([
 				["manifest.json", JSON.stringify(badManifest)],
@@ -528,9 +528,9 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 				backends: [http.source],
 				storageBackend: storage,
 			});
-			const files = tenantFiles();
-			const tarballBytes = await packTenantBundle(files);
-			const result = await registry.registerTenant("acme", files, {
+			const files = ownerFiles();
+			const tarballBytes = await packOwnerBundle(files);
+			const result = await registry.registerOwner("acme", files, {
 				tarballBytes,
 			});
 			expect(result.ok).toBe(false);

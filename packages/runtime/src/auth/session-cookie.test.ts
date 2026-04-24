@@ -13,7 +13,7 @@ function makePayload(over: Partial<SessionPayload> = {}): SessionPayload {
 	const now = 1_700_000_000_000;
 	return {
 		provider: "github",
-		name: "alice",
+		login: "alice",
 		mail: "alice@example.test",
 		orgs: ["acme"],
 		accessToken: "gho_xxx",
@@ -28,7 +28,7 @@ describe("session-cookie", () => {
 		const payload = makePayload();
 		const sealed = await sealSession(payload);
 		const unsealed = await unsealSession(sealed);
-		expect(unsealed.name).toBe(payload.name);
+		expect(unsealed.login).toBe(payload.login);
 		expect(unsealed.mail).toBe(payload.mail);
 		expect(unsealed.orgs).toEqual(payload.orgs);
 		expect(unsealed.accessToken).toBe(payload.accessToken);
@@ -44,7 +44,7 @@ describe("session-cookie", () => {
 		const payload = makePayload();
 		const user = userFromPayload(payload);
 		expect(user).toEqual({
-			name: "alice",
+			login: "alice",
 			mail: "alice@example.test",
 			orgs: ["acme"],
 		});

@@ -17,7 +17,7 @@ interface EventsTable {
 	ref: number | null;
 	at: string;
 	ts: number;
-	tenant: string;
+	owner: string;
 	workflow: string;
 	workflowSha: string;
 	name: string;
@@ -51,7 +51,7 @@ interface CteChain {
 }
 
 interface EventStore extends BusConsumer {
-	query(tenant: string): SelectQueryBuilder<Database, "events", object>;
+	query(owner: string): SelectQueryBuilder<Database, "events", object>;
 	ping(): Promise<void>;
 	with(name: string, fn: CteCallback): CteChain;
 	readonly initialized: Promise<void>;
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS events (
 	ref INTEGER,
 	"at" TIMESTAMPTZ NOT NULL,
 	ts BIGINT NOT NULL,
-	tenant TEXT NOT NULL,
+	owner TEXT NOT NULL,
 	workflow TEXT NOT NULL,
 	workflowSha TEXT NOT NULL,
 	name TEXT NOT NULL,
@@ -103,7 +103,7 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		ref: event.ref,
 		at: event.at,
 		ts: event.ts,
-		tenant: event.tenant,
+		owner: event.owner,
 		workflow: event.workflow,
 		workflowSha: event.workflowSha,
 		name: event.name,
@@ -150,10 +150,10 @@ async function createEventStore(
 	return {
 		initialized,
 
-		query(tenant: string): SelectQueryBuilder<Database, "events", object> {
+		query(owner: string): SelectQueryBuilder<Database, "events", object> {
 			return db
 				.selectFrom("events")
-				.where("tenant", "=", tenant) as SelectQueryBuilder<
+				.where("owner", "=", owner) as SelectQueryBuilder<
 				Database,
 				"events",
 				object

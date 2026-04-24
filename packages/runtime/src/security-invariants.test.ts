@@ -84,7 +84,7 @@ async function probe(code: string, store: SandboxStore): Promise<unknown> {
 //   - `__reportErrorHost` (web-platform)
 //   - `$fetch/do` (fetch)
 //   - `__console_{log,info,warn,error,debug}` (console)
-describe("§4.2 — private descriptors invisible to tenant source", () => {
+describe("§4.2 — private descriptors invisible to owner source", () => {
 	let store: SandboxStore;
 	afterEach(() => store?.dispose());
 
@@ -187,17 +187,17 @@ describe("§4.3 — hardenedFetch is the structural production default", () => {
 	});
 });
 
-// §4.4 — tenant isolation: two concurrent tenants run against distinct
-// sandbox instances with independent event streams. Tenant/workflow/
+// §4.4 — owner isolation: two concurrent owners run against distinct
+// sandbox instances with independent event streams. Owner/workflow/
 // workflowSha/id labels are added by the runtime executor at its
 // `sb.onEvent` boundary (SECURITY.md §2 R-8); the sandbox itself emits
 // `SandboxEvent` without those fields. This test asserts that the sandboxes
 // are distinct and their streams do not cross-pollinate.
-describe("§4.4 — tenant isolation across concurrent invocations", () => {
+describe("§4.4 — owner isolation across concurrent invocations", () => {
 	let store: SandboxStore;
 	afterEach(() => store?.dispose());
 
-	it("two tenants with the same sha get distinct sandboxes with non-overlapping event streams", async () => {
+	it("two owners with the same sha get distinct sandboxes with non-overlapping event streams", async () => {
 		store = makeStore();
 		const sbAcme = await store.get("acme", WORKFLOW, BUNDLE_SOURCE);
 		const sbBeta = await store.get("beta", WORKFLOW, BUNDLE_SOURCE);

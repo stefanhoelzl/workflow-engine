@@ -53,7 +53,7 @@ const WORKFLOW = {
 		},
 	],
 };
-const TENANT_MANIFEST = { workflows: [WORKFLOW] };
+const OWNER_MANIFEST = { workflows: [WORKFLOW] };
 
 // IIFE bundle: the vite-plugin emits `format: "iife"` and assigns exports to
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
@@ -128,10 +128,10 @@ describe("end-to-end event flow", () => {
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(OWNER_MANIFEST)],
 				["demo.js", BUNDLE],
 			]),
 		);
@@ -236,10 +236,10 @@ describe("end-to-end event flow", () => {
 		});
 		const executor = createExecutor({ bus, sandboxStore });
 		registry = createWorkflowRegistry({ logger, executor });
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(OWNER_MANIFEST)],
 				["demo.js", BUNDLE],
 			]),
 		);
@@ -258,7 +258,7 @@ describe("end-to-end event flow", () => {
 				bundleSource: entry.bundleSource,
 				dispatch: {
 					source: "manual",
-					user: { name: "Jane Doe", mail: "jane@example.com" },
+					user: { login: "Jane Doe", mail: "jane@example.com" },
 				},
 			},
 		);
@@ -281,7 +281,7 @@ describe("end-to-end event flow", () => {
 		expect(req?.meta).toEqual({
 			dispatch: {
 				source: "manual",
-				user: { name: "Jane Doe", mail: "jane@example.com" },
+				user: { login: "Jane Doe", mail: "jane@example.com" },
 			},
 		});
 		// Meta is stamped only on trigger.request; action/response events do not carry it.
@@ -305,7 +305,7 @@ describe("end-to-end event flow", () => {
 			ref: null,
 			at: new Date().toISOString(),
 			ts: 0,
-			tenant: "acme",
+			owner: "acme",
 			workflow: "demo",
 			workflowSha: WORKFLOW.sha,
 			name: "ping",
@@ -483,7 +483,7 @@ const CRON_WORKFLOW = {
 		},
 	],
 };
-const CRON_TENANT_MANIFEST = { workflows: [CRON_WORKFLOW] };
+const CRON_OWNER_MANIFEST = { workflows: [CRON_WORKFLOW] };
 
 // Hand-crafted IIFE bundle: a cron-style trigger is an empty-payload
 // callable. The runtime dispatches by the trigger's export name, so
@@ -543,10 +543,10 @@ describe("cron trigger integration", () => {
 			executor: { invoke },
 			backends: [cronSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(CRON_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(CRON_OWNER_MANIFEST)],
 				["cron-demo.js", CRON_BUNDLE],
 			]),
 		);
@@ -556,7 +556,7 @@ describe("cron trigger integration", () => {
 
 		expect(invoke).toHaveBeenCalledTimes(1);
 		const call = invoke.mock.calls[0];
-		expect(call?.[0]).toBe("acme"); // tenant
+		expect(call?.[0]).toBe("acme"); // owner
 		expect(call?.[1].name).toBe("cron-demo"); // workflow manifest
 		expect(call?.[2].name).toBe("every-minute"); // descriptor
 		expect(call?.[2].kind).toBe("cron");
@@ -565,7 +565,7 @@ describe("cron trigger integration", () => {
 		await cronSource.stop();
 	});
 
-	it("re-uploading the tenant cancels in-flight cron timers and rearms from the new view", async () => {
+	it("re-uploading the owner cancels in-flight cron timers and rearms from the new view", async () => {
 		vi.setSystemTime(new Date("2026-04-21T00:00:30.000Z"));
 
 		const logger = makeLogger();
@@ -584,16 +584,16 @@ describe("cron trigger integration", () => {
 			executor: { invoke },
 			backends: [cronSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(CRON_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(CRON_OWNER_MANIFEST)],
 				["cron-demo.js", CRON_BUNDLE],
 			]),
 		);
 
-		// Before the scheduled fire, replace with an empty tenant (removes the cron).
-		await registry.registerTenant(
+		// Before the scheduled fire, replace with an empty owner (removes the cron).
+		await registry.registerOwner(
 			"acme",
 			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
 		);
@@ -639,7 +639,7 @@ const MANUAL_WORKFLOW = {
 		},
 	],
 };
-const MANUAL_TENANT_MANIFEST = { workflows: [MANUAL_WORKFLOW] };
+const MANUAL_OWNER_MANIFEST = { workflows: [MANUAL_WORKFLOW] };
 
 const MANUAL_BUNDLE = `
 var __wfe_exports__ = (function(exports) {
@@ -670,10 +670,10 @@ describe("manual trigger integration", () => {
 			executor: { invoke },
 			backends: [manualSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
@@ -689,7 +689,7 @@ describe("manual trigger integration", () => {
 		}
 		expect(invoke).toHaveBeenCalledTimes(1);
 		const call = invoke.mock.calls[0];
-		expect(call?.[0]).toBe("acme"); // tenant
+		expect(call?.[0]).toBe("acme"); // owner
 		expect(call?.[1].name).toBe("manual-demo"); // workflow manifest
 		expect(call?.[2].name).toBe("rerun"); // descriptor
 		expect(call?.[2].kind).toBe("manual");
@@ -712,10 +712,10 @@ describe("manual trigger integration", () => {
 			executor: { invoke },
 			backends: [manualSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
@@ -732,7 +732,7 @@ describe("manual trigger integration", () => {
 		await manualSource.stop();
 	});
 
-	it("manual-only tenant is not addressable via /webhooks/*", async () => {
+	it("manual-only owner is not addressable via /webhooks/*", async () => {
 		const logger = makeLogger();
 		const invoke = vi.fn<Executor["invoke"]>(async () => ({
 			ok: true as const,
@@ -748,10 +748,10 @@ describe("manual trigger integration", () => {
 			executor: { invoke },
 			backends: [httpSource, manualSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
@@ -768,7 +768,7 @@ describe("manual trigger integration", () => {
 		await manualSource.stop();
 	});
 
-	it("re-uploading the tenant continues resolving manual entries from the new view", async () => {
+	it("re-uploading the owner continues resolving manual entries from the new view", async () => {
 		const logger = makeLogger();
 		const invoke = vi.fn<Executor["invoke"]>(async () => ({
 			ok: true as const,
@@ -782,16 +782,16 @@ describe("manual trigger integration", () => {
 			executor: { invoke },
 			backends: [manualSource],
 		});
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([
-				["manifest.json", JSON.stringify(MANUAL_TENANT_MANIFEST)],
+				["manifest.json", JSON.stringify(MANUAL_OWNER_MANIFEST)],
 				["manual-demo.js", MANUAL_BUNDLE],
 			]),
 		);
 		expect(registry.getEntry("acme", "manual-demo", "rerun")).toBeDefined();
 
-		await registry.registerTenant(
+		await registry.registerOwner(
 			"acme",
 			new Map([["manifest.json", JSON.stringify({ workflows: [] })]]),
 		);

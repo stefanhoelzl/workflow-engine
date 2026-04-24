@@ -10,7 +10,7 @@ import { Guest } from "@workflow-engine/sandbox";
 
 // The private dispatcher descriptor name. Phase-3 deletes it from globalThis
 // after Phase-2 guest() has captured it into the locked `__sdk` object,
-// so tenant code never sees this binding.
+// so owner code never sees this binding.
 const SDK_DISPATCH_DESCRIPTOR = "__sdkDispatchAction";
 
 /**
@@ -68,7 +68,7 @@ const dependsOn: readonly string[] = ["host-call-action"];
  *      validated value.
  *   4. Disposes the guest handler callable in `finally`.
  *
- * Any fourth positional argument passed by a stale tenant bundle (whose
+ * Any fourth positional argument passed by a stale owner bundle (whose
  * SDK still constructs a completer closure) is silently ignored — output
  * validation is host-side regardless, so the security property holds even
  * when the guest shape lags behind.
@@ -106,7 +106,7 @@ function worker(_ctx: SandboxContext, deps: DepsMap): PluginSetup {
 
 // Captures `__sdkDispatchAction` from globalThis into a locked `__sdk` object
 // (non-writable, non-configurable via defineProperty) with a frozen inner
-// shape, so tenant code cannot replace the dispatcher with a stub that
+// shape, so owner code cannot replace the dispatcher with a stub that
 // bypasses action.* emission or validateAction (SECURITY.md §2 R-2).
 // Phase-3 deletes the raw `__sdkDispatchAction` binding after this runs,
 // leaving only the reference captured into `raw` below.

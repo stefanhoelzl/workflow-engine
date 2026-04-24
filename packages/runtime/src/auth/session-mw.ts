@@ -102,13 +102,13 @@ function sessionMiddleware(
 
 		const refreshed = await provider.refreshSession(payload);
 		if (!refreshed) {
-			await setFlash(c, payload.name, payload.provider, secureCookies);
+			await setFlash(c, payload.login, payload.provider, secureCookies);
 			clearSession(c, secureCookies);
 			return c.redirect(LOGIN_PATH);
 		}
 		const nextPayload: SessionPayload = {
 			provider: payload.provider,
-			name: refreshed.name,
+			login: refreshed.login,
 			mail: refreshed.mail,
 			orgs: [...refreshed.orgs],
 			accessToken: payload.accessToken,

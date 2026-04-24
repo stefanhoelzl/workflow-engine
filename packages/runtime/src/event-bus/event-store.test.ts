@@ -37,35 +37,35 @@ describe("event store", () => {
 			seq: 0,
 			kind: "trigger.request",
 			ref: null,
-			tenant: "t0",
+			owner: "t0",
 			workflow: "wf",
 			workflowSha: "sha",
 			name: "on-push",
 		});
 	});
 
-	it("query(tenant) scopes results to that tenant", async () => {
+	it("query(owner) scopes results to that owner", async () => {
 		await store.handle(
-			event({ kind: "trigger.request", seq: 0, id: "evt_a", tenant: "acme" }),
+			event({ kind: "trigger.request", seq: 0, id: "evt_a", owner: "acme" }),
 		);
 		await store.handle(
 			event({
 				kind: "trigger.request",
 				seq: 0,
 				id: "evt_b",
-				tenant: "contoso",
+				owner: "contoso",
 			}),
 		);
 		await store.handle(
-			event({ kind: "trigger.request", seq: 0, id: "evt_c", tenant: "acme" }),
+			event({ kind: "trigger.request", seq: 0, id: "evt_c", owner: "acme" }),
 		);
 		const rows = await store.query("acme").selectAll().execute();
 		expect(rows.map((r) => r.id).sort()).toEqual(["evt_a", "evt_c"]);
 	});
 
-	it("query(tenant) returns no rows for a tenant the caller is not in", async () => {
+	it("query(owner) returns no rows for a owner the caller is not in", async () => {
 		await store.handle(
-			event({ kind: "trigger.request", seq: 0, id: "evt_x", tenant: "other" }),
+			event({ kind: "trigger.request", seq: 0, id: "evt_x", owner: "other" }),
 		);
 		const rows = await store
 			.query("t0")
@@ -184,7 +184,7 @@ describe("event store", () => {
 				meta: {
 					dispatch: {
 						source: "manual",
-						user: { name: "Jane", mail: "jane@ex.com" },
+						user: { login: "Jane", mail: "jane@ex.com" },
 					},
 				},
 			}),
@@ -202,7 +202,7 @@ describe("event store", () => {
 		expect(parsed).toEqual({
 			dispatch: {
 				source: "manual",
-				user: { name: "Jane", mail: "jane@ex.com" },
+				user: { login: "Jane", mail: "jane@ex.com" },
 			},
 		});
 		expect(rows[1]?.kind).toBe("trigger.response");

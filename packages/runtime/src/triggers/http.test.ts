@@ -67,16 +67,16 @@ interface MountOptions {
 	readonly descriptor?: HttpTriggerDescriptor;
 	readonly entries?: readonly TriggerEntry<HttpTriggerDescriptor>[];
 	readonly fire?: Fire;
-	readonly tenant?: string;
+	readonly owner?: string;
 }
 
 async function mount(options: MountOptions = {}) {
 	const source = createHttpTriggerSource();
-	const tenant = options.tenant ?? "t0";
+	const owner = options.owner ?? "t0";
 	if (options.entries) {
-		await source.reconfigure(tenant, options.entries);
+		await source.reconfigure(owner, options.entries);
 	} else {
-		await source.reconfigure(tenant, [
+		await source.reconfigure(owner, [
 			makeEntry(options.descriptor ?? makeDescriptor(), options.fire),
 		]);
 	}
@@ -107,7 +107,7 @@ describe("createHttpTriggerSource: contract", () => {
 		await source.stop();
 	});
 
-	it("reconfigure replaces entries atomically for a tenant", async () => {
+	it("reconfigure replaces entries atomically for a owner", async () => {
 		const d1 = makeDescriptor({ name: "a" });
 		const d2 = makeDescriptor({ name: "b" });
 		const source = createHttpTriggerSource();
@@ -129,7 +129,7 @@ describe("createHttpTriggerSource: contract", () => {
 		expect(hit.status).toBe(200);
 	});
 
-	it("reconfigure for one tenant does not affect another", async () => {
+	it("reconfigure for one owner does not affect another", async () => {
 		const source = createHttpTriggerSource();
 		await source.reconfigure("t0", [makeEntry(makeDescriptor({ name: "a" }))]);
 		await source.reconfigure("t1", [makeEntry(makeDescriptor({ name: "b" }))]);
@@ -156,7 +156,7 @@ describe("createHttpTriggerSource: contract", () => {
 // ---------------------------------------------------------------------------
 
 describe("createHttpTriggerSource: routing", () => {
-	it("matches exactly on (tenant, workflow, trigger-name) + method", async () => {
+	it("matches exactly on (owner, workflow, trigger-name) + method", async () => {
 		const { app } = await mount({
 			descriptor: makeDescriptor({ name: "webhook" }),
 		});
@@ -230,7 +230,7 @@ describe("createHttpTriggerSource: routing", () => {
 		expect(fire).not.toHaveBeenCalled();
 	});
 
-	it("cross-tenant request with matching workflow/trigger returns 404", async () => {
+	it("cross-owner request with matching workflow/trigger returns 404", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({
 			fire,
@@ -437,7 +437,7 @@ describe("createHttpTriggerSource: webhooks health probe", () => {
 // ---------------------------------------------------------------------------
 
 describe("createHttpTriggerSource: getEntry", () => {
-	it("returns the installed TriggerEntry for (tenant, workflow, trigger)", async () => {
+	it("returns the installed TriggerEntry for (owner, workflow, trigger)", async () => {
 		const d = makeDescriptor({ name: "a", workflowName: "w" });
 		const entry = makeEntry(d);
 		const source = createHttpTriggerSource();
@@ -468,7 +468,7 @@ describe("createHttpTriggerSource: security", () => {
 		expect(fire).toHaveBeenCalledTimes(1);
 	});
 
-	it("rejects malformed tenant names at the ingress", async () => {
+	it("rejects malformed owner names at the ingress", async () => {
 		const fire = vi.fn<Fire>();
 		const { app } = await mount({ fire });
 		const res = await app.request("/webhooks/..%2Fevil/w/t", {

@@ -28,19 +28,19 @@ import wasiTelemetryPlugin from "./plugins/wasi-telemetry.ts?sandbox-plugin";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 
-// Per-(tenant, sha) sandbox cache. Composes the production plugin list for
+// Per-(owner, sha) sandbox cache. Composes the production plugin list for
 // every entry: wasi → wasi-telemetry → web-platform → fetch → mail →
 // timers → console → host-call-action → sdk-support → trigger. Plugin
 // sources are pre-bundled at build time by `sandboxPlugins()` and loaded
 // via `data:` URI import.
 //
 // Sandboxes are held for the lifetime of the store. Re-upload on a changed
-// sha orphans the old `(tenant, oldSha)` sandbox, which remains reachable
+// sha orphans the old `(owner, oldSha)` sandbox, which remains reachable
 // to any in-flight invocation until the process exits.
 
 interface SandboxStore {
 	get(
-		tenant: string,
+		owner: string,
 		workflow: WorkflowManifest,
 		bundleSource: string,
 	): Promise<Sandbox>;
@@ -53,8 +53,8 @@ interface SandboxStoreOptions {
 	readonly keyStore: SecretsKeyStore;
 }
 
-function storeKey(tenant: string, sha: string): string {
-	return `${tenant}/${sha}`;
+function storeKey(owner: string, sha: string): string {
+	return `${owner}/${sha}`;
 }
 
 function buildPluginDescriptors(
@@ -69,7 +69,7 @@ function buildPluginDescriptors(
 		workflow,
 	) as unknown as PluginDescriptor["config"];
 	// Decrypt manifest.secrets once per sandbox — plaintexts live for the
-	// sandbox's lifetime (which is scoped to (tenant, workflow.sha), so
+	// sandbox's lifetime (which is scoped to (owner, workflow.sha), so
 	// the ciphertexts on the manifest would be stable anyway).
 	const plaintextStore = decryptWorkflowSecrets(workflow, keyStore);
 	const secretsConfig = {
@@ -97,7 +97,7 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 	const cache = new Map<string, Promise<Sandbox>>();
 
 	function build(
-		_tenant: string,
+		_owner: string,
 		workflow: WorkflowManifest,
 		bundleSource: string,
 	): Promise<Sandbox> {
@@ -109,13 +109,13 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 	}
 
 	return {
-		get(tenant, workflow, bundleSource) {
-			const key = storeKey(tenant, workflow.sha);
+		get(owner, workflow, bundleSource) {
+			const key = storeKey(owner, workflow.sha);
 			const existing = cache.get(key);
 			if (existing) {
 				return existing;
 			}
-			const promise = build(tenant, workflow, bundleSource);
+			const promise = build(owner, workflow, bundleSource);
 			cache.set(key, promise);
 			return promise;
 		},

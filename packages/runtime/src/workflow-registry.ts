@@ -28,34 +28,34 @@ import type {
 } from "./triggers/source.js";
 
 // ---------------------------------------------------------------------------
-// Workflow registry (multi-tenant, metadata-only)
+// Workflow registry (multi-owner, metadata-only)
 // ---------------------------------------------------------------------------
 //
-// The registry owns tenant manifests, their bundle sources, the derived list
+// The registry owns owner manifests, their bundle sources, the derived list
 // of trigger descriptors, and the `TriggerEntry` list (descriptor + pre-
-// wired `fire` closure) per tenant.
+// wired `fire` closure) per owner.
 //
 // It does NOT own sandboxes (see `sandbox-store.ts`) or perform HTTP URL
-// routing (the HTTP TriggerSource does, via `reconfigure(tenant, entries)`
+// routing (the HTTP TriggerSource does, via `reconfigure(owner, entries)`
 // pushes from this registry).
 //
 // Consumers:
-//   - TriggerSource backends: receive `reconfigure(tenant, entries)` on
-//     every tenant upload. Backends build their own per-tenant indexes
+//   - TriggerSource backends: receive `reconfigure(owner, entries)` on
+//     every owner upload. Backends build their own per-owner indexes
 //     (URL patterns for HTTP, timers for cron, etc.).
 //   - Executor: invoked exclusively from inside `fire` closures built by
 //     this registry — backends never call the executor directly.
-//   - UI (dashboard / trigger): `list(tenant?)`, `tenants()`, and
-//     `getEntry(tenant, workflow, trigger)` for presentation and manual
+//   - UI (dashboard / trigger): `list(owner?)`, `owners()`, and
+//     `getEntry(owner, workflow, trigger)` for presentation and manual
 //     fire.
 
 // ---------------------------------------------------------------------------
-// Tenant tarball extraction
+// Owner tarball extraction
 // ---------------------------------------------------------------------------
 
 const MAX_DECOMPRESSED_BYTES = 10_485_760;
 
-async function extractTenantTarGz(
+async function extractOwnerTarGz(
 	buffer: ArrayBuffer | Uint8Array,
 ): Promise<Map<string, string>> {
 	const files = new Map<string, string>();
@@ -181,10 +181,10 @@ function buildDescriptors(
 }
 
 // ---------------------------------------------------------------------------
-// Tenant state
+// Owner state
 // ---------------------------------------------------------------------------
 
-interface TenantState {
+interface OwnerState {
 	readonly workflows: Map<string, WorkflowManifest>;
 	readonly bundleSources: Map<string, string>;
 	readonly descriptors: Map<string, TriggerDescriptor[]>;
@@ -193,15 +193,15 @@ interface TenantState {
 	readonly entries: Map<string, TriggerEntry>;
 }
 
-// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (tenant, manifest, files, executor, allowedKinds, logger); packaging would just shuffle the same fields
-function buildTenantState(
-	tenant: string,
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (owner, manifest, files, executor, allowedKinds, logger); packaging would just shuffle the same fields
+function buildOwnerState(
+	owner: string,
 	manifest: Manifest,
 	files: Map<string, string>,
 	executor: Executor,
 	allowedKinds: ReadonlySet<string> | undefined,
 	logger: Logger,
-): { ok: true; state: TenantState } | { ok: false; error: string } {
+): { ok: true; state: OwnerState } | { ok: false; error: string } {
 	const workflows = new Map<string, WorkflowManifest>();
 	const bundleSources = new Map<string, string>();
 	const descriptorsByWf = new Map<string, TriggerDescriptor[]>();
@@ -221,7 +221,7 @@ function buildTenantState(
 		for (const descriptor of built.descriptors) {
 			const fire = buildFire(
 				executor,
-				tenant,
+				owner,
 				wf,
 				descriptor,
 				bundleSource,
@@ -249,19 +249,19 @@ interface WorkflowRegistryOptions {
 	readonly logger: Logger;
 	readonly executor: Executor;
 	readonly storageBackend?: StorageBackend;
-	// TriggerSource backends. On every successful tenant upload the registry
-	// calls `backend.reconfigure(tenant, entries)` on every backend in
+	// TriggerSource backends. On every successful owner upload the registry
+	// calls `backend.reconfigure(owner, entries)` on every backend in
 	// parallel with `Promise.allSettled`. The registry does NOT manage
 	// backend lifecycle (start/stop); the caller (main.ts) owns that.
 	readonly backends?: readonly TriggerSource[];
 }
 
-interface RegisterTenantOptions {
+interface RegisterOwnerOptions {
 	readonly tarballBytes?: Uint8Array;
 }
 
 interface WorkflowEntry {
-	readonly tenant: string;
+	readonly owner: string;
 	readonly workflow: WorkflowManifest;
 	readonly bundleSource: string;
 	readonly triggers: readonly TriggerDescriptor[];
@@ -269,20 +269,20 @@ interface WorkflowEntry {
 
 interface WorkflowRegistry {
 	readonly size: number;
-	tenants(): string[];
-	list(tenant?: string): WorkflowEntry[];
-	registerTenant(
-		tenant: string,
+	owners(): string[];
+	list(owner?: string): WorkflowEntry[];
+	registerOwner(
+		owner: string,
 		files: Map<string, string>,
-		opts?: RegisterTenantOptions,
+		opts?: RegisterOwnerOptions,
 	): Promise<RegisterResult>;
 	recover(): Promise<void>;
 	// Resolves a pre-built TriggerEntry for manual-fire via the /trigger UI.
-	// Returns undefined if no such trigger exists for this (tenant, workflow,
+	// Returns undefined if no such trigger exists for this (owner, workflow,
 	// triggerName). Input validation happens inside the returned `fire`
 	// closure.
 	getEntry(
-		tenant: string,
+		owner: string,
 		workflowName: string,
 		triggerName: string,
 	): TriggerEntry | undefined;
@@ -311,11 +311,11 @@ type ReconfigureAggregate =
 			readonly infraErrors: readonly BackendInfraError[];
 	  };
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state, manifest parsing, tenant swap, and reconfigure-push to backends — grouping is intentional
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure composes registry state, manifest parsing, owner swap, and reconfigure-push to backends — grouping is intentional
 function createWorkflowRegistry(
 	options: WorkflowRegistryOptions,
 ): WorkflowRegistry {
-	const tenantStates = new Map<string, TenantState>();
+	const ownerStates = new Map<string, OwnerState>();
 	const backend = options.storageBackend;
 	const backends: readonly TriggerSource[] = options.backends ?? [];
 	// Only enforce the kind-allowlist when at least one backend is
@@ -326,14 +326,14 @@ function createWorkflowRegistry(
 
 	options.logger.info("workflow-registry.created");
 
-	function collectEntries(tenant?: string): WorkflowEntry[] {
+	function collectEntries(owner?: string): WorkflowEntry[] {
 		const out: WorkflowEntry[] = [];
-		const iter = tenant
+		const iter = owner
 			? (() => {
-					const s = tenantStates.get(tenant);
-					return s ? [[tenant, s] as const] : [];
+					const s = ownerStates.get(owner);
+					return s ? [[owner, s] as const] : [];
 				})()
-			: [...tenantStates.entries()];
+			: [...ownerStates.entries()];
 		for (const [t, state] of iter) {
 			for (const [name, workflow] of state.workflows) {
 				const bundleSource = state.bundleSources.get(name);
@@ -342,7 +342,7 @@ function createWorkflowRegistry(
 					continue;
 				}
 				out.push({
-					tenant: t,
+					owner: t,
 					workflow,
 					bundleSource,
 					triggers: descriptors,
@@ -353,10 +353,10 @@ function createWorkflowRegistry(
 	}
 
 	async function reconfigureBackends(
-		tenant: string,
-		state: TenantState,
+		owner: string,
+		state: OwnerState,
 	): Promise<ReconfigureAggregate> {
-		// Partition this tenant's entries per backend kind. Backends whose
+		// Partition this owner's entries per backend kind. Backends whose
 		// kind doesn't appear in the manifest still receive an empty array
 		// so stale entries from a previous upload get cleared.
 		const entriesByKind = new Map<string, TriggerEntry[]>();
@@ -378,7 +378,7 @@ function createWorkflowRegistry(
 				// `unknown`. Backends enforce the per-kind shape via their
 				// own typed factories (HttpTriggerSource, CronTriggerSource).
 				return b.reconfigure(
-					tenant,
+					owner,
 					entries as unknown as readonly TriggerEntry[],
 				);
 			}),
@@ -417,7 +417,7 @@ function createWorkflowRegistry(
 	}
 
 	function parseManifest(
-		tenant: string,
+		owner: string,
 		manifestRaw: string,
 	): { ok: true; manifest: Manifest } | { ok: false; result: RegisterResult } {
 		try {
@@ -427,7 +427,7 @@ function createWorkflowRegistry(
 		} catch (err) {
 			const shape = toRegisterIssue(err);
 			options.logger.warn("workflow-registry.register-failed", {
-				tenant,
+				owner,
 				...shape,
 			});
 			return { ok: false, result: { ok: false, ...shape } };
@@ -435,7 +435,7 @@ function createWorkflowRegistry(
 	}
 
 	function validateModulesPresent(
-		tenant: string,
+		owner: string,
 		manifest: Manifest,
 		files: Map<string, string>,
 	): RegisterResult | undefined {
@@ -443,7 +443,7 @@ function createWorkflowRegistry(
 			if (!files.has(wf.module)) {
 				const error = `missing workflow module: ${wf.module}`;
 				options.logger.warn("workflow-registry.register-failed", {
-					tenant,
+					owner,
 					workflow: wf.name,
 					error,
 				});
@@ -453,7 +453,7 @@ function createWorkflowRegistry(
 	}
 
 	async function persistTarball(
-		tenant: string,
+		owner: string,
 		bytes: Uint8Array,
 	): Promise<{ ok: true } | { ok: false; error: string }> {
 		if (!backend) {
@@ -462,7 +462,7 @@ function createWorkflowRegistry(
 		// Write directly to the canonical key. `StorageBackend.writeBytes` is
 		// contractually atomic (FS: tmp+rename; S3: PutObject), so no staging
 		// key is needed. See openspec/specs/storage-backend/spec.md.
-		const key = `workflows/${tenant}.tar.gz`;
+		const key = `workflows/${owner}.tar.gz`;
 		try {
 			await backend.writeBytes(key, bytes);
 			return { ok: true };
@@ -474,16 +474,16 @@ function createWorkflowRegistry(
 		}
 	}
 
-	function prepareTenantState(
-		tenant: string,
+	function prepareOwnerState(
+		owner: string,
 		files: Map<string, string>,
 	):
-		| { ok: true; state: TenantState; workflowCount: number }
+		| { ok: true; state: OwnerState; workflowCount: number }
 		| { ok: false; result: RegisterResult } {
 		const manifestRaw = files.get("manifest.json");
 		if (manifestRaw === undefined) {
 			options.logger.warn("workflow-registry.register-failed", {
-				tenant,
+				owner,
 				error: "missing manifest.json",
 			});
 			return {
@@ -491,17 +491,17 @@ function createWorkflowRegistry(
 				result: { ok: false, error: "missing manifest.json" },
 			};
 		}
-		const parseResult = parseManifest(tenant, manifestRaw);
+		const parseResult = parseManifest(owner, manifestRaw);
 		if (!parseResult.ok) {
 			return { ok: false, result: parseResult.result };
 		}
 		const { manifest } = parseResult;
-		const modulesCheck = validateModulesPresent(tenant, manifest, files);
+		const modulesCheck = validateModulesPresent(owner, manifest, files);
 		if (modulesCheck) {
 			return { ok: false, result: modulesCheck };
 		}
-		const built = buildTenantState(
-			tenant,
+		const built = buildOwnerState(
+			owner,
 			manifest,
 			files,
 			options.executor,
@@ -510,7 +510,7 @@ function createWorkflowRegistry(
 		);
 		if (!built.ok) {
 			options.logger.warn("workflow-registry.register-failed", {
-				tenant,
+				owner,
 				error: built.error,
 			});
 			return {
@@ -525,70 +525,67 @@ function createWorkflowRegistry(
 		};
 	}
 
-	async function registerTenant(
-		tenant: string,
+	async function registerOwner(
+		owner: string,
 		files: Map<string, string>,
-		opts?: RegisterTenantOptions,
+		opts?: RegisterOwnerOptions,
 	): Promise<RegisterResult> {
-		const prepared = prepareTenantState(tenant, files);
+		const prepared = prepareOwnerState(owner, files);
 		if (!prepared.ok) {
 			return prepared.result;
 		}
 		const { state, workflowCount } = prepared;
 
-		const aggregate = await reconfigureBackends(tenant, state);
+		const aggregate = await reconfigureBackends(owner, state);
 		if (aggregate.kind !== "ok") {
 			options.logger.warn("workflow-registry.reconfigure-failed", {
-				tenant,
+				owner,
 				kind: aggregate.kind,
 			});
 			return mapAggregateToResult(aggregate);
 		}
 
 		if (opts?.tarballBytes && backend) {
-			const persisted = await persistTarball(tenant, opts.tarballBytes);
+			const persisted = await persistTarball(owner, opts.tarballBytes);
 			if (!persisted.ok) {
-				const error = `failed to persist tenant bundle: ${persisted.error}`;
+				const error = `failed to persist owner bundle: ${persisted.error}`;
 				options.logger.error("workflow-registry.persist-failed", {
-					tenant,
+					owner,
 					error,
 				});
 				return { ok: false, error };
 			}
 		}
-		tenantStates.set(tenant, state);
+		ownerStates.set(owner, state);
 		options.logger.info("workflow-registry.registered", {
-			tenant,
+			owner,
 			workflows: workflowCount,
 		});
 		return {
 			ok: true,
-			tenant,
+			owner,
 			workflows: Array.from(state.workflows.keys()),
 		};
 	}
 
 	async function recoverOne(
-		tenantBackend: StorageBackend,
+		ownerBackend: StorageBackend,
 		key: string,
 	): Promise<void> {
-		const tenant = key.slice(
-			"workflows/".length,
-			key.length - ".tar.gz".length,
-		);
+		const owner = key.slice("workflows/".length, key.length - ".tar.gz".length);
 		try {
-			const bytes = await tenantBackend.readBytes(key);
-			const files = await extractTenantTarGz(bytes);
-			const result = await registerTenant(tenant, files);
+			const bytes = await ownerBackend.readBytes(key);
+			const files = await extractOwnerTarGz(bytes);
+			const result = await registerOwner(owner, files);
 			if (!result.ok) {
 				options.logger.error("workflow-registry.recover-failed", {
-					tenant,
+					owner,
 					error: result.error,
 				});
 			}
 		} catch (err) {
 			options.logger.error("workflow-registry.recover-failed", {
-				tenant,
+				owner,
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
@@ -606,39 +603,39 @@ function createWorkflowRegistry(
 		}
 	}
 
-	function list(tenant?: string): WorkflowEntry[] {
-		return collectEntries(tenant);
+	function list(owner?: string): WorkflowEntry[] {
+		return collectEntries(owner);
 	}
 
 	function getEntry(
-		tenant: string,
+		owner: string,
 		workflowName: string,
 		triggerName: string,
 	): TriggerEntry | undefined {
-		return tenantStates
-			.get(tenant)
+		return ownerStates
+			.get(owner)
 			?.entries.get(`${workflowName}/${triggerName}`);
 	}
 
 	return {
 		get size(): number {
 			let total = 0;
-			for (const state of tenantStates.values()) {
+			for (const state of ownerStates.values()) {
 				for (const descriptors of state.descriptors.values()) {
 					total += descriptors.length;
 				}
 			}
 			return total;
 		},
-		tenants() {
-			return Array.from(tenantStates.keys());
+		owners() {
+			return Array.from(ownerStates.keys());
 		},
 		list,
-		registerTenant,
+		registerOwner,
 		recover,
 		getEntry,
 		dispose() {
-			tenantStates.clear();
+			ownerStates.clear();
 		},
 	};
 }
@@ -653,7 +650,7 @@ interface ManifestIssue {
 }
 
 type RegisterResult =
-	| { ok: true; tenant: string; workflows: string[] }
+	| { ok: true; owner: string; workflows: string[] }
 	| {
 			ok: false;
 			error: string;
@@ -686,7 +683,7 @@ function mapAggregateToResult(aggregate: ReconfigureAggregate): RegisterResult {
 		};
 	}
 	// "ok" already handled by caller; defensive fallback.
-	return { ok: true, tenant: "", workflows: [] };
+	return { ok: true, owner: "", workflows: [] };
 }
 
 function normalizeIssue(raw: unknown): ManifestIssue | undefined {
@@ -731,10 +728,10 @@ function toRegisterIssue(err: unknown): {
 
 export type {
 	BackendInfraError,
+	RegisterOwnerOptions,
 	RegisterResult,
-	RegisterTenantOptions,
 	WorkflowEntry,
 	WorkflowRegistry,
 	WorkflowRegistryOptions,
 };
-export { createWorkflowRegistry, extractTenantTarGz };
+export { createWorkflowRegistry, extractOwnerTarGz };

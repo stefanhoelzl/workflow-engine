@@ -626,7 +626,7 @@ async function handleRun(
 	const { vm, bridge, pluginLifecycle } = state;
 
 	bridge.resetAnchor();
-	// Run metadata (tenant/workflow/workflowSha/invocationId) is tracked on
+	// Run metadata (owner/workflow/workflowSha/invocationId) is tracked on
 	// the main thread (`packages/sandbox/src/index.ts`) and stamped onto
 	// events before they reach `sb.onEvent` subscribers. The worker only
 	// flips a boolean "run active" flag so the bridge knows to produce

@@ -63,9 +63,9 @@ function parseLocalRest(rest: string): LocalEntry {
 
 function userFromEntry(entry: LocalEntry): UserContext {
 	return {
-		name: entry.name,
+		login: entry.name,
 		mail: `${entry.name}${MAIL_SUFFIX}`,
-		orgs: entry.orgs,
+		orgs: [entry.name, ...entry.orgs],
 	};
 }
 
@@ -100,7 +100,7 @@ function buildSignin(
 		const now = deps.nowFn();
 		const payload: SessionPayload = {
 			provider: "local",
-			name: user.name,
+			login: user.login,
 			mail: user.mail,
 			orgs: [...user.orgs],
 			accessToken: "",
@@ -164,7 +164,7 @@ function createLocalProvider(
 
 		refreshSession(payload: SessionPayload): Promise<UserContext | undefined> {
 			return Promise.resolve({
-				name: payload.name,
+				login: payload.login,
 				mail: payload.mail,
 				orgs: payload.orgs,
 			});

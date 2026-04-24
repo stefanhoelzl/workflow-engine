@@ -219,7 +219,7 @@ body {
 	gap: var(--sp-4);
 }
 
-.topbar-tenant {
+.topbar-owner {
 	display: flex;
 	align-items: center;
 	gap: var(--sp-2);
@@ -228,13 +228,13 @@ body {
 	margin: 0;
 }
 
-.topbar-tenant-label {
+.topbar-owner-label {
 	text-transform: uppercase;
 	letter-spacing: 0.05em;
 	font-weight: 600;
 }
 
-.topbar-tenant select {
+.topbar-owner select {
 	background: var(--bg-surface);
 	color: var(--text);
 	border: 1px solid var(--border);
@@ -246,13 +246,13 @@ body {
 	transition: border-color 0.15s ease;
 }
 
-.topbar-tenant select:hover,
-.topbar-tenant select:focus {
+.topbar-owner select:hover,
+.topbar-owner select:focus {
 	border-color: var(--accent);
 	outline: none;
 }
 
-.topbar-tenant-go {
+.topbar-owner-go {
 	background: var(--bg-surface);
 	color: var(--text);
 	border: 1px solid var(--border);
@@ -262,7 +262,7 @@ body {
 	cursor: pointer;
 }
 
-.topbar-tenant-empty {
+.topbar-owner-empty {
 	font-size: var(--fs-base);
 	color: var(--text-muted);
 	font-style: italic;

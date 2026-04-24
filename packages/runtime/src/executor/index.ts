@@ -11,7 +11,7 @@ import type { InvokeResult, TriggerDescriptor } from "./types.js";
 
 interface InvocationMeta {
 	readonly id: string;
-	readonly tenant: string;
+	readonly owner: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
 	// Dispatch provenance. Forwarded from fire()'s optional `dispatch` arg;
@@ -29,7 +29,7 @@ interface InvokeOptions {
 // ---------------------------------------------------------------------------
 //
 // The executor resolves the sandbox via the injected SandboxStore,
-// serializes invocations per (tenant, workflow.sha), wires the sandbox's
+// serializes invocations per (owner, workflow.sha), wires the sandbox's
 // onEvent stream to the bus, and calls sandbox.run. The sandbox emits
 // trigger.request/response/error events itself — the executor does not
 // construct lifecycle events.
@@ -45,7 +45,7 @@ interface ExecutorOptions {
 
 interface Executor {
 	invoke(
-		tenant: string,
+		owner: string,
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
@@ -72,7 +72,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 	// time (enforced by `sb.run`'s concurrent-run reject), so every
 	// `SandboxEvent` arriving on `sb.onEvent` between set and clear belongs to
 	// this invocation. This is where runtime metadata is stamped — SECURITY.md
-	// §2 R-8: the sandbox has no tenant concept; the runtime widens events
+	// §2 R-8: the sandbox has no owner concept; the runtime widens events
 	// from `SandboxEvent` to `InvocationEvent` at this boundary.
 	const activeMeta = new WeakMap<Sandbox, InvocationMeta>();
 
@@ -101,7 +101,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 			const widened: InvocationEvent = {
 				...event,
 				id: meta.id,
-				tenant: meta.tenant,
+				owner: meta.owner,
 				workflow: meta.workflow,
 				workflowSha: meta.workflowSha,
 				// Dispatch provenance is stamped only onto the single
@@ -123,20 +123,20 @@ function createExecutor(options: ExecutorOptions): Executor {
 		wired.add(sb);
 	}
 
-	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — tenant + workflow + descriptor + input + options are orthogonal and already packaged by the caller
+	// biome-ignore lint/complexity/useMaxParams: invocation fan-in — owner + workflow + descriptor + input + options are orthogonal and already packaged by the caller
 	async function runInvocation(
-		tenant: string,
+		owner: string,
 		workflow: WorkflowManifest,
 		descriptor: TriggerDescriptor,
 		input: unknown,
 		options: InvokeOptions,
 	): Promise<InvokeResult<unknown>> {
-		const sb = await sandboxStore.get(tenant, workflow, options.bundleSource);
+		const sb = await sandboxStore.get(owner, workflow, options.bundleSource);
 		ensureWired(sb);
 		const invocationId = newInvocationId();
 		activeMeta.set(sb, {
 			id: invocationId,
-			tenant,
+			owner,
 			workflow: workflow.name,
 			workflowSha: workflow.sha,
 			dispatch: options.dispatch ?? { source: "trigger" },
@@ -178,9 +178,9 @@ function createExecutor(options: ExecutorOptions): Executor {
 
 	return {
 		// biome-ignore lint/complexity/useMaxParams: matches Executor.invoke contract
-		invoke(tenant, workflow, descriptor, input, options) {
-			return queueFor(`${tenant}/${workflow.sha}`).run(() =>
-				runInvocation(tenant, workflow, descriptor, input, options),
+		invoke(owner, workflow, descriptor, input, options) {
+			return queueFor(`${owner}/${workflow.sha}`).run(() =>
+				runInvocation(owner, workflow, descriptor, input, options),
 			);
 		},
 	};

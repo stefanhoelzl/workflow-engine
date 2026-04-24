@@ -6,7 +6,7 @@ import type {
 import { Guest } from "@workflow-engine/sandbox";
 import { hardenedFetch } from "./hardened-fetch.js";
 
-// The private descriptor name exposed to plugin source only — tenant code
+// The private descriptor name exposed to plugin source only — owner code
 // never sees this (Phase-3 deletion removes it after the WHATWG polyfill
 // captures it). `$` is a valid JS-identifier char; the leading sigil makes
 // it obvious this binding is structural, not meant for direct use.

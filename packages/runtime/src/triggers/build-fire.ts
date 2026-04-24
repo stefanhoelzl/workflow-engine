@@ -20,7 +20,7 @@ import {
 //      `validate()` helper).
 //   2. On validation failure: resolves to `{ok: false, error: {message,
 //      issues}}` without dispatching through the executor.
-//   3. On validation success: dispatches via `executor.invoke(tenant,
+//   3. On validation success: dispatches via `executor.invoke(owner,
 //      workflow, descriptor, validatedInput, bundleSource)`.
 //   4. On `{ok: true, output}`: validates `output` against
 //      `descriptor.outputSchema` (Ajv). On mismatch — the handler returned
@@ -59,7 +59,7 @@ function summariseIssues(issues: readonly ValidationIssue[]): string {
 // biome-ignore lint/complexity/useMaxParams: bound closure needs executor + identity + validation + observability
 function buildFire(
 	executor: Executor,
-	tenant: string,
+	owner: string,
 	workflow: WorkflowManifest,
 	descriptor: TriggerDescriptor,
 	bundleSource: string,
@@ -79,7 +79,7 @@ function buildFire(
 			});
 		}
 		return executor
-			.invoke(tenant, workflow, descriptor, v.input, {
+			.invoke(owner, workflow, descriptor, v.input, {
 				bundleSource,
 				...(dispatch === undefined ? {} : { dispatch }),
 			})
@@ -99,7 +99,7 @@ function buildFire(
 				// a server-side contract failure. The client did nothing
 				// wrong; a 422 would mislead.
 				logger?.warn("trigger.output-validation-failed", {
-					tenant,
+					owner,
 					workflow: workflow.name,
 					trigger: descriptor.name,
 					kind: descriptor.kind,

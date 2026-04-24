@@ -5,9 +5,9 @@ import type {
 import { Guest } from "@workflow-engine/sandbox";
 
 // The set of console methods the sandbox provides. Matches the legacy
-// `globals.ts` setupConsole catalog so tenant source-code that calls
+// `globals.ts` setupConsole catalog so owner source-code that calls
 // `console.log(...)` etc. behaves identically. `table`/`group`/`trace`
-// etc. are deliberately absent — the minimum surface tenant code is
+// etc. are deliberately absent — the minimum surface owner code is
 // expected to consume; adding more is a trivial extension once demand
 // materialises.
 const CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"] as const;
@@ -18,7 +18,7 @@ type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
  * Builds a guest-function descriptor for one console method. The
  * descriptor is **private** — Phase 3 of the boot pipeline deletes each
  * `__console_<method>` binding from globalThis after Phase 2's guest()
- * has captured them into a `console` object. This keeps tenant source
+ * has captured them into a `console` object. This keeps owner source
  * from re-obtaining a bridge to the host emit path by reading, say,
  * `globalThis.__console_log` directly.
  *
@@ -57,8 +57,8 @@ function worker(): PluginSetup {
 // and before Phase 3 deletes them. Captures each private descriptor into a
 // `console` object via closure. Per WebIDL, the outer `globalThis.console` is
 // a regular writable/configurable data property; we install it via plain
-// assignment (no defineProperty/freeze) so tenant source can reassign
-// `globalThis.console` (losing host emission). Tenant source cannot re-bridge
+// assignment (no defineProperty/freeze) so owner source can reassign
+// `globalThis.console` (losing host emission). Owner source cannot re-bridge
 // to the private descriptors — after Phase 3 the `__console_*` bindings are
 // gone, so the only live references are the ones captured here.
 function guest(): void {

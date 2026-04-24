@@ -23,11 +23,11 @@ interface InvocationRow {
 	readonly triggerKind?: string;
 	// Dispatch provenance parsed from the invocation's trigger.request event's
 	// meta.dispatch. Absent for legacy invocations archived before this
-	// feature. Only `user.name` is materialized on the list (mail stays in
+	// feature. Only `user.login` is materialized on the list (mail stays in
 	// the flamegraph tooltip to keep list rows compact).
 	readonly dispatch?: {
 		readonly source: "manual" | "trigger";
-		readonly user?: { readonly name: string };
+		readonly user?: { readonly login: string };
 	};
 }
 
@@ -70,7 +70,7 @@ function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
 	// Label stays compact ("manual"); the tooltip surfaces just the user
 	// name when present, so hover attributes the fire without re-stating
 	// what the chip already shows.
-	const tooltip = dispatch.user?.name ?? "";
+	const tooltip = dispatch.user?.login ?? "";
 	return html`<span class="entry-dispatch" title="${tooltip}">manual</span>`;
 }
 
@@ -157,14 +157,14 @@ function renderSkeletonCards() {
 interface DashboardPageOptions {
 	readonly user: string;
 	readonly email: string;
-	readonly tenants: readonly string[];
-	readonly activeTenant: string | undefined;
+	readonly owners: readonly string[];
+	readonly activeOwner: string | undefined;
 }
 
 function renderDashboardPage(options: DashboardPageOptions) {
-	const { user, email, tenants, activeTenant } = options;
-	const invocationsUrl = activeTenant
-		? `/dashboard/invocations?tenant=${encodeURIComponent(activeTenant)}`
+	const { user, email, owners, activeOwner } = options;
+	const invocationsUrl = activeOwner
+		? `/dashboard/invocations?owner=${encodeURIComponent(activeOwner)}`
 		: "/dashboard/invocations";
 	const head = html`  <script defer src="/static/flamegraph.js"></script>`;
 	const content = html`
@@ -188,9 +188,9 @@ function renderDashboardPage(options: DashboardPageOptions) {
 			activePath: "/dashboard",
 			user,
 			email,
-			tenants,
+			owners,
 			head,
-			...(activeTenant === undefined ? {} : { activeTenant }),
+			...(activeOwner === undefined ? {} : { activeOwner }),
 		},
 		content,
 	);

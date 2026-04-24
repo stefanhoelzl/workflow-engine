@@ -10,7 +10,7 @@ function makeEvent(overrides: Partial<InvocationEvent> = {}): InvocationEvent {
 		ref: null,
 		at: DEFAULT_AT,
 		ts: 0,
-		tenant: "t0",
+		owner: "t0",
 		workflow: "w",
 		workflowSha: "sha",
 		name: "t",

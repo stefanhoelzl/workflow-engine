@@ -8,12 +8,12 @@ import {
 } from "./seal.js";
 
 const TRAILING_SLASHES = /\/+$/;
-const TENANT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+const OWNER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 
 interface UploadOptions {
 	cwd: string;
 	url: string;
-	tenant: string;
+	owner: string;
 	user?: string;
 	token?: string;
 }
@@ -34,7 +34,7 @@ interface ErrorBody {
 }
 
 interface UploadFailure {
-	tenant: string;
+	owner: string;
 	status: number | "network-error";
 	error: string;
 	issues?: ManifestIssue[];
@@ -102,7 +102,7 @@ function formatIssuePath(path: Array<string | number>): string {
 }
 
 function formatFailure(failure: UploadFailure): string {
-	const lines = [`✗ ${failure.tenant}`];
+	const lines = [`✗ ${failure.owner}`];
 	lines.push(`    status: ${String(failure.status)}`);
 	lines.push(`    error: ${failure.error}`);
 	if (failure.issues && failure.issues.length > 0) {
@@ -116,7 +116,7 @@ function formatFailure(failure: UploadFailure): string {
 
 async function uploadBundleBytes(
 	url: string,
-	tenant: string,
+	owner: string,
 	body: Uint8Array,
 	auth: { user?: string | undefined; token?: string | undefined },
 ): Promise<UploadFailure | null> {
@@ -133,7 +133,7 @@ async function uploadBundleBytes(
 	let response: Response;
 	try {
 		response = await fetch(
-			`${url.replace(TRAILING_SLASHES, "")}/api/workflows/${tenant}`,
+			`${url.replace(TRAILING_SLASHES, "")}/api/workflows/${owner}`,
 			{
 				method: "POST",
 				headers,
@@ -142,7 +142,7 @@ async function uploadBundleBytes(
 		);
 	} catch (error) {
 		return {
-			tenant,
+			owner,
 			status: "network-error",
 			error: error instanceof Error ? error.message : String(error),
 		};
@@ -152,22 +152,22 @@ async function uploadBundleBytes(
 	}
 	const { error, issues } = await extractErrorBody(response);
 	return issues
-		? { tenant, status: response.status, error, issues }
-		: { tenant, status: response.status, error };
+		? { owner, status: response.status, error, issues }
+		: { owner, status: response.status, error };
 }
 
 function sealFailureToUploadFailure(
 	err: unknown,
-	tenant: string,
+	owner: string,
 ): UploadFailure {
 	if (err instanceof MissingSecretEnvError) {
-		return { tenant, status: "network-error", error: err.message };
+		return { owner, status: "network-error", error: err.message };
 	}
 	if (err instanceof PublicKeyFetchError) {
-		return { tenant, status: err.status, error: err.message };
+		return { owner, status: err.status, error: err.message };
 	}
 	return {
-		tenant,
+		owner,
 		status: "network-error",
 		error: err instanceof Error ? err.message : String(err),
 	};
@@ -202,9 +202,9 @@ function resolveAuth(options: UploadOptions): {
 async function upload(options: UploadOptions): Promise<UploadResult> {
 	const auth = resolveAuth(options);
 
-	if (!TENANT_RE.test(options.tenant)) {
+	if (!OWNER_RE.test(options.owner)) {
 		throw new Error(
-			`tenant "${options.tenant}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
+			`owner "${options.owner}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
 		);
 	}
 
@@ -219,11 +219,11 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 		// same bearer/user pair the upload will use.
 		toUpload = await sealBundleIfNeeded(bundleBytes, {
 			url: options.url,
-			tenant: options.tenant,
+			owner: options.owner,
 			auth,
 		});
 	} catch (err) {
-		const failure = sealFailureToUploadFailure(err, options.tenant);
+		const failure = sealFailureToUploadFailure(err, options.owner);
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
 		console.error(formatFailure(failure));
 		return { uploaded: 0, failed: 1 };
@@ -231,13 +231,13 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 
 	const failure = await uploadBundleBytes(
 		options.url,
-		options.tenant,
+		options.owner,
 		toUpload,
 		auth,
 	);
 	if (failure === null) {
 		// biome-ignore lint/suspicious/noConsole: user-facing CLI output
-		console.error(`✓ ${options.tenant}`);
+		console.error(`✓ ${options.owner}`);
 		return { uploaded: 1, failed: 0 };
 	}
 	// biome-ignore lint/suspicious/noConsole: user-facing CLI output

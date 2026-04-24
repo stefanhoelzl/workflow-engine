@@ -1,8 +1,8 @@
 import type { DispatchMeta } from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { tenantSet, validateTenant } from "../../auth/tenant.js";
-import { requireTenantMember } from "../../auth/tenant-mw.js";
+import { ownerSet, validateOwner } from "../../auth/owner.js";
+import { requireOwnerMember } from "../../auth/owner-mw.js";
 import type {
 	BaseTriggerDescriptor,
 	HttpTriggerDescriptor,
@@ -17,18 +17,18 @@ import { renderTriggerPage } from "./page.js";
 // ---------------------------------------------------------------------------
 //
 // Renders a GET page listing every registered trigger (any kind) scoped to
-// the user's active tenant. HTTP triggers submit directly to their public
-// webhook URL (`/webhooks/<tenant>/<workflow>/<trigger-name>`) — the HTTP
+// the user's active owner. HTTP triggers submit directly to their public
+// webhook URL (`/webhooks/<owner>/<workflow>/<trigger-name>`) — the HTTP
 // source fills in headers/url/method from the real HTTP
 // request. Non-HTTP kinds (future cron/mail) submit to the kind-agnostic
-// POST `/trigger/<tenant>/<workflow>/<trigger-name>` endpoint served here;
+// POST `/trigger/<owner>/<workflow>/<trigger-name>` endpoint served here;
 // this endpoint validates the body against `descriptor.inputSchema` via the
 // shared `validate()` and dispatches through the shared executor.
 //
 // SECURITY (§4): mounted under `/trigger/*`, which is protected by the
 // in-app `sessionMw` that reads the sealed session cookie set by the
 // auth capability (the oauth2-proxy forward-auth chain was removed by
-// `replace-oauth2-proxy`). Cross-tenant form submissions (which hit
+// `replace-oauth2-proxy`). Cross-owner form submissions (which hit
 // the public webhooks ingress) are still unauthenticated per §3.
 
 interface TriggerMiddlewareDeps {
@@ -44,20 +44,20 @@ interface TriggerMiddlewareDeps {
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 const HTTP_INTERNAL_ERROR = 500;
 
-function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
+function sortedOwners(c: Context, registry: WorkflowRegistry): string[] {
 	const user = c.get("user");
 	if (user) {
-		return Array.from(tenantSet(user)).sort();
+		return Array.from(ownerSet(user)).sort();
 	}
-	// Test fallback: show tenants present in the registry when no user is
+	// Test fallback: show owners present in the registry when no user is
 	// seeded on the context. In production, `sessionMw` mounted on
 	// `/trigger/*` ensures a `UserContext` is always set (or redirects to
 	// `/login`); reaching this branch means a test invoked the middleware
 	// without a session middleware attached.
 	const fromRegistry = new Set<string>();
-	for (const tenant of registry.tenants()) {
-		if (validateTenant(tenant)) {
-			fromRegistry.add(tenant);
+	for (const owner of registry.owners()) {
+		if (validateOwner(owner)) {
+			fromRegistry.add(owner);
 		}
 	}
 	return Array.from(fromRegistry).sort();
@@ -67,7 +67,7 @@ function sortedTenants(c: Context, registry: WorkflowRegistry): string[] {
 function wrapInputForDescriptor(
 	descriptor: BaseTriggerDescriptor<string>,
 	body: unknown,
-	tenant: string,
+	owner: string,
 	workflowName: string,
 	triggerName: string,
 ): unknown {
@@ -81,7 +81,7 @@ function wrapInputForDescriptor(
 		return {
 			body,
 			headers: {},
-			url: `/webhooks/${tenant}/${workflowName}/${triggerName}`,
+			url: `/webhooks/${owner}/${workflowName}/${triggerName}`,
 			method: http.method,
 		};
 	}
@@ -90,10 +90,10 @@ function wrapInputForDescriptor(
 
 function buildDispatch(c: Context): DispatchMeta {
 	const user = c.get("user");
-	if (user && typeof user.name === "string" && typeof user.mail === "string") {
+	if (user && typeof user.login === "string" && typeof user.mail === "string") {
 		return {
 			source: "manual",
-			user: { name: user.name, mail: user.mail },
+			user: { login: user.login, mail: user.mail },
 		};
 	}
 	// Authentication is binary per `auth/spec.md`: either a `UserContext`
@@ -105,55 +105,52 @@ function buildDispatch(c: Context): DispatchMeta {
 	return { source: "manual" };
 }
 
-function resolveActiveTenant(
-	c: Context,
-	tenants: string[],
-): string | undefined {
-	if (tenants.length === 0) {
+function resolveActiveOwner(c: Context, owners: string[]): string | undefined {
+	if (owners.length === 0) {
 		return;
 	}
-	const requested = c.req.query("tenant");
-	if (requested && tenants.includes(requested)) {
+	const requested = c.req.query("owner");
+	if (requested && owners.includes(requested)) {
 		return requested;
 	}
-	return tenants[0];
+	return owners[0];
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires page-render GET and kind-agnostic POST dispatch; splitting fragments the handler flow
 function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	const app = new Hono().basePath("/trigger");
 	app.use("*", deps.sessionMw);
-	app.use("/:tenant/*", requireTenantMember());
+	app.use("/:owner/*", requireOwnerMember());
 	app.notFound(createNotFoundHandler());
 
 	const render = (c: Context) => {
 		const user = c.get("user");
-		const tenants = sortedTenants(c, deps.registry);
-		const activeTenant = resolveActiveTenant(c, tenants);
-		const scopedEntries = activeTenant ? deps.registry.list(activeTenant) : [];
+		const owners = sortedOwners(c, deps.registry);
+		const activeOwner = resolveActiveOwner(c, owners);
+		const scopedEntries = activeOwner ? deps.registry.list(activeOwner) : [];
 		return c.html(
 			renderTriggerPage({
 				entries: scopedEntries,
-				user: user?.name ?? "",
+				user: user?.login ?? "",
 				email: user?.mail ?? "",
-				tenants,
-				activeTenant,
+				owners,
+				activeOwner,
 			}),
 		);
 	};
 	app.get("/", render);
 	app.get("", render);
 
-	// POST /trigger/<tenant>/<workflow>/<triggerName> — kind-agnostic manual
+	// POST /trigger/<owner>/<workflow>/<triggerName> — kind-agnostic manual
 	// fire. Validates JSON body against descriptor.inputSchema and dispatches
 	// via the shared executor. Response returns `{ ok, output }` on success
 	// or `{ error: "internal_error" }` on failure.
-	app.post("/:tenant/:workflow/:trigger", async (c) => {
-		const tenant = c.req.param("tenant");
+	app.post("/:owner/:workflow/:trigger", async (c) => {
+		const owner = c.req.param("owner");
 		const workflowName = c.req.param("workflow");
 		const triggerName = c.req.param("trigger");
 
-		const entry = deps.registry.getEntry(tenant, workflowName, triggerName);
+		const entry = deps.registry.getEntry(owner, workflowName, triggerName);
 		if (!entry) {
 			return c.notFound();
 		}
@@ -174,7 +171,7 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 		const input = wrapInputForDescriptor(
 			entry.descriptor,
 			body,
-			tenant,
+			owner,
 			workflowName,
 			triggerName,
 		);

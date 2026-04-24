@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { upload } from "@workflow-engine/sdk/cli";
 
 const DEFAULT_PORT = 8080;
-const DEV_TENANT = "dev";
+const DEV_OWNER = "dev";
 const DEBOUNCE_MS = 300;
 const PORT_POLL_INTERVAL_MS = 100;
 const PORT_POLL_TIMEOUT_MS = 10_000;
@@ -152,8 +152,8 @@ async function runUpload(port: number): Promise<void> {
 		await upload({
 			cwd: workflowsDir,
 			url: `http://localhost:${String(port)}`,
-			tenant: DEV_TENANT,
-			user: DEV_TENANT,
+			owner: DEV_OWNER,
+			user: DEV_OWNER,
 		});
 	} catch (error) {
 		console.error(

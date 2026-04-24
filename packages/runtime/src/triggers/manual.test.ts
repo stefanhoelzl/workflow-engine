@@ -62,7 +62,7 @@ describe("createManualTriggerSource", () => {
 		expect(entry.fire).not.toHaveBeenCalled();
 	});
 
-	it("reconfigure is scoped across tenants independently", async () => {
+	it("reconfigure is scoped across owners independently", async () => {
 		const source = createManualTriggerSource();
 		const a = await source.reconfigure("acme", [makeEntry("rerun")]);
 		const b = await source.reconfigure("globex", [makeEntry("reprocess")]);

@@ -22,14 +22,14 @@ const stubKeyStore: SecretsKeyStore = {
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/workflows/:tenant error-classification tests
+// POST /api/workflows/:owner error-classification tests
 // ---------------------------------------------------------------------------
 // Covers 422 (manifest/unknown-kind), 400 (backend {ok:false}), 500
 // (backend throws), and 400+infra_errors (both). See openspec
 // changes/generalize-trigger-backends/specs/action-upload/spec.md.
 //
 // Auth: tests use the local provider with `local:acme`, so a user named
-// `acme` is a member of the `acme` tenant (tenant === user.name path).
+// `acme` is a member of the `acme` owner (owner === user.name path).
 
 const logger = {
 	info: vi.fn(),
@@ -68,7 +68,7 @@ const VALID_MANIFEST = {
 	],
 };
 
-async function packTenantBundle(
+async function packOwnerBundle(
 	files: Map<string, string>,
 ): Promise<Uint8Array> {
 	const packer = tarPack();
@@ -85,7 +85,7 @@ async function packTenantBundle(
 }
 
 async function validBundle(): Promise<Uint8Array> {
-	return packTenantBundle(
+	return packOwnerBundle(
 		new Map([
 			["manifest.json", JSON.stringify(VALID_MANIFEST)],
 			["demo.js", "/* bundle */"],
@@ -150,17 +150,17 @@ const AUTH_HEADERS: Record<string, string> = {
 
 async function postUpload(
 	app: Hono,
-	tenant: string,
+	owner: string,
 	body: Uint8Array,
 ): Promise<Response> {
-	return app.request(`/api/workflows/${tenant}`, {
+	return app.request(`/api/workflows/${owner}`, {
 		method: "POST",
 		body: body as unknown as BodyInit,
 		headers: { ...AUTH_HEADERS, "Content-Type": "application/gzip" },
 	});
 }
 
-describe("POST /api/workflows/:tenant — error classification", () => {
+describe("POST /api/workflows/:owner — error classification", () => {
 	it("returns 204 on full-success across all backends", async () => {
 		const app = mountWithBackends([stubBackend("http", "ok")]);
 		const res = await postUpload(app, "acme", await validBundle());
@@ -195,7 +195,7 @@ describe("POST /api/workflows/:tenant — error classification", () => {
 				},
 			],
 		};
-		const bundle = await packTenantBundle(
+		const bundle = await packOwnerBundle(
 			new Map([
 				["manifest.json", JSON.stringify(badManifest)],
 				["demo.js", "/* bundle */"],
@@ -224,7 +224,7 @@ describe("POST /api/workflows/:tenant — error classification", () => {
 				},
 			],
 		};
-		const bundle = await packTenantBundle(
+		const bundle = await packOwnerBundle(
 			new Map([
 				["manifest.json", JSON.stringify(cronOnlyManifest)],
 				["demo.js", "/* bundle */"],

@@ -147,12 +147,12 @@ async function init() {
 	if (legacyWorkflowsDir) {
 		runtimeLogger.warn("workflows.dir-env-ignored", {
 			value: legacyWorkflowsDir,
-			note: "workflow bootstrap is now storage-backend only; upload via `wfe upload --tenant <name>`",
+			note: "workflow bootstrap is now storage-backend only; upload via `wfe upload --owner <name>`",
 		});
 	}
 
 	// 3 + 4. Construct the sandbox factory and sandbox store. The store is
-	//        keyed by (tenant, workflow.sha); sandboxes live for process
+	//        keyed by (owner, workflow.sha); sandboxes live for process
 	//        lifetime.
 	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
 	const sandboxStore = createSandboxStore({
@@ -161,7 +161,7 @@ async function init() {
 		keyStore,
 	});
 
-	// 5. Create the executor (serializes per-(tenant, sha) invocations;
+	// 5. Create the executor (serializes per-(owner, sha) invocations;
 	//    resolves sandboxes via the store; emits trigger.* events through
 	//    the bus).
 	const executor = createExecutor({ bus: eventBus, sandboxStore });
@@ -178,8 +178,8 @@ async function init() {
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 7. Workflow registry. Boots from the storage backend by LISTing
-	//    `workflows/*.tar.gz` tenant bundles and reconfiguring every
-	//    started backend with the persisted tenant entries.
+	//    `workflows/*.tar.gz` owner bundles and reconfiguring every
+	//    started backend with the persisted owner entries.
 	const registry = createWorkflowRegistry({
 		logger: runtimeLogger,
 		executor,

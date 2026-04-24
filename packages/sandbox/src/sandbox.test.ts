@@ -106,7 +106,7 @@ describe("sandbox dispose", () => {
 });
 
 // Sandbox emits `SandboxEvent` — intrinsic fields only (kind/seq/ref/at/ts/
-// name/input/output/error). Runtime metadata (id/tenant/workflow/workflowSha)
+// name/input/output/error). Runtime metadata (id/owner/workflow/workflowSha)
 // is added by the runtime executor in its `sb.onEvent` handler, not by the
 // sandbox. See SECURITY.md §2 R-8.
 describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
@@ -133,10 +133,10 @@ describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
 		expect(typeof e?.seq).toBe("number");
 		expect(typeof e?.ts).toBe("number");
 		expect(typeof e?.at).toBe("string");
-		// Runtime metadata must NOT be present — the sandbox has no tenant
+		// Runtime metadata must NOT be present — the sandbox has no owner
 		// concept. The runtime adds those fields at its boundary.
 		expect(e).not.toHaveProperty("id");
-		expect(e).not.toHaveProperty("tenant");
+		expect(e).not.toHaveProperty("owner");
 		expect(e).not.toHaveProperty("workflow");
 		expect(e).not.toHaveProperty("workflowSha");
 	});
