@@ -65,7 +65,11 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
+      - name: Build SDK (produces wfe CLI)
+        run: pnpm --filter @workflow-engine/sdk build
+
       - name: Upload workflows bundle
+        working-directory: workflows
         env:
           GITHUB_TOKEN: ${{ secrets.GH_UPLOAD_TOKEN }}
-        run: pnpm --filter workflows exec wfe upload --url "${{ steps.url.outputs.url }}"
+        run: node ../packages/sdk/dist/cli/cli.js upload --url "${{ steps.url.outputs.url }}"
