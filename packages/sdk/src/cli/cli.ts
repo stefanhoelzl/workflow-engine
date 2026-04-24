@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { defineCommand, runMain } from "citty";
-import { NoWorkflowsFoundError } from "./build.js";
+import { build, NoWorkflowsFoundError } from "./build.js";
 import { detectGitRemote } from "./git-remote.js";
 import { upload } from "./upload.js";
 
@@ -88,6 +88,28 @@ const uploadCommand = defineCommand({
 	},
 });
 
+const buildCommand = defineCommand({
+	meta: {
+		name: "build",
+		description: "Build workflows in cwd into dist/bundle.tar.gz (no upload)",
+	},
+	async run() {
+		try {
+			await build({ cwd: process.cwd() });
+			process.exit(0);
+		} catch (error) {
+			if (error instanceof NoWorkflowsFoundError) {
+				// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+				console.error("no workflows found in src/");
+				process.exit(1);
+			}
+			// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exit(1);
+		}
+	},
+});
+
 const main = defineCommand({
 	meta: {
 		name: "wfe",
@@ -96,6 +118,7 @@ const main = defineCommand({
 	},
 	subCommands: {
 		upload: uploadCommand,
+		build: buildCommand,
 	},
 });
 
