@@ -278,7 +278,9 @@ pnpx tsx .claude/commands/ship-wait.ts <repo> <number> <default-branch>
 
 The script handles:
 
-- Waiting for PRs ahead in queue (created before ours with auto-merge enabled)
+- Waiting for PRs ahead in queue (ordered by `autoMergeRequest.enabledAt`; re-enabling auto-merge moves a PR to the back)
+- Skipping failed-ahead PRs (CLOSED, merge state DIRTY, or any check with conclusion in {FAILURE, CANCELLED, TIMED_OUT, ACTION_REQUIRED}). Once skipped, always skipped within a run
+- Exiting early if our own PR merges or is closed while waiting (polled every iteration)
 - Rebasing onto default branch when it's our turn
 - Waiting for CI via `gh pr checks --watch`
 - Waiting for auto-merge to complete

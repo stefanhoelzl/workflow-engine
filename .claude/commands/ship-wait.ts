@@ -27,17 +27,75 @@ const CHECKS_APPEAR_POLL_MS = 5000;
 const CHECKS_APPEAR_MAX_ATTEMPTS = 12;
 const EXPECTED_ARGS = 3;
 
+type FailingConclusion =
+	| "FAILURE"
+	| "CANCELLED"
+	| "TIMED_OUT"
+	| "ACTION_REQUIRED";
+
+const FAILING_CONCLUSIONS: ReadonlySet<string> = new Set<FailingConclusion>([
+	"FAILURE",
+	"CANCELLED",
+	"TIMED_OUT",
+	"ACTION_REQUIRED",
+]);
+
+interface StatusCheck {
+	name?: string;
+	conclusion?: string | null;
+}
+
 interface PullRequest {
 	number: number;
 	createdAt: string;
 	autoMergeRequest: { enabledAt: string } | null;
 	state: "OPEN" | "MERGED" | "CLOSED";
 	headRefName: string;
+	mergeStateStatus?: string;
+	statusCheckRollup?: StatusCheck[];
 }
 
 interface PullRequestState {
 	state: "OPEN" | "MERGED" | "CLOSED";
 	mergeStateStatus: string;
+}
+
+type SkipReason =
+	| { kind: "closed" }
+	| { kind: "dirty" }
+	| { kind: "check-failed"; checkName: string; conclusion: string };
+
+function formatSkipReason(reason: SkipReason): string {
+	if (reason.kind === "closed") {
+		return "CLOSED";
+	}
+	if (reason.kind === "dirty") {
+		return "DIRTY";
+	}
+	return `check '${reason.checkName}' ${reason.conclusion}`;
+}
+
+function classifyAhead(pr: PullRequest): SkipReason | null {
+	if (pr.state === "CLOSED") {
+		return { kind: "closed" };
+	}
+	if (pr.mergeStateStatus === "DIRTY") {
+		return { kind: "dirty" };
+	}
+	if (pr.mergeStateStatus === "UNKNOWN") {
+		return null;
+	}
+	for (const check of pr.statusCheckRollup ?? []) {
+		const conclusion = check.conclusion;
+		if (conclusion && FAILING_CONCLUSIONS.has(conclusion)) {
+			return {
+				kind: "check-failed",
+				checkName: check.name ?? "<unnamed>",
+				conclusion,
+			};
+		}
+	}
+	return null;
 }
 
 function log(message: string): void {
@@ -105,7 +163,7 @@ async function execNoThrow(
 
 async function getOpenPrsWithAutoMerge(repo: string): Promise<PullRequest[]> {
 	const json = await exec(
-		`gh pr list --repo ${repo} --state open --json number,createdAt,autoMergeRequest,state,headRefName`,
+		`gh pr list --repo ${repo} --state open --json number,createdAt,autoMergeRequest,state,headRefName,mergeStateStatus,statusCheckRollup`,
 	);
 	const prs: PullRequest[] = JSON.parse(json);
 	return prs.filter((pr) => pr.autoMergeRequest !== null);
@@ -121,36 +179,99 @@ async function getPrState(
 	return JSON.parse(json);
 }
 
+function enabledAt(pr: PullRequest): number {
+	const ts = pr.autoMergeRequest?.enabledAt;
+	return ts ? new Date(ts).getTime() : Number.POSITIVE_INFINITY;
+}
+
 function getPrsAhead(ours: PullRequest, all: PullRequest[]): PullRequest[] {
+	const oursEnabled = enabledAt(ours);
 	return all
 		.filter((pr) => pr.number !== ours.number)
-		.filter((pr) => new Date(pr.createdAt) < new Date(ours.createdAt))
-		.sort(
-			(a, b) =>
-				new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-		);
+		.filter((pr) => enabledAt(pr) < oursEnabled)
+		.sort((a, b) => enabledAt(a) - enabledAt(b));
+}
+
+type QueueOutcome =
+	| { kind: "turn" }
+	| { kind: "ours-merged" }
+	| { kind: "ours-closed" }
+	| { kind: "timeout" };
+
+function partitionAhead(
+	prsAhead: PullRequest[],
+	skipped: Set<number>,
+): { waiting: string[]; skippedNow: string[] } {
+	const waiting: string[] = [];
+	const skippedNow: string[] = [];
+
+	for (const pr of prsAhead) {
+		if (skipped.has(pr.number)) {
+			skippedNow.push(`#${pr.number} (skipped)`);
+			continue;
+		}
+		const reason = classifyAhead(pr);
+		if (reason) {
+			skipped.add(pr.number);
+			skippedNow.push(`#${pr.number} (${formatSkipReason(reason)})`);
+			continue;
+		}
+		waiting.push(`#${pr.number}`);
+	}
+
+	return { waiting, skippedNow };
+}
+
+async function checkOursState(
+	repo: string,
+	prNumber: number,
+): Promise<QueueOutcome | null> {
+	const oursState = await getPrState(repo, prNumber);
+	if (oursState.state === "MERGED") {
+		log("Our PR merged while waiting for queue - exiting early");
+		return { kind: "ours-merged" };
+	}
+	if (oursState.state === "CLOSED") {
+		log("Our PR was closed while waiting for queue");
+		return { kind: "ours-closed" };
+	}
+	return null;
 }
 
 async function waitForPrsAhead(
 	repo: string,
 	ours: PullRequest,
 	startTime: number,
-): Promise<boolean> {
+): Promise<QueueOutcome> {
+	const skipped = new Set<number>();
+
 	while (true) {
 		if (Date.now() - startTime > TIMEOUT_MS) {
-			return false;
+			return { kind: "timeout" };
+		}
+
+		const oursOutcome = await checkOursState(repo, ours.number);
+		if (oursOutcome) {
+			return oursOutcome;
 		}
 
 		const allPrs = await getOpenPrsWithAutoMerge(repo);
 		const prsAhead = getPrsAhead(ours, allPrs);
+		const { waiting, skippedNow } = partitionAhead(prsAhead, skipped);
 
-		if (prsAhead.length === 0) {
+		if (waiting.length === 0) {
+			if (skippedNow.length > 0) {
+				log(`Ahead: skipping ${skippedNow.join(", ")}`);
+			}
 			log("No PRs ahead in queue - it's our turn!");
-			return true;
+			return { kind: "turn" };
 		}
 
-		const prNumbers = prsAhead.map((pr) => `#${pr.number}`).join(", ");
-		log(`Waiting for ${prsAhead.length} PR(s) ahead: ${prNumbers}`);
+		const parts = [`waiting on ${waiting.join(", ")}`];
+		if (skippedNow.length > 0) {
+			parts.push(`skipping ${skippedNow.join(", ")}`);
+		}
+		log(`Ahead: ${parts.join("; ")}`);
 
 		await sleep(POLL_INTERVAL_MS);
 	}
@@ -328,28 +449,22 @@ async function waitForQueueTurn(
 	repo: string,
 	prNumber: number,
 	startTime: number,
-): Promise<void> {
+): Promise<QueueOutcome> {
 	const allPrs = await getOpenPrsWithAutoMerge(repo);
 	const ourPr = allPrs.find((pr) => pr.number === prNumber);
 
 	if (ourPr) {
-		if (!(await waitForPrsAhead(repo, ourPr, startTime))) {
-			log("Timeout waiting for PRs ahead");
-			process.exit(2);
-		}
-	} else {
-		log("Warning: Our PR doesn't have auto-merge enabled, proceeding anyway");
-		const json = await exec(
-			`gh pr view --repo ${repo} ${prNumber} --json number,createdAt,state,headRefName`,
-		);
-		const pr = JSON.parse(json) as PullRequest;
-		pr.autoMergeRequest = { enabledAt: new Date().toISOString() };
-
-		if (!(await waitForPrsAhead(repo, pr, startTime))) {
-			log("Timeout waiting for PRs ahead");
-			process.exit(2);
-		}
+		return waitForPrsAhead(repo, ourPr, startTime);
 	}
+
+	log("Warning: Our PR doesn't have auto-merge enabled, proceeding anyway");
+	const json = await exec(
+		`gh pr view --repo ${repo} ${prNumber} --json number,createdAt,state,headRefName`,
+	);
+	const pr = JSON.parse(json) as PullRequest;
+	pr.autoMergeRequest = { enabledAt: new Date().toISOString() };
+
+	return waitForPrsAhead(repo, pr, startTime);
 }
 
 async function main(): Promise<void> {
@@ -373,7 +488,18 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	await waitForQueueTurn(repo, prNumber, startTime);
+	const queueOutcome = await waitForQueueTurn(repo, prNumber, startTime);
+	if (queueOutcome.kind === "ours-merged") {
+		await fetchDefaultBranch(defaultBranch);
+		process.exit(0);
+	}
+	if (queueOutcome.kind === "ours-closed") {
+		process.exit(1);
+	}
+	if (queueOutcome.kind === "timeout") {
+		log("Timeout waiting for PRs ahead");
+		process.exit(2);
+	}
 
 	if (!(await rebaseAndPush(defaultBranch))) {
 		log("Failed to rebase and push");
