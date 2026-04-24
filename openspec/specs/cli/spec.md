@@ -75,22 +75,42 @@ The CLI source code SHALL live inside `@workflow-engine/sdk` at `src/cli/`. The 
 
 ### Requirement: Target URL resolution
 
-The CLI SHALL POST each bundle to `<url>/api/workflows`. The `<url>` SHALL be resolved with the following precedence:
+The CLI SHALL POST the built tenant tarball to `<url>/api/workflows/<tenant>`. The `<url>` SHALL be resolved with the following precedence:
 
-1. `--url <url>` flag, if provided
-2. Built-in default: `https://workflow-engine.webredirect.org`
+1. `--url <url>` flag, if provided.
+2. Built-in default: `https://workflow-engine.webredirect.org`.
+
+The `<tenant>` path segment SHALL be resolved from:
+
+1. `--tenant <name>` flag, if provided.
+2. `WFE_TENANT` environment variable (trimmed), if set and non-empty.
+
+If neither source yields a non-empty tenant, the CLI SHALL print `tenant required: pass --tenant <name> or set WFE_TENANT` to stderr and exit with status `1` BEFORE attempting any build or upload.
 
 The CLI SHALL NOT read any environment variable for the URL.
 
 #### Scenario: Default URL used when no flag
 
-- **WHEN** `wfe upload` is invoked with no `--url` flag
-- **THEN** the CLI SHALL POST to `https://workflow-engine.webredirect.org/api/workflows`
+- **WHEN** `wfe upload --tenant acme` is invoked with no `--url` flag
+- **THEN** the CLI SHALL POST to `https://workflow-engine.webredirect.org/api/workflows/acme`
 
-#### Scenario: Flag overrides default
+#### Scenario: Flag overrides default URL
 
-- **WHEN** `wfe upload --url http://localhost:8080` is invoked
-- **THEN** the CLI SHALL POST to `http://localhost:8080/api/workflows`
+- **WHEN** `wfe upload --url http://localhost:8080 --tenant acme` is invoked
+- **THEN** the CLI SHALL POST to `http://localhost:8080/api/workflows/acme`
+
+#### Scenario: WFE_TENANT fallback
+
+- **GIVEN** `WFE_TENANT=acme` is set
+- **WHEN** `wfe upload` is invoked with no `--tenant` flag
+- **THEN** the CLI SHALL POST to `<default-url>/api/workflows/acme`
+
+#### Scenario: Missing tenant fails fast
+
+- **WHEN** `wfe upload` is invoked with no `--tenant` flag AND no `WFE_TENANT` environment variable
+- **THEN** the CLI SHALL print `tenant required: pass --tenant <name> or set WFE_TENANT` to stderr
+- **AND** exit with status `1`
+- **AND** SHALL NOT build any workflow or issue any upload request
 
 ### Requirement: Authentication via GITHUB_TOKEN or --user
 
@@ -133,31 +153,34 @@ When neither mode is supplied, the CLI SHALL omit both headers and let the serve
 
 ### Requirement: Upload semantics
 
-For each discovered bundle, the CLI SHALL POST the contents of `dist/<name>/bundle.tar.gz` to the resolved `/api/workflows` endpoint with `Content-Type: application/gzip`. The CLI SHALL attempt every bundle even if earlier ones fail (best-effort). The CLI SHALL NOT retry a failed request.
+The CLI SHALL POST a single tarball per invocation (not per-bundle) — the build step packages all discovered workflows into one `.tar.gz` containing a root `manifest.json` (`{workflows: [...]}`) plus one `<name>.js` per workflow. The tarball SHALL be POSTed to the resolved `/api/workflows/<tenant>` endpoint with `Content-Type: application/gzip`.
 
-The CLI SHALL exit with status `0` only when every bundle received a `204 No Content` response. On any failure (build error, network error, or non-`204` HTTP response), the CLI SHALL exit with status `1`.
+The CLI SHALL NOT retry a failed request.
 
-#### Scenario: All bundles succeed
+The CLI SHALL exit with status `0` only when the upload received a `204 No Content` response. On any failure (build error, network error, tenant missing, or non-`204` HTTP response), the CLI SHALL exit with status `1`.
 
-- **WHEN** three bundles each receive `204 No Content`
+#### Scenario: Successful upload
+
+- **WHEN** a valid tenant bundle is built and the server responds `204 No Content`
 - **THEN** the CLI SHALL exit with status `0`
 
-#### Scenario: One bundle fails, others succeed
+#### Scenario: Build error
 
-- **WHEN** bundle `foo` receives `204`, bundle `bar` receives `422`, and bundle `baz` receives `204`
-- **THEN** the CLI SHALL still attempt the upload for `baz`
-- **AND** the CLI SHALL exit with status `1`
+- **WHEN** the build step fails (e.g., TypeScript error, missing handler)
+- **THEN** the CLI SHALL exit with status `1`
+- **AND** no upload request SHALL be issued
 
-#### Scenario: Network error on first bundle
+#### Scenario: Network error
 
-- **WHEN** the first bundle's POST fails with a network error (e.g., connection refused)
-- **THEN** the CLI SHALL still attempt remaining bundles
-- **AND** the CLI SHALL exit with status `1`
+- **WHEN** the upload request fails with a network error (e.g., connection refused)
+- **THEN** the CLI SHALL exit with status `1`
 
-#### Scenario: No retry
+#### Scenario: Server returns 4xx or 5xx
 
-- **WHEN** a bundle receives a non-204 response
-- **THEN** the CLI SHALL NOT retry that bundle in the same invocation
+- **WHEN** the server responds with any non-`204` status (e.g., `401`, `404`, `422`, `500`)
+- **THEN** the CLI SHALL print the status + error body to stderr
+- **AND** exit with status `1`
+- **AND** SHALL NOT retry
 
 ### Requirement: Output formatting
 

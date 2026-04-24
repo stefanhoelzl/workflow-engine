@@ -80,8 +80,10 @@ pnpm start     # Build workflows and start
 
 ```
 packages/
-├── sdk/          # Workflow DSL + types
-├── vite-plugin/  # Build-time workflow compiler
-└── runtime/      # Event bus, scheduler, sandbox
-workflows/        # User-defined workflows
+├── core/            # Shared constants + brand symbols
+├── sdk/             # Workflow DSL + types + vite plugin + sdk-support plugin
+├── sandbox/         # QuickJS host + plugin composition
+├── sandbox-stdlib/  # Web-platform / fetch / timers / console plugins
+└── runtime/         # HTTP server + executor + workflow registry + sandbox store
+workflows/           # User-defined workflows
 ```

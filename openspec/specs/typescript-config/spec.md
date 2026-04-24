@@ -1,4 +1,10 @@
-## ADDED Requirements
+# TypeScript Config Specification
+
+## Purpose
+
+Own the shared TypeScript compiler configuration (`tsconfig.base.json` at the repo root) + per-package `tsconfig.json` extending it. Fixes strict mode, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax` as project-wide invariants; each package turns these into real type errors at `pnpm check` time.
+
+## Requirements
 
 ### Requirement: Shared base TypeScript configuration
 A `tsconfig.base.json` at the repository root SHALL define the shared strict TypeScript compiler settings used by all packages.

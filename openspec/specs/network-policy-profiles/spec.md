@@ -1,3 +1,11 @@
+# Network Policy Profiles Specification
+
+## Purpose
+
+Define the `modules/netpol/` OpenTofu module that renders Kubernetes `NetworkPolicy` resources for app pods, traefik, cert-manager acme-solver pods, and cross-namespace egress. Owns the default-deny-plus-allowlist posture that supports SECURITY.md §5 R-I1 (app-pod NetworkPolicy defence-in-depth for forged-header threats).
+
+## Requirements
+
 ### Requirement: NetworkPolicy factory module interface
 
 The `modules/netpol/` module SHALL accept the following variables and create one `kubernetes_network_policy_v1` resource:

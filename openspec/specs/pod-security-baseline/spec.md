@@ -1,3 +1,11 @@
+# Pod Security Baseline Specification
+
+## Purpose
+
+Own the `modules/baseline/` OpenTofu module that enforces Kubernetes Pod Security Admission `restricted` profile on all workload namespaces, plus the shared security-context defaults applied to every workload (non-root user, read-only root filesystem, dropped capabilities, seccomp profile). Cross-references SECURITY.md §5.
+
+## Requirements
+
 ### Requirement: Baseline module creates workload namespaces
 
 The `modules/baseline/` module SHALL accept a `namespaces` variable of type `list(string)` and create a `kubernetes_namespace_v1` resource for each entry. Each namespace SHALL carry the label `pod-security.kubernetes.io/enforce=restricted` (or `warn` during rollout).

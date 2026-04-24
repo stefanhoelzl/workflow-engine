@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Linting + Formatting Specification
+
+## Purpose
+
+Own the repository's linter + formatter configuration (Biome) and the `pnpm lint` / `pnpm format` scripts. Biome is chosen as a single tool covering both linting (incl. type-adjacent checks) and formatting for TypeScript, JSON, and JSONC files; Terraform files are formatted by `tofu fmt` (see `infrastructure`).
+
+## Requirements
 
 ### Requirement: Biome configuration at repository root
 A `biome.json` at the repository root SHALL configure Biome as the project's linter and formatter.
