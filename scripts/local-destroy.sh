@@ -4,9 +4,9 @@ set -uo pipefail
 CLUSTER_NAME="workflow-engine-dev"
 CONTAINER_NAME="${CLUSTER_NAME}-control-plane"
 IMAGE_NAME="localhost/workflow-engine:dev"
-INFRA_DIR="infrastructure/local"
+INFRA_DIR="infrastructure/envs/local"
 KUBECONFIG_PATH="/tmp/${CLUSTER_NAME}-kubeconfig"
-IMAGE_ID_PATH="infrastructure/modules/image/local/.image-id"
+IMAGE_ID_PATH="infrastructure/modules/image/build/.image-id"
 
 # 2. Force-remove the kind cluster container
 if podman container exists "$CONTAINER_NAME" 2>/dev/null; then
