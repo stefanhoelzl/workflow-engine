@@ -753,28 +753,43 @@ export const call = action({
 `;
 
 	it("routes secret bindings into manifest.secretBindings, not manifest.env", async () => {
-		const { outDir } = await buildFixture({
-			files: { "s.ts": WITH_SECRETS },
-			workflows: ["./s.ts"],
-		});
-		const manifest = (await readWorkflowManifest(outDir, "s")) as {
-			env: Record<string, string>;
-			secretBindings?: string[];
-		};
-		// Plaintext env stays in manifest.env.
-		expect(manifest.env).toEqual({ REGION: "us-east-1" });
-		// Secret envNames land in manifest.secretBindings (order not guaranteed).
-		expect(manifest.secretBindings).toBeDefined();
-		expect(new Set(manifest.secretBindings)).toEqual(
-			new Set(["TOKEN", "STRIPE_KEY"]),
-		);
+		// Build-time presence check (1a9bc48e) requires both secret env vars
+		// to be set; values are NOT embedded in the bundle (sentinel-encoded).
+		// biome-ignore lint/style/noProcessEnv: test-only; restored below
+		process.env.TOKEN = "build-time-presence-only";
+		// biome-ignore lint/style/noProcessEnv: test-only; restored below
+		process.env.STRIPE_KEY = "build-time-presence-only";
+		try {
+			const { outDir } = await buildFixture({
+				files: { "s.ts": WITH_SECRETS },
+				workflows: ["./s.ts"],
+			});
+			const manifest = (await readWorkflowManifest(outDir, "s")) as {
+				env: Record<string, string>;
+				secretBindings?: string[];
+			};
+			// Plaintext env stays in manifest.env.
+			expect(manifest.env).toEqual({ REGION: "us-east-1" });
+			// Secret envNames land in manifest.secretBindings (order not guaranteed).
+			expect(manifest.secretBindings).toBeDefined();
+			expect(new Set(manifest.secretBindings)).toEqual(
+				new Set(["TOKEN", "STRIPE_KEY"]),
+			);
+		} finally {
+			// biome-ignore lint/style/noProcessEnv: test-only restore
+			process.env.TOKEN = undefined;
+			// biome-ignore lint/style/noProcessEnv: test-only restore
+			process.env.STRIPE_KEY = undefined;
+		}
 	});
 
 	it("does not include a secret's plaintext value anywhere in the bundle", async () => {
 		// Set a value in the host env that would be resolved for a plaintext
 		// binding but MUST be skipped for a secret binding.
-		// biome-ignore lint/style/noProcessEnv: test-only; restores below
+		// biome-ignore lint/style/noProcessEnv: test-only; restored below
 		process.env.TOKEN = "SHOULD_NOT_APPEAR";
+		// biome-ignore lint/style/noProcessEnv: test-only; restored below
+		process.env.STRIPE_KEY = "ALSO_SHOULD_NOT_APPEAR";
 		try {
 			const { outDir } = await buildFixture({
 				files: { "s.ts": WITH_SECRETS },
@@ -786,9 +801,13 @@ export const call = action({
 			);
 			expect(bundleSrc).not.toContain("SHOULD_NOT_APPEAR");
 			expect(manifestRaw).not.toContain("SHOULD_NOT_APPEAR");
+			expect(bundleSrc).not.toContain("ALSO_SHOULD_NOT_APPEAR");
+			expect(manifestRaw).not.toContain("ALSO_SHOULD_NOT_APPEAR");
 		} finally {
 			// biome-ignore lint/style/noProcessEnv: test-only restore
 			process.env.TOKEN = undefined;
+			// biome-ignore lint/style/noProcessEnv: test-only restore
+			process.env.STRIPE_KEY = undefined;
 		}
 	});
 

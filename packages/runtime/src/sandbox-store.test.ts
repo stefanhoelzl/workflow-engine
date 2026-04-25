@@ -431,19 +431,20 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 	});
 
 	it("populates workflow.env from manifest.env and redacts plaintexts in outbound events", async () => {
-		const sodium = (await import("libsodium-wrappers")).default;
-		await sodium.ready;
-		const sk = sodium.randombytes_buf(32);
-		const pk = sodium.crypto_scalarmult_base(sk);
-		const { createKeyStore, readySodium } = await import("./secrets/index.js");
-		await readySodium();
+		const { derivePublicKey, generateKeypair, sealCiphertext } = await import(
+			"@workflow-engine/core/secrets-crypto"
+		);
+		const { createKeyStore, readyCrypto } = await import("./secrets/index.js");
+		await readyCrypto();
+		const sk = generateKeypair().secretKey;
+		const pk = derivePublicKey(sk);
 		const realKeyStore = createKeyStore(
 			`k1:${Buffer.from(sk).toString("base64")}`,
 		);
 		const primary = realKeyStore.getPrimary();
 
 		const plaintext = "PLAINTEXT_SECRET_VALUE";
-		const ct = sodium.crypto_box_seal(new TextEncoder().encode(plaintext), pk);
+		const ct = sealCiphertext(plaintext, pk);
 
 		const logger = makeLogger();
 		const factory = createSandboxFactory({ logger });

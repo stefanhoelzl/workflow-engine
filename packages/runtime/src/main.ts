@@ -21,7 +21,7 @@ import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createSandboxStore } from "./sandbox-store.js";
-import { createKeyStore, readySodium } from "./secrets/index.js";
+import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
@@ -91,7 +91,7 @@ async function init() {
 	const config = createConfig(process.env);
 
 	// libsodium is WASM-backed; initialise once before building the key-store.
-	await readySodium();
+	await readyCrypto();
 	const keyStore = createKeyStore(config.secretsPrivateKeys.reveal());
 
 	const runtimeLogger = createLogger("runtime", { level: config.logLevel });

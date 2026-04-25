@@ -239,7 +239,16 @@ function runIifeInVmContext(
 	// Branded objects still work across contexts because the SDK uses
 	// `Symbol.for(...)` for its brand keys, which are shared between all
 	// V8 contexts in the same process.
-	const sandboxGlobal: Record<string, unknown> = {};
+	//
+	// Inject the host's `process.env` so workflow authors can reference real
+	// env vars at build time (e.g. `env({ name: "API_URL" })`). The vm
+	// sandbox does not inherit globals, so without this `defineWorkflow`'s
+	// `getDefaultEnvSource()` returns `{}` and any non-default env binding
+	// throws "Missing environment variable".
+	const sandboxGlobal: Record<string, unknown> = {
+		// biome-ignore lint/style/noProcessEnv: build-time wiring; workflow authors deliberately reference host env vars via env()
+		process: { env: process.env },
+	};
 	const context = createContext(sandboxGlobal);
 	try {
 		runInContext(bundleSource, context, { filename: `${filestem}.js` });

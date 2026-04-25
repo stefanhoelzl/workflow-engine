@@ -1,16 +1,20 @@
 import { computeKeyId } from "@workflow-engine/core";
-import sodium from "libsodium-wrappers";
+import {
+	derivePublicKey,
+	generateKeypair,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
 	createKeyStore,
 	decryptSealed,
-	readySodium,
+	readyCrypto,
 	SecretDecryptError,
 	UnknownKeyIdError,
 } from "./key-store.js";
 
 beforeAll(async () => {
-	await readySodium();
+	await readyCrypto();
 });
 
 function makeCsv(
@@ -18,7 +22,7 @@ function makeCsv(
 ): string {
 	return entries
 		.map(({ keyId, sk }) => {
-			const s = sk ?? sodium.randombytes_buf(32);
+			const s = sk ?? generateKeypair().secretKey;
 			return `${keyId}:${Buffer.from(s).toString("base64")}`;
 		})
 		.join(",");
@@ -26,13 +30,13 @@ function makeCsv(
 
 describe("createKeyStore", () => {
 	it("derives public keys for every entry and fingerprints as keyId", () => {
-		const sk = sodium.randombytes_buf(32);
+		const sk = generateKeypair().secretKey;
 		const csv = makeCsv([{ keyId: "k1", sk }]);
 		const store = createKeyStore(csv);
 		const primary = store.getPrimary();
 		// keyId is the sha256(pk)[:8] fingerprint, NOT the CSV label.
 		expect(primary.keyId).toMatch(/^[0-9a-f]{16}$/);
-		expect(primary.pk).toEqual(sodium.crypto_scalarmult_base(sk));
+		expect(primary.pk).toEqual(derivePublicKey(sk));
 		expect(primary.sk).toEqual(sk);
 	});
 
@@ -61,14 +65,13 @@ describe("createKeyStore", () => {
 
 describe("decryptSealed", () => {
 	it("round-trips a crypto_box_seal ciphertext", () => {
-		const sk = sodium.randombytes_buf(32);
-		const pk = sodium.crypto_scalarmult_base(sk);
+		const sk = generateKeypair().secretKey;
+		const pk = derivePublicKey(sk);
 		const csv = makeCsv([{ keyId: "k1", sk }]);
 		const store = createKeyStore(csv);
 		const { keyId } = store.getPrimary();
 
-		const plaintext = new TextEncoder().encode("hello world");
-		const ct = sodium.crypto_box_seal(plaintext, pk);
+		const ct = sealCiphertext("hello world", pk);
 		const b64 = Buffer.from(ct).toString("base64");
 
 		const out = decryptSealed(b64, keyId, store);
@@ -91,14 +94,14 @@ describe("decryptSealed", () => {
 	});
 
 	it("throws SecretDecryptError when sealed with a different public key", () => {
-		const sk1 = sodium.randombytes_buf(32);
-		const pk2 = sodium.crypto_scalarmult_base(sodium.randombytes_buf(32));
+		const sk1 = generateKeypair().secretKey;
+		const pk2 = derivePublicKey(generateKeypair().secretKey);
 
 		const csv = makeCsv([{ keyId: "k1", sk: sk1 }]);
 		const store = createKeyStore(csv);
 		const { keyId } = store.getPrimary();
 
-		const ct = sodium.crypto_box_seal(new TextEncoder().encode("x"), pk2);
+		const ct = sealCiphertext("x", pk2);
 		const b64 = Buffer.from(ct).toString("base64");
 
 		expect(() => decryptSealed(b64, keyId, store)).toThrow(SecretDecryptError);
@@ -114,18 +117,18 @@ describe("decryptSealed", () => {
 // not exported, so we reach it through `keyStore.getPrimary().keyId`.
 describe("keyId fingerprint agreement with core.computeKeyId", () => {
 	it("matches for a freshly generated keypair", async () => {
-		const kp = sodium.crypto_box_keypair();
+		const kp = generateKeypair();
 		const store = createKeyStore(
-			`a:${Buffer.from(kp.privateKey).toString("base64")}`,
+			`a:${Buffer.from(kp.secretKey).toString("base64")}`,
 		);
 		expect(store.getPrimary().keyId).toBe(await computeKeyId(kp.publicKey));
 	});
 
 	it("matches across 5 independent keypairs", async () => {
 		const pairs = Array.from({ length: 5 }, () => {
-			const kp = sodium.crypto_box_keypair();
+			const kp = generateKeypair();
 			const store = createKeyStore(
-				`k:${Buffer.from(kp.privateKey).toString("base64")}`,
+				`k:${Buffer.from(kp.secretKey).toString("base64")}`,
 			);
 			return { kp, store };
 		});
@@ -138,7 +141,7 @@ describe("keyId fingerprint agreement with core.computeKeyId", () => {
 	});
 
 	it("produces 16 lowercase hex chars (SECRETS_KEY_ID_BYTES=8)", async () => {
-		const kp = sodium.crypto_box_keypair();
+		const kp = generateKeypair();
 		expect(await computeKeyId(kp.publicKey)).toMatch(/^[0-9a-f]{16}$/);
 	});
 });

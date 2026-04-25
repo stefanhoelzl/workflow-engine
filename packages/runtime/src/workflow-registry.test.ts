@@ -8,7 +8,11 @@ import {
 	encodeSentinel,
 	type WorkflowManifest,
 } from "@workflow-engine/core";
-import sodium from "libsodium-wrappers";
+import {
+	derivePublicKey,
+	generateKeypair,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { pack as tarPack } from "tar-stream";
 import {
 	afterEach,
@@ -22,7 +26,7 @@ import {
 import type { Executor } from "./executor/index.js";
 import type { Logger } from "./logger.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
-import { createKeyStore, readySodium } from "./secrets/index.js";
+import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import { createFsStorage } from "./storage/fs.js";
 import {
 	createWorkflowRegistry,
@@ -677,7 +681,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 
 describe("registry — trigger-config secrets", () => {
 	beforeAll(async () => {
-		await readySodium();
+		await readyCrypto();
 	});
 
 	function freshKeystore(): {
@@ -685,17 +689,15 @@ describe("registry — trigger-config secrets", () => {
 		keyId: string;
 		pk: Uint8Array;
 	} {
-		const sk = sodium.randombytes_buf(32);
-		const pk = sodium.crypto_scalarmult_base(sk);
+		const sk = generateKeypair().secretKey;
+		const pk = derivePublicKey(sk);
 		const skB64 = Buffer.from(sk).toString("base64");
 		const keyStore = createKeyStore(`primary:${skB64}`);
 		return { keyStore, keyId: "placeholder", pk };
 	}
 
 	function sealValue(pk: Uint8Array, plaintext: string): string {
-		return Buffer.from(sodium.crypto_box_seal(plaintext, pk)).toString(
-			"base64",
-		);
+		return Buffer.from(sealCiphertext(plaintext, pk)).toString("base64");
 	}
 
 	async function computeKeyIdB64(pk: Uint8Array): Promise<string> {
