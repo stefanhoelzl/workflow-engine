@@ -12,7 +12,6 @@
 	},
 	"exports": {
 		".": "./src/index.ts",
-		"./plugin": "./src/plugin/index.ts",
 		"./cli": "./src/cli/index.ts",
 		"./sdk-support": "./src/sdk-support/index.ts"
 	},

@@ -91,7 +91,8 @@ const uploadCommand = defineCommand({
 const buildCommand = defineCommand({
 	meta: {
 		name: "build",
-		description: "Build workflows in cwd into dist/bundle.tar.gz (no upload)",
+		description:
+			"Compile workflows in cwd to dist/<name>.js (no manifest, no tar, no network)",
 	},
 	async run() {
 		try {
