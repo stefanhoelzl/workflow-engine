@@ -1,5 +1,8 @@
+import {
+	derivePublicKey,
+	generateKeypair,
+} from "@workflow-engine/core/secrets-crypto";
 import { Hono } from "hono";
-import sodium from "libsodium-wrappers";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	buildRegistry,
@@ -7,7 +10,7 @@ import {
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
-import { createKeyStore, readySodium } from "../secrets/index.js";
+import { createKeyStore, readyCrypto } from "../secrets/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -45,7 +48,7 @@ function openAuthRegistry(): ProviderRegistry {
 
 describe("GET /api/workflows/:owner/public-key", () => {
 	beforeAll(async () => {
-		await readySodium();
+		await readyCrypto();
 	});
 
 	function mount(keyStore: ReturnType<typeof createKeyStore>) {
@@ -66,7 +69,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 	}
 
 	it("returns the primary public key and keyId", async () => {
-		const sk = sodium.randombytes_buf(32);
+		const sk = generateKeypair().secretKey;
 		const keyStore = createKeyStore(makeCsv(sk));
 		const app = mount(keyStore);
 
@@ -82,13 +85,13 @@ describe("GET /api/workflows/:owner/public-key", () => {
 		};
 		expect(body.algorithm).toBe("x25519");
 		const decoded = Uint8Array.from(Buffer.from(body.publicKey, "base64"));
-		const expectedPk = sodium.crypto_scalarmult_base(sk);
+		const expectedPk = derivePublicKey(sk);
 		expect(decoded).toEqual(expectedPk);
 		expect(body.keyId).toMatch(/^[0-9a-f]{16}$/);
 	});
 
 	it("returns a keyId that matches the published public key", async () => {
-		const sk = sodium.randombytes_buf(32);
+		const sk = generateKeypair().secretKey;
 		const keyStore = createKeyStore(makeCsv(sk));
 		const app = mount(keyStore);
 
@@ -108,7 +111,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 	});
 
 	it("returns 404 for an invalid owner identifier", async () => {
-		const sk = sodium.randombytes_buf(32);
+		const sk = generateKeypair().secretKey;
 		const app = mount(createKeyStore(makeCsv(sk)));
 		const res = await app.request("/api/workflows/$bad/public-key", {
 			headers: AUTH_HEADERS,

@@ -1,5 +1,10 @@
 import { createGunzip, createGzip } from "node:zlib";
-import sodium from "libsodium-wrappers";
+import {
+	awaitCryptoReady,
+	derivePublicKey,
+	generateKeypair,
+	unsealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { extract as tarExtract, pack as tarPack } from "tar-stream";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -9,7 +14,7 @@ import {
 } from "./seal.js";
 
 beforeAll(async () => {
-	await sodium.ready;
+	await awaitCryptoReady();
 });
 
 async function buildTarGz(
@@ -78,8 +83,8 @@ describe("collectSecretBindings", () => {
 
 describe("sealBundleIfNeeded", () => {
 	async function buildServerKeypair() {
-		const sk = sodium.randombytes_buf(32);
-		const pk = sodium.crypto_scalarmult_base(sk);
+		const sk = generateKeypair().secretKey;
+		const pk = derivePublicKey(sk);
 		return { pk, sk };
 	}
 
@@ -170,7 +175,7 @@ describe("sealBundleIfNeeded", () => {
 			const ct = Uint8Array.from(
 				Buffer.from(wf?.secrets?.TOKEN ?? "", "base64"),
 			);
-			const plaintext = sodium.crypto_box_seal_open(ct, pk, sk);
+			const plaintext = unsealCiphertext(ct, pk, sk);
 			expect(new TextDecoder().decode(plaintext)).toBe("ghp_example");
 		} finally {
 			vi.unstubAllGlobals();

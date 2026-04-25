@@ -1,5 +1,8 @@
 import { createGunzip, createGzip } from "node:zlib";
-import sodium from "libsodium-wrappers";
+import {
+	awaitCryptoReady,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { extract as tarExtract, pack as tarPack } from "tar-stream";
 
 const TRAILING_SLASHES = /\/+$/;
@@ -136,10 +139,7 @@ function sealOneWorkflow(inputs: SealOneInputs): void {
 		if (plaintext === undefined) {
 			throw new MissingSecretEnvError([envName]);
 		}
-		const ct = sodium.crypto_box_seal(
-			new TextEncoder().encode(plaintext),
-			publicKey,
-		);
+		const ct = sealCiphertext(plaintext, publicKey);
 		secrets[envName] = Buffer.from(ct).toString("base64");
 	}
 	workflow.secrets = secrets;
@@ -276,7 +276,7 @@ async function sealBundleIfNeeded(
 	if (total === 0) {
 		return bundleBytes;
 	}
-	await sodium.ready;
+	await awaitCryptoReady();
 	const pkRes = await fetchPublicKey(options.url, options.owner, options.auth);
 	const pk = Uint8Array.from(Buffer.from(pkRes.publicKey, "base64"));
 	const env =

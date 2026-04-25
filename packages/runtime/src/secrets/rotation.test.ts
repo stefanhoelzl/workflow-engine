@@ -1,8 +1,11 @@
 import type { Manifest, WorkflowManifest } from "@workflow-engine/core";
-import sodium from "libsodium-wrappers";
+import {
+	generateKeypair,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptWorkflowSecrets } from "./decrypt-workflow.js";
-import { createKeyStore, readySodium } from "./key-store.js";
+import { createKeyStore, readyCrypto } from "./key-store.js";
 import { verifyManifestSecrets } from "./verify-manifest.js";
 
 // Rotation lifecycle without a K8s cluster: each phase represents the app
@@ -15,17 +18,16 @@ import { verifyManifestSecrets } from "./verify-manifest.js";
 // post-merge via a live cluster apply.
 
 beforeAll(async () => {
-	await readySodium();
+	await readyCrypto();
 });
 
 function freshKeypair(): { skB64: string; pk: Uint8Array } {
-	const sk = sodium.randombytes_buf(32);
-	const pk = sodium.crypto_scalarmult_base(sk);
-	return { skB64: Buffer.from(sk).toString("base64"), pk };
+	const { publicKey, secretKey } = generateKeypair();
+	return { skB64: Buffer.from(secretKey).toString("base64"), pk: publicKey };
 }
 
 function seal(pk: Uint8Array, plaintext: string): string {
-	return Buffer.from(sodium.crypto_box_seal(plaintext, pk)).toString("base64");
+	return Buffer.from(sealCiphertext(plaintext, pk)).toString("base64");
 }
 
 function workflow(

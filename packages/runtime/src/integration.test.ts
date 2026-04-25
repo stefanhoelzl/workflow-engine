@@ -2,9 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeKeyId, type InvocationEvent } from "@workflow-engine/core";
+import {
+	generateKeypair,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
-import sodium from "libsodium-wrappers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventStore, type EventStore } from "./event-bus/event-store.js";
 import { createEventBus } from "./event-bus/index.js";
@@ -13,7 +16,7 @@ import { createExecutor, type Executor } from "./executor/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
-import { createKeyStore, readySodium } from "./secrets/index.js";
+import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import { createFsStorage } from "./storage/fs.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
@@ -102,7 +105,7 @@ describe("end-to-end event flow", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "integration-test-"));
-		await readySodium();
+		await readyCrypto();
 	});
 
 	afterEach(async () => {
@@ -246,9 +249,9 @@ describe("end-to-end event flow", () => {
 		// Pre-existing integration test predates the secrets feature; wire in
 		// a dummy keyStore since sandbox-store now requires it (no manifest
 		// secrets are declared here, so the store is never consulted).
-		const integrationKp = sodium.crypto_box_keypair();
+		const integrationKp = generateKeypair();
 		const integrationKeyStore = createKeyStore(
-			`k1:${Buffer.from(integrationKp.privateKey).toString("base64")}`,
+			`k1:${Buffer.from(integrationKp.secretKey).toString("base64")}`,
 		);
 		sandboxStore = createSandboxStore({
 			sandboxFactory,
@@ -893,7 +896,7 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "integration-secrets-"));
-		await readySodium();
+		await readyCrypto();
 	});
 
 	afterEach(async () => {
@@ -903,12 +906,12 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 	});
 
 	it("plaintext of a sealed secret is never emitted in archived events", async () => {
-		// Generate a real keypair and seal the plaintext with crypto_box_seal.
-		const kp = sodium.crypto_box_keypair();
+		// Generate a real keypair and seal the plaintext with sealCiphertext.
+		const kp = generateKeypair();
 		const keyId = await computeKeyId(kp.publicKey);
-		const ciphertext = sodium.crypto_box_seal(SECRET_PLAINTEXT, kp.publicKey);
+		const ciphertext = sealCiphertext(SECRET_PLAINTEXT, kp.publicKey);
 		const ciphertextB64 = Buffer.from(ciphertext).toString("base64");
-		const skB64 = Buffer.from(kp.privateKey).toString("base64");
+		const skB64 = Buffer.from(kp.secretKey).toString("base64");
 
 		const manifest = {
 			workflows: [
@@ -1087,8 +1090,8 @@ var __wfe_exports__ = (function(exports) {
 		const sandboxFactory = createSandboxFactory({ logger });
 		// No sealed-secret manifest → any non-empty CSV satisfies config;
 		// generate one fresh keypair for the keyStore.
-		const kp = sodium.crypto_box_keypair();
-		const skB64 = Buffer.from(kp.privateKey).toString("base64");
+		const kp = generateKeypair();
+		const skB64 = Buffer.from(kp.secretKey).toString("base64");
 		const keyStore = createKeyStore(`primary:${skB64}`);
 		sandboxStore = createSandboxStore({
 			sandboxFactory,

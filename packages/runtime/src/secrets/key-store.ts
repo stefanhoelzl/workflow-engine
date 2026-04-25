@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { SECRETS_KEY_ID_BYTES } from "@workflow-engine/core";
-import sodium from "libsodium-wrappers";
+import {
+	awaitCryptoReady,
+	derivePublicKey,
+	unsealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { parseSecretsPrivateKeys } from "./parse-keys.js";
 
 interface ResolvedKey {
@@ -35,23 +39,20 @@ class SecretDecryptError extends Error {
 	}
 }
 
-let sodiumReady = false;
+let cryptoReady = false;
 
 /**
- * Ensures libsodium's WASM has initialised before any crypto primitive is
- * called. Callers MUST await this before invoking `createKeyStore` /
+ * Ensures the underlying crypto backend has initialised before any primitive
+ * is called. Callers MUST await this before invoking `createKeyStore` /
  * `decryptSealed`. The runtime's bootstrap does so once at startup; tests
- * use the same helper.
+ * use the same helper. Routes through `@workflow-engine/core/secrets-crypto`
+ * so the runtime never imports libsodium directly.
  */
-async function readySodium(): Promise<void> {
-	if (!sodiumReady) {
-		await sodium.ready;
-		sodiumReady = true;
+async function readyCrypto(): Promise<void> {
+	if (!cryptoReady) {
+		await awaitCryptoReady();
+		cryptoReady = true;
 	}
-}
-
-function derivePublic(sk: Uint8Array): Uint8Array {
-	return sodium.crypto_scalarmult_base(sk);
 }
 
 // Computes the canonical keyId fingerprint for a public key, matching the
@@ -76,19 +77,19 @@ function fingerprintSync(publicKey: Uint8Array): string {
  * The manifest's `secretsKeyId` and the public-key endpoint's `keyId`
  * both use that fingerprint; `lookup(keyId)` takes the fingerprint too.
  *
- * Callers MUST `await readySodium()` before invoking this function.
+ * Callers MUST `await readyCrypto()` before invoking this function.
  */
 function createKeyStore(csv: string): SecretsKeyStore {
-	if (!sodiumReady) {
+	if (!cryptoReady) {
 		throw new Error(
-			"createKeyStore: libsodium not initialised; call readySodium() first",
+			"createKeyStore: crypto backend not initialised; call readyCrypto() first",
 		);
 	}
 	const parsed = parseSecretsPrivateKeys(csv);
 	const resolved = new Map<string, ResolvedKey>();
 	const order: string[] = [];
 	for (const { sk } of parsed) {
-		const pk = derivePublic(sk);
+		const pk = derivePublicKey(sk);
 		const keyId = fingerprintSync(pk);
 		if (resolved.has(keyId)) {
 			throw new Error(
@@ -130,7 +131,7 @@ function createKeyStore(csv: string): SecretsKeyStore {
  * identified by `keyId`. Throws `UnknownKeyIdError` if the keyId is not in
  * the store, or `SecretDecryptError` if the underlying seal-open fails.
  *
- * Callers MUST `await readySodium()` before invoking.
+ * Callers MUST `await readyCrypto()` before invoking.
  */
 function decryptSealed(
 	b64Ciphertext: string,
@@ -152,12 +153,10 @@ function decryptSealed(
 		);
 	}
 	try {
-		return sodium.crypto_box_seal_open(ct, entry.pk, entry.sk);
+		return unsealCiphertext(ct, entry.pk, entry.sk);
 	} catch (err) {
 		throw new SecretDecryptError(
-			`crypto_box_seal_open failed${
-				err instanceof Error ? `: ${err.message}` : ""
-			}`,
+			err instanceof Error ? err.message : String(err),
 		);
 	}
 }
@@ -166,7 +165,7 @@ export type { ResolvedKey, SecretsKeyStore };
 export {
 	createKeyStore,
 	decryptSealed,
-	readySodium,
+	readyCrypto,
 	SecretDecryptError,
 	UnknownKeyIdError,
 };

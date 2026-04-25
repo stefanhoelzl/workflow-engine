@@ -1,11 +1,15 @@
 import type { WorkflowManifest } from "@workflow-engine/core";
-import sodium from "libsodium-wrappers";
+import {
+	derivePublicKey,
+	generateKeypair,
+	sealCiphertext,
+} from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptWorkflowSecrets } from "./decrypt-workflow.js";
-import { createKeyStore, readySodium, UnknownKeyIdError } from "./key-store.js";
+import { createKeyStore, readyCrypto, UnknownKeyIdError } from "./key-store.js";
 
 beforeAll(async () => {
-	await readySodium();
+	await readyCrypto();
 });
 
 function makeWorkflow(
@@ -25,18 +29,18 @@ function makeWorkflow(
 describe("decryptWorkflowSecrets", () => {
 	it("returns {} when manifest has no secrets", () => {
 		const store = createKeyStore(
-			`k1:${Buffer.from(sodium.randombytes_buf(32)).toString("base64")}`,
+			`k1:${Buffer.from(generateKeypair().secretKey).toString("base64")}`,
 		);
 		expect(decryptWorkflowSecrets(makeWorkflow(), store)).toEqual({});
 	});
 
 	it("decrypts every ciphertext into a plaintextStore", () => {
-		const sk = sodium.randombytes_buf(32);
-		const pk = sodium.crypto_scalarmult_base(sk);
+		const sk = generateKeypair().secretKey;
+		const pk = derivePublicKey(sk);
 		const store = createKeyStore(`k1:${Buffer.from(sk).toString("base64")}`);
 		const primary = store.getPrimary();
-		const sealA = sodium.crypto_box_seal(new TextEncoder().encode("aaa"), pk);
-		const sealB = sodium.crypto_box_seal(new TextEncoder().encode("bbb"), pk);
+		const sealA = sealCiphertext("aaa", pk);
+		const sealB = sealCiphertext("bbb", pk);
 		const out = decryptWorkflowSecrets(
 			makeWorkflow({
 				secrets: {
@@ -52,7 +56,7 @@ describe("decryptWorkflowSecrets", () => {
 
 	it("throws UnknownKeyIdError for unknown keyId", () => {
 		const store = createKeyStore(
-			`k1:${Buffer.from(sodium.randombytes_buf(32)).toString("base64")}`,
+			`k1:${Buffer.from(generateKeypair().secretKey).toString("base64")}`,
 		);
 		expect(() =>
 			decryptWorkflowSecrets(

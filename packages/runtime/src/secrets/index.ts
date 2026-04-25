@@ -3,7 +3,7 @@ export type { ResolvedKey, SecretsKeyStore } from "./key-store.js";
 export {
 	createKeyStore,
 	decryptSealed,
-	readySodium,
+	readyCrypto,
 	SecretDecryptError,
 	UnknownKeyIdError,
 } from "./key-store.js";
