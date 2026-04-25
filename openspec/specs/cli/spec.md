@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide `@workflow-engine/cli` — a published npm package with a `wfe` binary — that lets any operator build workflows from source and upload them to a running `@workflow-engine/runtime`. The CLI is the single supported entry point for external users to deploy workflow code; the dev loop (`scripts/dev.ts`) consumes the same programmatic `upload()` function to keep one code path in and out of the monorepo.
-
 ## Requirements
-
 ### Requirement: Workflow discovery
 
 The CLI SHALL discover workflow entry files by globbing `<cwd>/src/*.ts` non-recursively. Each matched file is treated as one workflow whose name is derived from the file basename without the `.ts` extension.
@@ -42,23 +40,29 @@ The CLI SHALL exit with a non-zero status and print `no workflows found in src/`
 
 ### Requirement: Build pipeline
 
-The CLI SHALL build workflows using the vite plugin imported from `@workflow-engine/sdk/plugin` (previously `@workflow-engine/vite-plugin`). Build output SHALL be a single tenant tarball at `<cwd>/dist/bundle.tar.gz` containing a root `manifest.json` (`{ workflows: [...] }`) plus one `<name>.js` per discovered workflow. The CLI SHALL NOT support a user-authored `vite.config.ts`; any such file in `cwd` SHALL be ignored.
+The CLI SHALL build workflows using a pure `buildWorkflows(cwd)` core module exported from `@workflow-engine/sdk/cli` (or equivalent internal path). The core SHALL return an in-memory pair `{ files: Map<name, bytes>, manifest: UnsealedManifest }` where `manifest` matches today's `{ workflows: [...] }` shape and carries `secretBindings` for each workflow that declared `env({secret:true})`.
 
-#### Scenario: CLI uses SDK-internal plugin
+`buildWorkflows` SHALL be the single implementation of workflow discovery, env resolution, trigger collection, and per-workflow JS production used by every code path that needs workflow JS or manifest data. It SHALL invoke Vite/Rolldown via the programmatic API with a private internal-only emit-to-memory plugin; nothing else SHALL re-implement these concerns.
 
-- **WHEN** the CLI's vite-config module imports the plugin
-- **THEN** it imports from the SDK's internal plugin module (not a separate package)
+The CLI SHALL NOT support a user-authored `vite.config.ts`; any such file in `cwd` SHALL be ignored. The previously-public `@workflow-engine/sdk/plugin` export and its `packages/sdk/src/plugin/` directory SHALL be deleted.
 
-#### Scenario: Build produces a single tenant tarball for all discovered workflows
+#### Scenario: Single build implementation shared across entry points
 
-- **WHEN** `wfe upload` is invoked in a directory containing `src/foo.ts` and `src/bar.ts`
-- **THEN** exactly one file `<cwd>/dist/bundle.tar.gz` SHALL exist after the build step
-- **AND** extracting it SHALL yield `manifest.json`, `foo.js`, and `bar.js` at the tarball root
+- **WHEN** inspecting the CLI source
+- **THEN** the `wfe build` subcommand and the internal `bundle` function SHALL both invoke the same exported `buildWorkflows` function
+- **AND** there SHALL be no duplicate implementations of workflow discovery
+
+#### Scenario: Public Vite plugin is removed
+
+- **WHEN** inspecting the SDK package
+- **THEN** `packages/sdk/src/plugin/` SHALL NOT exist
+- **AND** `packages/sdk/package.json`'s `exports` SHALL NOT contain a `./plugin` subpath
+- **AND** the only consumer of the in-memory build implementation SHALL be `buildWorkflows`
 
 #### Scenario: User vite.config.ts is ignored
 
-- **WHEN** `wfe upload` is invoked in a directory containing a user-authored `vite.config.ts`
-- **THEN** the CLI SHALL use its bundled default vite config regardless
+- **WHEN** the CLI runs in a directory containing a user-authored `vite.config.ts`
+- **THEN** the CLI SHALL use its bundled internal vite/rolldown configuration regardless
 
 ### Requirement: CLI code lives in SDK
 
@@ -249,82 +253,95 @@ The `user` option SHALL drive the same headers as the CLI's `--user` flag (`X-Au
 
 ### Requirement: CLI seals and uploads workflows with secret bindings
 
-The `wfe upload --tenant <name>` CLI SHALL detect `manifest.secretBindings` on any workflow in the bundle. When any workflow has non-empty `secretBindings`, the CLI SHALL:
+The `wfe upload` CLI SHALL seal and POST workflows in a single in-memory pipeline routed through an internal `bundle({cwd, url, owner, user?, token?}) → Promise<Uint8Array>` function. The pipeline SHALL:
 
-1. Call `GET <url>/api/workflows/<tenant>/public-key` once (with existing auth). Validate the response shape `{ algorithm: "x25519", publicKey: <b64>, keyId: <hex> }`.
-2. Base64-decode `publicKey` to a 32-byte X25519 pk.
-3. For each workflow with `secretBindings`, for each envName in the list:
-   a. Read `process.env[envName]`. If undefined, fail with error: `"Missing env var for secret binding: <envName>"`.
-   b. Compute `ct = crypto_box_seal(plaintext, pk)` and base64-encode.
-   c. Assign `manifest.secrets[envName] = <b64 ct>`.
-4. Set `manifest.secretsKeyId = response.keyId` for each workflow whose secrets were just sealed.
-5. Delete the `secretBindings` field from each manifest.
-6. Repack the tarball with the rewritten manifests (preserving all other bundle files unchanged).
-7. POST the rewritten bundle to `<url>/api/workflows/<tenant>` as before.
+1. Call `buildWorkflows(cwd)` to obtain `{ files, manifest }` in memory.
+2. If any workflow in `manifest.workflows` has non-empty `secretBindings`:
+   - Call `GET <url>/api/workflows/<owner>/public-key` once (with the resolved auth headers). Validate the response shape `{ algorithm: "x25519", publicKey: <b64>, keyId: <hex> }`.
+   - For each binding on each affected workflow, read `process.env[name]`, call `sealCiphertext(plaintext, pubkey)` from `@workflow-engine/core/secrets-crypto`, base64-encode the returned bytes into `manifest.workflows[i].secrets[name]`, set `manifest.workflows[i].secretsKeyId = keyId`, and remove the `secretBindings` field. The CLI SHALL NOT call `crypto_box_seal` directly; only `sealCiphertext` from core.
+3. Pack a single tenant tarball in-memory containing `manifest.json` (sealed) at the root plus one `<name>.js` per workflow at the root, from the `files` map.
+4. Return the tarball bytes.
 
-The CLI SHALL NOT write the rewritten manifest or any plaintext to disk. All processing SHALL be in-memory.
+The CLI SHALL NOT contain its own `crypto_box_seal` invocation; all sealing SHALL go through `sealCiphertext` from `@workflow-engine/core/secrets-crypto`. The CLI SHALL NOT depend directly on `libsodium-wrappers`. `packages/sdk/package.json`'s `dependencies` SHALL NOT list `libsodium-wrappers`.
 
-If `secretBindings` is absent or empty on every workflow, the CLI SHALL upload the bundle unchanged without fetching the public key.
+`wfe upload` SHALL then POST the returned bytes to `<url>/api/workflows/<owner>` with `Content-Type: application/gzip` and the resolved auth headers, as before.
+
+The pipeline SHALL NOT write the built JS files, unsealed manifest, sealed manifest, or tarball to disk. All processing between `buildWorkflows` and the HTTP POST SHALL be in-memory.
+
+If no workflow has a non-empty `secretBindings`, the CLI SHALL pack and POST the tarball without fetching the public key.
+
+#### Scenario: Sealing routes through core
+
+- **WHEN** `wfe upload` runs against a bundle with secret bindings
+- **THEN** the only `crypto_box_seal` invocation SHALL be inside `@workflow-engine/core/secrets-crypto`
+- **AND** `packages/sdk/` SHALL NOT contain a direct call to any libsodium API
+
+#### Scenario: SDK package does not depend on libsodium directly
+
+- **WHEN** inspecting `packages/sdk/package.json`
+- **THEN** the `dependencies` SHALL NOT list `libsodium-wrappers` or any other libsodium binding
 
 #### Scenario: Bundle with secret bindings is sealed and uploaded
 
-- **GIVEN** a bundle whose manifest has `secretBindings: ["TOKEN"]` and `process.env.TOKEN = "ghp_xxx"`
-- **WHEN** `wfe upload --tenant acme` runs
-- **THEN** the CLI SHALL fetch `https://.../api/workflows/acme/public-key`
-- **AND** SHALL seal `"ghp_xxx"` against the returned pk
-- **AND** SHALL POST a bundle whose manifest has `secrets: { TOKEN: <base64 ciphertext> }` and `secretsKeyId: <hex>`
+- **GIVEN** a workflow declaring `env({name: "TOKEN", secret: true})` and `process.env.TOKEN = "ghp_xxx"`
+- **WHEN** `wfe upload --owner acme --url https://example` runs
+- **THEN** the CLI SHALL fetch `https://example/api/workflows/acme/public-key`
+- **AND** SHALL seal `"ghp_xxx"` against the returned pk via `sealCiphertext` from core
+- **AND** SHALL POST a bundle whose workflow manifest has `secrets: { TOKEN: <base64 ciphertext> }` and `secretsKeyId: <hex>`
 - **AND** SHALL NOT include `secretBindings` in the POSTed manifest
 - **AND** the response SHALL be 204
 
-#### Scenario: Missing env var fails upload
+#### Scenario: Missing secret env var fails upload at build phase
 
-- **GIVEN** a bundle with `secretBindings: ["TOKEN"]` and `process.env.TOKEN` is unset
+- **GIVEN** a workflow declares `env({name: "TOKEN", secret: true})` and `process.env.TOKEN` is unset
 - **WHEN** `wfe upload` runs
-- **THEN** upload SHALL fail with error `"Missing env var for secret binding: TOKEN"`
+- **THEN** `buildWorkflows` SHALL fail with `Missing environment variable: TOKEN`
+- **AND** no public-key fetch SHALL be issued
 - **AND** no network POST SHALL be made
 
 #### Scenario: Bundle without secret bindings skips PK fetch
 
-- **GIVEN** a bundle whose manifests have no `secretBindings` or only empty arrays
+- **GIVEN** a workflow with no `env({secret:true})` declarations
 - **WHEN** `wfe upload` runs
 - **THEN** the CLI SHALL NOT call the public-key endpoint
-- **AND** the bundle SHALL be POSTed unchanged
+- **AND** the tarball SHALL be POSTed without a `secrets` or `secretsKeyId` field in any workflow manifest
 
 #### Scenario: Public-key fetch failure aborts upload
 
-- **GIVEN** a bundle with secret bindings
+- **GIVEN** a workflow with secret bindings
 - **WHEN** the public-key fetch returns 401 or 404 or the connection fails
 - **THEN** upload SHALL fail with a descriptive error
 - **AND** no bundle SHALL be POSTed
 
-#### Scenario: Plaintext is not written to disk
+#### Scenario: Plaintext and tarball are not written to disk
 
-- **GIVEN** a bundle with secret bindings and a valid `process.env`
-- **WHEN** the CLI rewrites the manifest
-- **THEN** no filesystem write in or around `dist/` SHALL contain the plaintext or rewritten manifest
-- **AND** the only disk interaction SHALL be reading the original bundle
+- **GIVEN** a workflow with secret bindings and a valid `process.env`
+- **WHEN** `wfe upload` runs
+- **THEN** no filesystem write in or around `dist/` SHALL contain plaintext secret values
+- **AND** no `dist/bundle.tar.gz` SHALL be produced on the upload path
+- **AND** no `dist/manifest.json` SHALL be produced on the upload path
 
 #### Scenario: keyId matches server response
 
 - **GIVEN** a bundle successfully sealed
 - **WHEN** the POSTed manifest is inspected
-- **THEN** `manifest.secretsKeyId` SHALL equal the `keyId` field from the public-key endpoint response
+- **THEN** each sealed workflow manifest's `secretsKeyId` SHALL equal the `keyId` field from the public-key endpoint response
 
 ### Requirement: Build-only subcommand
 
-The `wfe` binary SHALL expose a `build` subcommand that performs the same build pipeline as `wfe upload` (`packages/sdk/src/cli/build.ts`'s `build({ cwd })`) without performing any network I/O, authentication, or target-URL resolution.
+The `wfe` binary SHALL expose a `build` subcommand that invokes `buildWorkflows(cwd)` and writes only the per-workflow `<name>.js` files to `<cwd>/dist/`. It SHALL NOT write `<cwd>/dist/manifest.json`, SHALL NOT pack `<cwd>/dist/bundle.tar.gz`, and SHALL NOT perform any network I/O, authentication, or target-URL resolution.
 
-The `build` subcommand SHALL share a single `build()` implementation with the `upload` subcommand. The build phase of `wfe upload` and the entire operation of `wfe build` SHALL invoke the same function; there SHALL be no parallel implementations of the bundle build.
+The `build` subcommand SHALL fail fast when a workflow declares an env binding (plaintext or `secret: true`) whose resolved value is absent: stderr SHALL include `Missing environment variable: <name>` and the command SHALL exit with status `1`. No JS file SHALL be written to `<cwd>/dist/` in that case.
 
-The `build` subcommand SHALL exit with status `0` when the bundle at `<cwd>/dist/bundle.tar.gz` is produced successfully and with status `1` on any build error. On build failure, stderr SHALL include the same `no workflows found in src/` message as `wfe upload` when no workflow entry files are present.
+The `build` subcommand SHALL NOT accept `--url`, `--owner`, `--tenant`, `--user`, `--token`, or read `GITHUB_TOKEN`. Passing any authentication-related flag or environment variable SHALL have no effect on its behaviour.
 
-The `build` subcommand SHALL NOT accept or require `--url`, `--tenant`, `--user`, `--token`, or read `GITHUB_TOKEN`. Passing any authentication-related flag or environment variable SHALL have no effect on its behaviour.
+#### Scenario: Build subcommand writes only JS files to dist
 
-#### Scenario: Build subcommand produces bundle
-
-- **WHEN** `wfe build` is invoked in a directory containing `src/foo.ts`
-- **THEN** the CLI SHALL produce `<cwd>/dist/bundle.tar.gz` containing `manifest.json` and `foo.js` at the tarball root
-- **AND** exit with status `0`
+- **WHEN** `wfe build` is invoked in a directory containing `src/foo.ts` and `src/bar.ts`
+- **THEN** `<cwd>/dist/foo.js` and `<cwd>/dist/bar.js` SHALL exist
+- **AND** `<cwd>/dist/manifest.json` SHALL NOT exist
+- **AND** `<cwd>/dist/bundle.tar.gz` SHALL NOT exist
+- **AND** the command SHALL exit with status `0`
 - **AND** SHALL NOT issue any HTTP request
 
 #### Scenario: Build subcommand performs no authentication
@@ -333,22 +350,25 @@ The `build` subcommand SHALL NOT accept or require `--url`, `--tenant`, `--user`
 - **WHEN** `wfe build` is invoked
 - **THEN** no HTTP request SHALL be issued (the token is ignored by design)
 
+#### Scenario: Build fails fast on missing plaintext env var
+
+- **GIVEN** a workflow declares `env({name: "API_URL"})` with no default
+- **AND** `process.env.API_URL` is unset
+- **WHEN** `wfe build` is invoked
+- **THEN** stderr SHALL include `Missing environment variable: API_URL`
+- **AND** the command SHALL exit with status `1`
+
+#### Scenario: Build fails fast on missing secret env var
+
+- **GIVEN** a workflow declares `env({name: "TOKEN", secret: true})`
+- **AND** `process.env.TOKEN` is unset
+- **WHEN** `wfe build` is invoked
+- **THEN** stderr SHALL include `Missing environment variable: TOKEN`
+- **AND** the command SHALL exit with status `1`
+
 #### Scenario: Build subcommand fails on missing workflows
 
 - **WHEN** `wfe build` is invoked in a directory where `src/` does not exist or contains no top-level `.ts` files
 - **THEN** the CLI SHALL exit with status `1`
 - **AND** stderr SHALL include `no workflows found in src/`
 
-#### Scenario: Build subcommand and upload share build implementation
-
-- **WHEN** inspecting the CLI source
-- **THEN** both the `build` subcommand and the build phase of the `upload` subcommand SHALL invoke the single exported `build()` function from `packages/sdk/src/cli/build.ts`
-- **AND** neither path SHALL duplicate the vite-plugin invocation
-
-#### Scenario: pnpm -r build exercises the workflow bundle build
-
-- **GIVEN** `workflows/package.json` declares `"build": "wfe build"`
-- **WHEN** `pnpm -r build` is invoked from the monorepo root
-- **THEN** pnpm SHALL build `@workflow-engine/sdk` before the `workflows` package
-- **AND** the `workflows` build SHALL invoke `wfe build`
-- **AND** a broken `workflows/src/demo.ts` or regressed SDK surface SHALL cause `pnpm -r build` to exit non-zero
