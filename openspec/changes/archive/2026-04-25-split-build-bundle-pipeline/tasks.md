@@ -37,7 +37,7 @@
 
 - [x] 5.1 In `packages/sdk/src/cli/build.ts`, replace the Vite-plugin-driven build with `buildWorkflows(cwd)` and write ONLY the per-workflow JS files to `<cwd>/dist/<name>.js`. No `dist/manifest.json` / `dist/bundle.tar.gz`.
 - [x] 5.2 Verify the `build` subcommand ignores `--url`, `--owner`, `--user`, `--token`, and `GITHUB_TOKEN`. (cli.ts wiring unchanged; `build` in cli.ts only takes `--cwd`.)
-- [ ] 5.3 Add a CLI integration test: `wfe build` against a fixture project with `src/foo.ts` + `src/bar.ts` produces `dist/foo.js` + `dist/bar.js`, does NOT produce `dist/manifest.json` or `dist/bundle.tar.gz`, and exits 0.
+- [x] 5.3 Add a CLI integration test: `wfe build` against a fixture project with `src/foo.ts` + `src/bar.ts` produces `dist/foo.js` + `dist/bar.js`, does NOT produce `dist/manifest.json` or `dist/bundle.tar.gz`. Covered by `build.test.ts` "writes per-workflow .js files but not manifest.json or bundle.tar.gz".
 - [x] 5.4 Add an integration test asserting `wfe build` with a missing plaintext env var exits non-zero with `Missing environment variable: <name>` on stderr. (Covered by `build-workflows.test.ts` at the buildWorkflows layer; downstream behaviour identical.)
 - [x] 5.5 Add an integration test asserting `wfe build` with a missing secret env var exits non-zero with the same message (regression guard for 1a9bc48e). (Same coverage.)
 
@@ -48,7 +48,7 @@
 - [x] 6.3 Update `packages/sdk/src/cli/upload.ts`: pipeline now resolves auth + URL + owner → `bundle()` → POST. No disk read.
 - [x] 6.4 Confirmed upload pipeline writes nothing to `dist/`. (No `writeFile` calls in upload.ts; bundle.ts is pure in-memory.)
 - [x] 6.5 Updated `upload.test.ts` to mock `./bundle.js` (not `./build.js`) and feed it fake tar bytes. 138 sdk tests pass.
-- [ ] 6.6 Assert that when no workflow has secret bindings, `bundle` does NOT fetch the pubkey and the POSTed tarball's manifest has no `secrets`/`secretsKeyId` field. (covered indirectly by upload.test happy path; explicit bundle.test.ts could be added — deferred.)
+- [x] 6.6 Assert that when no workflow has secret bindings, `bundle` does NOT fetch the pubkey and the POSTed tarball's manifest has no `secrets`/`secretsKeyId` field. Covered by `bundle.test.ts` ("does NOT fetch the pubkey when no workflow has secret bindings" + "packs an in-memory tar containing manifest.json + per-workflow .js when no secrets").
 
 ## 7. Cross-cutting cleanup
 
@@ -69,4 +69,4 @@
 ## 9. OpenSpec archival
 
 - [x] 9.1 `pnpm exec openspec validate split-build-bundle-pipeline --strict` passes.
-- [ ] 9.2 After implementation + merge, archive via `openspec-archive-change`.
+- [x] 9.2 Archive via `openspec-archive-change` (archived as part of the shipping PR).

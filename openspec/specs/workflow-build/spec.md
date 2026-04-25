@@ -10,27 +10,6 @@ Each workflow SHALL be a single TypeScript file in the `workflows/` directory th
 - **THEN** it SHALL export branded SDK products as named constants
 - **AND** it SHALL import `defineWorkflow`, `action`, `httpTrigger`, and `z` from `@workflow-engine/sdk`
 
-### Requirement: Vite plugin builds workflows into a single tenant tarball
-`workflows/vite.config.ts` (if used) SHALL import the plugin from `@workflow-engine/sdk/plugin` instead of `@workflow-engine/vite-plugin`. The plugin SHALL emit a single tarball at `<outDir>/bundle.tar.gz` (typically `workflows/dist/bundle.tar.gz`) whose entries are a root `manifest.json` with shape `{ workflows: [...] }` and one `<name>.js` per discovered workflow at the tarball root. Workflow bundles do NOT contain SDK or Zod imports. Node built-ins remain as external imports.
-
-#### Scenario: Plugin import path in vite config
-- **WHEN** a vite config imports the workflow plugin
-- **THEN** it uses `import { workflowPlugin } from "@workflow-engine/sdk/plugin"`
-
-#### Scenario: Build produces a single tenant tarball
-- **WHEN** `pnpm --filter workflows build` is run
-- **AND** `workflows/vite.config.ts` lists `"./cronitor.ts"` and `"./demo.ts"` in the workflow configuration
-- **THEN** exactly one file `workflows/dist/bundle.tar.gz` SHALL be produced
-- **AND** extracting the tarball SHALL yield `manifest.json` at the root plus `cronitor.js` and `demo.js` at the root
-
-#### Scenario: Bundle has no SDK dependency
-- **WHEN** a workflow is built
-- **THEN** the output bundle SHALL NOT contain import statements referencing `@workflow-engine/sdk` or `zod`
-
-#### Scenario: Node built-ins are externalized
-- **WHEN** a workflow is built
-- **THEN** Node.js built-in modules SHALL remain as external imports
-
 ### Requirement: Workflows directory is a pnpm workspace member
 The `workflows/` directory SHALL have a `package.json` declaring only `@workflow-engine/sdk` as a workspace dependency and SHALL be listed in `pnpm-workspace.yaml`. The separate `@workflow-engine/cli` dependency is no longer needed.
 
@@ -44,12 +23,23 @@ The `workflows/` directory SHALL have a `package.json` declaring only `@workflow
 - **THEN** `@workflow-engine/sdk` SHALL be resolved as a workspace link for the workflows directory
 
 ### Requirement: Root build includes workflows
-The root `pnpm build` script SHALL build both the runtime and the workflows.
+
+The root `pnpm build` script SHALL build the runtime and SHALL produce per-workflow JS files but SHALL NOT produce `workflows/dist/bundle.tar.gz` or `workflows/dist/manifest.json`. Producing a deployable tenant tarball requires sealing, which is only available via `wfe upload` (which calls the internal `bundle` function) because sealing needs the server public key.
 
 #### Scenario: Full build
+
 - **WHEN** `pnpm build` is run from the repository root
 - **THEN** `dist/main.js` (runtime) SHALL be produced
-- **AND** `workflows/dist/bundle.tar.gz` (the tenant tarball containing `manifest.json` + every `<name>.js`) SHALL be produced
+- **AND** each declared workflow SHALL have a corresponding `workflows/dist/<name>.js` file produced
+- **AND** `workflows/dist/bundle.tar.gz` SHALL NOT be produced
+- **AND** `workflows/dist/manifest.json` SHALL NOT be produced
+
+#### Scenario: Deployable tarball requires upload path
+
+- **WHEN** a deployable tenant tarball is needed
+- **THEN** it SHALL be produced by `wfe upload` (or the internal `bundle` function it calls)
+- **AND** it SHALL NOT be produced as a side effect of `pnpm build`
+- **AND** it SHALL NOT be written to disk at any point in the upload pipeline
 
 ### Requirement: Per-workflow bundle output
 
