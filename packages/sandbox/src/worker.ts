@@ -380,13 +380,26 @@ function startRestore(currentState: SandboxState): Promise<void> {
 				"injected restore failure (WFE_TEST_SANDBOX_RESTORE_FAIL)",
 			);
 		}
-		currentState.bridge.dispose();
-		currentState.vm.dispose();
+		// Build the new VM BEFORE disposing the old one. The previous order
+		// (dispose → restore) left a window where the old VM was already
+		// disposed but late host-callback / sink work scheduled by guest
+		// async that resolved just before `post({type:"done"})` then hit
+		// the disposed VM, the worker's `promise.catch →
+		// queueMicrotask(throw)` raised an uncaught error, and main's
+		// `worker.on("error")` rejected the run promise with `"QuickJS
+		// instance has been disposed"` — usually before the queued `done`
+		// message was processed. Surfaced under concurrent WPT load
+		// (idlharness, fetch suites). Holding two VMs briefly costs
+		// transient memory but eliminates the race; `pnpm test:wpt` is the
+		// integration check (a synthetic regression test could not match
+		// the timing characteristics of the WPT harness load).
 		wasiState.anchor.ns = perfNowNs();
 		const newVm = await QuickJS.restore(
 			currentState.snapshotRef,
 			currentState.createOptions,
 		);
+		const oldVm = currentState.vm;
+		const oldBridge = currentState.bridge;
 		const { bridge: newBridge } = rebindRestoredVm(
 			newVm,
 			currentState.guestFunctions,
@@ -395,6 +408,8 @@ function startRestore(currentState: SandboxState): Promise<void> {
 		currentState.bridge = newBridge;
 		currentState.runState = "ready";
 		currentState.restorePromise = null;
+		oldBridge.dispose();
+		oldVm.dispose();
 	})();
 	// Surface failures through Node's uncaught-error pathway so the worker
 	// dies and main fires onDied. The awaiting handleRun will also see the
