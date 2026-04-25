@@ -14,6 +14,12 @@ jobs:
       - run: pnpm validate
       - run: git diff --exit-code infrastructure/envs/local/.terraform.lock.hcl infrastructure/envs/persistence/.terraform.lock.hcl infrastructure/envs/cluster/.terraform.lock.hcl infrastructure/envs/prod/.terraform.lock.hcl infrastructure/envs/staging/.terraform.lock.hcl
       - run: pnpm build
+        # Build-time presence check (1a9bc48e) requires every secret env var
+        # declared in workflows/src/*.ts to be defined. Values are not
+        # embedded in the bundle (sentinel-encoded); any non-empty string
+        # works. Add new vars here when demo.ts/fixtures declare them.
+        env:
+          WEBHOOK_TOKEN: ci-presence-only
 
   wpt:
     runs-on: ubuntu-latest
