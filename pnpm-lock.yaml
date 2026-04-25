@@ -9,6 +9,9 @@ patchedDependencies:
   fetch-blob@4.0.0:
     hash: 2992dc126ec02c4209ed213a9d85ddcdc45846fe0111b3ce7dc0c0a639a8e77c
     path: patches/fetch-blob@4.0.0.patch
+  quickjs-wasi@2.2.0:
+    hash: fa11241a114784dd6e66974914f3c064196ecca4df32f079177b25b2351c4410
+    path: patches/quickjs-wasi@2.2.0.patch
 
 importers:
 
@@ -144,7 +147,7 @@ importers:
         version: link:../core
       quickjs-wasi:
         specifier: ^2.2.0
-        version: 2.2.0
+        version: 2.2.0(patch_hash=fa11241a114784dd6e66974914f3c064196ecca4df32f079177b25b2351c4410)
     devDependencies:
       '@rollup/plugin-commonjs':
         specifier: ^29.0.2
@@ -5032,7 +5035,7 @@ snapshots:
 
   quick-format-unescaped@4.0.4: {}
 
-  quickjs-wasi@2.2.0: {}
+  quickjs-wasi@2.2.0(patch_hash=fa11241a114784dd6e66974914f3c064196ecca4df32f079177b25b2351c4410): {}
 
   readable-stream@3.6.2:
     dependencies:
