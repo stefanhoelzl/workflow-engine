@@ -1,14 +1,13 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { createGunzip } from "node:zlib";
-import { extract as tarExtract } from "tar-stream";
-import { build as viteBuild } from "vite";
 import { describe, expect, it } from "vitest";
-import { workflowPlugin } from "./index.js";
+import {
+	type BuildWorkflowsResult,
+	buildWorkflows,
+	type UnsealedWorkflowManifest,
+} from "./build-workflows.js";
 
 const thisFile = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(thisFile), "..", "..", "..", "..");
@@ -21,16 +20,10 @@ const ERR_ACTION_NOT_TRANSFORMED =
 	/was not transformed at build time. Actions must be declared as/;
 const ERR_ACTION_DEFAULT_EXPORT =
 	/action cannot be a default export; use .export const./;
-// The IIFE bundle assigns its exports as properties on the namespace object,
-// so the bundle source contains lines like `exports.onEvent = ...` / `exports.sendNotification = ...`.
 const EXPORT_ON_EVENT_RE = /exports\.onEvent\s*=/;
 const EXPORT_SEND_NOTIFICATION_RE = /exports\.sendNotification\s*=/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
-// The fixtures below import `@workflow-engine/sdk` by name. For Vite to
-// resolve that from a temp workspace, we symlink the repo's SDK into the temp
-// `node_modules` tree. The plugin itself is imported directly from src; the
-// SDK is what the fixtures import.
 async function linkSdk(tempDir: string): Promise<void> {
 	const { symlink } = await import("node:fs/promises");
 	const nm = join(tempDir, "node_modules");
@@ -45,10 +38,9 @@ interface BuildFixtureArgs {
 	workflows: string[];
 }
 
-async function buildFixture(args: BuildFixtureArgs): Promise<{
-	outDir: string;
-	dir: string;
-}> {
+async function buildFixture(
+	args: BuildFixtureArgs,
+): Promise<{ result: BuildWorkflowsResult; dir: string }> {
 	const dir = await mkdtemp(join(tmpdir(), "wf-build-"));
 	await writeFile(
 		join(dir, "package.json"),
@@ -62,85 +54,29 @@ async function buildFixture(args: BuildFixtureArgs): Promise<{
 			await writeFile(full, content, "utf8");
 		}),
 	);
-
-	await viteBuild({
-		configFile: false,
-		root: dir,
-		logLevel: "silent",
-		plugins: [
-			skipTypecheckPlugin(),
-			workflowPlugin({ workflows: args.workflows }),
-		],
+	const result = await buildWorkflows({
+		cwd: dir,
+		workflows: args.workflows,
+		skipTypecheck: true,
 	});
-	return { outDir: join(dir, "dist"), dir };
+	return { result, dir };
 }
 
-// Stub plugin that fakes `watch` into resolvedConfig so the workflow-engine
-// plugin's buildStart skips the typechecker. Fixture workflows are not part
-// of a full tsconfig and would produce noisy lib-resolution errors otherwise.
-function skipTypecheckPlugin() {
-	return {
-		name: "test:skip-typecheck",
-		enforce: "pre" as const,
-		configResolved(config: { build: { watch: unknown } }) {
-			Object.defineProperty(config.build, "watch", {
-				value: {},
-				configurable: true,
-				writable: true,
-				enumerable: true,
-			});
-		},
-	};
-}
-
-async function readOwnerBundle(outDir: string): Promise<Map<string, string>> {
-	const bundleBytes = await readFile(join(outDir, "bundle.tar.gz"));
-	const files = new Map<string, string>();
-	const extractor = tarExtract();
-	extractor.on("entry", (header, stream, next) => {
-		if (header.type === "file") {
-			const chunks: Buffer[] = [];
-			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-			stream.on("end", () => {
-				files.set(header.name, Buffer.concat(chunks).toString("utf-8"));
-				next();
-			});
-		} else {
-			stream.on("end", () => next());
-			stream.resume();
-		}
-	});
-	await pipeline(Readable.from(bundleBytes), createGunzip(), extractor);
-	return files;
-}
-
-async function readWorkflowManifest(
-	outDir: string,
+function getManifest(
+	result: BuildWorkflowsResult,
 	name: string,
-): Promise<unknown> {
-	const files = await readOwnerBundle(outDir);
-	const manifestRaw = files.get("manifest.json");
-	if (!manifestRaw) {
-		throw new Error(`manifest.json missing from bundle.tar.gz at ${outDir}`);
-	}
-	const owner = JSON.parse(manifestRaw) as {
-		workflows: Array<{ name: string }>;
-	};
-	const wf = owner.workflows.find((w) => w.name === name);
+): UnsealedWorkflowManifest {
+	const wf = result.manifest.workflows.find((w) => w.name === name);
 	if (!wf) {
-		throw new Error(`workflow "${name}" not in owner manifest`);
+		throw new Error(`workflow "${name}" not in manifest`);
 	}
 	return wf;
 }
 
-async function readWorkflowBundleSource(
-	outDir: string,
-	name: string,
-): Promise<string> {
-	const files = await readOwnerBundle(outDir);
-	const src = files.get(`${name}.js`);
+function getBundle(result: BuildWorkflowsResult, name: string): string {
+	const src = result.files.get(`${name}.js`);
 	if (!src) {
-		throw new Error(`${name}.js missing from owner bundle`);
+		throw new Error(`${name}.js missing from build result`);
 	}
 	return src;
 }
@@ -192,9 +128,6 @@ export const a = defineWorkflow({ name: "a" });
 export const b = defineWorkflow({ name: "b" });
 `;
 
-// Alias-only: `inner` IS declared via `export const` (so the AST transform
-// injects `name: "inner"`), but `alias` exports the same callable under a
-// second name. The plugin's identity-set check catches this at build time.
 const ACTION_TWO_NAMES = `
 import { action, defineWorkflow, z } from "@workflow-engine/sdk";
 
@@ -209,10 +142,6 @@ export const inner = action({
 export { inner as alias };
 `;
 
-// Detached export: the variable is declared with `const` (not `export const`)
-// and then exported via a named-export specifier. The AST transform only
-// matches `export const X = action({...})` declarations, so `inner` here is
-// not transformed; the post-bundle "every action has a name" check catches it.
 const ACTION_DETACHED_EXPORT = `
 import { action, defineWorkflow, z } from "@workflow-engine/sdk";
 
@@ -239,9 +168,6 @@ export default action({
 });
 `;
 
-// Factory wrapper: the action() call is hidden inside a helper, so the AST
-// transform cannot see it. Runtime detection kicks in via the "every action
-// has a name" check.
 const ACTION_FACTORY_WRAPPER = `
 import { action, defineWorkflow, z } from "@workflow-engine/sdk";
 
@@ -353,66 +279,37 @@ export { inner as $weird };
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("workflowPlugin: brand-based discovery", () => {
-	it("emits per-workflow bundle and manifest with actions and triggers", async () => {
-		const { outDir } = await buildFixture({
+describe("buildWorkflows: brand-based discovery", () => {
+	it("returns per-workflow JS bytes and manifest with actions and triggers", async () => {
+		const { result } = await buildFixture({
 			files: { "basic.ts": BASIC_WORKFLOW },
 			workflows: ["./basic.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "basic")) as {
-			name: string;
-			module: string;
-			sha: string;
-			env: Record<string, string>;
-			actions: Array<{ name: string; input: unknown; output: unknown }>;
-			triggers: Array<{
-				name: string;
-				type: string;
-				method: string;
-				body: unknown;
-			}>;
-		};
+		const manifest = getManifest(result, "basic");
 		expect(manifest.name).toBe("basic");
 		expect(manifest.module).toBe("basic.js");
-		// sha is a 64-char hex SHA-256 of the bundle source.
 		expect(manifest.sha).toMatch(SHA256_HEX_RE);
 		expect(manifest.env).toEqual({});
 		expect(manifest.actions).toHaveLength(1);
 		expect(manifest.actions[0]?.name).toBe("sendNotification");
 		expect(manifest.triggers).toHaveLength(1);
 		expect(manifest.triggers[0]?.name).toBe("onEvent");
-		expect(manifest.triggers[0]?.type).toBe("http");
-		expect(manifest.triggers[0]?.method).toBe("POST");
-		// No path, params, or query fields on HTTP trigger manifest entries.
-		expect(
-			(manifest.triggers[0] as Record<string, unknown>).path,
-		).toBeUndefined();
-		expect(
-			(manifest.triggers[0] as Record<string, unknown>).params,
-		).toBeUndefined();
-		expect(
-			(manifest.triggers[0] as Record<string, unknown>).query,
-		).toBeUndefined();
+		const trigger = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(trigger.type).toBe("http");
+		expect(trigger.method).toBe("POST");
+		expect(trigger.path).toBeUndefined();
+		expect(trigger.params).toBeUndefined();
+		expect(trigger.query).toBeUndefined();
 
-		const bundleSrc = await readWorkflowBundleSource(outDir, "basic");
-		// Bundle is an ES module with the original named exports preserved.
+		const bundleSrc = getBundle(result, "basic");
 		expect(bundleSrc).toMatch(EXPORT_ON_EVENT_RE);
-		// The AST transform injects `name: "sendNotification"` into the
-		// `action({...})` call at build time. Confirm the literal appears
-		// in the emitted bundle source.
 		expect(bundleSrc).toContain('name: "sendNotification"');
 		expect(bundleSrc).toMatch(EXPORT_SEND_NOTIFICATION_RE);
 
-		// sha matches SHA-256 of the bundle source bytes — verify by recomputing.
 		const { createHash } = await import("node:crypto");
 		const expectedSha = createHash("sha256").update(bundleSrc).digest("hex");
 		expect(manifest.sha).toBe(expectedSha);
 
-		// Post-PR 2 (sandbox-plugin-architecture §2.2/2.6): the emitted bundle
-		// must route action dispatch through `globalThis.__sdk.dispatchAction`
-		// (installed as a locked global by the sandbox-store's dispatcher
-		// IIFE). Legacy `__dispatchAction` / `__hostCallAction` / `__emitEvent`
-		// references must NOT appear in owner bundles.
 		expect(bundleSrc).toContain("globalThis.__sdk");
 		expect(bundleSrc).not.toContain("__dispatchAction");
 		expect(bundleSrc).not.toContain("__hostCallAction");
@@ -420,18 +317,14 @@ describe("workflowPlugin: brand-based discovery", () => {
 	});
 
 	it("generates JSON Schema for input, output, and trigger body", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "basic.ts": BASIC_WORKFLOW },
 			workflows: ["./basic.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "basic")) as {
-			actions: Array<{
-				input: Record<string, unknown>;
-				output: Record<string, unknown>;
-			}>;
-			triggers: Array<{ body: Record<string, unknown> }>;
-		};
-		const inputSchema = manifest.actions[0]?.input as {
+		const manifest = getManifest(result, "basic");
+		const action = manifest.actions[0];
+		expect(action).toBeDefined();
+		const inputSchema = action?.input as {
 			type: string;
 			properties: Record<string, unknown>;
 			required: string[];
@@ -440,14 +333,15 @@ describe("workflowPlugin: brand-based discovery", () => {
 		expect(inputSchema.properties).toHaveProperty("message");
 		expect(inputSchema.required).toContain("message");
 
-		const outputSchema = manifest.actions[0]?.output as {
+		const outputSchema = action?.output as {
 			type: string;
 			properties: Record<string, unknown>;
 		};
 		expect(outputSchema.type).toBe("object");
 		expect(outputSchema.properties).toHaveProperty("ok");
 
-		const bodySchema = manifest.triggers[0]?.body as {
+		const trigger = manifest.triggers[0] as { body: Record<string, unknown> };
+		const bodySchema = trigger.body as {
 			type: string;
 			properties: Record<string, unknown>;
 		};
@@ -456,37 +350,30 @@ describe("workflowPlugin: brand-based discovery", () => {
 	});
 });
 
-describe("workflowPlugin: name derivation", () => {
+describe("buildWorkflows: name derivation", () => {
 	it("defaults workflow name to the file's filestem", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "no_define.ts": NO_DEFINE_WORKFLOW },
 			workflows: ["./no_define.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "no_define")) as {
-			name: string;
-			module: string;
-			env: Record<string, string>;
-		};
+		const manifest = getManifest(result, "no_define");
 		expect(manifest.name).toBe("no_define");
 		expect(manifest.module).toBe("no_define.js");
 		expect(manifest.env).toEqual({});
 	});
 
 	it("uses explicit defineWorkflow({name}) when provided", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "wf.ts": NAMED_WORKFLOW },
 			workflows: ["./wf.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "custom-name")) as {
-			name: string;
-			module: string;
-		};
+		const manifest = getManifest(result, "custom-name");
 		expect(manifest.name).toBe("custom-name");
 		expect(manifest.module).toBe("custom-name.js");
 	});
 });
 
-describe("workflowPlugin: HTTP trigger entry", () => {
+describe("buildWorkflows: HTTP trigger entry", () => {
 	it("fails the build when an HTTP trigger export name contains non-URL-safe characters", async () => {
 		await expect(
 			buildFixture({
@@ -497,67 +384,51 @@ describe("workflowPlugin: HTTP trigger entry", () => {
 	});
 
 	it("accepts an HTTP trigger export name with a leading underscore", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "u.ts": TRIGGER_UNDERSCORE_PREFIX_NAME },
 			workflows: ["./u.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "u")) as {
-			triggers: Array<{ name: string }>;
-		};
+		const manifest = getManifest(result, "u");
 		expect(manifest.triggers[0]?.name).toBe("_privateHook");
 	});
 });
 
-describe("workflowPlugin: cron trigger entry", () => {
+describe("buildWorkflows: cron trigger entry", () => {
 	it("emits cron descriptor with author-supplied tz", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "cr.ts": CRON_WORKFLOW_EXPLICIT_TZ },
 			workflows: ["./cr.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "cr")) as {
-			triggers: Array<{
-				name: string;
-				type: string;
-				schedule?: string;
-				tz?: string;
-				inputSchema?: Record<string, unknown>;
-				outputSchema?: Record<string, unknown>;
-				path?: string;
-			}>;
-		};
+		const manifest = getManifest(result, "cr");
 		expect(manifest.triggers).toHaveLength(1);
-		const t = manifest.triggers[0];
-		expect(t?.name).toBe("daily");
-		expect(t?.type).toBe("cron");
-		expect(t?.schedule).toBe("0 9 * * *");
-		expect(t?.tz).toBe("Europe/Berlin");
-		expect(t?.inputSchema).toBeDefined();
-		expect(t?.outputSchema).toBeDefined();
-		// No HTTP-specific fields leak into a cron descriptor.
-		expect(t?.path).toBeUndefined();
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("daily");
+		expect(t.type).toBe("cron");
+		expect(t.schedule).toBe("0 9 * * *");
+		expect(t.tz).toBe("Europe/Berlin");
+		expect(t.inputSchema).toBeDefined();
+		expect(t.outputSchema).toBeDefined();
+		expect(t.path).toBeUndefined();
 	});
 
 	it("defaults cron tz to the build host IANA zone when omitted", async () => {
 		const hostTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "cr2.ts": CRON_WORKFLOW_DEFAULT_TZ },
 			workflows: ["./cr2.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "cr2")) as {
-			triggers: Array<{ name: string; tz?: string }>;
-		};
-		expect(manifest.triggers[0]?.name).toBe("heartbeat");
-		expect(manifest.triggers[0]?.tz).toBe(hostTz);
+		const manifest = getManifest(result, "cr2");
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("heartbeat");
+		expect(t.tz).toBe(hostTz);
 	});
 
 	it("emits both HTTP and cron triggers in the same workflow", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "mixed.ts": CRON_AND_HTTP_WORKFLOW },
 			workflows: ["./mixed.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "mixed")) as {
-			triggers: Array<{ name: string; type: string }>;
-		};
+		const manifest = getManifest(result, "mixed");
 		expect(manifest.triggers).toHaveLength(2);
 		const types = new Set(manifest.triggers.map((t) => t.type));
 		expect(types.has("http")).toBe(true);
@@ -565,56 +436,38 @@ describe("workflowPlugin: cron trigger entry", () => {
 	});
 });
 
-describe("workflowPlugin: manual trigger entry", () => {
+describe("buildWorkflows: manual trigger entry", () => {
 	it("emits manual descriptor with default input/output schemas", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "mt.ts": MANUAL_WORKFLOW_DEFAULT_SCHEMAS },
 			workflows: ["./mt.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "mt")) as {
-			triggers: Array<{
-				name: string;
-				type: string;
-				inputSchema?: Record<string, unknown>;
-				outputSchema?: Record<string, unknown>;
-				method?: string;
-				schedule?: string;
-				tz?: string;
-			}>;
-		};
+		const manifest = getManifest(result, "mt");
 		expect(manifest.triggers).toHaveLength(1);
-		const t = manifest.triggers[0];
-		expect(t?.name).toBe("rerun");
-		expect(t?.type).toBe("manual");
-		expect(t?.inputSchema).toBeDefined();
-		expect(t?.outputSchema).toBeDefined();
-		// No http- or cron-specific fields leak into a manual descriptor.
-		expect(t?.method).toBeUndefined();
-		expect(t?.schedule).toBeUndefined();
-		expect(t?.tz).toBeUndefined();
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("rerun");
+		expect(t.type).toBe("manual");
+		expect(t.inputSchema).toBeDefined();
+		expect(t.outputSchema).toBeDefined();
+		expect(t.method).toBeUndefined();
+		expect(t.schedule).toBeUndefined();
+		expect(t.tz).toBeUndefined();
 	});
 
 	it("emits manual descriptor with author-provided input/output schemas", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "mt2.ts": MANUAL_WORKFLOW_AUTHOR_SCHEMAS },
 			workflows: ["./mt2.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "mt2")) as {
-			triggers: Array<{
-				name: string;
-				type: string;
-				inputSchema: Record<string, unknown>;
-				outputSchema: Record<string, unknown>;
-			}>;
+		const manifest = getManifest(result, "mt2");
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("reprocessOrder");
+		expect(t.type).toBe("manual");
+		const inputSchema = t.inputSchema as {
+			properties?: Record<string, unknown>;
 		};
-		expect(manifest.triggers).toHaveLength(1);
-		const t = manifest.triggers[0];
-		expect(t?.name).toBe("reprocessOrder");
-		expect(t?.type).toBe("manual");
-		const props = (t?.inputSchema as { properties?: Record<string, unknown> })
-			.properties;
-		expect(props).toBeDefined();
-		expect(props?.id).toBeDefined();
+		expect(inputSchema.properties).toBeDefined();
+		expect(inputSchema.properties?.id).toBeDefined();
 	});
 
 	it("fails the build when a manual trigger export name is not URL-safe", async () => {
@@ -627,7 +480,7 @@ describe("workflowPlugin: manual trigger entry", () => {
 	});
 });
 
-describe("workflowPlugin: build failures", () => {
+describe("buildWorkflows: build failures", () => {
 	it("fails when more than one defineWorkflow is exported", async () => {
 		await expect(
 			buildFixture({
@@ -679,9 +532,6 @@ import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow();
 
-// Bypass the SDK's type check to simulate a mis-constructed trigger reaching
-// the plugin. The plugin guards against this even though the SDK's types
-// require handler.
 // biome-ignore lint/suspicious/noExplicitAny: test fixture
 export const broken = httpTrigger({ path: "x" } as any);
 `;
@@ -699,7 +549,6 @@ import { action, defineWorkflow } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow();
 
-// Intentionally passing a non-Zod value as the schema.
 export const bad = action({
 	// biome-ignore lint/suspicious/noExplicitAny: test fixture
 	input: { not: "a zod schema" } as any,
@@ -717,7 +566,7 @@ export const bad = action({
 	});
 });
 
-describe("workflowPlugin: secret bindings", () => {
+describe("buildWorkflows: secret bindings", () => {
 	const WITH_SECRETS = `
 import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";
 
@@ -753,24 +602,17 @@ export const call = action({
 `;
 
 	it("routes secret bindings into manifest.secretBindings, not manifest.env", async () => {
-		// Build-time presence check (1a9bc48e) requires both secret env vars
-		// to be set; values are NOT embedded in the bundle (sentinel-encoded).
 		// biome-ignore lint/style/noProcessEnv: test-only; restored below
 		process.env.TOKEN = "build-time-presence-only";
 		// biome-ignore lint/style/noProcessEnv: test-only; restored below
 		process.env.STRIPE_KEY = "build-time-presence-only";
 		try {
-			const { outDir } = await buildFixture({
+			const { result } = await buildFixture({
 				files: { "s.ts": WITH_SECRETS },
 				workflows: ["./s.ts"],
 			});
-			const manifest = (await readWorkflowManifest(outDir, "s")) as {
-				env: Record<string, string>;
-				secretBindings?: string[];
-			};
-			// Plaintext env stays in manifest.env.
+			const manifest = getManifest(result, "s");
 			expect(manifest.env).toEqual({ REGION: "us-east-1" });
-			// Secret envNames land in manifest.secretBindings (order not guaranteed).
 			expect(manifest.secretBindings).toBeDefined();
 			expect(new Set(manifest.secretBindings)).toEqual(
 				new Set(["TOKEN", "STRIPE_KEY"]),
@@ -784,21 +626,17 @@ export const call = action({
 	});
 
 	it("does not include a secret's plaintext value anywhere in the bundle", async () => {
-		// Set a value in the host env that would be resolved for a plaintext
-		// binding but MUST be skipped for a secret binding.
 		// biome-ignore lint/style/noProcessEnv: test-only; restored below
 		process.env.TOKEN = "SHOULD_NOT_APPEAR";
 		// biome-ignore lint/style/noProcessEnv: test-only; restored below
 		process.env.STRIPE_KEY = "ALSO_SHOULD_NOT_APPEAR";
 		try {
-			const { outDir } = await buildFixture({
+			const { result } = await buildFixture({
 				files: { "s.ts": WITH_SECRETS },
 				workflows: ["./s.ts"],
 			});
-			const bundleSrc = await readWorkflowBundleSource(outDir, "s");
-			const manifestRaw = JSON.stringify(
-				await readWorkflowManifest(outDir, "s"),
-			);
+			const bundleSrc = getBundle(result, "s");
+			const manifestRaw = JSON.stringify(getManifest(result, "s"));
 			expect(bundleSrc).not.toContain("SHOULD_NOT_APPEAR");
 			expect(manifestRaw).not.toContain("SHOULD_NOT_APPEAR");
 			expect(bundleSrc).not.toContain("ALSO_SHOULD_NOT_APPEAR");
@@ -812,15 +650,34 @@ export const call = action({
 	});
 
 	it("omits secretBindings when no secret env is declared", async () => {
-		const { outDir } = await buildFixture({
+		const { result } = await buildFixture({
 			files: { "p.ts": PLAINTEXT_ONLY },
 			workflows: ["./p.ts"],
 		});
-		const manifest = (await readWorkflowManifest(outDir, "p")) as {
-			env: Record<string, string>;
-			secretBindings?: string[];
-		};
+		const manifest = getManifest(result, "p");
 		expect(manifest.env).toEqual({ REGION: "us-east-1" });
 		expect(manifest.secretBindings).toBeUndefined();
+	});
+});
+
+describe("buildWorkflows: artifact shape", () => {
+	it("returns files keyed on workflow name with .js suffix", async () => {
+		const { result } = await buildFixture({
+			files: { "basic.ts": BASIC_WORKFLOW },
+			workflows: ["./basic.ts"],
+		});
+		expect([...result.files.keys()]).toEqual(["basic.js"]);
+	});
+
+	it("does not write anything to dist/", async () => {
+		const { dir, result } = await buildFixture({
+			files: { "basic.ts": BASIC_WORKFLOW },
+			workflows: ["./basic.ts"],
+		});
+		// buildWorkflows is in-memory; no dist/ should appear.
+		const { existsSync } = await import("node:fs");
+		expect(existsSync(join(dir, "dist"))).toBe(false);
+		expect(result.files.size).toBeGreaterThan(0);
+		expect(result.manifest.workflows.length).toBeGreaterThan(0);
 	});
 });

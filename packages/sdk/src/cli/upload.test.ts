@@ -92,9 +92,7 @@ async function createProjectWithBundle(): Promise<{
 	cleanup: () => Promise<void>;
 }> {
 	const cwd = await mkdtemp(join(tmpdir(), "wfe-cli-upload-"));
-	const distDir = join(cwd, "dist");
-	await mkdir(distDir);
-	await writeFile(join(distDir, "bundle.tar.gz"), "workflow-bundle-contents");
+	await mkdir(join(cwd, "src"));
 	await writeFile(
 		join(cwd, "package.json"),
 		JSON.stringify({ type: "module", name: "wfe-cli-upload-test" }),
@@ -102,14 +100,18 @@ async function createProjectWithBundle(): Promise<{
 	return { cwd, cleanup: async () => {} };
 }
 
-// The real `upload()` invokes `build()` first, which requires src/. For
-// unit-testing the upload logic in isolation we mock build().
-vi.mock("./build.js", async () => {
+const FAKE_TAR_BYTES = new TextEncoder().encode("workflow-bundle-contents");
+
+// The real `upload()` invokes `bundle()` to produce the tar bytes via
+// buildWorkflows + sealing. For unit-testing the upload-only logic
+// (auth header wiring, error formatting, response handling), mock bundle()
+// to return a fake byte array instead of running Vite.
+vi.mock("./bundle.js", async () => {
 	const actual =
-		await vi.importActual<typeof import("./build.js")>("./build.js");
+		await vi.importActual<typeof import("./bundle.js")>("./bundle.js");
 	return {
 		...actual,
-		build: vi.fn(async () => {}),
+		bundle: vi.fn(async () => FAKE_TAR_BYTES),
 	};
 });
 
@@ -208,13 +210,13 @@ describe("upload", () => {
 		expect(runtime.requests).toHaveLength(0);
 	});
 
-	it("rejects when --user and GITHUB_TOKEN are both supplied, before building", async () => {
+	it("rejects when --user and GITHUB_TOKEN are both supplied, before bundling", async () => {
 		const { cwd } = await createProjectWithBundle();
 		// biome-ignore lint/style/noProcessEnv: test needs to manipulate the CLI's documented env var
 		process.env.GITHUB_TOKEN = "ghp_env";
-		const buildModule = await import("./build.js");
-		const buildSpy = vi.mocked(buildModule.build);
-		buildSpy.mockClear();
+		const bundleModule = await import("./bundle.js");
+		const bundleSpy = vi.mocked(bundleModule.bundle);
+		bundleSpy.mockClear();
 
 		await expect(
 			upload({
@@ -226,7 +228,7 @@ describe("upload", () => {
 			}),
 		).rejects.toThrow(MUTUALLY_EXCLUSIVE_RE);
 		expect(runtime.requests).toHaveLength(0);
-		expect(buildSpy).not.toHaveBeenCalled();
+		expect(bundleSpy).not.toHaveBeenCalled();
 	});
 
 	it("surfaces 401 as a failure", async () => {

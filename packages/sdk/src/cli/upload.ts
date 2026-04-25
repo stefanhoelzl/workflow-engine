@@ -1,11 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { build } from "./build.js";
-import {
-	MissingSecretEnvError,
-	PublicKeyFetchError,
-	sealBundleIfNeeded,
-} from "./seal.js";
+import { bundle, MissingSecretEnvError } from "./bundle.js";
+import { PublicKeyFetchError } from "./seal-http.js";
 
 const TRAILING_SLASHES = /\/+$/;
 const OWNER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
@@ -160,7 +154,7 @@ async function uploadBundleBytes(
 		: { owner, repo, status: response.status, error };
 }
 
-function sealFailureToUploadFailure(
+function bundleFailureToUploadFailure(
 	err: unknown,
 	owner: string,
 	repo: string,
@@ -189,9 +183,6 @@ function resolveAuth(options: UploadOptions): {
 		);
 	}
 
-	// Resolve GITHUB_TOKEN from env BEFORE running the build so that mutual
-	// exclusion with --user is caught early per cli/spec.md §Authentication
-	// (no upload request, no build, when the auth inputs conflict).
 	// biome-ignore lint/style/noProcessEnv: reading GITHUB_TOKEN is the documented auth input
 	const envToken = process.env.GITHUB_TOKEN?.trim();
 	const envTokenValue = envToken && envToken.length > 0 ? envToken : undefined;
@@ -217,22 +208,17 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 		throw new Error(`repo "${options.repo}" must match [a-zA-Z0-9._-]{1,100}`);
 	}
 
-	await build({ cwd: options.cwd });
-
-	const bundlePath = join(options.cwd, "dist", "bundle.tar.gz");
-	const bundleBytes = await readFile(bundlePath);
-
-	let toUpload: Uint8Array = bundleBytes;
+	let tarBytes: Uint8Array;
 	try {
-		// Sealing fetches the public-key endpoint — server-side auth is the
-		// same bearer/user pair the upload will use.
-		toUpload = await sealBundleIfNeeded(bundleBytes, {
+		tarBytes = await bundle({
+			cwd: options.cwd,
 			url: options.url,
 			owner: options.owner,
-			auth,
+			user: auth.user,
+			token: auth.token,
 		});
 	} catch (err) {
-		const failure = sealFailureToUploadFailure(
+		const failure = bundleFailureToUploadFailure(
 			err,
 			options.owner,
 			options.repo,
@@ -246,7 +232,7 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 		options.url,
 		options.owner,
 		options.repo,
-		toUpload,
+		tarBytes,
 		auth,
 	);
 	if (failure === null) {
