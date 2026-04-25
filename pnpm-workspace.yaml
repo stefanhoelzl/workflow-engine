@@ -7,3 +7,4 @@ allowBuilds:
   protobufjs: true
 patchedDependencies:
   fetch-blob@4.0.0: patches/fetch-blob@4.0.0.patch
+  quickjs-wasi@2.2.0: patches/quickjs-wasi@2.2.0.patch

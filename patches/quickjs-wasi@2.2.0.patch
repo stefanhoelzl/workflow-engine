@@ -1,0 +1,33 @@
+diff --git a/dist/index.js b/dist/index.js
+index 51cc524e9ff2e1fc447cccfd97339366caa83b0f..54b2ca14046bad5e59b492c934c689017e772302 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1445,9 +1445,15 @@ export class QuickJS {
+         if (Array.isArray(value)) {
+             const arr = this.newArray();
+             for (let i = 0; i < value.length; i++) {
+-                const elemHandle = this.hostToHandle(value[i]);
++                const elem = value[i];
++                const elemHandle = this.hostToHandle(elem);
+                 this.exports.qjs_set_prop_uint32(arr.ptr, i, elemHandle.ptr);
+-                elemHandle.dispose();
++                // hostToHandle returns the VM-owned cached JSValueHandle for
++                // null/undefined/true/false; disposing it frees the underlying
++                // JSValue and corrupts every later read of that singleton.
++                if (elem !== null && elem !== undefined && elem !== true && elem !== false) {
++                    elemHandle.dispose();
++                }
+             }
+             return arr;
+         }
+@@ -1456,7 +1462,9 @@ export class QuickJS {
+             for (const [key, val] of Object.entries(value)) {
+                 const valHandle = this.hostToHandle(val);
+                 obj.setProp(key, valHandle);
+-                valHandle.dispose();
++                if (val !== null && val !== undefined && val !== true && val !== false) {
++                    valHandle.dispose();
++                }
+             }
+             return obj;
+         }
