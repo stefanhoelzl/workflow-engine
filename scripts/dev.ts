@@ -24,6 +24,7 @@ const runtimeWatchDirs = [
 	resolve(rootDir, "packages/runtime/src"),
 	resolve(rootDir, "packages/core/src"),
 	sandboxSrcDir,
+	resolve(rootDir, "packages/sandbox-stdlib/src"),
 	resolve(rootDir, "packages/sdk/src"),
 ];
 
