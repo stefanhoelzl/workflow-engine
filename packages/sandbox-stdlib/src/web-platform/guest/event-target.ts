@@ -16,6 +16,25 @@
 
 import { Event, EventTarget } from "event-target-shim";
 
+class CustomEvent<
+	T = unknown,
+> extends (Event as unknown as typeof globalThis.Event) {
+	readonly detail: T;
+
+	constructor(
+		type: string,
+		init: {
+			detail?: T;
+			bubbles?: boolean;
+			cancelable?: boolean;
+			composed?: boolean;
+		} = {},
+	) {
+		super(type, init);
+		this.detail = (init.detail ?? null) as T;
+	}
+}
+
 class ErrorEvent extends (Event as unknown as typeof globalThis.Event) {
 	readonly message: string;
 	readonly filename: string;
@@ -217,6 +236,7 @@ for (const method of [
 for (const [name, value] of [
 	["EventTarget", EventTarget],
 	["Event", Event],
+	["CustomEvent", CustomEvent],
 	["ErrorEvent", ErrorEvent],
 	["AbortController", AbortController],
 	["AbortSignal", AbortSignal],
