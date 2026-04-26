@@ -1,4 +1,4 @@
-import type { Logger } from "./index.js";
+import type { Logger } from "./logger.js";
 import type { WorkerToMain } from "./protocol.js";
 
 // Routes a WorkerToMain 'log' message to the injected Logger.

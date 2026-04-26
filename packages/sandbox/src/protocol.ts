@@ -1,4 +1,4 @@
-import type { SandboxEvent } from "@workflow-engine/core";
+import type { InvocationEventError } from "@workflow-engine/core";
 import type { PluginDescriptor } from "./plugin.js";
 
 interface SerializedError {
@@ -11,6 +11,33 @@ interface SerializedError {
 	// reconstructed as own properties on the Error re-thrown into the guest.
 	issues?: unknown;
 	data?: Record<string, unknown>;
+}
+
+// Wire-level framing discriminator on every WireEvent. Sandbox's main-side
+// RunSequencer reads `type` directly to decide framing — kind strings are
+// free-form metadata and SHALL NOT be parsed for framing decisions.
+//
+// SDK callers pass `"leaf" | "open" | { close: CallId }`; the bridge
+// transforms `"open"` into `{ open: <mintedCallId> }` before posting to main.
+// See openspec/specs/sandbox `Explicit framing via the type field on wire events`.
+type WireFraming =
+	| "leaf"
+	| { readonly open: number }
+	| { readonly close: number };
+
+// Worker → Sandbox wire payload. Carries the bridge-stamped intrinsic fields
+// (`kind`, `name`, `ts`, `at`, payload) plus the typed framing discriminator.
+// Sandbox stamps `seq` and `ref` from this, drops `type` and the embedded
+// callId, and forwards a SandboxEvent to `sb.onEvent`.
+interface WireEvent {
+	readonly kind: string;
+	readonly name: string;
+	readonly ts: number;
+	readonly at: string;
+	readonly input?: unknown;
+	readonly output?: unknown;
+	readonly error?: InvocationEventError;
+	readonly type: WireFraming;
 }
 
 type RunResultPayload =
@@ -40,7 +67,7 @@ type MainToWorker =
 type WorkerToMain =
 	| { type: "ready" }
 	| { type: "init-error"; error: SerializedError }
-	| { type: "event"; event: SandboxEvent }
+	| { type: "event"; event: WireEvent }
 	| { type: "done"; payload: RunResultPayload }
 	| {
 			type: "log";
@@ -49,4 +76,11 @@ type WorkerToMain =
 			meta?: Record<string, unknown>;
 	  };
 
-export type { MainToWorker, RunResultPayload, SerializedError, WorkerToMain };
+export type {
+	MainToWorker,
+	RunResultPayload,
+	SerializedError,
+	WireEvent,
+	WireFraming,
+	WorkerToMain,
+};

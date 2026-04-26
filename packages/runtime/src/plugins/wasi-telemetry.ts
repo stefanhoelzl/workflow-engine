@@ -34,14 +34,16 @@ function worker(ctx: SandboxContext): PluginSetup {
 	return {
 		wasiHooks: {
 			clockTimeGet: (args: WasiClockArgs): undefined => {
-				ctx.emit("wasi.clock_time_get", "", {
+				ctx.emit("system.call", {
+					name: "wasi.clock_time_get",
 					input: { label: args.label },
 					output: { ns: args.defaultNs },
 				});
 				return;
 			},
 			randomGet: (args: WasiRandomArgs): undefined => {
-				ctx.emit("wasi.random_get", "", {
+				ctx.emit("system.call", {
+					name: "wasi.random_get",
 					input: { bufLen: args.bufLen },
 					output: {
 						bufLen: args.bufLen,
@@ -51,7 +53,8 @@ function worker(ctx: SandboxContext): PluginSetup {
 				return;
 			},
 			fdWrite: (args: WasiFdWriteArgs): void => {
-				ctx.emit("wasi.fd_write", "", {
+				ctx.emit("system.call", {
+					name: "wasi.fd_write",
 					input: { fd: args.fd, text: args.text },
 				});
 			},

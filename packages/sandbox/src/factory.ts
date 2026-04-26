@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-	type Logger,
-	type Sandbox,
-	type SandboxOptions,
-	sandbox,
-} from "./sandbox.js";
+import type { Logger } from "./logger.js";
+import { type Sandbox, type SandboxOptions, sandbox } from "./sandbox.js";
 
 /** @deprecated Kept as an alias for `SandboxOptions`. Remove in the next breaking change. */
 type FactoryCreateOptions = Omit<SandboxOptions, "logger">;

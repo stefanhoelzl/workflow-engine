@@ -363,7 +363,7 @@ function buildGuestFunctionHandler(
 			// Single-leaf event before handler invocation; handler result is
 			// NOT wrapped so caller controls event shape explicitly via
 			// ctx.emit.
-			ctx.emit(log.event, eventName, { input: eventInput });
+			ctx.emit(log.event, { name: eventName, input: eventInput });
 			const raw = invoke();
 			return marshalResult(vm, descriptor.name, descriptor.result, raw);
 		}
@@ -373,8 +373,7 @@ function buildGuestFunctionHandler(
 		// Promise-returning guest functions become mainstream.
 		const raw = ctx.request(
 			log.request,
-			eventName,
-			{ input: eventInput },
+			{ name: eventName, input: eventInput },
 			invoke,
 		);
 		return marshalResult(vm, descriptor.name, descriptor.result, raw);

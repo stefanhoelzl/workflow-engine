@@ -1,4 +1,5 @@
 import type {
+	CallId,
 	PluginRunResult,
 	PluginSetup,
 	RunInput,
@@ -9,43 +10,53 @@ import { serializeLifecycleError } from "@workflow-engine/sandbox";
 /**
  * Emits `trigger.request`/`trigger.response`/`trigger.error` around every
  * guest-export invocation via the sandbox's run-lifecycle hooks:
- *   - `onBeforeRunStarted` opens the frame (`createsFrame: true`) so nested
- *     emissions (fetch.*, timer.*, action.*) parent under `trigger.request`.
- *   - `onRunFinished` closes the frame with the terminal kind.
+ *   - `onBeforeRunStarted` opens the frame (`type: "open"`) and captures the
+ *     CallId returned from `ctx.emit` into setup-state.
+ *   - `onRunFinished` closes the frame by passing the captured CallId on
+ *     `type: { close: callId }`. The pairing is structurally enforced by
+ *     the SDK type system.
  * Composition without this plugin produces silent runs.
  */
 const name = "trigger";
 
 function worker(ctx: SandboxContext): PluginSetup {
+	// Captured between onBeforeRunStarted (open) and onRunFinished (close).
+	// PluginSetup host-side state is allowed to persist between hooks per
+	// SECURITY.md R-4. Sandbox is single-run-at-a-time, so a single slot is
+	// sufficient.
+	let openCallId: CallId | null = null;
+
 	return {
 		onBeforeRunStarted(runInput: RunInput): boolean {
-			ctx.emit(
-				"trigger.request",
-				runInput.name,
-				{ input: runInput.input },
-				{ createsFrame: true },
-			);
+			openCallId = ctx.emit("trigger.request", {
+				name: runInput.name,
+				input: runInput.input,
+				type: "open",
+			});
 			return true;
 		},
 		onRunFinished(result: PluginRunResult, runInput: RunInput): void {
-			if (result.ok) {
-				ctx.emit(
-					"trigger.response",
-					runInput.name,
-					{ input: runInput.input, output: result.output },
-					{ closesFrame: true },
-				);
+			if (openCallId === null) {
+				// onBeforeRunStarted didn't fire — nothing to close.
 				return;
 			}
-			ctx.emit(
-				"trigger.error",
-				runInput.name,
-				{
+			const callId = openCallId;
+			openCallId = null;
+			if (result.ok) {
+				ctx.emit("trigger.response", {
+					name: runInput.name,
 					input: runInput.input,
-					error: serializeLifecycleError(result.error),
-				},
-				{ closesFrame: true },
-			);
+					output: result.output,
+					type: { close: callId },
+				});
+				return;
+			}
+			ctx.emit("trigger.error", {
+				name: runInput.name,
+				input: runInput.input,
+				error: serializeLifecycleError(result.error),
+				type: { close: callId },
+			});
 		},
 	};
 }

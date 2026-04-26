@@ -3,14 +3,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { SandboxEvent } from "@workflow-engine/core";
 import { dispatchLog } from "./log-dispatch.js";
+import type { Logger } from "./logger.js";
 import type { PluginDescriptor } from "./plugin.js";
 import { serializePluginDescriptors } from "./plugin-compose.js";
 import type {
 	MainToWorker,
-	RunResultPayload,
 	SerializedError,
 	WorkerToMain,
 } from "./protocol.js";
+import { createRunSequencer, type RunSequencer } from "./run-sequencer.js";
 
 function resolveWorkerUrl(): URL {
 	const here = dirname(fileURLToPath(import.meta.url));
@@ -24,13 +25,6 @@ type RunResult =
 	| { ok: true; result: unknown }
 	| { ok: false; error: { message: string; stack: string } };
 
-interface Logger {
-	info(message: string, meta?: Record<string, unknown>): void;
-	warn(message: string, meta?: Record<string, unknown>): void;
-	error(message: string, meta?: Record<string, unknown>): void;
-	debug(message: string, meta?: Record<string, unknown>): void;
-}
-
 interface SandboxOptions {
 	readonly source: string;
 	readonly plugins: readonly PluginDescriptor[];
@@ -40,8 +34,9 @@ interface SandboxOptions {
 	// to QuickJS.create({ memoryLimit }).
 	readonly memoryLimit?: number;
 	// Optional sink for WorkerToMain log messages (quickjs engine diagnostics
-	// from fd_write + plugin dangling-frame warnings). Omit to silently drop
-	// engine log lines.
+	// from fd_write + plugin dangling-frame warnings) and main-side
+	// RunSequencer warnings (close-without-open, event-outside-run, etc).
+	// Omit to silently drop log lines.
 	readonly logger?: Logger;
 }
 
@@ -84,7 +79,7 @@ function errorFromSerialized(err: SerializedError): Error {
 	return e;
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, run/dispose, event subscription
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, run/dispose, event subscription, sequencer wiring
 async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	const {
 		source,
@@ -98,24 +93,53 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 
 	let onEventCb: ((event: SandboxEvent) => void) | null = null;
 
-	// Events from the worker arrive as `SandboxEvent` (no owner/workflow/
-	// workflowSha/id). They flow straight to the subscriber — the runtime
-	// widens by stamping invocation metadata in its `sb.onEvent` handler,
-	// so the sandbox package stays ignorant of runtime identity.
-	function dispatchEvent(event: SandboxEvent): void {
+	// Main-side RunSequencer owns seq/ref stamping. One per Sandbox; reused
+	// across runs (start() opens the window; finish() zeroes state).
+	const sequencer: RunSequencer = createRunSequencer(logger);
+
+	// Forward an already-stamped SandboxEvent (from sequencer.next or
+	// sequencer.finish synthesis) to the consumer.
+	function forwardSandboxEvent(event: SandboxEvent): void {
 		if (!onEventCb) {
 			return;
 		}
 		try {
 			onEventCb(event);
-		} catch {
-			// Swallow callback errors so they don't kill the worker listener.
+		} catch (err) {
+			// Swallow callback errors so they don't kill the worker listener,
+			// but surface via logger so a buggy bus consumer is visible to
+			// operators rather than failing silently.
+			logger?.error("sandbox.onEvent_callback_failed", {
+				kind: event.kind,
+				name: event.name,
+				seq: event.seq,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	// Stamp an incoming WireEvent via the sequencer and forward the
+	// resulting SandboxEvent (or drop if sequencer returned null:
+	// out-of-window or close-without-matching-open — both already logged
+	// by the sequencer).
+	function dispatchWireEvent(wire: WorkerToMain & { type: "event" }): void {
+		try {
+			const stamped = sequencer.next(wire.event);
+			if (stamped !== null) {
+				forwardSandboxEvent(stamped);
+			}
+		} catch (err) {
+			logger?.error("sandbox.stamp_failed", {
+				kind: wire.event.kind,
+				name: wire.event.name,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 	}
 
 	const onPersistentMessage = (msg: WorkerToMain) => {
 		if (msg.type === "event") {
-			dispatchEvent(msg.event);
+			dispatchWireEvent(msg);
 			return;
 		}
 		if (msg.type === "log") {
@@ -202,11 +226,11 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	// --- Run dispatch ---
 
 	const pendingRunRejects = new Set<(err: Error) => void>();
-	// Concurrent-run guard. The sandbox serves one run at a time; the
-	// executor is expected to queue per-(owner, sha). A second `run()`
-	// while one is active rejects loudly rather than silently interleaving.
-	let runActive = false;
+	// In-flight tracker for concurrency control + isActive surface. Distinct
+	// from the sequencer's internal `runActive` (which gates stamping).
+	let runInFlight = false;
 
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run() encapsulates the full run-dispatch lifecycle (precondition checks, sequencer start, worker postMessage, message/error/exit listeners, finalize with death-synthesis) as one cohesive promise — splitting it would require threading mutable state across multiple call frames
 	function run(
 		name: string,
 		ctx: unknown,
@@ -220,7 +244,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 				new Error(`Sandbox worker has died: ${deathRecorded.message}`),
 			);
 		}
-		if (runActive) {
+		if (runInFlight) {
 			return Promise.reject(
 				new Error(
 					"sandbox.run: concurrent run not permitted; a previous run is still in flight",
@@ -230,32 +254,47 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 
 		return new Promise<RunResult>((resolve, reject) => {
 			pendingRunRejects.add(reject);
-			runActive = true;
+			runInFlight = true;
+			// Open the sequencer window BEFORE posting the run message —
+			// any wire events that arrive while the run is starting will
+			// be stamped against a fresh seq=0/empty refStack/empty callMap.
+			sequencer.start();
 
-			const onMessage = (msg: WorkerToMain) => {
-				if (msg.type === "done") {
-					cleanup();
-					const payload: RunResultPayload = msg.payload;
-					resolve(payload);
+			let finished = false;
+
+			function finalize(synth: SandboxEvent[], settle: () => void): void {
+				if (finished) {
+					return;
 				}
-			};
-
-			const onError = (err: Error) => {
-				cleanup();
-				reject(err);
-			};
-
-			const onExit = (code: number) => {
-				cleanup();
-				reject(new Error(`worker exited with code ${code}`));
-			};
-
-			const cleanup = () => {
+				finished = true;
 				pendingRunRejects.delete(reject);
 				worker.off("message", onMessage);
 				worker.off("error", onError);
 				worker.off("exit", onExit);
-				runActive = false;
+				for (const evt of synth) {
+					forwardSandboxEvent(evt);
+				}
+				runInFlight = false;
+				settle();
+			}
+
+			const onMessage = (msg: WorkerToMain) => {
+				if (msg.type === "done") {
+					finalize(sequencer.finish(), () => resolve(msg.payload));
+				}
+			};
+
+			const onError = (err: Error) => {
+				finalize(sequencer.finish({ closeReason: err.message }), () =>
+					reject(err),
+				);
+			};
+
+			const onExit = (code: number) => {
+				const err = new Error(`worker exited with code ${code}`);
+				finalize(sequencer.finish({ closeReason: err.message }), () =>
+					reject(err),
+				);
 			};
 
 			worker.on("message", onMessage);
@@ -303,10 +342,10 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		dispose,
 		onDied,
 		get isActive() {
-			return runActive;
+			return runInFlight;
 		},
 	};
 }
 
-export type { Logger, RunResult, Sandbox, SandboxOptions };
+export type { RunResult, Sandbox, SandboxOptions };
 export { sandbox };

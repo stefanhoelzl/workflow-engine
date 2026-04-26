@@ -1,321 +1,259 @@
-import type { InvocationEvent } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
-import type { Bridge } from "./bridge-factory.js";
+import type { Bridge, EmitFraming } from "./bridge-factory.js";
+import type { WireEvent } from "./protocol.js";
 import { createSandboxContext } from "./sandbox-context.js";
 
-interface RecordedEvent {
-	readonly kind: string;
-	readonly name: string;
-	readonly seq: number;
-	readonly ref: number | null;
-	readonly input?: unknown;
-	readonly output?: unknown;
-	readonly error?: unknown;
-}
-
 /**
- * Minimal Bridge stand-in exposing only the surface createSandboxContext uses
- * (buildEvent, emit, nextSeq, currentRef, pushRef, popRef). The real bridge
- * depends on a QuickJS VM, which isn't available in pure unit tests — this
- * fake lets us exercise ctx.emit / ctx.request semantics in isolation while
- * preserving the real seq/ref-stack invariants.
+ * Minimal Bridge stand-in. Exposes the post-refactor Bridge surface:
+ * `buildEvent(kind, name, framing, extra) → CallId`, `setSink`, `emit`,
+ * `setRunActive`/`clearRunActive`/`resetCallIds`, plus VM/marshal/arg/anchor
+ * methods touched by createSandboxContext only via type compatibility. The
+ * fake is pre-activated so tests don't need to call setRunActive themselves.
  */
 interface FakeBridge extends Bridge {
-	readonly events: RecordedEvent[];
-	readonly refStack: number[];
-	nextSeqValue(): number;
+	readonly events: WireEvent[];
 }
 
 function createFakeBridge(): FakeBridge {
-	const events: RecordedEvent[] = [];
-	const refStack: number[] = [];
-	let seq = 0;
-	// Partial Bridge — we only need the methods sandbox-context calls.
+	const events: WireEvent[] = [];
+	let nextCallId = 0;
+	let active = true;
 	const bridge = {
 		events,
-		refStack,
-		nextSeqValue: () => seq,
-		nextSeq: () => ++seq,
-		currentRef: () => refStack.at(-1) ?? null,
-		pushRef: (s: number) => {
-			refStack.push(s);
-		},
-		popRef: () => refStack.pop() ?? null,
-		// biome-ignore lint/complexity/useMaxParams: Bridge.buildEvent signature has 5 params (kind, seq, ref, name, extra) — fake must match it
 		buildEvent: (
 			kind: string,
-			seqValue: number,
-			ref: number | null,
 			name: string,
+			framing: EmitFraming,
 			extra: { input?: unknown; output?: unknown; error?: unknown },
-		): InvocationEvent | null => {
-			// Real bridge returns null if no runContext; fake always returns an
-			// event so tests can inspect emission order. That matches design
-			// intent — ctx users shouldn't care about runContext gating.
-			return {
-				kind: kind as InvocationEvent["kind"],
-				id: "test",
-				seq: seqValue,
-				ref,
-				at: "1970-01-01T00:00:00.000Z",
-				ts: 0,
-				owner: "t",
-				repo: "r",
-				workflow: "w",
-				workflowSha: "s",
+		): number => {
+			if (!active) {
+				return 0;
+			}
+			let wireType: WireEvent["type"];
+			let assignedId = 0;
+			if (framing === "leaf") {
+				wireType = "leaf";
+			} else if (framing === "open") {
+				assignedId = nextCallId++;
+				wireType = { open: assignedId };
+			} else {
+				wireType = { close: framing.close };
+			}
+			const event = {
+				kind,
 				name,
+				ts: 0,
+				at: "1970-01-01T00:00:00.000Z",
+				type: wireType,
 				...(extra.input === undefined ? {} : { input: extra.input }),
 				...(extra.output === undefined ? {} : { output: extra.output }),
 				...(extra.error === undefined
 					? {}
 					: {
-							error: extra.error as {
-								message: string;
-								stack: string;
-								issues?: unknown;
-							},
+							error: extra.error as NonNullable<WireEvent["error"]>,
 						}),
-			};
+			} satisfies WireEvent;
+			events.push(event);
+			return assignedId;
 		},
-		emit: (event: InvocationEvent) => {
-			events.push({
-				kind: event.kind,
-				name: event.name,
-				seq: event.seq,
-				ref: event.ref,
-				...(event.input === undefined ? {} : { input: event.input }),
-				...(event.output === undefined ? {} : { output: event.output }),
-				...(event.error === undefined ? {} : { error: event.error }),
-			});
+		emit: (_e: WireEvent) => {
+			/* unused in these tests — buildEvent does the recording */
 		},
-	} as unknown as FakeBridge;
+		setSink: () => {
+			/* unused */
+		},
+		setRunActive: () => {
+			active = true;
+		},
+		clearRunActive: () => {
+			active = false;
+		},
+		resetCallIds: () => {
+			nextCallId = 0;
+		},
+		resetAnchor: () => {
+			/* unused */
+		},
+		anchorNs: () => 0n,
+		tsUs: () => 0,
+		rebind: () => {
+			/* unused */
+		},
+		// marshal/arg fields are not invoked by createSandboxContext;
+		// satisfy the type with an empty shim so the compiler is happy.
+		marshal: {} as unknown as FakeBridge["marshal"],
+		arg: {} as unknown as FakeBridge["arg"],
+	} satisfies FakeBridge;
 	return bridge;
 }
 
-describe("ctx.emit — leaf semantics (no options)", () => {
-	it("emits with ref = current stack top", () => {
+describe("ctx.emit — leaf default", () => {
+	it("emits a leaf event when type is omitted", () => {
 		const bridge = createFakeBridge();
-		bridge.pushRef(7);
 		const ctx = createSandboxContext(bridge);
-		ctx.emit("timer.set", "setTimeout", { input: { delay: 100 } });
+		ctx.emit("system.call", { name: "console.log", input: { args: ["hi"] } });
 		expect(bridge.events).toHaveLength(1);
-		expect(bridge.events[0]).toMatchObject({
-			kind: "timer.set",
-			name: "setTimeout",
-			ref: 7,
-			input: { delay: 100 },
+		expect(bridge.events[0]?.type).toBe("leaf");
+		expect(bridge.events[0]?.kind).toBe("system.call");
+		expect(bridge.events[0]?.name).toBe("console.log");
+		expect(bridge.events[0]?.input).toEqual({ args: ["hi"] });
+	});
+
+	it("emits a leaf event when type is explicit 'leaf'", () => {
+		const bridge = createFakeBridge();
+		const ctx = createSandboxContext(bridge);
+		ctx.emit("user.click", { name: "btn", type: "leaf" });
+		expect(bridge.events[0]?.type).toBe("leaf");
+	});
+});
+
+describe("ctx.emit — open", () => {
+	it("returns the minted CallId and emits {open: id}", () => {
+		const bridge = createFakeBridge();
+		const ctx = createSandboxContext(bridge);
+		const callId = ctx.emit("trigger.request", {
+			name: "demo",
+			input: { x: 1 },
+			type: "open",
 		});
+		expect(typeof callId).toBe("number");
+		expect(bridge.events[0]?.type).toEqual({ open: callId });
 	});
 
-	it("emits with ref null when stack is empty", () => {
+	it("each open mints a fresh id", () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		ctx.emit("uncaught-error", "reportError", { input: "boom" });
-		expect(bridge.events).toHaveLength(1);
-		expect(bridge.events[0]?.ref).toBeNull();
-	});
-
-	it("does not modify the refStack", () => {
-		const bridge = createFakeBridge();
-		bridge.pushRef(1);
-		const ctx = createSandboxContext(bridge);
-		const before = [...bridge.refStack];
-		ctx.emit("console.log", "log", { input: ["hi"] });
-		expect(bridge.refStack).toEqual(before);
+		const a = ctx.emit("system.request", { name: "fetchA", type: "open" });
+		const b = ctx.emit("system.request", { name: "fetchB", type: "open" });
+		expect(a).not.toBe(b);
+		expect(bridge.events[0]?.type).toEqual({ open: a });
+		expect(bridge.events[1]?.type).toEqual({ open: b });
 	});
 });
 
-describe("ctx.emit — createsFrame", () => {
-	it("emits with parent ref then pushes this event's seq", () => {
+describe("ctx.emit — close echoes the supplied callId", () => {
+	it("emits {close: id} echoing the caller's id", () => {
 		const bridge = createFakeBridge();
-		bridge.pushRef(5);
 		const ctx = createSandboxContext(bridge);
-		ctx.emit(
-			"trigger.request",
-			"run",
-			{ input: { foo: 1 } },
-			{ createsFrame: true },
-		);
-		const evt = bridge.events[0];
-		expect(evt?.ref).toBe(5);
-		expect(evt?.kind).toBe("trigger.request");
-		// Stack now has this event's seq on top.
-		expect(bridge.refStack.at(-1)).toBe(evt?.seq);
+		ctx.emit("trigger.response", {
+			name: "demo",
+			output: { ok: true },
+			type: { close: 42 },
+		});
+		expect(bridge.events[0]?.type).toEqual({ close: 42 });
+		expect(bridge.events[0]?.output).toEqual({ ok: true });
 	});
-});
 
-describe("ctx.emit — closesFrame", () => {
-	it("emits with current stack top as ref then pops", () => {
+	it("type-system enforces close.callId is a number, not arbitrary", () => {
 		const bridge = createFakeBridge();
-		bridge.pushRef(3);
-		bridge.pushRef(9);
 		const ctx = createSandboxContext(bridge);
-		ctx.emit(
-			"trigger.response",
-			"run",
-			{ input: { foo: 1 }, output: { ok: true } },
-			{ closesFrame: true },
-		);
-		expect(bridge.events[0]?.ref).toBe(9);
-		expect(bridge.refStack).toEqual([3]);
-	});
-});
-
-describe("ctx.emit — both flags (treated as leaf)", () => {
-	it("does not push or pop when both createsFrame and closesFrame are true", () => {
-		const bridge = createFakeBridge();
-		bridge.pushRef(2);
-		const ctx = createSandboxContext(bridge);
-		ctx.emit(
-			"instant.span",
-			"inst",
-			{},
-			{ createsFrame: true, closesFrame: true },
-		);
-		expect(bridge.refStack).toEqual([2]);
-		expect(bridge.events[0]?.ref).toBe(2);
+		// closes must carry their CallId as a number via `{ close: callId }`.
+		// Passing a non-number must be a compile-time error — this guards the
+		// structural pairing contract.
+		// biome-ignore format: keep on one line so @ts-expect-error matches the offending expression
+		// @ts-expect-error - "not-a-number" is not assignable to CallId (number)
+		ctx.emit("trigger.response", { name: "demo", type: { close: "not-a-number" } });
 	});
 });
 
 describe("ctx.request — sync fn", () => {
-	it("emits request + response around the function body", () => {
+	it("emits open and close around fn, pairing via callId", () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
 		const out = ctx.request(
-			"fetch",
-			"GET /api",
-			{ input: { url: "/api" } },
-			() => ({ status: 200 }),
+			"system",
+			{ name: "fetch", input: { url: "x" } },
+			() => "result",
 		);
-		expect(out).toEqual({ status: 200 });
-		expect(bridge.events.map((e) => e.kind)).toEqual([
-			"fetch.request",
-			"fetch.response",
-		]);
-		const [req, res] = bridge.events;
-		expect(res?.ref).toBe(req?.seq);
-		expect(res?.output).toEqual({ status: 200 });
+		expect(out).toBe("result");
+		expect(bridge.events).toHaveLength(2);
+		expect(bridge.events[0]?.kind).toBe("system.request");
+		const openType = bridge.events[0]?.type;
+		expect(openType).toMatchObject({ open: expect.any(Number) });
+		const openId = (openType as { open: number }).open;
+		expect(bridge.events[1]?.kind).toBe("system.response");
+		expect(bridge.events[1]?.type).toEqual({ close: openId });
+		expect(bridge.events[1]?.output).toBe("result");
 	});
 
-	it("leaves refStack balanced on sync success", () => {
+	it("emits open and error close on throw, then rethrows", () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		const before = bridge.refStack.length;
-		ctx.request("x", "y", { input: 1 }, () => 2);
-		expect(bridge.refStack.length).toBe(before);
-	});
-
-	it("emits request + error and rethrows on sync throw", () => {
-		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
-		const boom = new Error("boom");
 		expect(() =>
-			ctx.request("fetch", "fail", { input: null }, () => {
-				throw boom;
+			ctx.request("system", { name: "fail" }, () => {
+				throw new Error("boom");
 			}),
-		).toThrow(boom);
-		expect(bridge.events.map((e) => e.kind)).toEqual([
-			"fetch.request",
-			"fetch.error",
-		]);
-		const err = bridge.events[1];
-		expect(err?.error).toMatchObject({ message: "boom" });
-	});
-
-	it("leaves refStack balanced on sync throw", () => {
-		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
-		const before = bridge.refStack.length;
-		try {
-			ctx.request("x", "y", {}, () => {
-				throw new Error("stack-balance");
-			});
-		} catch {
-			/* expected */
-		}
-		expect(bridge.refStack.length).toBe(before);
+		).toThrow("boom");
+		expect(bridge.events).toHaveLength(2);
+		expect(bridge.events[0]?.kind).toBe("system.request");
+		const openId = (bridge.events[0]?.type as { open: number }).open;
+		expect(bridge.events[1]?.kind).toBe("system.error");
+		expect(bridge.events[1]?.type).toEqual({ close: openId });
+		expect(bridge.events[1]?.error).toMatchObject({ message: "boom" });
 	});
 });
 
 describe("ctx.request — async fn", () => {
-	it("emits request synchronously and response after resolve", async () => {
+	it("emits open synchronously, response after await", async () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		const promise = ctx.request(
-			"fetch",
-			"slow",
-			{ input: { url: "/" } },
-			async () => {
-				await Promise.resolve();
-				return { body: "ok" };
-			},
-		);
-		// Request is emitted synchronously (before the promise resolves).
-		expect(bridge.events.map((e) => e.kind)).toEqual(["fetch.request"]);
-		const out = await promise;
-		expect(out).toEqual({ body: "ok" });
-		expect(bridge.events.map((e) => e.kind)).toEqual([
-			"fetch.request",
-			"fetch.response",
-		]);
-		const [req, res] = bridge.events;
-		expect(res?.ref).toBe(req?.seq);
+		const promise = ctx.request("system", { name: "fetch" }, async () => 7);
+		// Open already emitted synchronously
+		expect(bridge.events).toHaveLength(1);
+		expect(bridge.events[0]?.kind).toBe("system.request");
+		const result = await promise;
+		expect(result).toBe(7);
+		expect(bridge.events).toHaveLength(2);
+		expect(bridge.events[1]?.kind).toBe("system.response");
+		expect(bridge.events[1]?.output).toBe(7);
 	});
 
-	it("emits request + error on async rejection and rethrows", async () => {
+	it("emits open synchronously, error close on rejection", async () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		const boom = new Error("later");
 		await expect(
-			ctx.request("x", "fail", {}, async () => {
-				await Promise.resolve();
-				throw boom;
+			ctx.request("system", { name: "fetch" }, async () => {
+				throw new Error("network");
 			}),
-		).rejects.toThrow(boom);
-		expect(bridge.events.map((e) => e.kind)).toEqual(["x.request", "x.error"]);
+		).rejects.toThrow("network");
+		expect(bridge.events).toHaveLength(2);
+		expect(bridge.events[1]?.kind).toBe("system.error");
+		expect(bridge.events[1]?.error).toMatchObject({ message: "network" });
 	});
 
-	it("captures reqSeq so response/error parent correctly after stack changes mid-await", async () => {
+	it("concurrent requests pair correctly via callId — Promise.all shape", async () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		const outer = ctx.request("outer", "A", {}, async () => {
-			// Nested ctx.request pushes/pops during the outer's await.
-			await ctx.request("inner", "B", {}, async () => {
-				await Promise.resolve();
-				return 1;
-			});
-			return "done";
-		});
-		await outer;
-		const byKind = bridge.events.map((e) => e.kind);
-		expect(byKind).toEqual([
-			"outer.request",
-			"inner.request",
-			"inner.response",
-			"outer.response",
-		]);
-		const [outReq, inReq, inRes, outRes] = bridge.events;
-		// inner.request parents to outer.request
-		expect(inReq?.ref).toBe(outReq?.seq);
-		// inner.response parents to inner.request
-		expect(inRes?.ref).toBe(inReq?.seq);
-		// outer.response parents to outer.request
-		expect(outRes?.ref).toBe(outReq?.seq);
+		const a = ctx.request("system", { name: "A" }, async () => "A_result");
+		const b = ctx.request("system", { name: "B" }, async () => "B_result");
+		await Promise.all([a, b]);
+
+		// Two opens, two closes (4 events). Each close pairs to its own open.
+		expect(bridge.events).toHaveLength(4);
+		const openA = bridge.events[0]?.type as { open: number };
+		const openB = bridge.events[1]?.type as { open: number };
+		expect(openA.open).not.toBe(openB.open);
+
+		// Both responses should reference the right open id (regardless of
+		// which resolved first).
+		const closeA = bridge.events.find(
+			(e) => e.kind === "system.response" && e.name === "A",
+		);
+		const closeB = bridge.events.find(
+			(e) => e.kind === "system.response" && e.name === "B",
+		);
+		expect(closeA?.type).toEqual({ close: openA.open });
+		expect(closeB?.type).toEqual({ close: openB.open });
 	});
 });
 
-describe("ctx — seq and ref are internal", () => {
-	it("emit returns undefined (no seq leak)", () => {
+describe("ctx.emit — present-only payload fields", () => {
+	it("omits input/output/error when not provided", () => {
 		const bridge = createFakeBridge();
 		const ctx = createSandboxContext(bridge);
-		const result = ctx.emit("log", "x", {});
-		expect(result).toBeUndefined();
-	});
-
-	it("request returns the handler's result unchanged", () => {
-		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
-		const out = ctx.request("x", "y", {}, () => 42);
-		expect(out).toBe(42);
+		ctx.emit("system.call", { name: "x" });
+		expect("input" in (bridge.events[0] ?? {})).toBe(false);
+		expect("output" in (bridge.events[0] ?? {})).toBe(false);
+		expect("error" in (bridge.events[0] ?? {})).toBe(false);
 	});
 });

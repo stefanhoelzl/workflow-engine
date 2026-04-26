@@ -1,8 +1,5 @@
-import type {
-	Callable,
-	DepsMap,
-	SandboxContext,
-} from "@workflow-engine/sandbox";
+import type { Callable, DepsMap } from "@workflow-engine/sandbox";
+import { recordingContext } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import {
 	guest,
@@ -11,59 +8,6 @@ import {
 	name as SDK_SUPPORT_PLUGIN_NAME,
 	worker,
 } from "./index.js";
-
-interface RequestRecord {
-	prefix: string;
-	name: string;
-	extra: { input?: unknown };
-	result?: unknown;
-	error?: unknown;
-}
-
-interface EventRecord {
-	kind: string;
-	name: string;
-	extra: unknown;
-}
-
-function recordingContext(): SandboxContext & {
-	readonly events: EventRecord[];
-	readonly requests: RequestRecord[];
-} {
-	const events: EventRecord[] = [];
-	const requests: RequestRecord[] = [];
-	return {
-		events,
-		requests,
-		emit(kind, name, extra) {
-			events.push({ kind, name, extra });
-		},
-		request(prefix, name, extra, fn) {
-			const entry: RequestRecord = { prefix, name, extra };
-			requests.push(entry);
-			try {
-				const r = fn();
-				if (r instanceof Promise) {
-					return r.then(
-						(v) => {
-							entry.result = v;
-							return v;
-						},
-						(e) => {
-							entry.error = e;
-							throw e;
-						},
-					);
-				}
-				entry.result = r;
-				return r;
-			} catch (e) {
-				entry.error = e;
-				throw e;
-			}
-		},
-	};
-}
 
 function makeCallableDouble(
 	impl: (...args: readonly unknown[]) => unknown,

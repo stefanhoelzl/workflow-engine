@@ -19,23 +19,32 @@ interface ReportErrorPayload {
 }
 
 function reportErrorHostDescriptor(
-	ctx: SandboxContext,
+	_ctx: SandboxContext,
 ): GuestFunctionDescription {
 	return {
 		name: REPORT_ERROR_HOST,
 		args: [Guest.object<ReportErrorPayload>()],
 		result: Guest.void(),
-		handler: ((payload: ReportErrorPayload) => {
-			// Leaf event records the uncaught error in the invocation
-			// archive. Consumers that want an additional side effect
-			// (e.g. a logger in runtime) subscribe via `sb.onEvent`
-			// rather than via a plugin option — plugin configs must be
-			// JSON-serializable, so function callbacks are out.
-			ctx.emit("uncaught-error", "reportError", { input: payload });
+		handler: (() => {
+			/* no-op — the leaf event is emitted by the log auto-wrap */
 		}) as unknown as GuestFunctionDescription["handler"],
-		// No log wrap — the ctx.emit above IS the single leaf; wrapping in
-		// request/response would double-emit.
-		log: { event: "uncaught-error.noop" },
+		// Auto-wrap emits one `system.exception` leaf event per invocation,
+		// carrying the report payload as `input`. Consumers that want a
+		// side effect (e.g. a logger in runtime) subscribe via `sb.onEvent`.
+		// Per the bridge-main-sequencing change, the `uncaught-error` reserved
+		// prefix is folded into `system.exception` (a leaf under the `system.*`
+		// family). The classname / message / stack remain in `input` for
+		// consumers that want them.
+		log: { event: "system.exception" },
+		// Override the default name (descriptor.name = "__reportErrorHost").
+		// Use the reported error's class name for visual disambiguation
+		// in the dashboard.
+		logName: (args) => {
+			const payload = args[0] as ReportErrorPayload | undefined;
+			return payload?.name ?? "Error";
+		},
+		// The args tuple is `[payload]`; emit the payload directly as input.
+		logInput: (args) => args[0],
 		public: false,
 	};
 }

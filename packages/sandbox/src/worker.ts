@@ -25,7 +25,6 @@ import type {
 } from "./plugin.js";
 import {
 	collectGuestFunctions,
-	type FrameTracker,
 	type GlobalBinder,
 	loadPluginModules,
 	runOnBeforeRunStarted,
@@ -35,7 +34,6 @@ import {
 	runPhaseSourceEval,
 	runPhaseWorker,
 	type SourceEvaluator,
-	truncateFinalRefStack,
 	type WarnFn,
 } from "./plugin-runtime.js";
 import type {
@@ -426,27 +424,11 @@ function startRestore(currentState: SandboxState): Promise<void> {
 }
 
 /**
- * Wraps the Bridge's refStack primitives as a FrameTracker so plugin-runtime
- * lifecycle helpers can depth-check / truncate without depending on the
- * Bridge type directly.
- */
-function bridgeFrameTracker(bridge: Bridge): FrameTracker {
-	return {
-		depth() {
-			return bridge.refStackDepth();
-		},
-		truncateTo(depth) {
-			return bridge.truncateRefStackTo(depth);
-		},
-	};
-}
-
-/**
  * Emits a `log` message to the main thread for a dangling-frame warning.
- * Plugin-runtime surfaces these when onBeforeRunStarted or the final
- * cleanup drop frames that weren't explicitly closed; surfacing them via
- * the existing logger channel keeps the signal visible without requiring a
- * new protocol message.
+ * Frame tracking now lives entirely on the main-thread RunSequencer (see
+ * `run-sequencer.ts`); the worker no longer truncates or counts open
+ * frames itself. This warn channel is preserved for any plugin-lifecycle
+ * surfacing that benefits from the same wire shape.
  */
 const logDanglingFrame: WarnFn = (warning) => {
 	post({
@@ -462,15 +444,15 @@ const logDanglingFrame: WarnFn = (warning) => {
 };
 
 /**
- * Runs onBeforeRunStarted hooks across all registered plugins. A hook throw
- * does NOT abort the run — we log an error and continue with the guest
- * handler. Frames pushed by hooks that threw are already truncated by
- * runOnBeforeRunStarted internally.
+ * Runs onBeforeRunStarted hooks across all registered plugins. A hook
+ * throw does NOT abort the run — we log an error and continue with the
+ * guest handler. Frame state (refStack, callMap) is owned by the main-
+ * thread RunSequencer; the worker no longer truncates anything on hook
+ * throw.
  */
 function runLifecycleBefore(
 	pluginLifecycle: PluginLifecycleState | null,
 	runInput: import("./plugin.js").RunInput,
-	tracker: FrameTracker,
 ): void {
 	if (!pluginLifecycle) {
 		return;
@@ -480,8 +462,6 @@ function runLifecycleBefore(
 			setups: pluginLifecycle.setups,
 			order: pluginLifecycle.order,
 			runInput,
-			tracker,
-			warn: logDanglingFrame,
 		});
 	} catch (err) {
 		post({
@@ -494,16 +474,17 @@ function runLifecycleBefore(
 }
 
 /**
- * Runs onRunFinished hooks in reverse topo order, then truncates any
- * remaining refStack frames with a dangling-frame warning. Invoked from
- * handleRun's finally block so it always fires — even if the guest handler
- * threw.
+ * Runs onRunFinished hooks in reverse topo order. Frame cleanup (closing
+ * any plugin-opened frames) is the plugin's own responsibility — typically
+ * via `ctx.emit({type: { close: callId }})` matching their own opens.
+ * Frames left open after the run finishes are caught by the main-thread
+ * RunSequencer's `finish()` (clean-end path: warn-and-drop; death path:
+ * synthesise closes).
  */
 function runLifecycleAfter(
 	pluginLifecycle: PluginLifecycleState,
 	runInput: import("./plugin.js").RunInput,
 	payload: RunResultPayload,
-	tracker: FrameTracker,
 ): void {
 	const runResult: import("./plugin.js").RunResult = payload.ok
 		? { ok: true, output: payload.result }
@@ -515,7 +496,6 @@ function runLifecycleAfter(
 		runInput,
 		warn: logDanglingFrame,
 	});
-	truncateFinalRefStack(tracker, logDanglingFrame);
 }
 
 function readExportFromIife(
@@ -604,18 +584,22 @@ interface RunFinalizeArgs {
 	readonly state: SandboxState;
 	readonly runInput: import("./plugin.js").RunInput;
 	readonly payload: RunResultPayload;
-	readonly tracker: FrameTracker;
 }
 
 function finalizeRun(args: RunFinalizeArgs): void {
-	const { state, runInput, payload, tracker } = args;
+	const { state, runInput, payload } = args;
 	const { bridge, pluginLifecycle } = state;
-	runLifecycleAfter(pluginLifecycle, runInput, payload, tracker);
+	runLifecycleAfter(pluginLifecycle, runInput, payload);
 	state.currentAbort?.abort();
 	state.currentAbort = null;
+	// Close the worker-side run window so any late host-callback
+	// emissions (e.g. from guest async resolutions during the post-`done`
+	// restore) are silently suppressed at the source, matching pre-
+	// refactor behaviour.
 	bridge.clearRunActive();
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: handleRun sequences the full per-run lifecycle (await prior restore, anchor reset, run-window open, lifecycle hooks, guest invoke, finalize, fire-and-forget restore) — splitting requires threading state across multiple call frames
 async function handleRun(
 	msg: Extract<MainToWorker, { type: "run" }>,
 ): Promise<void> {
@@ -642,12 +626,19 @@ async function handleRun(
 	const { vm, bridge, pluginLifecycle } = state;
 
 	bridge.resetAnchor();
-	// Run metadata (owner/workflow/workflowSha/invocationId) is tracked on
-	// the main thread (`packages/sandbox/src/index.ts`) and stamped onto
-	// events before they reach `sb.onEvent` subscribers. The worker only
-	// flips a boolean "run active" flag so the bridge knows to produce
-	// events (vs. the init-phase "no run" state which would short-circuit
-	// emission).
+	// Open the worker-side run window. The bridge suppresses emissions
+	// outside this window (returns from `buildEvent` without posting),
+	// matching pre-refactor behaviour. This avoids posting init-time
+	// events (e.g. WPT test bodies that run during Phase-4 source eval
+	// inline `console.log(Symbol.for(...))` calls — registered symbols
+	// would otherwise break `port.postMessage` clone). `resetCallIds`
+	// zeroes the per-run callId counter so each run mints IDs from 0.
+	//
+	// Runtime metadata (owner/workflow/workflowSha/invocationId) is
+	// stamped runtime-side; seq/ref are stamped main-side via the
+	// RunSequencer. The worker's gate is for SUPPRESSION only; it does
+	// not own ordering or stamping.
+	bridge.resetCallIds();
 	bridge.setRunActive();
 	state.currentAbort = new AbortController();
 
@@ -656,8 +647,7 @@ async function handleRun(
 		input: msg.ctx,
 		...(msg.extras === undefined ? {} : { extras: msg.extras }),
 	};
-	const tracker = bridgeFrameTracker(bridge);
-	runLifecycleBefore(pluginLifecycle, runInput, tracker);
+	runLifecycleBefore(pluginLifecycle, runInput);
 
 	let payload: RunResultPayload;
 	try {
@@ -666,7 +656,7 @@ async function handleRun(
 		const e = serializeError(err);
 		payload = { ok: false, error: { message: e.message, stack: e.stack } };
 	}
-	finalizeRun({ state, runInput, payload, tracker });
+	finalizeRun({ state, runInput, payload });
 	post({ type: "done", payload });
 
 	// Fire-and-forget async restore so the next run sees fresh guest state.

@@ -15,23 +15,26 @@ describe("IIFE_NAMESPACE", () => {
 });
 
 describe("EventKind", () => {
-	it("includes the five timer kinds", () => {
-		// The `satisfies` clause is a compile-time assertion that each literal is
-		// a member of the EventKind union. A `timer.tick` (not in the union) would
-		// fail compilation here, covering the negative case at the type level.
-		const timerKinds = [
-			"timer.set",
-			"timer.request",
-			"timer.response",
-			"timer.error",
-			"timer.clear",
+	it("includes the consolidated system.* kinds", () => {
+		// The `satisfies` clause is a compile-time assertion that each literal
+		// is a member of the EventKind union. After the bridge-main-sequencing
+		// prefix consolidation, all host-call kinds (formerly fetch.*, mail.*,
+		// sql.*, timer.*, console.*, wasi.*, uncaught-error) collapse into the
+		// `system.*` family with the operation identity carried in the event's
+		// `name` field.
+		const systemKinds = [
+			"system.request",
+			"system.response",
+			"system.error",
+			"system.call",
+			"system.exception",
 		] as const satisfies readonly EventKind[];
-		expect(timerKinds).toHaveLength(5);
+		expect(systemKinds).toHaveLength(5);
 	});
 
-	it("InvocationEvent accepts timer kinds with the expected fields", () => {
+	it("InvocationEvent accepts system.* timer-callback kinds with the expected fields", () => {
 		const setEvent: InvocationEvent = makeEvent({
-			kind: "timer.set",
+			kind: "system.call",
 			id: "evt_1",
 			seq: 0,
 			ref: 1,
@@ -40,7 +43,7 @@ describe("EventKind", () => {
 			input: { delay: 100, timerId: 7 },
 		});
 		const requestEvent: InvocationEvent = makeEvent({
-			kind: "timer.request",
+			kind: "system.request",
 			id: "evt_1",
 			seq: 1,
 			ref: null,
@@ -49,7 +52,7 @@ describe("EventKind", () => {
 			input: { timerId: 7 },
 		});
 		const responseEvent: InvocationEvent = makeEvent({
-			kind: "timer.response",
+			kind: "system.response",
 			id: "evt_1",
 			seq: 2,
 			ref: 1,
@@ -59,7 +62,7 @@ describe("EventKind", () => {
 			output: "ok",
 		});
 		const errorEvent: InvocationEvent = makeEvent({
-			kind: "timer.error",
+			kind: "system.error",
 			id: "evt_1",
 			seq: 3,
 			ref: 1,
@@ -69,7 +72,7 @@ describe("EventKind", () => {
 			error: { message: "boom", stack: "stack" },
 		});
 		const clearEvent: InvocationEvent = makeEvent({
-			kind: "timer.clear",
+			kind: "system.call",
 			id: "evt_1",
 			seq: 4,
 			ref: null,
@@ -77,7 +80,7 @@ describe("EventKind", () => {
 			name: "clearTimeout",
 			input: { timerId: 7 },
 		});
-		expect(setEvent.kind).toBe("timer.set");
+		expect(setEvent.name).toBe("setTimeout");
 		expect(requestEvent.ref).toBeNull();
 		expect(responseEvent.output).toBe("ok");
 		expect(errorEvent.error?.message).toBe("boom");

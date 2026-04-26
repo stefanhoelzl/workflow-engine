@@ -4,11 +4,13 @@
 export type { FactoryCreateOptions, SandboxFactory } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
+export type { Logger } from "./logger.js";
 export type {
 	Callable,
+	CallId,
 	DepsMap,
+	EmitFraming,
 	EmitOptions,
-	EventExtra,
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
@@ -16,6 +18,7 @@ export type {
 	Plugin,
 	PluginDescriptor,
 	PluginSetup,
+	RequestOptions,
 	RunInput,
 	RunResult as PluginRunResult,
 	SandboxContext,
@@ -37,7 +40,16 @@ export type {
 export { Guest } from "./plugin-types.js";
 export { name as WASI_PLUGIN_NAME } from "./plugins/wasi-plugin.js";
 export type { WorkerToMain } from "./protocol.js";
-export type { Logger, RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
+export type {
+	EmittedEvent,
+	FlatEvent,
+	FlatRequest,
+	RecordedRequest,
+	RecordingContext,
+	RecordingContextOptions,
+} from "./recording-context.js";
+export { recordingContext } from "./recording-context.js";
+export type { RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
 export { sandbox } from "./sandbox.js";
 export type { LifecycleError } from "./sandbox-context.js";
 export { serializeLifecycleError } from "./sandbox-context.js";

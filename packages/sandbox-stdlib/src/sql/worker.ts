@@ -568,19 +568,19 @@ function sqlDispatcherDescriptor(): GuestFunctionDescription {
 			const result = await dispatchSqlExecute(input);
 			return result as unknown as Record<string, unknown>;
 		}) as unknown as GuestFunctionDescription["handler"],
-		log: { request: "sql" },
+		log: { request: "system" },
 		logName: (args) => {
 			const input = args[0] as Partial<SqlInputWire> | undefined;
 			if (!input || typeof input !== "object") {
-				return "sql query";
+				return "executeSql";
 			}
 			try {
 				const facts = extractConnectionFacts(
 					input.connection as SqlConnectionWire,
 				);
-				return `sql to ${facts.hostname}/${facts.database}`;
+				return `executeSql ${facts.hostname}/${facts.database}`;
 			} catch {
-				return "sql query";
+				return "executeSql";
 			}
 		},
 		logInput: (args) => {

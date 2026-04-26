@@ -5,62 +5,9 @@ import {
 	GuestValidationError,
 	installGuestFunction,
 } from "./guest-function-install.js";
-import type { GuestFunctionDescription, SandboxContext } from "./plugin.js";
+import type { GuestFunctionDescription } from "./plugin.js";
 import { Guest } from "./plugin-types.js";
-
-interface EmittedEvent {
-	kind: string;
-	name: string;
-	extra: unknown;
-}
-interface RequestCall {
-	prefix: string;
-	name: string;
-	extra: unknown;
-	result?: unknown;
-	error?: unknown;
-}
-
-interface RecordingCtx extends SandboxContext {
-	readonly events: EmittedEvent[];
-	readonly requests: RequestCall[];
-}
-
-function recordingContext(): RecordingCtx {
-	const events: EmittedEvent[] = [];
-	const requests: RequestCall[] = [];
-	return {
-		events,
-		requests,
-		emit(kind, name, extra) {
-			events.push({ kind, name, extra });
-		},
-		request(prefix, name, extra, fn) {
-			const entry: RequestCall = { prefix, name, extra };
-			requests.push(entry);
-			try {
-				const r = fn();
-				if (r instanceof Promise) {
-					return r.then(
-						(v) => {
-							entry.result = v;
-							return v;
-						},
-						(e) => {
-							entry.error = e;
-							throw e;
-						},
-					);
-				}
-				entry.result = r;
-				return r;
-			} catch (e) {
-				entry.error = e;
-				throw e;
-			}
-		},
-	};
-}
+import { recordingContext } from "./recording-context.js";
 
 describe("installGuestFunction", () => {
 	let vm: QuickJS;
@@ -74,7 +21,7 @@ describe("installGuestFunction", () => {
 	});
 
 	it("marshals number args and returns a string result through ctx.request by default", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "join",
 			args: [Guest.number(), Guest.number()],
@@ -86,18 +33,18 @@ describe("installGuestFunction", () => {
 		const out = vm.evalCode("join(2, 3)", "<test>");
 		expect(vm.dump(out)).toBe("2+3=5");
 		out.dispose();
-		expect(ctx.requests).toEqual([
+		expect(ctx.flatRequests).toEqual([
 			{
 				prefix: "join",
 				name: "join",
-				extra: { input: [2, 3] },
+				input: [2, 3],
 				result: "2+3=5",
 			},
 		]);
 	});
 
 	it("honours log: { event: ... } by emitting a leaf event instead of wrapping in ctx.request", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "setTimeout",
 			args: [Guest.number()],
@@ -110,14 +57,14 @@ describe("installGuestFunction", () => {
 		installGuestFunction(vm, ctx, desc);
 		const out = vm.evalCode("setTimeout(5)", "<test>");
 		out.dispose();
-		expect(ctx.events).toEqual([
-			{ kind: "timer.set", name: "setTimeout", extra: { input: [5] } },
+		expect(ctx.flatEvents).toEqual([
+			{ kind: "timer.set", name: "setTimeout", input: [5] },
 		]);
-		expect(ctx.requests).toEqual([]);
+		expect(ctx.flatRequests).toEqual([]);
 	});
 
 	it("honours a custom log: { request: '...' } prefix", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "$fetch/do",
 			args: [Guest.string()],
@@ -129,18 +76,18 @@ describe("installGuestFunction", () => {
 		const out = vm.evalCode("globalThis['$fetch/do']('http://x')", "<test>");
 		expect(vm.dump(out)).toBe("fetched:http://x");
 		out.dispose();
-		expect(ctx.requests).toEqual([
+		expect(ctx.flatRequests).toEqual([
 			{
 				prefix: "fetch",
 				name: "$fetch/do",
-				extra: { input: ["http://x"] },
+				input: ["http://x"],
 				result: "fetched:http://x",
 			},
 		]);
 	});
 
 	it("marshals object args and object results via vm.dump / vm.hostToHandle", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "wrap",
 			args: [Guest.object()],
@@ -154,7 +101,7 @@ describe("installGuestFunction", () => {
 	});
 
 	it("throws GuestArgTypeMismatchError when the guest passes a wrong-typed argument", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "strict",
 			args: [Guest.number()],
@@ -176,13 +123,13 @@ describe("installGuestFunction", () => {
 			/err:.*guest function "strict" arg\[0\]: expected number/,
 		);
 		out.dispose();
-		expect(ctx.requests).toHaveLength(0);
-		const thrown = ctx.events.length === 0; // request path threw before event
+		expect(ctx.flatRequests).toHaveLength(0);
+		const thrown = ctx.flatEvents.length === 0; // request path threw before event
 		expect(thrown).toBe(true);
 	});
 
 	it("marshals a callable arg as a host-side Callable that can be invoked and disposed", async () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		let captured: import("./plugin.js").Callable | null = null;
 		const desc: GuestFunctionDescription = {
 			name: "registerCb",
@@ -214,7 +161,7 @@ describe("installGuestFunction", () => {
 	});
 
 	it("propagates guest-side rejections out of a Callable as host Error", async () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		let captured: import("./plugin.js").Callable | null = null;
 		const desc: GuestFunctionDescription = {
 			name: "registerReject",
@@ -237,7 +184,7 @@ describe("installGuestFunction", () => {
 	});
 
 	it("validates result types and throws GuestValidationError on mismatch", () => {
-		const ctx = recordingContext();
+		const ctx = recordingContext({ callIds: "always" });
 		const desc: GuestFunctionDescription = {
 			name: "lies",
 			args: [],

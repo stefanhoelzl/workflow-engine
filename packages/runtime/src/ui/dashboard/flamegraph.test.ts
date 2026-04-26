@@ -226,7 +226,7 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "action.request", seq: 1, ref: 0, ts: 100, name: "sched" }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 2,
 				ref: 1,
 				ts: 150,
@@ -235,7 +235,7 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 			}),
 			req({ kind: "action.response", seq: 3, ref: 1, ts: 200, name: "sched" }),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 4,
 				ref: null,
 				ts: 300,
@@ -243,7 +243,7 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 5,
 				ref: 4,
 				ts: 400,
@@ -269,7 +269,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "action.request", seq: 1, ref: 0, ts: 50, name: "sched" }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 2,
 				ref: 1,
 				ts: 60,
@@ -279,7 +279,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 			req({ kind: "action.response", seq: 3, ref: 1, ts: 70, name: "sched" }),
 			// Three fires of id=9.
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 4,
 				ref: null,
 				ts: 160,
@@ -287,7 +287,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 5,
 				ref: 4,
 				ts: 170,
@@ -295,7 +295,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 6,
 				ref: null,
 				ts: 270,
@@ -303,7 +303,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 7,
 				ref: 6,
 				ts: 280,
@@ -311,7 +311,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 8,
 				ref: null,
 				ts: 380,
@@ -319,7 +319,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 9,
 				ref: 8,
 				ts: 390,
@@ -327,7 +327,7 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.clear",
+				kind: "system.call",
 				seq: 10,
 				ref: 0,
 				ts: 450,
@@ -353,7 +353,7 @@ describe("renderFlamegraph — unpaired set", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 1,
 				ref: 0,
 				ts: 100,
@@ -361,7 +361,7 @@ describe("renderFlamegraph — unpaired set", () => {
 				input: { timerId: 11, delay: 300 },
 			}),
 			req({
-				kind: "timer.clear",
+				kind: "system.call",
 				seq: 2,
 				ref: 0,
 				ts: 150,
@@ -384,7 +384,7 @@ describe("renderFlamegraph — nested timer", () => {
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "action.request", seq: 1, ref: 0, ts: 20, name: "outer" }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 2,
 				ref: 1,
 				ts: 40,
@@ -393,7 +393,7 @@ describe("renderFlamegraph — nested timer", () => {
 			}),
 			req({ kind: "action.response", seq: 3, ref: 1, ts: 70, name: "outer" }),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 4,
 				ref: null,
 				ts: 120,
@@ -402,7 +402,7 @@ describe("renderFlamegraph — nested timer", () => {
 			}),
 			// Nested set inside the outer timer callback.
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 5,
 				ref: 4,
 				ts: 160,
@@ -410,7 +410,7 @@ describe("renderFlamegraph — nested timer", () => {
 				input: { timerId: 9, delay: 60 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 6,
 				ref: 4,
 				ts: 300,
@@ -418,7 +418,7 @@ describe("renderFlamegraph — nested timer", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 7,
 				ref: null,
 				ts: 220,
@@ -426,7 +426,7 @@ describe("renderFlamegraph — nested timer", () => {
 				input: { timerId: 9 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 8,
 				ref: 7,
 				ts: 280,
@@ -450,7 +450,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 1,
 				ref: 0,
 				ts: 30,
@@ -458,7 +458,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 2,
 				ref: 0,
 				ts: 50,
@@ -466,7 +466,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 				input: { timerId: 8 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 3,
 				ref: null,
 				ts: 80,
@@ -474,7 +474,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 4,
 				ref: null,
 				ts: 100,
@@ -482,7 +482,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 				input: { timerId: 8 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 5,
 				ref: 4,
 				ts: 180,
@@ -490,7 +490,7 @@ describe("renderFlamegraph — concurrent overlap", () => {
 				input: { timerId: 8 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 6,
 				ref: 3,
 				ts: 240,
@@ -517,14 +517,14 @@ describe("renderFlamegraph — rest-lane bars", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			reqOpen({
-				kind: "fetch.request",
+				kind: "system.request",
 				seq: 1,
 				ref: 0,
 				ts: 200,
 				name: "fetch",
 			}),
 			reqOpen({
-				kind: "fetch.response",
+				kind: "system.response",
 				seq: 2,
 				ref: 1,
 				ts: 400,
@@ -565,7 +565,7 @@ describe("renderFlamegraph — rest-lane bars", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 1,
 				ref: null,
 				ts: 200,
@@ -573,7 +573,7 @@ describe("renderFlamegraph — rest-lane bars", () => {
 				input: { timerId: 3 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 2,
 				ref: 1,
 				ts: 400,
@@ -594,11 +594,11 @@ describe("renderFlamegraph — open-ended markers", () => {
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "action.request", seq: 1, ref: 0, ts: 100, name: "work" }),
 			reqOpen({
-				kind: "wasi.clock_time_get",
+				kind: "system.call",
 				seq: 2,
 				ref: 1,
 				ts: 200,
-				name: "wasi.clock_time_get",
+				name: "system.call",
 			}),
 			req({ kind: "action.response", seq: 3, ref: 1, ts: 300, name: "work" }),
 			req({ kind: "trigger.response", seq: 4, ref: 0, ts: 500 }),
@@ -612,7 +612,7 @@ describe("renderFlamegraph — open-ended markers", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 1,
 				ref: 0,
 				ts: 50,
@@ -620,14 +620,14 @@ describe("renderFlamegraph — open-ended markers", () => {
 				input: { timerId: 2 },
 			}),
 			reqOpen({
-				kind: "wasi.fd_write",
+				kind: "system.call",
 				seq: 2,
 				ref: 0,
 				ts: 100,
-				name: "wasi.fd_write",
+				name: "system.call",
 			}),
 			req({
-				kind: "timer.clear",
+				kind: "system.call",
 				seq: 3,
 				ref: 0,
 				ts: 150,
@@ -667,7 +667,7 @@ describe("renderFlamegraph — fragment structure", () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 1,
 				ref: 0,
 				ts: 100,
@@ -675,7 +675,7 @@ describe("renderFlamegraph — fragment structure", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 2,
 				ref: null,
 				ts: 200,
@@ -683,7 +683,7 @@ describe("renderFlamegraph — fragment structure", () => {
 				input: { timerId: 7 },
 			}),
 			req({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 3,
 				ref: 2,
 				ts: 300,

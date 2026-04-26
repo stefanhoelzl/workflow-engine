@@ -24,10 +24,21 @@ interface HttpTriggerPayload<Body = unknown> {
 // ---------------------------------------------------------------------------
 
 /**
- * `system.call` is a single-record kind: the event carries both `input` and
- * `output` and has no paired counterpart. Used for instant synchronous
- * sub-bridge host reads (WASI clock/random). Every other kind follows the
- * paired `*.request` / `*.response` / `*.error` contract.
+ * Reserved event prefixes are `trigger.*`, `action.*`, and `system.*`. The
+ * paired triplet (`*.request` / `*.response` / `*.error`) covers operations
+ * with a request/response lifecycle. `system.call` is a leaf for fire-and-
+ * forget host calls (e.g. `console.log`, `setTimeout` registration, WASI
+ * clock/random reads). `system.exception` is a leaf for uncaught guest
+ * exceptions bubbled via the `reportError` polyfill (replaces the previous
+ * top-level `uncaught-error` kind).
+ *
+ * Plugin authors disambiguate which underlying operation produced an event
+ * via the event's `name` field — e.g. `system.request name="fetch"` versus
+ * `system.request name="sendMail"` versus `system.call name="setTimeout"`.
+ *
+ * The bridge-main-sequencing change consolidated the previous distinct
+ * `fetch.*`, `mail.*`, `sql.*`, `timer.*`, `console.*`, `wasi.*`, and
+ * `uncaught-error` kinds into the `system.*` family.
  */
 type EventKind =
 	| "trigger.request"
@@ -40,21 +51,15 @@ type EventKind =
 	| "system.response"
 	| "system.error"
 	| "system.call"
-	| "timer.set"
-	| "timer.request"
-	| "timer.response"
-	| "timer.error"
-	| "timer.clear"
-	| "mail.request"
-	| "mail.response"
-	| "mail.error"
-	| "sql.request"
-	| "sql.response"
-	| "sql.error";
+	| "system.exception";
 
 interface InvocationEventError {
 	message: string;
-	stack: string;
+	// Optional: real Errors usually carry a stack, but synthetic terminals
+	// (worker-death close synthesis in `RunSequencer.finish`, recovery's
+	// `engine_crashed` synthetic terminal) have no JS stack to capture.
+	// Omitting beats emitting a meaningless `""`.
+	stack?: string;
 	issues?: unknown;
 	/**
 	 * Recovery stamps `kind: "engine_crashed"` onto the synthetic `trigger.error`

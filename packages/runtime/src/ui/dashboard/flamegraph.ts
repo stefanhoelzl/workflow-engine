@@ -54,10 +54,48 @@ interface LaidOutBar {
 	readonly timerId: string | null;
 }
 
-// Markers are open-ended leaf events (e.g. timer.set, timer.clear, wasi.*,
-// console.log, uncaught-error). The flamegraph only renders bespoke glyphs
-// for a small known set and falls back to a neutral circle otherwise.
+// Markers are open-ended leaf events. After the bridge-main-sequencing
+// prefix consolidation, this includes `system.call` (setTimeout
+// registration, console.log, randomUUID, WASI clock/random, etc.) and
+// `system.exception` (uncaught guest throws). Timer registration vs.
+// arbitrary host calls is distinguished by the event's `name` field
+// (`setTimeout`/`setInterval` for registration, `clearTimeout`/
+// `clearInterval` for clears). The flamegraph renders bespoke glyphs for
+// the timer family and falls back to a neutral circle for everything else.
 type MarkerKind = string;
+
+// Timer-family detection. Replaces the legacy `kind.startsWith("timer.")`
+// check (now that `timer.*` no longer exists as a top-level prefix).
+const TIMER_REGISTRATION_NAMES = new Set(["setTimeout", "setInterval"]);
+const TIMER_CLEAR_NAMES = new Set(["clearTimeout", "clearInterval"]);
+const TIMER_CALLBACK_NAMES = TIMER_REGISTRATION_NAMES;
+
+function isTimerRegistrationMarker(event: InvocationEvent): boolean {
+	return (
+		event.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(event.name)
+	);
+}
+
+function isTimerClearMarker(event: InvocationEvent): boolean {
+	return event.kind === "system.call" && TIMER_CLEAR_NAMES.has(event.name);
+}
+
+function isTimerCallbackRequest(event: InvocationEvent): boolean {
+	return (
+		event.kind === "system.request" && TIMER_CALLBACK_NAMES.has(event.name)
+	);
+}
+
+function isAnyTimerEvent(event: InvocationEvent): boolean {
+	return (
+		isTimerRegistrationMarker(event) ||
+		isTimerClearMarker(event) ||
+		((event.kind === "system.request" ||
+			event.kind === "system.response" ||
+			event.kind === "system.error") &&
+			TIMER_CALLBACK_NAMES.has(event.name))
+	);
+}
 
 interface LaidOutMarker {
 	readonly kind: MarkerKind;
@@ -224,9 +262,9 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 
 	// Classify each event as belonging to "main" or "track" based on its ref-chain root.
 	//   - trigger.request (ref=null) → main root
-	//   - timer.request (ref=null) → track root
+	//   - timer-callback system.request (ref=null) → track root
 	//   - non-null ref → inherit location from parent
-	//   - timer.clear with ref=null (auto-clear) → main (row 0)
+	//   - timer-clear system.call with ref=null (auto-clear) → main (row 0)
 	const location = new Map<number, Location>();
 	const depthInLocation = new Map<number, number>();
 
@@ -236,12 +274,12 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 			return cached;
 		}
 		if (event.ref === null) {
-			if (event.kind === "timer.request") {
+			if (isTimerCallbackRequest(event)) {
 				location.set(event.seq, "track");
 				depthInLocation.set(event.seq, 0);
 				return "track";
 			}
-			// trigger.request OR auto-clear timer.clear OR any other null-ref edge case → main
+			// trigger.request OR auto-clear timer system.call OR any other null-ref edge case → main
 			location.set(event.seq, "main");
 			depthInLocation.set(event.seq, 0);
 			return "main";
@@ -319,9 +357,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		const subRow = greedyAssignSubRow(bucket, startTs, endTs);
 		subRowByRequestSeq.set(req.seq, subRow);
 		const errored = Boolean(terminal && isErrorKind(terminal.kind));
-		const timerId = req.kind.startsWith("timer.")
-			? timerIdFromEvent(req)
-			: null;
+		const timerId = isAnyTimerEvent(req) ? timerIdFromEvent(req) : null;
 		bars.push({
 			kind,
 			name: req.name,
@@ -379,9 +415,10 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 	});
 
 	// ------ Markers ------
-	// Each marker event (timer.set, timer.clear, system.call) renders on the
-	// row identified by its ref. For timer.clear with ref=null (auto-clear),
-	// render on row 0 main (the trigger row).
+	// Each marker event (system.call leaves, system.exception) renders on the
+	// row identified by its ref. For an auto-clear timer (system.call
+	// name="clearTimeout/clearInterval") with ref=null, render on row 0 main
+	// (the trigger row).
 	const rowBySeq = new Map<number, { row: number; location: Location }>();
 	rowBySeq.set(triggerEvent.seq, { row: 0, location: "main" });
 	for (const b of laidOutBars) {
@@ -391,8 +428,10 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 	const markers: LaidOutMarker[] = [];
 	for (const e of events) {
 		// Leaf events are anything that isn't a paired request/response/error.
-		// This includes timer.set/timer.clear plus open-ended plugin leaves
-		// (wasi.*, console.log, uncaught-error, legacy system.call, etc.).
+		// This includes timer registrations/clears (system.call name=
+		// setTimeout/setInterval/clearTimeout/clearInterval), generic host
+		// calls (system.call name=console.log, randomUUID, wasi.*, etc.),
+		// and uncaught guest exceptions (system.exception).
 		if (
 			isRequestKind(e.kind) ||
 			isResponseKind(e.kind) ||
@@ -400,7 +439,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		) {
 			continue;
 		}
-		const auto = e.kind === "timer.clear" && e.ref === null;
+		const auto = isTimerClearMarker(e) && e.ref === null;
 		let row = 0;
 		let loc: Location = "main";
 		if (auto) {
@@ -413,7 +452,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 				loc = parent.location;
 			}
 		}
-		const timerId = e.kind.startsWith("timer.") ? timerIdFromEvent(e) : null;
+		const timerId = isAnyTimerEvent(e) ? timerIdFromEvent(e) : null;
 		markers.push({
 			kind: e.kind,
 			name: e.name,
@@ -426,9 +465,15 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		});
 	}
 
-	// ------ Connectors (timer.set → each timer.request with same timerId) ------
+	// ------ Connectors (system.call timer registration → each
+	// system.request timer-callback with same timerId) ------
 	const connectors: LaidOutConnector[] = [];
-	const setMarkers = markers.filter((m) => m.kind === "timer.set" && m.timerId);
+	const setMarkers = markers.filter(
+		(m) =>
+			m.kind === "system.call" &&
+			TIMER_REGISTRATION_NAMES.has(m.name) &&
+			m.timerId,
+	);
 	for (const setM of setMarkers) {
 		const originX = pct(setM.ts - triggerEvent.ts, totalDurationTs);
 		const originY = yForRow(setM.row, setM.location, mainRows) + BAR_HEIGHT_PX;
@@ -458,9 +503,11 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		if (e.kind === "action.request") {
 			actionCount += 1;
 		} else if (e.kind === "system.request") {
-			systemCount += 1;
-		} else if (e.kind === "timer.request") {
-			timerCount += 1;
+			if (isTimerCallbackRequest(e)) {
+				timerCount += 1;
+			} else {
+				systemCount += 1;
+			}
 		}
 	}
 
@@ -571,11 +618,15 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			: "";
 		const dataEventSeq = ` data-event-seq="${m.seq}"`;
 		const markerTitle = `<title>${escapeHtml(m.kind)}</title>`;
-		if (m.kind === "timer.set") {
+		const isTimerSet =
+			m.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(m.name);
+		const isTimerClear =
+			m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name);
+		if (isTimerSet) {
 			shapes.push(
 				`<rect class="marker-set" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
 			);
-		} else if (m.kind === "timer.clear") {
+		} else if (isTimerClear) {
 			const autoClass = m.auto ? " marker-auto" : "";
 			shapes.push(
 				`<rect class="marker-clear-bg${autoClass}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
@@ -684,7 +735,9 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 
 function hasAnyTimerMarker(layout: Layout): boolean {
 	return layout.markers.some(
-		(m) => m.kind === "timer.set" || m.kind === "timer.clear",
+		(m) =>
+			m.kind === "system.call" &&
+			(TIMER_REGISTRATION_NAMES.has(m.name) || TIMER_CLEAR_NAMES.has(m.name)),
 	);
 }
 
@@ -746,9 +799,13 @@ function detectLegendPresence(layout: Layout): LegendPresence {
 	let hasClearMarker = false;
 	let hasCallMarker = false;
 	for (const m of layout.markers) {
-		if (m.kind === "timer.clear") {
+		const isTimerSet =
+			m.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(m.name);
+		const isTimerClear =
+			m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name);
+		if (isTimerClear) {
 			hasClearMarker = true;
-		} else if (m.kind !== "timer.set") {
+		} else if (!isTimerSet) {
 			hasCallMarker = true;
 		}
 	}

@@ -68,7 +68,6 @@ function buildSyntheticTerminal(
 		name: firstEvent.name,
 		error: {
 			message: "engine crashed before invocation completed",
-			stack: "",
 			kind: "engine_crashed",
 		},
 	};

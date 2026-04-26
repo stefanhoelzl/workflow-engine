@@ -233,20 +233,6 @@ function collectGuestFunctions(phase1: Phase1Result): readonly {
 	return out;
 }
 
-/**
- * Abstracts the Bridge's refStack for testability. The production
- * implementation delegates to `Bridge.refStackDepth()` and
- * `Bridge.truncateRefStackTo()`; tests use an in-memory array.
- *
- * Frame tracking drives the auto-balance semantics of onBeforeRunStarted:
- * hooks that return falsy have all frames they pushed rewound; hooks that
- * return truthy keep their frames open for the run body + onRunFinished.
- */
-interface FrameTracker {
-	depth(): number;
-	truncateTo(depth: number): number;
-}
-
 interface DanglingFrameWarning {
 	readonly phase: "onBeforeRunStarted" | "run-body" | "onRunFinished" | "final";
 	readonly plugin?: string;
@@ -256,66 +242,54 @@ interface DanglingFrameWarning {
 type WarnFn = (warning: DanglingFrameWarning) => void;
 
 /**
- * Runs every plugin's onBeforeRunStarted hook in topo order. For each hook:
- *  1. Record the refStack depth BEFORE invocation.
- *  2. Call the hook synchronously.
- *  3. If the hook returns truthy, leave its pushed frames in place — the
- *     plugin wants to wrap the run body (e.g. trigger plugin's
- *     trigger.request frame stays open until onRunFinished emits
- *     trigger.response/error).
- *  4. If the hook returns falsy/void, truncate back to the pre-hook depth —
- *     the plugin auto-balanced, or forgot to close a frame it opened.
- *     Emit a warning if any frames were truncated so dangling pushes are
- *     visible in logs but do not leak into the run body.
+ * Runs every plugin's onBeforeRunStarted hook in topo order.
  *
- * If a hook throws, the error is annotated with the plugin name and rethrown.
- * The caller is responsible for running onRunFinished in its own catch block
- * so that cleanup still happens.
+ * The hook's boolean return value is preserved as a documented contract
+ * (`true` = keep an opened frame open for the run body), but the post-
+ * refactor framing model puts ref-stack ownership entirely on the main-
+ * thread RunSequencer. Plugins that opened frames via `ctx.emit({type:
+ * "open"})` are expected to close them in `onRunFinished` by passing the
+ * captured `CallId` on `type: { close: callId }`. The worker no longer
+ * tracks refStack depth, so the ignored-return / auto-truncate behaviour
+ * has been dropped — `runOnBeforeRunStarted` simply runs the hook and
+ * surfaces a thrown error annotated with the plugin name.
+ *
+ * If a hook throws, the error is annotated with the plugin name and
+ * rethrown. The caller is responsible for running onRunFinished in its
+ * own catch block so that cleanup still happens.
  */
 interface OnBeforeRunStartedArgs {
 	readonly setups: ReadonlyMap<string, PluginSetup>;
 	readonly order: readonly string[];
 	readonly runInput: RunInput;
-	readonly tracker: FrameTracker;
-	readonly warn?: WarnFn;
 }
 
 function runOnBeforeRunStarted(args: OnBeforeRunStartedArgs): void {
-	const { setups, order, runInput, tracker, warn } = args;
+	const { setups, order, runInput } = args;
 	for (const name of order) {
 		const setup = setups.get(name);
 		if (!setup?.onBeforeRunStarted) {
 			continue;
 		}
-		const before = tracker.depth();
-		let keep: boolean;
 		try {
-			keep = setup.onBeforeRunStarted(runInput) === true;
+			setup.onBeforeRunStarted(runInput);
 		} catch (err) {
-			// Truncate any partial frames so the error path doesn't leak them.
-			tracker.truncateTo(before);
 			throw annotateLifecycleError(name, "onBeforeRunStarted", err);
-		}
-		if (!keep) {
-			const dropped = tracker.truncateTo(before);
-			if (dropped > 0 && warn) {
-				warn({ phase: "onBeforeRunStarted", plugin: name, dropped });
-			}
 		}
 	}
 }
 
 /**
- * Runs every plugin's onRunFinished hook in REVERSE topo order. refStack
- * frames opened during onBeforeRunStarted (by hooks that returned truthy)
- * are still present — this is load-bearing for plugins like `trigger` which
- * emit trigger.response/error via `closesFrame: true`, matching the
- * trigger.request pushed in onBeforeRunStarted.
+ * Runs every plugin's onRunFinished hook in REVERSE topo order. Plugins that
+ * opened a frame in `onBeforeRunStarted` (via `ctx.emit({type: "open"})`) are
+ * expected to close it here by passing the captured `CallId` on
+ * `type: { close: callId }` — pairing is structurally enforced by the SDK
+ * type system. The worker no longer tracks refStack depth; the main-thread
+ * `RunSequencer` owns frame bookkeeping.
  *
  * Hook throws are caught per-plugin so that a single misbehaving plugin can
- * neither cancel cleanup for other plugins nor prevent the final-refStack
- * truncation. Each exception is surfaced via `warn` (if provided) so
- * operators see what went wrong, and then swallowed.
+ * neither cancel cleanup for other plugins. Each exception is surfaced via
+ * `warn` (if provided) so operators see what went wrong, and then swallowed.
  */
 interface OnRunFinishedArgs {
 	readonly setups: ReadonlyMap<string, PluginSetup>;
@@ -348,25 +322,6 @@ function runOnRunFinished(args: OnRunFinishedArgs): readonly Error[] {
 		}
 	}
 	return errors;
-}
-
-/**
- * Final refStack cleanup — any frames still open after onRunFinished are
- * dangling (the run body emitted createsFrame without a matching closesFrame,
- * or a plugin's onBeforeRunStarted returned truthy but its onRunFinished
- * never emitted a closing event). Truncate to 0 and emit a warning so the
- * condition is audit-visible.
- *
- * A single final warning carries the total drop count; per-plugin
- * attribution isn't possible here because the refStack doesn't remember
- * which plugin pushed which frame.
- */
-function truncateFinalRefStack(tracker: FrameTracker, warn?: WarnFn): number {
-	const dropped = tracker.truncateTo(0);
-	if (dropped > 0 && warn) {
-		warn({ phase: "final", dropped });
-	}
-	return dropped;
 }
 
 /**
@@ -454,7 +409,6 @@ function annotatePluginError(
 
 export type {
 	DanglingFrameWarning,
-	FrameTracker,
 	GlobalBinder,
 	LoadedPlugin,
 	ModuleLoader,
@@ -473,5 +427,4 @@ export {
 	runPhasePrivateDelete,
 	runPhaseSourceEval,
 	runPhaseWorker,
-	truncateFinalRefStack,
 };
