@@ -42,7 +42,6 @@ import {
 	assertInput,
 	buildSsl,
 	clampTimeout,
-	closeAllHandles,
 	coerceRow,
 	coerceValue,
 	dispatchSqlExecute,
@@ -689,8 +688,6 @@ describe("sql plugin — cleanup", () => {
 		// the handle in `openHandles` past the dispatch (fail-then-recover).
 		mockPublicHost(PUBLIC_IP);
 		mockDriverRows([]);
-		// First end() call (the per-call finally) — make it throw and then
-		// succeed on the backstop call.
 		let callCount = 0;
 		pgMock.end.mockImplementation(async () => {
 			callCount += 1;
@@ -699,18 +696,18 @@ describe("sql plugin — cleanup", () => {
 			}
 			return;
 		});
-		// Even if end throws, dispatch should still resolve because we catch
-		// end() errors.
 		await dispatchSqlExecute({
 			connection: "postgres://db.example.com/app",
 			query: "SELECT 1",
 			params: [],
 		});
-		// Backstop: invoke onRunFinished and observe that end() was called
-		// again (with timeout:0). We can't directly observe "leaked" handles
-		// here because the dispatcher removes them from the Set on end()
-		// completion — but we can verify the backstop path is wired: calling
-		// closeAllHandles with no open handles must not throw.
-		await expect(closeAllHandles()).resolves.toBeUndefined();
+		// Backstop: invoke the worker's onRunFinished. With no leaked handles
+		// in `openHandles`, it must resolve without throwing.
+		const setup = worker(noopCtx());
+		await expect(
+			setup.onRunFinished?.({ ok: true, output: undefined }, {
+				event: undefined,
+			} as never),
+		).resolves.toBeUndefined();
 	});
 });

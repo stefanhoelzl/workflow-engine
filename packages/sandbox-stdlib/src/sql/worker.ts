@@ -425,14 +425,6 @@ function throwStructured(err: unknown): never {
 type SqlHandle = ReturnType<typeof postgres>;
 const openHandles = new Set<SqlHandle>();
 
-async function closeAllHandles(): Promise<void> {
-	const handles = Array.from(openHandles);
-	openHandles.clear();
-	await Promise.allSettled(
-		handles.map((h) => h.end({ timeout: 0 }).catch(() => undefined)),
-	);
-}
-
 // ---------------------------------------------------------------------------
 // Core dispatch
 // ---------------------------------------------------------------------------
@@ -555,6 +547,9 @@ async function dispatchSqlExecute(input: SqlInputWire): Promise<SqlResultWire> {
 		throwStructured(err);
 	} finally {
 		openHandles.delete(sql);
+		// Safe to race with the onRunFinished backstop — porsager's end() merges
+		// concurrent calls via `if (ending) return ending`
+		// (postgres@3.4.9 src/index.js:366).
 		await sql.end({ timeout: 5 }).catch(() => undefined);
 	}
 }
@@ -616,7 +611,14 @@ function worker(_ctx: SandboxContext): PluginSetup {
 	return {
 		guestFunctions: [sqlDispatcherDescriptor()],
 		onRunFinished: async () => {
-			await closeAllHandles();
+			const handles = Array.from(openHandles);
+			openHandles.clear();
+			// porsager/postgres end() is idempotent: `if (ending) return ending`
+			// (postgres@3.4.9 src/index.js:366). Safe to race with the per-query
+			// `finally { sql.end() }` — both callers share one teardown.
+			await Promise.allSettled(
+				handles.map((h) => h.end({ timeout: 0 }).catch(() => undefined)),
+			);
 		},
 	};
 }
@@ -625,7 +627,6 @@ export {
 	assertInput,
 	buildSsl,
 	clampTimeout,
-	closeAllHandles,
 	coerceRow,
 	coerceValue,
 	dispatchSqlExecute,
