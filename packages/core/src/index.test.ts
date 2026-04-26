@@ -228,6 +228,103 @@ describe("ManifestSchema manual trigger", () => {
 	});
 });
 
+describe("ManifestSchema imap trigger", () => {
+	const base = (triggers: unknown[]) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: {},
+				actions: [],
+				triggers,
+			},
+		],
+	});
+	const validImap = {
+		name: "inbound",
+		type: "imap" as const,
+		host: "imap.example.com",
+		port: 993,
+		tls: "required" as const,
+		insecureSkipVerify: false,
+		user: "alice",
+		password: "hunter2",
+		folder: "INBOX",
+		search: "UNSEEN",
+		onError: {},
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: true,
+		},
+		outputSchema: {},
+	};
+
+	it("accepts a valid imap descriptor", () => {
+		const parsed = ManifestSchema.parse(base([validImap]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "imap") {
+			throw new Error("expected imap");
+		}
+		expect(trigger.host).toBe("imap.example.com");
+		expect(trigger.port).toBe(993);
+		expect(trigger.tls).toBe("required");
+		expect(trigger.folder).toBe("INBOX");
+	});
+
+	it("accepts an imap descriptor with sentinel in password", () => {
+		const withSentinel = {
+			...validImap,
+			password: "\x00secret:IMAP_PASSWORD\x00",
+		};
+		const parsed = ManifestSchema.parse(base([withSentinel]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "imap") {
+			throw new Error("expected imap");
+		}
+		expect(trigger.password).toBe("\x00secret:IMAP_PASSWORD\x00");
+	});
+
+	it("accepts an imap descriptor with onError command list", () => {
+		const withOnError = {
+			...validImap,
+			onError: { command: ["UID STORE 1 +FLAGS (\\Seen)"] },
+		};
+		const parsed = ManifestSchema.parse(base([withOnError]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "imap") {
+			throw new Error("expected imap");
+		}
+		expect(trigger.onError.command).toEqual(["UID STORE 1 +FLAGS (\\Seen)"]);
+	});
+
+	it("rejects an imap descriptor with port as string", () => {
+		const bad = { ...validImap, port: "993" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects an imap descriptor with unknown tls mode", () => {
+		const bad = { ...validImap, tls: "ssl" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+
+	it("rejects an imap descriptor missing password", () => {
+		const { password: _p, ...rest } = validImap;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects an imap descriptor missing onError", () => {
+		const { onError: _o, ...rest } = validImap;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects an imap entry with a non-URL-safe name", () => {
+		const bad = { ...validImap, name: "$weird" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+});
+
 describe("ManifestSchema secrets + secretsKeyId", () => {
 	const base = (overrides: Record<string, unknown> = {}) => ({
 		workflows: [

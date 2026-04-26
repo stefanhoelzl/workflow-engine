@@ -21,18 +21,19 @@ The SDK SHALL depend on `@workflow-engine/core` (which provides Zod) and re-expo
 
 ### Requirement: Brand symbols identify SDK products
 
-The SDK SHALL export five brand symbols used to identify objects produced by its factories:
+The SDK SHALL export six brand symbols used to identify objects produced by its factories:
 - `ACTION_BRAND = Symbol.for("@workflow-engine/action")`
 - `HTTP_TRIGGER_BRAND = Symbol.for("@workflow-engine/http-trigger")`
 - `CRON_TRIGGER_BRAND = Symbol.for("@workflow-engine/cron-trigger")`
 - `MANUAL_TRIGGER_BRAND = Symbol.for("@workflow-engine/manual-trigger")`
+- `IMAP_TRIGGER_BRAND = Symbol.for("@workflow-engine/imap-trigger")`
 - `WORKFLOW_BRAND = Symbol.for("@workflow-engine/workflow")`
 
-The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `isCronTrigger(value)`, `isManualTrigger(value)`, `isWorkflow(value)` that check for the corresponding brand symbol.
+The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `isCronTrigger(value)`, `isManualTrigger(value)`, `isImapTrigger(value)`, `isWorkflow(value)` that check for the corresponding brand symbol.
 
 #### Scenario: Brand on each factory return value
 
-- **WHEN** `action(...)`, `httpTrigger(...)`, `cronTrigger(...)`, `manualTrigger(...)`, or `defineWorkflow(...)` is called
+- **WHEN** `action(...)`, `httpTrigger(...)`, `cronTrigger(...)`, `manualTrigger(...)`, `imapTrigger(...)`, or `defineWorkflow(...)` is called
 - **THEN** the returned value SHALL have the corresponding brand symbol set to `true`
 
 #### Scenario: Type guard recognizes branded value
@@ -54,6 +55,7 @@ The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `is
 - **THEN** the function SHALL return `true`
 - **AND** `isHttpTrigger(v)` SHALL return `false`
 - **AND** `isManualTrigger(v)` SHALL return `false`
+- **AND** `isImapTrigger(v)` SHALL return `false`
 
 #### Scenario: isManualTrigger recognizes manual trigger values
 
@@ -62,6 +64,16 @@ The SDK SHALL provide type guards `isAction(value)`, `isHttpTrigger(value)`, `is
 - **THEN** the function SHALL return `true`
 - **AND** `isHttpTrigger(v)` SHALL return `false`
 - **AND** `isCronTrigger(v)` SHALL return `false`
+- **AND** `isImapTrigger(v)` SHALL return `false`
+
+#### Scenario: isImapTrigger recognizes imap trigger values
+
+- **GIVEN** a value `v` returned from `imapTrigger({...})`
+- **WHEN** `isImapTrigger(v)` is called
+- **THEN** the function SHALL return `true`
+- **AND** `isHttpTrigger(v)` SHALL return `false`
+- **AND** `isCronTrigger(v)` SHALL return `false`
+- **AND** `isManualTrigger(v)` SHALL return `false`
 
 ### Requirement: defineWorkflow factory
 
@@ -537,7 +549,6 @@ The SDK SHALL export a named function `sendMail` from `@workflow-engine/sdk`. Th
 - **WHEN** the SDK caller awaits `sendMail(...)`
 - **THEN** the awaited promise SHALL reject with an error preserving `kind`, `code`, `message`, and `response`
 
-
 ### Requirement: SecretEnvRef build-time resolution emits sentinel strings
 
 The SDK's build-time env resolver (`resolveEnvRecord` in `packages/sdk/src/index.ts`, invoked from `defineWorkflow`'s build-time branch when `globalThis.workflow` is absent) SHALL emit a sentinel string for every `SecretEnvRef` entry in `config.env` instead of skipping the entry.
@@ -661,3 +672,29 @@ The function SHALL invoke the private `$sql/do` host-callable descriptor with th
 - **GIVEN** `workflows/src/demo.ts` statically references SDK identity symbols in its `_sdkSurface` block
 - **WHEN** any future rename or removal of `executeSql` at the SDK boundary occurs
 - **THEN** `pnpm build` on `demo.ts` SHALL fail with a type or reference error, preventing silent SDK drift
+
+### Requirement: imapTrigger factory
+
+The SDK SHALL export an `imapTrigger(config)` factory per the `imap-trigger` capability. The factory SHALL return an `ImapTrigger` value branded with `IMAP_TRIGGER_BRAND` and callable as `(msg: ImapMessage) => Promise<ImapTriggerResult>`. The SDK SHALL additionally re-export the `ImapMessage` and `ImapTriggerResult` TypeScript types from the package root so author code can spell the handler argument and return shapes.
+
+The factory SHALL default omitted optional fields as follows: `tls` → `"required"`, `insecureSkipVerify` → `false`, `onError` → `{}`.
+
+The SDK SHALL enforce at the TypeScript type level that `handler`'s return type satisfies `Promise<ImapTriggerResult>`; a handler that returns `void` or an otherwise-mismatched shape SHALL be a compile error.
+
+#### Scenario: imapTrigger is exported from SDK root
+
+- **WHEN** a workflow author imports `{ imapTrigger }` from `"@workflow-engine/sdk"`
+- **THEN** the import SHALL resolve to the factory
+- **AND** calling it with a valid config SHALL return a branded callable
+
+#### Scenario: ImapMessage and ImapTriggerResult types are re-exported
+
+- **WHEN** a workflow author imports `type { ImapMessage, ImapTriggerResult }` from `"@workflow-engine/sdk"`
+- **THEN** the imports SHALL resolve to the types defined by the `imap-trigger` capability
+
+#### Scenario: Handler return type is enforced at compile time
+
+- **GIVEN** `imapTrigger({ ..., handler: async () => {} })` where the handler returns `void`
+- **WHEN** the workflow is type-checked
+- **THEN** TypeScript SHALL emit a compile error
+- **AND** the error SHALL indicate that the handler must return `Promise<ImapTriggerResult>`

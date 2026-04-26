@@ -9,10 +9,13 @@ import {
 	env,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
+	IMAP_TRIGGER_BRAND,
+	imapTrigger,
 	isAction,
 	isCronTrigger,
 	isEnvRef,
 	isHttpTrigger,
+	isImapTrigger,
 	isManualTrigger,
 	isSecret,
 	isWorkflow,
@@ -238,6 +241,134 @@ describe("brands and type guards", () => {
 		expect(() =>
 			// @ts-expect-error — missing handler
 			manualTrigger({}),
+		).toThrow(/missing a handler/);
+	});
+
+	// ---------------------------------------------------------------------------
+	// IMAP trigger
+	// ---------------------------------------------------------------------------
+
+	const imapBaseConfig = {
+		host: "imap.example.com",
+		port: 993,
+		user: "alice",
+		password: "hunter2",
+		folder: "INBOX",
+		search: "UNSEEN",
+	};
+	const imapMsg = {
+		uid: 1,
+		references: [] as string[],
+		from: { address: "sender@example.com" },
+		to: [{ address: "alice@example.com" }],
+		cc: [] as { address: string }[],
+		bcc: [] as { address: string }[],
+		subject: "hi",
+		date: "2026-01-01T00:00:00.000Z",
+		headers: {} as Record<string, string[]>,
+		attachments: [] as {
+			contentType: string;
+			size: number;
+			content: string;
+		}[],
+	};
+
+	it("imapTrigger() returns a callable branded with IMAP_TRIGGER_BRAND", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(typeof t).toBe("function");
+		expect((t as unknown as Record<symbol, unknown>)[IMAP_TRIGGER_BRAND]).toBe(
+			true,
+		);
+		expect(isImapTrigger(t)).toBe(true);
+	});
+
+	it("imapTrigger defaults tls to 'required'", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(t.tls).toBe("required");
+	});
+
+	it("imapTrigger defaults insecureSkipVerify to false", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(t.insecureSkipVerify).toBe(false);
+	});
+
+	it("imapTrigger defaults onError to empty envelope", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(t.onError).toEqual({});
+	});
+
+	it("imapTrigger exposes connection + dedup config as readonly properties", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(t.host).toBe("imap.example.com");
+		expect(t.port).toBe(993);
+		expect(t.user).toBe("alice");
+		expect(t.password).toBe("hunter2");
+		expect(t.folder).toBe("INBOX");
+		expect(t.search).toBe("UNSEEN");
+	});
+
+	it("imapTrigger does not expose the handler as a property", () => {
+		const handler = async () => ({});
+		const t = imapTrigger({ ...imapBaseConfig, handler });
+		expect("handler" in t).toBe(false);
+	});
+
+	it("imapTrigger callable invokes the handler with the message", async () => {
+		const calls: unknown[] = [];
+		const t = imapTrigger({
+			...imapBaseConfig,
+			handler: async (msg) => {
+				calls.push(msg);
+				return { command: [`UID STORE ${msg.uid} +FLAGS (\\Seen)`] };
+			},
+		});
+		const out = await t(imapMsg);
+		expect(out).toEqual({ command: ["UID STORE 1 +FLAGS (\\Seen)"] });
+		expect(calls).toEqual([imapMsg]);
+	});
+
+	it("imapTrigger inputSchema validates parsed messages", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(() => t.inputSchema.parse(imapMsg)).not.toThrow();
+		expect(() => t.inputSchema.parse({ uid: "not-a-number" })).toThrow();
+	});
+
+	it("imapTrigger outputSchema accepts envelope with or without command", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(() => t.outputSchema.parse({})).not.toThrow();
+		expect(() =>
+			t.outputSchema.parse({ command: ["UID STORE 1 +FLAGS (\\Seen)"] }),
+		).not.toThrow();
+		expect(() => t.outputSchema.parse({ command: [1] })).toThrow();
+	});
+
+	it("isImapTrigger distinguishes from other trigger kinds", () => {
+		const http = httpTrigger({ handler: async () => ({}) });
+		const cron = cronTrigger({
+			schedule: "0 0 * * *",
+			tz: "UTC",
+			handler: async () => {},
+		});
+		const manual = manualTrigger({ handler: async () => {} });
+		const imap = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(isImapTrigger(http)).toBe(false);
+		expect(isImapTrigger(cron)).toBe(false);
+		expect(isImapTrigger(manual)).toBe(false);
+		expect(isHttpTrigger(imap)).toBe(false);
+		expect(isCronTrigger(imap)).toBe(false);
+		expect(isManualTrigger(imap)).toBe(false);
+	});
+
+	it("isImapTrigger rejects plain values", () => {
+		expect(isImapTrigger(() => 1)).toBe(false);
+		expect(isImapTrigger(null)).toBe(false);
+		expect(isImapTrigger({})).toBe(false);
+	});
+
+	it("imapTrigger throws when handler is omitted", () => {
+		expect(() =>
+			// @ts-expect-error — missing handler
+			imapTrigger(imapBaseConfig),
 		).toThrow(/missing a handler/);
 	});
 });

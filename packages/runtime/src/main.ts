@@ -31,6 +31,7 @@ import { createS3Storage } from "./storage/s3.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
+import { createImapTriggerSource } from "./triggers/imap.js";
 import { createManualTriggerSource } from "./triggers/manual.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
@@ -175,7 +176,10 @@ async function init() {
 		logger: runtimeLogger,
 	});
 	const manualSource = createManualTriggerSource();
-	const triggerBackends = [httpSource, cronSource, manualSource];
+	const imapSource = createImapTriggerSource({
+		logger: runtimeLogger,
+	});
+	const triggerBackends = [httpSource, cronSource, manualSource, imapSource];
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 7. Workflow registry. Boots from the storage backend by LISTing
@@ -292,3 +296,5 @@ async function main() {
 }
 
 main();
+// 1777133046701353883
+// 1777161535758443155

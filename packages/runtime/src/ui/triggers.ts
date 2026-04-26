@@ -2,6 +2,7 @@ import { html } from "hono/html";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ImapTriggerDescriptor,
 	TriggerDescriptor,
 } from "../executor/types.js";
 
@@ -13,12 +14,14 @@ const KIND_ICONS: Record<string, string> = {
 	http: "\u{1F310}", // globe
 	cron: "\u{23F0}", // alarm clock
 	manual: "\u{1F464}", // bust in silhouette
+	imap: "\u{1F4E8}", // incoming envelope
 };
 
 const KIND_LABELS: Record<string, string> = {
 	http: "HTTP",
 	cron: "Cron",
 	manual: "Manual",
+	imap: "IMAP",
 };
 
 function triggerKindIcon(kind: string) {
@@ -43,6 +46,10 @@ function triggerCardMeta(
 	if (descriptor.kind === "cron") {
 		const cron = descriptor as CronTriggerDescriptor;
 		return `${cron.schedule} (${cron.tz})`;
+	}
+	if (descriptor.kind === "imap") {
+		const imap = descriptor as ImapTriggerDescriptor;
+		return `${imap.host}:${String(imap.port)} ${imap.folder}`;
 	}
 	// manual — no meta line (UI-only fire path, nothing schedule/URL-like to show)
 	return "";

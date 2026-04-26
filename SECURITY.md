@@ -1543,6 +1543,14 @@ Additional main-thread secrets rules on top of the K8s-centric rules above:
 11. **NEVER call `TriggerSource.reconfigure` with entries that contain unresolved `\x00secret:NAME\x00` sentinels.** Resolution SHALL go through `packages/runtime/src/triggers/resolve-secret-sentinels.ts`. `TriggerSource` implementations MUST NOT parse or pattern-match sentinels themselves.
 12. **NEVER re-implement the `\x00secret:NAME\x00` encoding.** All producers (the SDK's build-time env resolver) and all consumers (the runtime's main-side trigger-config resolver) MUST import `encodeSentinel` and `SENTINEL_SUBSTRING_RE` from `@workflow-engine/core`. The worker-side plaintext scrubber is a separate mechanism keyed on plaintext bytes (not sentinels) and is not a consumer of this format.
 
+### Imap trigger source addenda
+
+13. **Imap-source plaintext credential carve-out.** The imap `TriggerSource` (`packages/runtime/src/triggers/imap.ts`) is permitted to hold the resolved IMAP `user` and `password` plaintext on its long-lived per-entry descriptor state (and to pass them into `ImapFlow`'s `auth.user` / `auth.pass` per poll). This mirrors the existing carve-out for the cron source's resolved schedule string and is covered by Rule 10's `(b)` clause ("inside `TriggerSource` instance state set via `reconfigure`"). The constructed `ImapFlow` auth object's lifetime past `client.logout()` falls under the `(c)` third-party-library boundary clause.
+
+14. **No sentinel resolution on handler outputs.** The imap source MUST NOT run `resolveSecretSentinels` (or any equivalent walk) over the handler's returned `{ command?: string[] }` envelope or over any value originating from `entry.fire`'s output. Sentinel substitution applies only to manifest-sourced strings consumed at `reconfigure` time. Treating handler output as a sentinel-bearing surface would re-introduce sealed plaintext into runtime-author-controlled code paths that the threat model excludes.
+
+15. **`auth-failed` log lines may echo credentials.** When IMAP authentication fails, the imap source surfaces the server's response text (including any `imapText` field) via `deps.logger.warn` with `reason: "auth-failed"`. (Per the Group 5 deviation noted in `add-imap-trigger/tasks.md` §5.5, source-level failures are logged rather than emitted as `trigger.error` events.) A misbehaving IMAP server that echoes LOGIN arguments in its `NO`/`BAD` response text could therefore leak the plaintext password into the structured log stream. This is a documented tradeoff in favour of operator debugging — a generic "auth failed" without server text is markedly harder to triage against the long tail of real-world IMAP server quirks. Operators MUST treat the runtime log stream as credential-grade when imap triggers are in use.
+
 ### File references
 
 - App deployment: `infrastructure/modules/app-instance/workloads.tf`

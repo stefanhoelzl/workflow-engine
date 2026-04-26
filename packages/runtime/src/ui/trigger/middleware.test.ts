@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ImapTriggerDescriptor,
 	InvokeResult,
 	ManualTriggerDescriptor,
 } from "../../executor/types.js";
@@ -233,6 +234,59 @@ function makeManualStub(
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: fire ?? defaultFire,
+	};
+	return {
+		owner,
+		repo: DEFAULT_REPO,
+		workflowName,
+		triggerName: spec.name,
+		triggerEntry,
+		workflowEntry: {
+			owner,
+			repo: DEFAULT_REPO,
+			workflow: {
+				name: workflowName,
+				module: `${workflowName}.js`,
+				sha: "0".repeat(64),
+				env: {},
+				actions: [],
+				triggers: [],
+			},
+			bundleSource: "",
+			triggers: [descriptor],
+		},
+	};
+}
+
+function makeImapStub(
+	owner: string,
+	workflowName: string,
+	spec: { name: string; host?: string; port?: number; folder?: string },
+): StubEntry {
+	const descriptor: ImapTriggerDescriptor = {
+		kind: "imap",
+		type: "imap",
+		name: spec.name,
+		workflowName,
+		host: spec.host ?? "imap.example.com",
+		port: spec.port ?? 993,
+		tls: "required",
+		insecureSkipVerify: false,
+		user: "alice",
+		password: "hunter2",
+		folder: spec.folder ?? "INBOX",
+		search: "UNSEEN",
+		onError: {},
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: true,
+		},
+		outputSchema: {},
+	};
+	const triggerEntry: TriggerEntry = {
+		descriptor,
+		fire: async () => ({ ok: true, output: undefined }),
 	};
 	return {
 		owner,
@@ -718,6 +772,43 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 		expect(json.output).toEqual({ id: "abc" });
 		expect(fire).toHaveBeenCalledTimes(1);
 		expect(fire.mock.calls[0]?.[0]).toEqual({ id: "abc" });
+	});
+});
+
+describe("triggerMiddleware: imap trigger rendering", () => {
+	it("renders an imap trigger card with envelope icon and host:port folder meta", async () => {
+		const registry = makeStubRegistry([
+			makeImapStub("t0", "mail", {
+				name: "inbound",
+				host: "imap.example.com",
+				port: 993,
+				folder: "INBOX",
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		expect(body).toContain('class="trigger-group-title">mail</h2>');
+		expect(body).toContain('<span class="trigger-name">inbound</span>');
+		expect(body).toContain('title="imap"');
+		expect(body).toContain("\u{1F4E8}"); // incoming envelope
+		expect(body).toContain("imap.example.com:993 INBOX");
+	});
+
+	it("renders custom host/port/folder in meta line", async () => {
+		const registry = makeStubRegistry([
+			makeImapStub("t0", "mail", {
+				name: "support",
+				host: "imap.fastmail.com",
+				port: 143,
+				folder: "Support",
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
+		const body = await res.text();
+		expect(body).toContain("imap.fastmail.com:143 Support");
 	});
 });
 

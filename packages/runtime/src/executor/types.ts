@@ -43,10 +43,24 @@ interface ManualTriggerDescriptor extends BaseTriggerDescriptor<"manual"> {
 	readonly type: "manual";
 }
 
+interface ImapTriggerDescriptor extends BaseTriggerDescriptor<"imap"> {
+	readonly type: "imap";
+	readonly host: string;
+	readonly port: number;
+	readonly tls: "required" | "starttls" | "none";
+	readonly insecureSkipVerify: boolean;
+	readonly user: string;
+	readonly password: string;
+	readonly folder: string;
+	readonly search: string;
+	readonly onError: { readonly command?: readonly string[] };
+}
+
 type TriggerDescriptor =
 	| HttpTriggerDescriptor
 	| CronTriggerDescriptor
-	| ManualTriggerDescriptor;
+	| ManualTriggerDescriptor
+	| ImapTriggerDescriptor;
 
 interface ValidationIssue {
 	readonly path: readonly (string | number)[];
@@ -75,6 +89,7 @@ export type {
 	BaseTriggerDescriptor,
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ImapTriggerDescriptor,
 	InvokeResult,
 	ManualTriggerDescriptor,
 	TriggerDescriptor,
