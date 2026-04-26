@@ -108,9 +108,9 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 13. PR 12 — `.fetch` auth resolution + test #8 (cross-owner 404 isolation)
 
-- [ ] 13.1 Implement `auth: {user, via: "cookie" | "api-header"}` resolution: `via: "cookie"` POSTs to `/auth/local/signin` with `name=user`, captures sealed `session` cookie; `via: "api-header"` adds `Authorization: User <user>` and `X-Auth-Provider: local` headers; cache per `(child, user, via)`
-- [ ] 13.2 Write test #8: upload one workflow under `(acme, e2e)` as `alice`; chain calls `.fetch("/api/workflows/acme", {auth: {user: "bob", via: "api-header"}, label: "bobApi"})`, `.fetch("/dashboard/acme", {auth: {user: "bob", via: "cookie"}, label: "bobDash"})`, `.fetch("/api/workflows/acme", {auth: {user: "alice", via: "api-header"}, label: "aliceApi"})`; expect bobApi=404, bobDash=404, aliceApi=200
-- [ ] 13.3 Verify cross-owner enumeration returns 404, alice sanity passes
+- [x] 13.1 Implement `auth: {user, via: "cookie" | "api-header"}` resolution: `via: "cookie"` POSTs to `/auth/local/signin` with `name=user`, captures sealed `session` cookie; `via: "api-header"` adds `Authorization: User <user>` and `X-Auth-Provider: local` headers; cache per `(child, user, via)`
+- [x] 13.2 Write test #8: upload one workflow under `(acme, e2e)` as `alice`; chain calls `.fetch("/api/workflows/acme", {auth: {user: "bob", via: "api-header"}, label: "bobApi"})`, `.fetch("/dashboard/acme", {auth: {user: "bob", via: "cookie"}, label: "bobDash"})`, `.fetch("/api/workflows/acme", {auth: {user: "alice", via: "api-header"}, label: "aliceApi"})`; expect bobApi=404, bobDash=404, aliceApi=200
+- [x] 13.3 Verify cross-owner enumeration returns 404, alice sanity passes
 
 ## 14. PR 13 — Mock infrastructure + HTTP echo mock + test #17 (fetch SSRF guard)
 
