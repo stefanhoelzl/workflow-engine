@@ -75,4 +75,6 @@ jobs:
           # Placeholder for demo's `env({ secret: true })` binding; demo only
           # self-signs with it. Mirrors scripts/dev.ts's DEV_SECRET_DEFAULTS.
           WEBHOOK_TOKEN: staging-webhook-token
+          IMAP_USER: staging-imap-user
+          IMAP_PASSWORD: staging-imap-password
         run: node ../packages/sdk/dist/cli/cli.js upload --url "${{ steps.url.outputs.url }}"
