@@ -122,7 +122,14 @@ const TRIGGER_KINDS = new Set<string>([
 	"trigger.error",
 ]);
 
-function matchesFilter(event: InvocationEvent, filter: EventFilter): boolean {
+interface InternalFilter extends EventFilter {
+	id?: string;
+}
+
+function matchesFilter(
+	event: InvocationEvent,
+	filter: InternalFilter,
+): boolean {
 	if (filter.kind !== undefined && event.kind !== filter.kind) {
 		return false;
 	}
@@ -130,6 +137,9 @@ function matchesFilter(event: InvocationEvent, filter: EventFilter): boolean {
 		return false;
 	}
 	if (filter.repo !== undefined && event.repo !== filter.repo) {
+		return false;
+	}
+	if (filter.id !== undefined && event.id !== filter.id) {
 		return false;
 	}
 	if (filter.trigger !== undefined) {
@@ -158,7 +168,7 @@ interface WaitOptions {
 
 async function waitForEvent(
 	persistencePath: string,
-	filter: EventFilter,
+	filter: InternalFilter,
 	opts: WaitOptions = {},
 ): Promise<InvocationEvent> {
 	const hardCap = opts.hardCap ?? DEFAULT_HARDCAP_MS;
@@ -186,12 +196,12 @@ async function waitForEvent(
 	);
 }
 
-function archivedScope(filter: EventFilter): ScanOptions {
+function archivedScope(filter: InternalFilter): ScanOptions {
 	if (filter.archived === undefined) {
 		return {};
 	}
 	return { archived: filter.archived };
 }
 
-export type { ScanOptions };
+export type { InternalFilter, ScanOptions };
 export { matchesFilter, scanEvents, waitForEvent };

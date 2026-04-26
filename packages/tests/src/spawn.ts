@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,47 +33,60 @@ function freePort(): Promise<number> {
 	});
 }
 
-interface SpawnOptions {
-	env?: Record<string, string>;
+interface SpawnSpec {
+	port: number;
+	persistencePath: string;
+	secretsKey: string;
+	env: Record<string, string>;
 }
 
-interface RuntimeChild {
+interface SpawnedChild {
 	readonly baseUrl: string;
 	readonly persistencePath: string;
 	readonly logs: readonly LogLine[];
 	readonly logStream: LogStream;
-	stop(): Promise<void>;
-}
-
-interface SpawnedChild extends RuntimeChild {
 	readonly proc: ChildProcess;
+	readonly exited: () => Promise<{
+		code: number | null;
+		signal: NodeJS.Signals | null;
+	}>;
+	stop(): Promise<void>;
+	signal(signal: NodeJS.Signals): void;
 }
 
-async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
-	const port = await freePort();
-	const persistencePath = await mkdtemp(join(tmpdir(), "wfe-tests-persist-"));
-	const secretsKey = `k1:${randomBytes(32).toString("base64")}`;
+async function buildSpawnSpec(
+	opts: { env?: Record<string, string> } = {},
+): Promise<SpawnSpec> {
+	return {
+		port: await freePort(),
+		persistencePath: await mkdtemp(join(tmpdir(), "wfe-tests-persist-")),
+		secretsKey: `k1:${randomBytes(32).toString("base64")}`,
+		env: opts.env ?? {},
+	};
+}
+
+async function spawnRuntime(spec: SpawnSpec): Promise<SpawnedChild> {
 	const env: NodeJS.ProcessEnv = {
 		PATH: process.env.PATH,
 		HOME: process.env.HOME,
-		PORT: String(port),
-		PERSISTENCE_PATH: persistencePath,
-		BASE_URL: `http://127.0.0.1:${String(port)}`,
+		PORT: String(spec.port),
+		PERSISTENCE_PATH: spec.persistencePath,
+		BASE_URL: `http://127.0.0.1:${String(spec.port)}`,
 		AUTH_ALLOW: "local:dev,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",
-		SECRETS_PRIVATE_KEYS: secretsKey,
+		SECRETS_PRIVATE_KEYS: spec.secretsKey,
 		LOG_LEVEL: "info",
-		...(opts.env ?? {}),
+		...spec.env,
 	};
 
 	const proc = spawn("node", [RUNTIME_DIST_MAIN], {
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
 		cwd: REPO_ROOT,
-		// Dedicated process group so `process.kill(-pid, signal)` in stop()
-		// reaches every descendant if node ever spawns helpers. Belt-and-braces:
-		// the direct `node` child has no shell wrapper, but keeping the pgid
-		// pattern means stop() stays correct under future changes.
+		// Dedicated process group so `process.kill(-pid, signal)` reaches every
+		// descendant. Belt-and-braces: the direct `node` child has no shell
+		// wrapper, but keeping the pgid pattern means stop() stays correct
+		// under future changes.
 		detached: true,
 	});
 
@@ -83,6 +96,13 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 	let stderrBuffer = "";
 	let ready = false;
 	let exited = false;
+	let exitInfo: { code: number | null; signal: NodeJS.Signals | null } = {
+		code: null,
+		signal: null,
+	};
+	const exitWaiters: Array<
+		(info: { code: number | null; signal: NodeJS.Signals | null }) => void
+	> = [];
 
 	let onReady: (() => void) | null = null;
 	let onReadyFail: ((err: Error) => void) | null = null;
@@ -137,6 +157,10 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 
 	proc.on("exit", (code, signal) => {
 		exited = true;
+		exitInfo = { code, signal };
+		for (const w of exitWaiters.splice(0)) {
+			w(exitInfo);
+		}
 		if (!ready && onReadyFail) {
 			const tail = stderrBuf.slice(-20).join("\n");
 			onReadyFail(
@@ -169,48 +193,58 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 		}
 	});
 
-	const baseUrl = `http://127.0.0.1:${String(port)}`;
+	const baseUrl = `http://127.0.0.1:${String(spec.port)}`;
 
-	function killGroup(signal: NodeJS.Signals): void {
+	function killGroup(sig: NodeJS.Signals): void {
 		if (proc.pid === undefined) {
 			return;
 		}
 		try {
-			// Negative pid = signal the entire process group (pgid set up by
-			// `detached: true`). Reaches pnpm + sh wrapper + leaf node child
-			// in one call so nothing re-parents to PID 1 and leaks.
-			process.kill(-proc.pid, signal);
+			process.kill(-proc.pid, sig);
 		} catch {
 			// already gone, or pgid no longer exists; nothing to do
 		}
 	}
 
+	function exitedPromise(): Promise<{
+		code: number | null;
+		signal: NodeJS.Signals | null;
+	}> {
+		if (exited) {
+			return Promise.resolve(exitInfo);
+		}
+		return new Promise((res) => {
+			exitWaiters.push(res);
+		});
+	}
+
 	async function stop(): Promise<void> {
 		if (exited) {
-			await rm(persistencePath, { recursive: true, force: true });
 			return;
 		}
-		const exitPromise = new Promise<void>((res) => {
-			if (exited) {
-				res();
-				return;
-			}
-			proc.once("exit", () => res());
-		});
+		const wait = exitedPromise();
 		killGroup("SIGTERM");
 		const timeout = setTimeout(() => {
 			if (!exited) {
 				killGroup("SIGKILL");
 			}
 		}, SHUTDOWN_TIMEOUT_MS);
-		await exitPromise;
+		await wait;
 		clearTimeout(timeout);
-		await rm(persistencePath, { recursive: true, force: true });
 	}
 
 	const logStream = createLogStream(logs);
-	return { baseUrl, persistencePath, logs, logStream, proc, stop };
+	return {
+		baseUrl,
+		persistencePath: spec.persistencePath,
+		logs,
+		logStream,
+		proc,
+		stop,
+		signal: killGroup,
+		exited: exitedPromise,
+	};
 }
 
-export type { RuntimeChild, SpawnedChild };
-export { spawnRuntime };
+export type { SpawnedChild, SpawnSpec };
+export { buildSpawnSpec, spawnRuntime };
