@@ -124,15 +124,23 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		});
 	}
 
-	function disposeEntry(entry: CacheEntry): void {
+	function disposeEntry(
+		entry: CacheEntry,
+		reason: "lru" | "store-dispose",
+	): void {
 		const sb = entry.sandbox;
 		if (!sb) {
 			return;
 		}
 		const p = Promise.resolve()
 			.then(() => sb.dispose())
-			.catch(() => {
-				/* ignore disposal errors */
+			.catch((err: unknown) => {
+				logger.warn("sandbox dispose failed", {
+					owner: entry.owner,
+					sha: entry.sha,
+					reason,
+					err,
+				});
 			})
 			.finally(() => {
 				pendingDisposals.delete(p);
@@ -174,7 +182,7 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 				ageMs,
 				runCount: victim.runCount,
 			});
-			disposeEntry(victim);
+			disposeEntry(victim, "lru");
 		}
 	}
 
@@ -219,11 +227,16 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 			const remaining: Promise<void>[] = [];
 			for (const entry of cache.values()) {
 				const p = entry.promise
-					.then((sb) => {
-						sb.dispose();
+					.then(() => {
+						disposeEntry(entry, "store-dispose");
 					})
-					.catch(() => {
-						/* ignore disposal errors */
+					.catch((err: unknown) => {
+						logger.warn("sandbox dispose failed", {
+							owner: entry.owner,
+							sha: entry.sha,
+							reason: "store-dispose",
+							err,
+						});
 					});
 				remaining.push(p);
 			}
