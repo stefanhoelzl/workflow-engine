@@ -41,11 +41,9 @@ export const tick = cronTrigger({
 				expect(ping).toBeDefined();
 				expect(tick).toBeDefined();
 				expect(state.responses).toHaveLength(1);
-				const res = state.responses.byIndex(0);
-				if ("error" in res) {
-					throw new Error(`webhook errored: ${res.error}`);
-				}
-				expect(res.status).toBe(200);
-				expect(res.body).toBe("pong");
+				expect(state.responses.byIndex(0)).toMatchObject({
+					status: 200,
+					body: "pong",
+				});
 			}));
 });

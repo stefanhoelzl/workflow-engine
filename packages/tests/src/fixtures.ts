@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { build } from "@workflow-engine/sdk/cli";
 import {
@@ -25,7 +32,10 @@ interface BuildFixtureOptions {
 interface BuildFixtureResult {
 	cwd: string;
 	names: readonly string[];
+	workflows: ReadonlyArray<{ name: string; sha: string }>;
 }
+
+const SHAS_FILE = ".shas.json";
 
 async function writeFixtureProject(
 	cwd: string,
@@ -69,7 +79,10 @@ async function buildFixture(
 	const names = opts.workflows.map((w) => w.name);
 
 	if (await fixtureCacheHit(key)) {
-		return { cwd, names };
+		const cachedShas = JSON.parse(
+			await readFile(join(cwd, SHAS_FILE), "utf8"),
+		) as { name: string; sha: string }[];
+		return { cwd, names, workflows: cachedShas };
 	}
 
 	// Cache miss — stage inside the cache directory itself so that NodeNext
@@ -79,27 +92,38 @@ async function buildFixture(
 	// directory is also fast and avoids EXDEV across filesystems.
 	await mkdir(CACHE_DIR, { recursive: true });
 	const staging = await mkdtemp(join(CACHE_DIR, `${key}.staging-`));
+	let workflows: ReadonlyArray<{ name: string; sha: string }>;
 	try {
 		await writeFixtureProject(staging, key, opts.workflows);
-		await build({ cwd: staging, env: buildEnv });
+		const result = await build({ cwd: staging, env: buildEnv });
+		workflows = result.workflows.map((w) => ({ name: w.name, sha: w.sha }));
+		await writeFile(
+			join(staging, SHAS_FILE),
+			JSON.stringify(workflows),
+			"utf8",
+		);
 		try {
 			await rename(staging, cwd);
 		} catch (err) {
 			// Race lost: another worker landed the same key first. Their
 			// entry is by-construction equivalent (same key = same inputs).
-			// Drop our staging.
+			// Drop our staging and read the winning entry's shas.
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code !== "EEXIST" && code !== "ENOTEMPTY") {
 				throw err;
 			}
 			await rm(staging, { recursive: true, force: true });
+			workflows = JSON.parse(await readFile(join(cwd, SHAS_FILE), "utf8")) as {
+				name: string;
+				sha: string;
+			}[];
 		}
 	} catch (err) {
 		await rm(staging, { recursive: true, force: true });
 		throw err;
 	}
 
-	return { cwd, names };
+	return { cwd, names, workflows };
 }
 
 export type { BuildFixtureOptions, BuildFixtureResult, FixtureWorkflow };

@@ -50,16 +50,17 @@ export const echo = httpTrigger({
 			.expect((state) => {
 				expect(state.responses).toHaveLength(1);
 				const res = state.responses.byIndex(0);
-				if ("error" in res) {
-					throw new Error(`webhook errored: ${res.error}`);
-				}
-				expect(res.status).toBe(201);
-				expect(res.headers.get("x-custom-resp")).toBe("from-handler");
-				expect(res.body).toEqual({
-					body: { greet: "hi" },
-					headerVal: "header-value",
-					query: { q: "qval", k: "kval" },
+				expect(res).toMatchObject({
+					status: 201,
+					body: {
+						body: { greet: "hi" },
+						headerVal: "header-value",
+						query: { q: "qval", k: "kval" },
+					},
 				});
+				expect("headers" in res && res.headers.get("x-custom-resp")).toBe(
+					"from-handler",
+				);
 			}));
 
 	test("schema mismatch on body returns 422 with issues", (s) =>
@@ -78,13 +79,9 @@ export const strict = httpTrigger({
 			.webhook("strict", { body: { greet: 123 } })
 			.expect((state) => {
 				expect(state.responses).toHaveLength(1);
-				const res = state.responses.byIndex(0);
-				if ("error" in res) {
-					throw new Error(`webhook errored: ${res.error}`);
-				}
-				expect(res.status).toBe(422);
-				expect(res.body).toMatchObject({
-					error: "payload_validation_failed",
+				expect(state.responses.byIndex(0)).toMatchObject({
+					status: 422,
+					body: { error: "payload_validation_failed" },
 				});
 			}));
 });
