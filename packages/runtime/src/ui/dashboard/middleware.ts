@@ -48,6 +48,17 @@ interface RawTerminalRow {
 	error: unknown;
 }
 
+interface RawExceptionRow {
+	id: string;
+	owner: string;
+	repo: string;
+	workflow: string;
+	name: string;
+	at: string;
+	ts: number | bigint;
+	input: unknown;
+}
+
 function toNumber(value: number | bigint): number {
 	return typeof value === "bigint" ? Number(value) : value;
 }
@@ -129,6 +140,14 @@ function parseJsonField(value: unknown): unknown {
 // a specific (workflow, trigger) — this is what the per-trigger filter URL
 // exposes. Terminal rows are merged in memory; the page renderer applies
 // the "pending-first, then newest-completed" sort.
+//
+// Single-leaf `trigger.exception` invocations (author-fixable pre-dispatch
+// failures emitted via `executor.fail` — e.g. "imap.poll-failed") are
+// fetched in parallel and merged into the result as synthetic `failed`
+// rows. They have no `trigger.request` to derive the trigger name from;
+// the trigger declaration name is read from `event.input.trigger` (stamped
+// by `executor.fail`'s primitive). See dashboard-list-view spec
+// "Single-leaf trigger.exception invocations render inline".
 // biome-ignore lint/complexity/useMaxParams: orthogonal inputs already packaged by the caller
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: sequential DB fetch → merge → row shape; splitting hurts readability
 async function fetchInvocationRowsForScopes(
@@ -172,7 +191,7 @@ async function fetchInvocationRowsForScopes(
 		terminalById.set(t.id, t);
 	}
 
-	return requests.map((r) => {
+	const handlerRows = requests.map((r) => {
 		const t = terminalById.get(r.id);
 		const kind = lookupTriggerKind(registry, {
 			owner: r.owner,
@@ -197,6 +216,81 @@ async function fetchInvocationRowsForScopes(
 		};
 		return row;
 	});
+
+	const exceptionRows = await fetchExceptionRows(
+		eventStore,
+		registry,
+		scopes,
+		limit,
+		triggerFilter,
+	);
+
+	return [...handlerRows, ...exceptionRows];
+}
+
+function extractTriggerName(rawInput: unknown): string | undefined {
+	const input = parseJsonField(rawInput);
+	if (!input || typeof input !== "object") {
+		return;
+	}
+	const trigger = (input as { trigger?: unknown }).trigger;
+	return typeof trigger === "string" ? trigger : undefined;
+}
+
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs mirror fetchInvocationRowsForScopes
+async function fetchExceptionRows(
+	eventStore: EventStore,
+	registry: WorkflowRegistry,
+	scopes: readonly Scope[],
+	limit: number,
+	triggerFilter?: { workflow: string; trigger: string },
+): Promise<InvocationRow[]> {
+	const base = eventStore.query(scopes).where("kind", "=", "trigger.exception");
+	// Trigger declaration name lives in `input.trigger` (a JSON column), so
+	// the per-trigger filter is applied in memory after parsing. Workflow
+	// is a top-level column and SQL-filtered.
+	const filtered = triggerFilter
+		? base.where("workflow", "=", triggerFilter.workflow)
+		: base;
+	const rows = (await filtered
+		.select(["id", "owner", "repo", "workflow", "name", "at", "ts", "input"])
+		.orderBy("at", "desc")
+		.orderBy("id", "desc")
+		.limit(limit)
+		.execute()) as RawExceptionRow[];
+
+	const out: InvocationRow[] = [];
+	for (const r of rows) {
+		const trigger = extractTriggerName(r.input);
+		if (trigger === undefined) {
+			continue;
+		}
+		if (triggerFilter && trigger !== triggerFilter.trigger) {
+			continue;
+		}
+		const ts = toNumber(r.ts);
+		const kind = lookupTriggerKind(registry, {
+			owner: r.owner,
+			repo: r.repo,
+			workflow: r.workflow,
+			trigger,
+		});
+		out.push({
+			id: r.id,
+			owner: r.owner,
+			repo: r.repo,
+			workflow: r.workflow,
+			trigger,
+			status: "failed",
+			startedAt: r.at,
+			completedAt: r.at,
+			startedTs: ts,
+			completedTs: ts,
+			synthetic: true,
+			...(kind ? { triggerKind: kind } : {}),
+		});
+	}
+	return out;
 }
 
 async function fetchInvocationEvents(

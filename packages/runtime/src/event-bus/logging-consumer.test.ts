@@ -82,6 +82,36 @@ describe("logging consumer", () => {
 		expect(logger.error).not.toHaveBeenCalled();
 	});
 
+	it("does not log trigger.exception (author-failure events stay out of operator pino)", async () => {
+		// Per `logging-consumer` spec MODIFIED requirement: trigger.exception
+		// represents an author-fixable trigger setup failure (e.g. IMAP
+		// misconfig). Pino logs are operator-facing; surfacing every misconfig
+		// across a fleet of tenants would re-introduce the noise the consumer
+		// was designed to remove. Operator-relevant pre-dispatch failures
+		// (engine bugs like cron.fire-threw / imap.fire-threw) log at their
+		// call sites, not via this consumer.
+		const logger = makeLogger();
+		const c = createLoggingConsumer(logger);
+		await c.handle(
+			event({
+				kind: "trigger.exception",
+				name: "imap.poll-failed",
+				error: { message: "ECONNREFUSED" },
+			}),
+		);
+		await c.handle(
+			event({
+				kind: "trigger.exception",
+				name: "some.other.future-name",
+				error: { message: "x" },
+			}),
+		);
+		expect(logger.info).not.toHaveBeenCalled();
+		expect(logger.warn).not.toHaveBeenCalled();
+		expect(logger.error).not.toHaveBeenCalled();
+		expect(logger.debug).not.toHaveBeenCalled();
+	});
+
 	it("swallows logger backend failures", async () => {
 		const logger = makeLogger();
 		(logger.info as unknown as ReturnType<typeof vi.fn>).mockImplementation(

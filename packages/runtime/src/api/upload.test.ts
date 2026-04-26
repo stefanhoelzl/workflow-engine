@@ -42,6 +42,7 @@ const logger = {
 
 const stubExecutor: Executor = {
 	invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
+	fail: vi.fn(async () => undefined),
 };
 
 const VALID_MANIFEST = {

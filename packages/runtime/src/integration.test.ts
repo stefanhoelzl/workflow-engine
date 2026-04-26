@@ -679,7 +679,7 @@ describe("cron trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [cronSource],
 			keyStore: dummyKeyStore,
 		});
@@ -723,7 +723,7 @@ describe("cron trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [cronSource],
 			keyStore: dummyKeyStore,
 		});
@@ -812,7 +812,7 @@ describe("manual trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [manualSource],
 			keyStore: dummyKeyStore,
 		});
@@ -857,7 +857,7 @@ describe("manual trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [manualSource],
 			keyStore: dummyKeyStore,
 		});
@@ -900,7 +900,7 @@ describe("manual trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [httpSource, manualSource],
 			keyStore: dummyKeyStore,
 		});
@@ -938,7 +938,7 @@ describe("manual trigger integration", () => {
 
 		registry = createWorkflowRegistry({
 			logger,
-			executor: { invoke },
+			executor: { invoke, fail: vi.fn(async () => undefined) },
 			backends: [manualSource],
 			keyStore: dummyKeyStore,
 		});

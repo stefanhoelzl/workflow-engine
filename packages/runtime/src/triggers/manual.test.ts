@@ -25,7 +25,7 @@ function makeEntry(name: string): TriggerEntry<ManualTriggerDescriptor> {
 			output: {},
 		}),
 	);
-	return { descriptor, fire };
+	return { descriptor, fire, exception: vi.fn(async () => undefined) };
 }
 
 describe("createManualTriggerSource", () => {

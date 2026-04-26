@@ -89,7 +89,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { status: 200 } });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const descriptor = makeDescriptor();
 		const workflow = makeWorkflow();
 		const fire = buildFire(
@@ -120,7 +120,7 @@ describe("buildFire", () => {
 
 	it("returns {ok:false} without calling executor on validation failure", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -145,7 +145,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: false, error: { message: "boom" } });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -165,7 +165,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: {} });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -202,7 +202,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { status: 202 } });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const logger = makeSilentLogger();
 		const fire = buildFire(
 			executor,
@@ -236,7 +236,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { statusCode: 202 } }); // typo for `status`
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const logger = makeSilentLogger();
 		const fire = buildFire(
 			executor,
@@ -273,7 +273,7 @@ describe("buildFire", () => {
 			ok: false,
 			error: { message: "boom", stack: "trace" },
 		});
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const logger = makeSilentLogger();
 		const fire = buildFire(
 			executor,
@@ -298,7 +298,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: undefined });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const logger = makeSilentLogger();
 		const fire = buildFire(
 			executor,
@@ -320,7 +320,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { status: 200 } });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -353,7 +353,7 @@ describe("buildFire", () => {
 		const invoke = vi
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { status: 200 } });
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -374,7 +374,7 @@ describe("buildFire", () => {
 
 	it("does not call executor (and thus does not stamp dispatch) on validation failure", async () => {
 		const invoke = vi.fn<Executor["invoke"]>();
-		const executor: Executor = { invoke };
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const fire = buildFire(
 			executor,
 			"acme",

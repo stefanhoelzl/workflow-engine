@@ -32,6 +32,20 @@ describe("EventKind", () => {
 		expect(systemKinds).toHaveLength(5);
 	});
 
+	it("includes trigger.exception as a leaf kind for author-fixable pre-dispatch failures", () => {
+		// `trigger.exception` is host-emitted (no sandbox involvement), has no
+		// paired `trigger.request`, and is the sole kind allowed to bypass the
+		// sandbox/sequencer stamping path via the runtime's `emitTriggerException`
+		// helper. See SECURITY.md §2 R-8 stamping boundary.
+		const triggerKinds = [
+			"trigger.request",
+			"trigger.response",
+			"trigger.error",
+			"trigger.exception",
+		] as const satisfies readonly EventKind[];
+		expect(triggerKinds).toHaveLength(4);
+	});
+
 	it("InvocationEvent accepts system.* timer-callback kinds with the expected fields", () => {
 		const setEvent: InvocationEvent = makeEvent({
 			kind: "system.call",

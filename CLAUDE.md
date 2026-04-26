@@ -50,31 +50,31 @@ Prod/staging runbook: `docs/infrastructure.md`.
 
 ## Dev verification
 
-Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the full cluster. `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` to owner `dev`, and hot-reloads on source changes — no kind cluster, no Traefik, no cert-manager.
+Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the full cluster. `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` and `workflows/src/demo-advanced.ts` under owner `local` (repos `demo` and `demo-advanced`), and hot-reloads on source changes — no kind cluster, no Traefik, no cert-manager.
 
 **Escalate to `pnpm local:up:build` (https://localhost:8443) only when the change touches:** `infrastructure/`, Traefik routing/middleware, `secure-headers.ts` (CSP/HSTS/Permissions-Policy), `NetworkPolicy`, cert-manager, K8s manifests, or Helm values. Agents do NOT run `pnpm local:up:build` themselves; they write a `Cluster smoke (human)` block in `tasks.md` listing the specific probes for a human to run. Local auth (`/login`, the local-user dropdown, session-cookie flows) is NOT a cluster-escalation reason — the in-app local provider renders identically under `pnpm dev`.
 
 ### Spawn & readiness
 
 1. Start backgrounded: `pnpm dev --random-port --kill`. Agents use `run_in_background` so the process tree is owned by the agent.
-2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (owner=dev)`. Parse the port from that line. Do NOT probe before it appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
+2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (tenant=dev)`. Parse the port from that line — the literal `tenant=dev` is a stale legacy string emitted by `scripts/dev.ts:353`; the actual upload target is owner `local`, not `dev`. Do NOT probe before the marker appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
 3. Kill the process tree at end of task. `.persistence/` is left as-is between tasks; each boot re-uploads the bundle anyway.
 
-### Auth fixture (set by `scripts/dev.ts`: `AUTH_ALLOW=local:dev,local:alice:acme,local:bob`, `LOCAL_DEPLOYMENT=1`)
+### Auth fixture (set by `scripts/dev.ts`: `AUTH_ALLOW=local:local,local:alice:acme,local:bob`, `LOCAL_DEPLOYMENT=1`)
 
-- `/api/*`: `X-Auth-Provider: local` + `Authorization: User dev` — default happy path on owner `dev`.
+- `/api/*`: `X-Auth-Provider: local` + `Authorization: User local` — default happy path on owner `local`. Note: the only API routes registered today are `POST /api/workflows/<owner>/<repo>` (upload) and `GET /api/workflows/<owner>/public-key`. There is no `GET /api/workflows/<owner>` listing route; reach the workflow surface via `/dashboard/<owner>` (UI route, session cookie).
 - Positive owner isolation: `Authorization: User alice` against owner `acme` → 200.
 - Negative owner isolation: `Authorization: User bob` against owner `acme` → 404.
 - `/webhooks/*`: public, no headers.
-- UI routes (`/dashboard`, `/trigger`, `/login`): use `curl -c/-b cookiejar` against `POST /auth/local/signin` with form field `name=dev` to obtain the sealed `session` cookie, then send it on subsequent GETs. For interactive Alpine behaviour, use Playwright (below).
+- UI routes (`/dashboard`, `/trigger`, `/login`): use `curl -c/-b cookiejar` against `POST /auth/local/signin` with form field `user=local` (NOT `name=local`; the handler reads `body.user`) to obtain the sealed `session` cookie, then send it on subsequent GETs. For interactive Alpine behaviour, use Playwright (below).
 
 ### Canonical fixture
 
-`workflows/src/demo.ts` is the probe target. Its triggers: `runDemo` cron, http GET + POST under `/webhooks/dev/demo/*`, manual `fail` (exercises the `action.error` / `trigger.error` path). SDK or sandbox-stdlib changes must keep `demo.ts` in sync (see `## Example workflows`), so the probe surface stays stable.
+`workflows/src/demo.ts` is the probe target. Its triggers: `runDemo` cron, http GET + POST under `/webhooks/local/demo/*`, manual `fail` (exercises the `action.error` / `trigger.error` path). SDK or sandbox-stdlib changes must keep `demo.ts` in sync (see `## Example workflows`), so the probe surface stays stable.
 
 ### Probe toolkit
 
-- **HTTP**: `curl` against `/api/workflows/dev`, `POST /webhooks/dev/demo/<trigger>`, `/dashboard`, `/dashboard/invocations`, `/trigger`. Assert on status code + JSON/HTML content.
+- **HTTP**: `curl` against `POST /webhooks/local/demo/<trigger>` (public webhooks), `/dashboard/local/demo` (session cookie), `/trigger/local/demo` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the dashboard HTML — there is no `GET /api/workflows/<owner>` JSON listing.
 - **EventStore**: inspect `.persistence/` for emitted events (`invocation.started`, `invocation.completed`, `trigger.request`, `action.error`, …). Useful when verifying owner scoping or event-shape changes without a UI.
 - **Dashboard HTML scraping**: grep rendered output for expected classes (`kind-trigger`, `kind-action`, `kind-rest`, `.entry.skeleton`) — cheap UI regression check without a browser.
 - **Stdout tailing**: tee the dev process's stdout to a file; grep for error traces and upload confirmations.
@@ -85,10 +85,10 @@ Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the
 Replace the old "visit `https://localhost:8443` and click X" bullets with dev-probe bullets the agent ticks as it executes them. Example shape:
 
 ```
-- [ ] N.1 `pnpm dev --random-port --kill` boots; stdout contains `Dev ready on http://localhost:<port> (owner=dev)`.
-- [ ] N.2 `GET /api/workflows/dev` (headers: `X-Auth-Provider: local`, `Authorization: User dev`) → 200 lists `demo`.
-- [ ] N.3 `POST /webhooks/dev/demo/<trigger>` with <fixture body> → 202; `.persistence/` event stream shows paired `invocation.started` / `invocation.completed`.
-- [ ] N.4 `GET /dashboard` (session cookie for `dev`) → 200; HTML contains `kind-trigger` and `kind-action` spans.
+- [ ] N.1 `pnpm dev --random-port --kill` boots; stdout contains `Dev ready on http://localhost:<port> (tenant=dev)` (the `tenant=dev` literal is legacy — the actual upload target is owner `local`).
+- [ ] N.2 `POST /auth/local/signin` (form: `user=local`) → 302 + `session` cookie. Health-check by hitting `/dashboard/local/demo` with that cookie → 200; HTML contains a `runDemo` trigger row.
+- [ ] N.3 `POST /webhooks/local/demo/<trigger>` with <fixture body> → 202; `.persistence/` event stream shows paired `invocation.started` / `invocation.completed`.
+- [ ] N.4 `GET /dashboard/local/demo` (session cookie for `local`) → 200; HTML contains `kind-trigger` and `kind-action` spans.
 - [ ] N.5 (Alpine/interactivity only, if relevant) Playwright script: <click path + assertion>.
 
 (If and only if the change touches edge/auth/infra:)

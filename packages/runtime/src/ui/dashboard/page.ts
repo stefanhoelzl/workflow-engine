@@ -24,6 +24,13 @@ interface InvocationRow {
 		readonly source: "manual" | "trigger";
 		readonly user?: { readonly login: string };
 	};
+	// Marks rows reconstructed from a single `trigger.exception` leaf event
+	// (author-fixable pre-dispatch failure: IMAP misconfig, broken cron
+	// expression, etc.). The renderer surfaces a distinct setup-failed
+	// glyph and tooltip so authors can tell setup failures apart from
+	// handler-throw failures at a glance. See `dashboard-list-view` spec
+	// "Single-leaf trigger.exception invocations render inline".
+	readonly synthetic?: boolean;
 }
 
 // Flat-list sort order:
@@ -74,6 +81,14 @@ const chevronIconSvg = raw(
 	'<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
 );
 
+// Wrench glyph rendered next to the status badge for synthetic
+// (`trigger.exception`) invocations so authors can spot trigger setup
+// failures at a glance without reading the badge text. The `<title>`
+// child supplies hover-text per the dashboard-list-view spec.
+const setupFailedGlyphSvg = raw(
+	'<svg class="icon icon-setup-failed" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="false" role="img"><title>trigger setup failed</title><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+);
+
 function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
 	if (!dispatch || dispatch.source !== "manual") {
 		return "";
@@ -91,6 +106,12 @@ function renderCardSummary(
 	const chevron = expandable
 		? html`<span class="entry-expand-chevron" aria-hidden="true">${chevronIconSvg}</span>`
 		: html`<span class="entry-expand-chevron entry-expand-chevron--placeholder" aria-hidden="true"></span>`;
+	const setupFailed = row.synthetic
+		? html`<span class="entry-setup-failed" aria-label="trigger setup failed">${setupFailedGlyphSvg}</span>`
+		: "";
+	// Synthetic invocations have no `trigger.request` and so no dispatch
+	// metadata. Skip the dispatch chip outright (the spec also forbids it).
+	const dispatchChip = row.synthetic ? "" : renderDispatchChip(row.dispatch);
 	return html`<div class="entry-header">
       ${chevron}
       <div class="entry-identity">
@@ -101,7 +122,8 @@ function renderCardSummary(
         <span class="entry-identity-sep">›</span>
         <span class="entry-trigger">${row.trigger}</span>
       </div>
-      ${renderDispatchChip(row.dispatch)}
+      ${dispatchChip}
+      ${setupFailed}
       <span class="badge ${row.status}">${row.status}</span>
     </div>
     <div class="entry-meta">

@@ -38,7 +38,11 @@ function makeEntry(
 				output: { status: 200, body: "ok" },
 			})),
 	);
-	return { descriptor, fire: fireMock };
+	return {
+		descriptor,
+		fire: fireMock,
+		exception: vi.fn(async () => undefined),
+	};
 }
 
 // fire closure that runs the real input-schema validator, mirroring the
