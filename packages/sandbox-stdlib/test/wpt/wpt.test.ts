@@ -42,7 +42,8 @@ async function runSuite(): Promise<void> {
 	const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as Manifest;
 
 	const concurrency = Number(
-		process.env.WPT_CONCURRENCY ?? Math.max(4, availableParallelism() * 2),
+		process.env.WPT_CONCURRENCY ??
+			Math.max(1, Math.floor(availableParallelism() / 2)),
 	);
 
 	const runnable: Array<{ path: string; entry: RunnableEntry }> = [];
