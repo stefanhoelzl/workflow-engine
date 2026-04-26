@@ -20,6 +20,8 @@ jobs:
         # works. Add new vars here when demo.ts/fixtures declare them.
         env:
           WEBHOOK_TOKEN: ci-presence-only
+          IMAP_USER: ci-presence-only
+          IMAP_PASSWORD: ci-presence-only
 
   wpt:
     runs-on: ubuntu-latest
