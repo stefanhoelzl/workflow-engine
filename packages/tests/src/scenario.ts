@@ -54,6 +54,10 @@ interface InvocationLabel {
 	resolvedId?: string;
 }
 
+interface AuthCredentials {
+	headers: Record<string, string>;
+}
+
 interface MutableState {
 	workflows: WorkflowRef[];
 	workflowLabels: Map<string, WorkflowRef>;
@@ -63,6 +67,11 @@ interface MutableState {
 	responseLabels: Map<string, HttpResponse | { error: string }>;
 	fetches: FetchResult[];
 	fetchLabels: Map<string, FetchResult>;
+	// Cache of resolved auth credentials keyed by `<via>:<user>`. The cache
+	// survives a child respawn because the spawn spec's `secretsKey` is reused
+	// (sealed cookies remain valid) and api-header credentials don't depend on
+	// the child at all.
+	authCache: Map<string, AuthCredentials>;
 	// In-flight fetch promises from fire-and-forget `.webhook` / `.manual`.
 	// Drained at each `.expect` (so the callback sees a terminal response,
 	// never a placeholder) and before each new `.webhook` (so back-to-back
@@ -273,19 +282,67 @@ function inferAs(contentType: string): "json" | "text" {
 	return contentType.includes("json") ? "json" : "text";
 }
 
+async function resolveAuth(
+	state: MutableState,
+	ctx: ScenarioRunContext,
+	auth: { user: string; via: "cookie" | "api-header" },
+): Promise<AuthCredentials> {
+	const key = `${auth.via}:${auth.user}`;
+	const cached = state.authCache.get(key);
+	if (cached) {
+		return cached;
+	}
+	let creds: AuthCredentials;
+	if (auth.via === "api-header") {
+		creds = {
+			headers: {
+				authorization: `User ${auth.user}`,
+				"x-auth-provider": "local",
+			},
+		};
+	} else {
+		const signinUrl = `${ctx.getChild().baseUrl}/auth/local/signin`;
+		const body = new URLSearchParams({ user: auth.user, returnTo: "/" });
+		const res = await fetch(signinUrl, {
+			method: "POST",
+			body,
+			redirect: "manual",
+		});
+		if (res.status !== 302) {
+			throw new Error(
+				`auth: cookie sign-in for "${auth.user}" failed: status ${String(res.status)}`,
+			);
+		}
+		const setCookies = res.headers.getSetCookie();
+		const sessionLine = setCookies.find((c) => c.startsWith("session="));
+		if (!sessionLine) {
+			throw new Error(
+				`auth: cookie sign-in for "${auth.user}" did not set a "session" cookie`,
+			);
+		}
+		const sessionValue = sessionLine.slice(0, sessionLine.indexOf(";"));
+		creds = { headers: { cookie: sessionValue } };
+	}
+	state.authCache.set(key, creds);
+	return creds;
+}
+
 async function runFetch(
 	state: MutableState,
 	ctx: ScenarioRunContext,
 	path: string,
 	opts: FetchOpts,
 ): Promise<void> {
-	if (opts.auth !== undefined) {
-		throw new Error(
-			"Scenario.fetch: opts.auth is not implemented in this build (PR 12)",
-		);
-	}
 	const url = `${ctx.getChild().baseUrl}${path}`;
-	const { as, label, ...init } = opts;
+	const { as, label, auth, ...init } = opts;
+	if (auth !== undefined) {
+		const creds = await resolveAuth(state, ctx, auth);
+		const merged = new Headers(init.headers);
+		for (const [k, v] of Object.entries(creds.headers)) {
+			merged.set(k, v);
+		}
+		init.headers = merged;
+	}
 	const res = await fetch(url, init as RequestInit);
 	const contentType = res.headers.get("content-type") ?? "";
 	const mode = as ?? inferAs(contentType);
@@ -582,6 +639,7 @@ function createScenario(): Scenario & ScenarioInternals {
 				responseLabels: new Map(),
 				fetches: [],
 				fetchLabels: new Map(),
+				authCache: new Map(),
 				inFlight: [],
 				invocationLabels: new Map(),
 			};
