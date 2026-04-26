@@ -16,10 +16,10 @@
 
 ## 2. PR 2 — `.webhook` body/headers/query + test #15 (httpTrigger protocol adapter)
 
-- [ ] 2.1 Extend `.webhook(name, opts)` to accept `{body?, headers?, query?}`; serialize headers and query into the HTTP request
-- [ ] 2.2 Extend `state.responses` capture to include `status`, `headers`, parsed body
-- [ ] 2.3 Write test #15: workflow with httpTrigger that echoes body + headers + query into response with custom status/headers; webhook fires positive case + negative case (422 on schema mismatch)
-- [ ] 2.4 Verify both happy and negative paths pass
+- [x] 2.1 Extend `.webhook(name, opts)` to accept `{body?, headers?, query?}`; serialize headers and query into the HTTP request
+- [x] 2.2 Extend `state.responses` capture to include `status`, `headers`, parsed body
+- [x] 2.3 Write test #15: workflow with httpTrigger that echoes body + headers + query into response with custom status/headers; webhook fires positive case + negative case (422 on schema mismatch)
+- [x] 2.4 Verify both happy and negative paths pass
 
 ## 3. PR 3 — `.waitForEvent` (FS polling) + test #16 (cronTrigger fires)
 
