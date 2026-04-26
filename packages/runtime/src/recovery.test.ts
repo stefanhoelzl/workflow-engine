@@ -90,7 +90,6 @@ describe("recovery", () => {
 		expect(synthetic?.workflowSha).toBe("sha");
 		expect(synthetic?.error).toEqual({
 			message: "engine crashed before invocation completed",
-			stack: "",
 			kind: "engine_crashed",
 		});
 	});

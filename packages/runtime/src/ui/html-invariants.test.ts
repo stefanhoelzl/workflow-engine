@@ -185,7 +185,7 @@ describe("HTML CSP invariants", () => {
 				name: "sendEmail",
 			}),
 			makeEvent({
-				kind: "timer.set",
+				kind: "system.call",
 				seq: 2,
 				ref: 1,
 				ts: 120,
@@ -200,7 +200,7 @@ describe("HTML CSP invariants", () => {
 				name: "sendEmail",
 			}),
 			makeEvent({
-				kind: "timer.request",
+				kind: "system.request",
 				seq: 4,
 				ref: null,
 				ts: 200,
@@ -208,7 +208,7 @@ describe("HTML CSP invariants", () => {
 				input: { timerId: 7 },
 			}),
 			makeEvent({
-				kind: "timer.response",
+				kind: "system.response",
 				seq: 5,
 				ref: 4,
 				ts: 250,

@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
-import type { EventKind, SandboxEvent } from "@workflow-engine/core";
 import type { JSValueHandle, QuickJS } from "quickjs-wasi";
+import type { WireEvent, WireFraming } from "./protocol.js";
 import type { AnchorCell } from "./wasi.js";
 
 const NS_PER_MS = 1_000_000;
@@ -8,7 +8,7 @@ const US_PER_MS = 1000;
 
 // --- Event sink (worker installs to forward events to main thread) ---
 
-type EventSink = (event: SandboxEvent) => void;
+type EventSink = (event: WireEvent) => void;
 
 // --- Extractor types ---
 
@@ -29,15 +29,26 @@ interface RestExtractor<T> {
 	readonly extractFn: (vm: QuickJS, handle: JSValueHandle) => T;
 }
 
-// The bridge emits `SandboxEvent` — the subset of event fields the sandbox
-// owns (`kind`, `seq`, `ref`, `at`, `ts`, `name`, `input`/`output`/`error`).
-// Runtime metadata (`id`, `owner`, `workflow`, `workflowSha`) is added by
-// the runtime's `sb.onEvent` receiver in the executor before events reach
-// the bus (SECURITY.md §2 R-8: no runtime metadata in sandbox).
+// SDK-input shape for emit framing. The bridge transforms `"open"` into
+// `{ open: <mintedCallId> }` on the wire (asymmetric SDK vs wire types).
+type EmitFraming = "leaf" | "open" | { readonly close: number };
+
+// The bridge's job is narrow: marshal/arg extractors, the WASI clock
+// anchor, a per-run callId counter for SDK `type: "open"` minting, the
+// event sink that posts WireEvents to main, and a runActive gate that
+// suppresses emission outside an active run. seq, refStack, and ref
+// attribution live on the main-thread RunSequencer (see
+// `run-sequencer.ts`).
 //
-// `runActive` is a boolean gate — `buildEvent` returns null when no run
-// is in progress, matching the pre-refactor "silent pre-run emission"
-// behaviour without requiring the bridge to know about run metadata.
+// Worker-side runActive gating is deliberate (not redundant with main):
+// emits during plugin boot or Phase-4 user-source eval (which inline WPT
+// test bodies whose synchronous `test(...)` calls can invoke
+// `console.log(Symbol.for(...))` — see `console-log-symbol.any.js`) carry
+// values that may be unclonable (registered symbols cross `vm.dump` as
+// host primitives and break `port.postMessage`). Suppressing at source
+// avoids the clone failure AND keeps init-time emissions out of the bus,
+// matching the pre-refactor behaviour. The main-side `RunSequencer`
+// retains a distinct runActive for stamping; both gates are required.
 
 interface Bridge {
 	readonly arg: {
@@ -54,25 +65,47 @@ interface Bridge {
 		// biome-ignore lint/suspicious/noConfusingVoidType: void marshal must accept void return values from impl
 		readonly void: (value: void) => JSValueHandle;
 	};
-	// Run-active lifecycle (boolean state, no metadata):
+	/**
+	 * Open the run window: subsequent `buildEvent` calls produce wire
+	 * events and post them via the sink. Pure boolean toggle; callers MUST
+	 * also invoke `resetCallIds()` at run start so each run mints CallIds
+	 * from a fresh sequence.
+	 */
 	setRunActive(): void;
+	/**
+	 * Close the run window: subsequent `buildEvent` calls return without
+	 * posting. Pure boolean toggle; the callId counter is left untouched
+	 * (the next `resetCallIds()` zeroes it).
+	 */
 	clearRunActive(): void;
-	runActive(): boolean;
-	resetSeq(): void;
-	nextSeq(): number;
-	currentRef(): number | null;
-	pushRef(seq: number): void;
-	popRef(): number | null;
-	refStackDepth(): number;
-	truncateRefStackTo(depth: number): number;
+	/**
+	 * Zero the per-run callId counter. Worker calls this at run start
+	 * (paired with `setRunActive()`) so each run's open-events mint
+	 * deterministic, monotonic IDs from 0.
+	 */
+	resetCallIds(): void;
+	/**
+	 * Build a WireEvent and emit it via the sink — but ONLY when a run is
+	 * active. Outside the active window, the call is a no-op (no
+	 * postMessage, no callId minted) and the return value is 0. This
+	 * mirrors the pre-refactor "silent pre/post-run emission" behaviour
+	 * and prevents init-time emissions (e.g. WPT test bodies that run
+	 * during Phase-4 source eval) from posting unclonable values to main.
+	 *
+	 * For `type: "open"`, mints a per-run-unique callId from the local
+	 * counter and rewrites to wire shape `{ open: <id> }`. For `"leaf"`
+	 * and `{ close }`, the SDK-input shape passes through unchanged.
+	 * Returns the assigned CallId for opens (so the SDK caller can
+	 * capture it for a future close); returns 0 for leaves, closes, and
+	 * out-of-window calls (callers ignore the return value in those cases).
+	 */
 	buildEvent(
-		kind: EventKind,
-		seq: number,
-		ref: number | null,
+		kind: string,
 		name: string,
+		framing: EmitFraming,
 		extra: { input?: unknown; output?: unknown; error?: unknown },
-	): SandboxEvent | null;
-	emit(event: SandboxEvent): void;
+	): number;
+	emit(event: WireEvent): void;
 	setSink(sink: EventSink | null): void;
 	resetAnchor(): void;
 	anchorNs(): bigint;
@@ -107,12 +140,11 @@ const ARG_EXTRACTORS = {
 
 // --- Factory ---
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-active state, and event emission as one cohesive unit
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups marshal helpers, framing transformation, anchor/ts, callId minting, and sink wiring as one cohesive unit
 function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	let currentVm: QuickJS = vm;
+	let nextCallId = 0;
 	let runActive = false;
-	let seq = 0;
-	const refStack: number[] = [];
 	let sink: EventSink | null = null;
 
 	function resetAnchor(): void {
@@ -133,30 +165,43 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		void: (_value: void) => currentVm.undefined,
 	};
 
-	function emit(event: SandboxEvent): void {
+	function emit(event: WireEvent): void {
 		if (sink) {
 			sink(event);
 		}
 	}
 
-	// biome-ignore lint/complexity/useMaxParams: pure constructor for the event payload — collapsing into an options object would just add boilerplate
-	function buildEvent(
-		kind: EventKind,
-		seqValue: number,
-		ref: number | null,
-		method: string,
-		extra: { input?: unknown; output?: unknown; error?: unknown },
-	): SandboxEvent | null {
-		if (!runActive) {
-			return null;
+	function toWireFraming(framing: EmitFraming): {
+		readonly wireType: WireFraming;
+		readonly assignedId: number;
+	} {
+		if (framing === "leaf") {
+			return { wireType: "leaf", assignedId: 0 };
 		}
-		const event: SandboxEvent = {
+		if (framing === "open") {
+			const id = nextCallId++;
+			return { wireType: { open: id }, assignedId: id };
+		}
+		// { close: callId } passes through unchanged on the wire.
+		return { wireType: { close: framing.close }, assignedId: 0 };
+	}
+
+	function buildEvent(
+		kind: string,
+		name: string,
+		framing: EmitFraming,
+		extra: { input?: unknown; output?: unknown; error?: unknown },
+	): number {
+		if (!runActive) {
+			return 0;
+		}
+		const { wireType, assignedId } = toWireFraming(framing);
+		const event: WireEvent = {
 			kind,
-			seq: seqValue,
-			ref,
+			name,
 			at: new Date().toISOString(),
 			ts: tsUs(),
-			name: method,
+			type: wireType,
 			...(extra.input === undefined ? {} : { input: extra.input }),
 			...(extra.output === undefined ? {} : { output: extra.output }),
 			...(extra.error === undefined
@@ -169,7 +214,8 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 						},
 					}),
 		};
-		return event;
+		emit(event);
+		return assignedId;
 	}
 
 	return {
@@ -177,43 +223,12 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		marshal,
 		setRunActive() {
 			runActive = true;
-			seq = 0;
-			refStack.length = 0;
 		},
 		clearRunActive() {
 			runActive = false;
-			seq = 0;
-			refStack.length = 0;
 		},
-		runActive() {
-			return runActive;
-		},
-		resetSeq() {
-			seq = 0;
-			refStack.length = 0;
-		},
-		nextSeq() {
-			return seq++;
-		},
-		currentRef() {
-			return refStack.at(-1) ?? null;
-		},
-		pushRef(s: number) {
-			refStack.push(s);
-		},
-		popRef() {
-			return refStack.pop() ?? null;
-		},
-		refStackDepth() {
-			return refStack.length;
-		},
-		truncateRefStackTo(depth: number) {
-			if (depth < 0 || depth > refStack.length) {
-				return 0;
-			}
-			const dropped = refStack.length - depth;
-			refStack.length = depth;
-			return dropped;
+		resetCallIds() {
+			nextCallId = 0;
 		},
 		buildEvent,
 		emit,
@@ -226,13 +241,16 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		},
 		tsUs,
 		rebind(newVm: QuickJS) {
+			// Snapshot-restore VM swap. Reset per-run worker-side state:
+			// runActive (gate) and the callId counter. seq/refStack live
+			// on the main-thread RunSequencer and are reset there via
+			// `sequencer.finish()` in the run lifecycle.
 			currentVm = newVm;
 			runActive = false;
-			seq = 0;
-			refStack.length = 0;
+			nextCallId = 0;
 		},
 	};
 }
 
-export type { Bridge, EventSink };
+export type { Bridge, EmitFraming, EventSink };
 export { createBridge };

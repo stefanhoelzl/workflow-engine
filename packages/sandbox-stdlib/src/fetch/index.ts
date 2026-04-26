@@ -83,11 +83,14 @@ function fetchDispatcherDescriptor(
 				headers,
 				body,
 			})) as unknown as GuestFunctionDescription["handler"],
-		log: { request: "fetch" },
+		log: { request: "system" },
 		// Surface `<METHOD> <url>` in the event `name` field so the flamegraph
 		// and audit log show "GET https://example.com/x" rather than the
-		// bridge-internal descriptor identifier ("$fetch/do").
-		logName: (args) => `${String(args[0] ?? "GET")} ${String(args[1] ?? "")}`,
+		// bridge-internal descriptor identifier ("$fetch/do"). The `system.*`
+		// prefix consolidation means the operation kind ("fetch") is conveyed
+		// via the name's prefix; the URL/method follow.
+		logName: (args) =>
+			`fetch ${String(args[0] ?? "GET")} ${String(args[1] ?? "")}`,
 		// The raw args tuple `[method, url, headers, body]` is already the
 		// right shape for the audit event — omit the logInput override.
 		public: false,

@@ -22,9 +22,12 @@ type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
  * from re-obtaining a bridge to the host emit path by reading, say,
  * `globalThis.__console_log` directly.
  *
- * Emission shape: one leaf event per call, kind `console.<method>`, with
- * `input: [...args]`. No request/response pair — `console.log` is a
- * one-shot side effect, not a request.
+ * Emission shape: one `system.call` leaf event per call with
+ * `name: "console.<method>"` and `input: [...args]`. No request/response
+ * pair — `console.log` is a one-shot side effect, not a request. The
+ * `system.*` prefix consolidation (per the bridge-main-sequencing change)
+ * collapses the previous `console.*` reserved prefix into `system.*`,
+ * with the operation name carried in the event's `name` field.
  */
 function consoleDescriptor(method: ConsoleMethod): GuestFunctionDescription {
 	return {
@@ -34,7 +37,11 @@ function consoleDescriptor(method: ConsoleMethod): GuestFunctionDescription {
 		handler: () => {
 			/* no-op — the leaf event is emitted by the log auto-wrap */
 		},
-		log: { event: `console.${method}` },
+		log: { event: "system.call" },
+		// Override the auto-wrap's default `name = descriptor.name` so the
+		// emitted event carries `name: "console.log"` (not the bridge-
+		// internal `__console_log`).
+		logName: () => `console.${method}`,
 		// Guest bridge packs the tenant's variadic args into a single array
 		// (see `guest()` below). The log auto-wrap's default `input = args`
 		// would therefore emit `input: [[...]]` — a pointless extra level of

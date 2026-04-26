@@ -118,16 +118,16 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("sql plugin — descriptor shape", () => {
-	it("exposes name + dispatcher descriptor with log.request:'sql'", () => {
+	it("exposes name + dispatcher descriptor with log.request:'system'", () => {
 		const setup = worker(noopCtx());
 		expect(setup.guestFunctions).toHaveLength(1);
 		const gf = setup.guestFunctions?.[0];
 		expect(gf?.name).toBe(SQL_DISPATCHER_NAME);
 		expect(gf?.public).toBe(false);
-		expect(gf?.log).toEqual({ request: "sql" });
+		expect(gf?.log).toEqual({ request: "system" });
 	});
 
-	it("logName uses host/database", () => {
+	it("logName uses executeSql + host/database", () => {
 		const gf = worker(noopCtx()).guestFunctions?.[0];
 		const name = gf?.logName?.([
 			{
@@ -136,7 +136,7 @@ describe("sql plugin — descriptor shape", () => {
 				params: [],
 			} as unknown,
 		]);
-		expect(name).toBe("sql to db.example.com/mydb");
+		expect(name).toBe("executeSql db.example.com/mydb");
 	});
 
 	it("logInput emits engine/host/database/query/paramCount and drops param values", () => {

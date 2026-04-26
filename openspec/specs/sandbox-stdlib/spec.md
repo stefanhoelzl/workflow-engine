@@ -126,109 +126,16 @@ The sandbox-stdlib package SHALL export `hardenedFetch` as a named constant — 
 
 ### Requirement: createMailPlugin factory
 
-The sandbox-stdlib package SHALL export a `createMailPlugin(): Plugin` factory. The plugin SHALL declare `name: "mail"` and `dependsOn: ["web-platform"]`. The plugin SHALL register a private (`public` unset) guest function descriptor named `$mail/send` whose handler invokes `nodemailer` to deliver SMTP mail and returns `{messageId, accepted, rejected}` on success. The plugin's `guestSource` SHALL install a locked top-level global `__mail` with a frozen inner object `{send}`, installed via `Object.defineProperty(globalThis, "__mail", { value: Object.freeze({ send }), writable: false, configurable: false })`, where `send` is the captured `$mail/send` descriptor. After capturing, the guest IIFE SHALL `delete globalThis["$mail/send"]`. The descriptor SHALL declare `log: { request: "mail" }`, a `logName` producing `"mail to <first-recipient>"`, and a `logInput` returning `{smtp, from, to, cc, bcc, replyTo, subject, timeout}` (deliberately omitting `text`, `html`, `attachments`). The handler SHALL call the net-guard primitive `assertHostIsPublic(opts.smtp.host)` before constructing the nodemailer transport, and SHALL pass the validated IP as the transport's `host` with `tls.servername` set to the original hostname. The plugin SHALL NOT define `onRunFinished` (no cross-call state).
+The `createMailPlugin` factory SHALL return a `Plugin` whose worker-side handler emits a paired `system.request` / `system.response` (or `system.error`) under the `system.*` prefix with `name = "sendMail"` for each `sendMail` call. Pairing SHALL use the main-side `RunSequencer`'s `callId` mechanism.
 
-#### Scenario: Mail send emits mail.request/mail.response triad
+The `system.request` event SHALL carry the `sendMail` arguments as `input` (with credentials redacted per existing rules). `system.response` SHALL carry `output` describing the sent envelope (message id, accepted recipients). `system.error` SHALL carry the serialized error.
 
-- **GIVEN** guest code awaits `globalThis.__mail.send(validMailOpts)` and the send succeeds
-- **WHEN** the call resolves
-- **THEN** a `mail.request` event SHALL be emitted with `createsFrame: true` carrying `input = {smtp, from, to, cc, bcc, replyTo, subject, timeout}`
-- **AND** a `mail.response` event SHALL be emitted with `closesFrame: true` carrying `output = {messageId, accepted, rejected}`
-- **AND** neither event SHALL contain `text`, `html`, or `attachments` in its payload
+#### Scenario: Successful sendMail emits paired events
 
-#### Scenario: Mail send to RFC-1918 host is refused before socket
-
-- **GIVEN** `opts.smtp.host` resolves to `10.0.0.25`
-- **WHEN** `__mail.send(opts)` is called
-- **THEN** `assertHostIsPublic` SHALL reject with `HostBlockedError`
-- **AND** no SMTP connection SHALL be attempted
-- **AND** a `mail.error` event SHALL be emitted
-
-#### Scenario: TLS-mode union maps to nodemailer transport options
-
-- **GIVEN** `opts.smtp.tls === "tls"`
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** the transport options SHALL include `{secure: true}`
-
-- **GIVEN** `opts.smtp.tls === "starttls"`
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** the transport options SHALL include `{secure: false, requireTLS: true}`
-
-- **GIVEN** `opts.smtp.tls === "plaintext"`
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** the transport options SHALL include `{secure: false, ignoreTLS: true}`
-
-#### Scenario: Timeout bounds both connection and socket
-
-- **GIVEN** `opts.smtp.timeout === 15000`
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** the transport SHALL set `connectionTimeout` to `15000`
-- **AND** SHALL set `socketTimeout` to `15000`
-
-#### Scenario: Timeout default
-
-- **GIVEN** `opts.smtp.timeout` is omitted
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** both `connectionTimeout` and `socketTimeout` SHALL default to `30000`
-
-#### Scenario: Structured error for auth failure
-
-- **GIVEN** SMTP server rejects AUTH with a 535 response
-- **WHEN** the handler catches the nodemailer error
-- **THEN** the thrown error SHALL carry `kind: "auth"`
-- **AND** SHALL carry the numeric SMTP `code`
-- **AND** SHALL carry the raw server `response` string
-
-#### Scenario: Structured error for connection failure
-
-- **GIVEN** TCP connect to the SMTP host fails
-- **WHEN** the handler catches the nodemailer error
-- **THEN** the thrown error SHALL carry `kind: "connection"`
-
-#### Scenario: Structured error for timeout
-
-- **GIVEN** the SMTP session exceeds `smtp.timeout`
-- **WHEN** the handler catches the nodemailer error
-- **THEN** the thrown error SHALL carry `kind: "timeout"`
-
-#### Scenario: Structured error for recipient rejection
-
-- **GIVEN** the server accepts the sender but rejects a recipient with a 5xx RCPT TO response
-- **WHEN** the handler catches the nodemailer error
-- **THEN** the thrown error SHALL carry `kind: "recipient-rejected"`
-
-#### Scenario: Structured error for message rejection
-
-- **GIVEN** the server accepts the envelope but rejects the message body with a 5xx DATA response
-- **WHEN** the handler catches the nodemailer error
-- **THEN** the thrown error SHALL carry `kind: "message-rejected"`
-
-#### Scenario: __mail global is locked
-
-- **GIVEN** the mail plugin's guest IIFE has evaluated
-- **WHEN** guest code attempts `globalThis.__mail = {}` or `delete globalThis.__mail` or `globalThis.__mail.send = () => {}`
-- **THEN** each attempt SHALL fail silently in non-strict mode or throw in strict mode
-- **AND** the original `__mail.send` SHALL remain reachable
-
-#### Scenario: $mail/send private descriptor is deleted after capture
-
-- **GIVEN** the mail plugin's guest IIFE has evaluated
-- **WHEN** guest code reads `globalThis["$mail/send"]`
-- **THEN** the value SHALL be `undefined`
-
-#### Scenario: Attachment content is base64 on the bridge
-
-- **GIVEN** the host-side JSON Schema for `$mail/send` arguments
-- **WHEN** validating an attachment entry
-- **THEN** the schema SHALL require `content` to be a string
-- **AND** the handler SHALL base64-decode `content` before passing to nodemailer
-
-#### Scenario: Net-guard integration uses pre-resolve + SNI
-
-- **GIVEN** `opts.smtp.host === "smtp.example.com"` resolving to `93.184.216.34`
-- **WHEN** the handler constructs the nodemailer transport
-- **THEN** the transport `host` option SHALL be `"93.184.216.34"` (the validated IP)
-- **AND** the transport `tls.servername` option SHALL be `"smtp.example.com"` (the original hostname)
+- **GIVEN** guest code calls `await sendMail({ to, subject, body })` and the call succeeds
+- **WHEN** the call returns
+- **THEN** a `system.request` event SHALL be emitted with `name = "sendMail"`
+- **AND** a `system.response` event SHALL follow with the matching ref via callId pairing
 
 ### Requirement: createTimersPlugin factory
 
@@ -382,7 +289,7 @@ The guest-visible `globalThis.DOMException` is the wrapped Proxy, not the raw qu
 
 ### Requirement: web-platform plugin — reportError and microtask exception routing
 
-The plugin SHALL install `globalThis.reportError` as a function that dispatches a cancelable `ErrorEvent` on `globalThis`; if the event is not default-prevented, the function SHALL forward a serialized payload to the captured private `__reportErrorHost` descriptor, which emits an `uncaught-error` leaf event.
+The plugin SHALL install `globalThis.reportError` as a function that dispatches a cancelable `ErrorEvent` on `globalThis`; if the event is not default-prevented, the function SHALL forward a serialized payload to the captured private `__reportErrorHost` descriptor, which emits a `system.exception` leaf event.
 
 The plugin SHALL also wrap `queueMicrotask` so uncaught exceptions inside a microtask route through `reportError` rather than silently terminating the microtask queue. The wrapped `globalThis.queueMicrotask(callback)` SHALL preserve the WHATWG shape.
 
@@ -393,7 +300,7 @@ The plugin SHALL also wrap `queueMicrotask` so uncaught exceptions inside a micr
 - **GIVEN** guest code calls `queueMicrotask(() => { throw new Error("boom") })`
 - **WHEN** the microtask fires
 - **THEN** `reportError` SHALL be invoked with the thrown error
-- **AND** an `uncaught-error` leaf event SHALL be emitted unless a listener called `preventDefault()` on the dispatched ErrorEvent
+- **AND** a `system.exception` leaf event SHALL be emitted unless a listener called `preventDefault()` on the dispatched ErrorEvent
 
 #### Scenario: __reportErrorHost is not guest-visible
 
@@ -471,30 +378,22 @@ No host bridge SHALL back these classes — all state lives in the QuickJS heap.
 
 ### Requirement: fetch plugin — global fetch wraps __hostFetch
 
-`createFetchPlugin()` SHALL register a private guest function `__hostFetch` (public unset). The web-platform plugin's `fetch.ts` SHALL install `globalThis.fetch` as a WHATWG-compatible function, installed via `Object.defineProperty` with `writable: false, configurable: false, enumerable: true`, routing every call through the captured `__hostFetch` reference.
+The fetch plugin SHALL install `globalThis.fetch` as a wrapper that emits a paired `system.request` / `system.response` (or `system.error` on failure) under the `system.*` prefix with `name = "fetch"`. The pairing SHALL use the main-side `RunSequencer`'s `callId` mechanism.
 
-The guest-side `fetch(input, init?)` SHALL accept `RequestInfo | URL` and return `Promise<Response>`. Request bodies SHALL be drained to a UTF-8 string before crossing the host bridge; streaming and binary bodies SHALL be decoded as UTF-8 via the Body mixin's `.text()` method. `Request.signal` SHALL NOT be propagated to the host bridge in this revision.
+The `system.request` event SHALL carry `input: { method, url, headers? }`. The `system.response` event SHALL carry `output: { status, headers, body? }`. The `system.error` event SHALL carry `error: { message, stack }`. Body fields SHALL respect existing redaction rules.
 
-The descriptor SHALL declare `log: { request: "fetch" }` so every call emits `fetch.request` / `fetch.response` or `fetch.error`.
+#### Scenario: Successful fetch emits paired system.request / system.response
 
-#### Scenario: fetch calls host bridge
+- **GIVEN** guest code calls `await fetch("https://example.com")` and the call succeeds
+- **WHEN** the call returns
+- **THEN** a `system.request` event SHALL precede the call with `name = "fetch"`, `input.url = "https://example.com"`
+- **AND** a `system.response` event SHALL follow with the matching ref via callId pairing
 
-- **GIVEN** a sandbox composed with `createFetchPlugin()` + `createWebPlatformPlugin()`
-- **WHEN** guest code calls `await fetch("https://example.com/")`
-- **THEN** the host-side `__hostFetch` handler SHALL be invoked with the URL + init
-- **AND** guest SHALL receive a Response whose body derives from the host response
+#### Scenario: Failed fetch emits system.error
 
-#### Scenario: fetch call emits request/response events
-
-- **WHEN** guest code awaits a successful fetch
-- **THEN** `fetch.request` (createsFrame) and `fetch.response` (closesFrame) SHALL be emitted
-- **AND** `fetch.response.ref` SHALL equal `fetch.request.seq`
-
-#### Scenario: Request body drained to UTF-8 before crossing bridge
-
-- **GIVEN** `fetch(url, { method: "POST", body: new Request(url, { body: "hi" }) })`
-- **WHEN** the call is issued
-- **THEN** the underlying `__hostFetch` SHALL receive `method`, `url`, `headers`, and the drained UTF-8 body from that Request
+- **GIVEN** guest code calls `await fetch("https://blocked.invalid")` and the host returns an error
+- **WHEN** the call rejects
+- **THEN** a `system.error` event SHALL be emitted with `name = "fetch"`, `error.message` populated
 
 ### Requirement: fetch plugin — hardenedFetch default and override discipline
 
@@ -648,47 +547,53 @@ The plugin SHALL install `globalThis.Observable` + `globalThis.Subscriber` and a
 
 ### Requirement: console plugin — log methods emit leaf events
 
-The console plugin SHALL install `globalThis.console` with methods `log`, `info`, `warn`, `error`, `debug`. Each method SHALL emit a leaf event of kind `console.<method>` with `input` carrying the argument list. The `console` object SHALL be writable and configurable (per WebIDL). The plugin SHALL register a private `__console_<method>` descriptor for each method, routing host-side dispatch; the guest-visible `console` methods close over the captured references (via the plugin's `guest()` export, bundled as `descriptor.guestSource`) and survive Phase 3 auto-delete because they are closure-bound.
+The console plugin SHALL install `globalThis.console` with `log`, `info`, `warn`, `error`, `debug` methods. Each method SHALL emit one `system.call` leaf event per call carrying:
 
-#### Scenario: console.log emits leaf
+- `name`: `"console.log"`, `"console.info"`, `"console.warn"`, `"console.error"`, or `"console.debug"` matching the called method.
+- `input`: `{ args: unknown[] }` containing the marshalled arguments.
 
-- **GIVEN** guest code calls `console.log("hello", { x: 1 })`
+The event SHALL NOT carry `output` or `error`. The console methods SHALL NOT throw if argument marshalling fails; the event SHALL omit the offending argument and SHALL include a placeholder marker.
+
+#### Scenario: console.log emits one system.call event
+
+- **GIVEN** guest code calls `console.log("hello", { a: 1 })`
 - **WHEN** the call returns
-- **THEN** a leaf event with kind `console.log` and `input: ["hello", { x: 1 }]` SHALL be emitted
-
-#### Scenario: Each method produces its own kind
-
-- **WHEN** guest code calls `console.warn("w")` and `console.error("e")`
-- **THEN** two leaf events SHALL be emitted — one `console.warn`, one `console.error`
+- **THEN** exactly one InvocationEvent SHALL be emitted with `kind = "system.call"`, `name = "console.log"`, `input.args = ["hello", { a: 1 }]`
 
 ### Requirement: timers plugin — setTimeout / setInterval / clearTimeout / clearInterval
 
-`createTimersPlugin()` SHALL register public descriptors (the ONLY `public: true` descriptors across the codebase) for `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`. `setTimeout`/`setInterval` SHALL declare `log: { event: "timer.set" }` emitting a leaf at scheduling time with `{ delay, timerId }`. `clearTimeout`/`clearInterval` SHALL declare `log: { event: "timer.clear" }`.
+The timers plugin SHALL install `globalThis.setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`. Each registration SHALL emit one `system.call` leaf event per call. Each timer firing (callback execution) SHALL emit a paired `system.request` / `system.response` (or `system.request` / `system.error` on throw) under the `system.*` prefix, with `name` identifying the operation:
 
-When a scheduled timer fires host-side, the plugin SHALL wrap the guest callback execution in `ctx.request("timer", name, { input: { timerId } }, () => callable())`, producing `timer.request` (createsFrame) → callable execution → `timer.response` (closesFrame) or `timer.error` events.
+- `system.call name="setTimeout"` — emitted on registration. `input: { delay: number, timerId: number }`.
+- `system.call name="setInterval"` — emitted on registration. Same input shape.
+- `system.call name="clearTimeout"` — emitted on explicit clear of a known pending id, or by run-end auto-cleanup. `input: { timerId: number }`. SHALL NOT be emitted for clears targeting unknown or already-disposed ids.
+- `system.call name="clearInterval"` — same as `clearTimeout` for interval timers.
+- `system.request name="setTimeout"` (or `"setInterval"`) — emitted immediately before invoking the guest callback. `input: { timerId: number }`.
+- `system.response name="setTimeout"` (or `"setInterval"`) — emitted on normal callback return. `input: { timerId }`, `output` SHALL be the callback's return value when JSON-serialisable, otherwise omitted.
+- `system.error name="setTimeout"` (or `"setInterval"`) — emitted when the callback throws. `input: { timerId }`, `error: { message, stack }`. SHALL NOT promote to `trigger.error`. For `setInterval`, subsequent ticks SHALL continue until cleared.
 
-The plugin SHALL implement `onRunFinished` to clear any host timers still live at run end via the same code path as guest-initiated `clearTimeout`, emitting a `timer.clear` leaf for each.
+The pairing of `system.request` and `system.response`/`system.error` for callback firings SHALL use the main-side `RunSequencer`'s `callId` mechanism (worker assigns a callId on the open; close echoes it).
 
-#### Scenario: setTimeout emits timer.set
+#### Scenario: setTimeout registration emits a leaf
 
-- **WHEN** guest code calls `setTimeout(cb, 100)`
-- **THEN** a `timer.set` leaf event with `input: { delay: 100, timerId: <id> }` SHALL be emitted at scheduling time
+- **GIVEN** guest code calls `setTimeout(cb, 100)` returning `timerId = 7`
+- **WHEN** the call returns
+- **THEN** exactly one `system.call` event SHALL be emitted with `name = "setTimeout"`, `input = { delay: 100, timerId: 7 }`
+- **AND** no `system.request` event SHALL be emitted at registration
 
-#### Scenario: Timer callback wraps with timer.request/response
+#### Scenario: Timer firing emits paired request/response under system.*
 
-- **GIVEN** a setTimeout whose callback returns normally
-- **WHEN** the timer fires
-- **THEN** `timer.request` (createsFrame) SHALL be emitted
-- **AND** the callable SHALL run
-- **AND** `timer.response` (closesFrame) SHALL follow with `ref === timer.request.seq`
+- **GIVEN** a registered `setTimeout` that fires its callback successfully
+- **WHEN** the callback completes
+- **THEN** a `system.request` event SHALL precede the callback execution with `name = "setTimeout"`, `input = { timerId }`
+- **AND** a `system.response` event SHALL follow with the matching ref via callId pairing
 
-#### Scenario: Unfired timer cleared at run end
+#### Scenario: Interval continues after an errored tick
 
-- **GIVEN** `setTimeout(cb, 30000)` scheduled inside a 1s run
-- **WHEN** the run completes
-- **THEN** `onRunFinished` SHALL clear the host timer via the same path as `clearTimeout`
-- **AND** a `timer.clear` leaf SHALL be emitted for it
-- **AND** no callback SHALL fire in subsequent runs against the same sandbox
+- **GIVEN** a `setInterval(cb, 10)` whose first tick throws
+- **WHEN** the first tick fires and emits `system.error` with `name = "setInterval"`
+- **THEN** the host SHALL NOT call `clearInterval` on that timer
+- **AND** subsequent ticks SHALL produce further `system.request` / `system.response` or `system.error` pairs until the handler returns or the guest clears the timer
 
 ### Requirement: timers correlate via timerId
 
@@ -704,156 +609,18 @@ The `timer.set` leaf's `input.timerId` SHALL match the `timer.request`'s `input.
 
 ### Requirement: createSqlPlugin factory
 
-The sandbox-stdlib package SHALL export a `createSqlPlugin(): Plugin` factory. The plugin SHALL declare `name: "sql"` and `dependsOn: ["web-platform"]`. The plugin SHALL register a private (`public` unset) guest function descriptor named `$sql/do` whose handler invokes the `postgres` (porsager/postgres) driver via `sql.unsafe(query, params)` to execute parameterized SQL against a Postgres server and returns `{rows, columns, rowCount}` on success, where every value in `rows` and every `ColumnMeta` in `columns` is JSON-safe. The descriptor SHALL declare `log: { request: "sql" }`, a `logName` producing `"sql to <host>/<database>"`, and a `logInput` returning `{engine: "postgres", host, database, query, paramCount}` (deliberately omitting `params`). The handler SHALL call the net-guard primitive `assertHostIsPublic(originalHost)` BEFORE constructing the `postgres()` handle, and SHALL override the driver options with `host: <validatedIp>` so the driver's own `socket.connect(port, host)` path connects to the pre-resolved IP rather than re-resolving DNS. The handler SHALL pin `ssl.servername` to `originalHost` whenever `ssl` is truthy so TLS SNI and certificate verification remain bound to the hostname the author specified; when the author's DSN includes `sslmode=require`/`verify-ca`/`verify-full`/`prefer`/`allow` but no `ssl` object was supplied, the handler SHALL synthesize `ssl: { servername: originalHost, rejectUnauthorized: false }` so the servername pin still applies after the host override. The handler SHALL configure the Postgres connection with `max: 1`, `prepare: false`, `connect_timeout: 10` (seconds), and `connection.statement_timeout` set to the effective `timeoutMs` (default 30_000 ms, clamped to a hard ceiling of 120_000 ms). The handler SHALL call `sql.end({timeout: 5})` in a `finally` block on both success and failure. The plugin SHALL define `onRunFinished` as a backstop that forces `sql.end({timeout: 0})` on any handle still open.
+The `createSqlPlugin` factory SHALL return a `Plugin` whose worker-side handler emits a paired `system.request` / `system.response` (or `system.error`) under the `system.*` prefix with `name = "executeSql"` for each `executeSql` call. Pairing SHALL use the main-side `RunSequencer`'s `callId` mechanism.
 
-The plugin SHALL convert every value `postgres` returns to a JSON-safe form before replying to the guest, following this fixed mapping:
+The `system.request` event SHALL carry the connection identifier and the redacted query/parameters as `input`. `system.response` SHALL carry the result-set summary as `output`. `system.error` SHALL carry the serialized error.
 
-- `int2`, `int4`, `float4`, `float8`, and `numeric` values fitting an IEEE-754 f64 → `number`;
-- `int8` and any `numeric` exceeding f64 → `string` (decimal representation);
-- `bool` → `boolean`;
-- `text`, `varchar`, `char`, `uuid`, `name` → `string`;
-- `timestamp`, `timestamptz`, `date`, `time`, `timetz` → `string` (ISO-8601);
-- `bytea` → `string` (base64);
-- `json`, `jsonb` → parsed JSON value (object, array, or scalar);
-- array types → JSON array with the same recursive mapping applied to each element;
-- composite, range, and geometric types → `string` in the Postgres text form returned by the driver;
-- `NULL` → `null`.
+Per-query `statement_timeout` defaults and the public/SSL hardening rules established in the existing SQL plugin SHALL continue to apply.
 
-`ColumnMeta` SHALL carry `{name: string, dataTypeID: number}` for each returned column, preserving the Postgres OID so guest code can disambiguate values that share a JSON representation (e.g. `timestamptz` vs. `text`).
+#### Scenario: Successful executeSql emits paired events
 
-For a multi-statement query (invoked with an empty `params` array, which routes through Postgres's simple-query protocol) the handler SHALL return the result set of the **last** statement only. Queries invoked with a non-empty `params` array use Postgres's extended protocol, which supports parameter binding but requires a single statement; in that case the handler SHALL return that single statement's result set.
-
-#### Scenario: SQL query emits sql.request/sql.response triad
-
-- **GIVEN** guest code awaits `executeSql(conn, "SELECT $1::text AS greeting", ["hi"])` and the driver returns one row
-- **WHEN** the handler completes successfully
-- **THEN** a `sql.request` event SHALL be emitted with `createsFrame: true` carrying `input = {engine: "postgres", host, database, query: "SELECT $1::text AS greeting", paramCount: 1}`
-- **AND** a `sql.response` event SHALL be emitted with `closesFrame: true` carrying `output = {rowCount: 1, durationMs}`
-- **AND** neither event SHALL contain the string `"hi"`
-
-#### Scenario: SQL query to RFC-1918 host is refused before socket
-
-- **GIVEN** guest code awaits `executeSql("postgres://db.internal/app", "SELECT 1")` and DNS resolves `db.internal` to `10.0.0.5`
-- **WHEN** `assertHostIsPublic("db.internal")` rejects with `HostBlockedError`
-- **THEN** `postgres()` SHALL NOT be called and no TCP socket SHALL be opened
-- **AND** a `sql.error` event SHALL be emitted with `output = {message: <HostBlockedError message>}` and no `code` field
-
-#### Scenario: options.host is overridden with the validated IP
-
-- **GIVEN** `assertHostIsPublic("db.example.com")` resolves to `203.0.113.42`
-- **WHEN** the plugin calls `postgres(url, options)`
-- **THEN** `options.host` SHALL equal `"203.0.113.42"`
-- **AND** `options.host` SHALL NOT equal `"db.example.com"`
-
-#### Scenario: DSN sslmode=require auto-synthesizes ssl.servername
-
-- **GIVEN** the author passes a string connection `"postgres://db.example.com/app?sslmode=require"` with no explicit `ssl` field
-- **WHEN** the plugin constructs the `postgres()` options
-- **THEN** `options.ssl` SHALL be `{servername: "db.example.com", rejectUnauthorized: false}`
-- **AND** TLS SNI SHALL therefore bind to the original hostname rather than the validated IP that replaced `options.host`
-
-#### Scenario: TLS servername is pinned to the original hostname
-
-- **GIVEN** the author supplies `ssl: true` with `connectionString: "postgres://db.example.com/app"`
-- **WHEN** the plugin constructs the `postgres()` options
-- **THEN** the merged `ssl` object SHALL contain `servername: "db.example.com"`
-- **AND** every other `ssl.*` field the author supplied SHALL pass through unchanged
-
-#### Scenario: Author TLS PEMs pass through
-
-- **GIVEN** the author supplies `ssl: {ca: "-----BEGIN CERTIFICATE-----...", rejectUnauthorized: true}`
-- **WHEN** the plugin constructs the `postgres()` options
-- **THEN** `ssl.ca`, `ssl.cert` (if set), `ssl.key` (if set), and `ssl.rejectUnauthorized` SHALL equal the author-supplied values
-
-#### Scenario: statement_timeout default and ceiling
-
-- **WHEN** the author does not pass `options.timeoutMs`
-- **THEN** the plugin SHALL call `postgres()` with `connection.statement_timeout === "30000"`
-- **WHEN** the author passes `options.timeoutMs = 5000`
-- **THEN** the plugin SHALL call `postgres()` with `connection.statement_timeout === "5000"`
-- **WHEN** the author passes `options.timeoutMs = 999999`
-- **THEN** the plugin SHALL clamp the value and call `postgres()` with `connection.statement_timeout === "120000"`
-
-#### Scenario: Structured error for statement_timeout
-
-- **GIVEN** a query exceeds `statement_timeout` and the Postgres server cancels it
-- **WHEN** the driver rejects with SQLSTATE `57014`
-- **THEN** a `sql.error` event SHALL be emitted with `output = {message, code: "57014"}`
-
-#### Scenario: Structured error for auth failure
-
-- **GIVEN** the Postgres server rejects the plugin's credentials
-- **WHEN** the driver rejects with SQLSTATE `28P01`
-- **THEN** a `sql.error` event SHALL be emitted with `output = {message, code: "28P01"}`
-
-#### Scenario: Structured error for syntax error
-
-- **GIVEN** the author passes `query: "SELCT 1"`
-- **WHEN** the driver rejects with SQLSTATE `42601`
-- **THEN** a `sql.error` event SHALL be emitted with `output = {message, code: "42601"}`
-
-#### Scenario: Structured error for connection failure
-
-- **GIVEN** the hardened socket cannot complete TCP or TLS within `connect_timeout`
-- **WHEN** the driver rejects before the Postgres startup handshake completes
-- **THEN** a `sql.error` event SHALL be emitted with `output = {message}` and no `code` field
-
-#### Scenario: Row coercion maps timestamptz to ISO string
-
-- **GIVEN** the driver returns a row value that is a `Date` instance for a `timestamptz` column
-- **WHEN** the handler serializes the row for the guest
-- **THEN** the guest SHALL receive `typeof value === "string"` with the value equal to `date.toISOString()`
-
-#### Scenario: Row coercion maps bytea to base64 string
-
-- **GIVEN** the driver returns a row value that is a `Buffer` or `Uint8Array` for a `bytea` column
-- **WHEN** the handler serializes the row for the guest
-- **THEN** the guest SHALL receive `typeof value === "string"` with the value equal to the base64 encoding of the bytes
-
-#### Scenario: Row coercion maps bigint to decimal string
-
-- **GIVEN** the driver returns a row value for an `int8` column that does not fit an IEEE-754 safe integer
-- **WHEN** the handler serializes the row for the guest
-- **THEN** the guest SHALL receive `typeof value === "string"` with the value equal to the decimal representation of the integer
-
-#### Scenario: Row coercion passes jsonb objects through
-
-- **GIVEN** the driver returns a row value that is a plain object for a `jsonb` column
-- **WHEN** the handler serializes the row for the guest
-- **THEN** the guest SHALL receive an equivalent plain object whose nested values follow the same JSON-safe mapping
-
-#### Scenario: Multi-statement query (no params) returns last result set
-
-- **GIVEN** the author passes `query: "SELECT 1 AS a; SELECT 2 AS b"` with no `params`
-- **WHEN** the handler completes
-- **THEN** the simple-query protocol SHALL be used
-- **AND** the guest SHALL receive `rows = [{b: 2}]` (or the coerced equivalent)
-- **AND** the guest SHALL NOT receive `rows` for the first statement
-
-#### Scenario: Params are bound via $N placeholders
-
-- **GIVEN** the author passes `query: "SELECT * FROM t WHERE id = $1"` and `params: [42]`
-- **WHEN** the handler invokes the driver
-- **THEN** the driver SHALL be called via `sql.unsafe("SELECT * FROM t WHERE id = $1", [42])` using Postgres's extended protocol
-- **AND** the value `42` SHALL NOT appear in the `sql.request.input.query` string
-
-#### Scenario: Per-call connection is closed in finally on success
-
-- **GIVEN** a successful `executeSql` call
-- **WHEN** the handler returns
-- **THEN** `sql.end({timeout: 5})` SHALL have been awaited before the handler resolves
-
-#### Scenario: Per-call connection is closed in finally on error
-
-- **GIVEN** any failure path (host blocked, connect failure, query failure, timeout)
-- **WHEN** the handler rejects
-- **THEN** `sql.end({timeout: 5})` SHALL have been awaited before the rejection surfaces
-
-#### Scenario: onRunFinished forces close of leaked handles
-
-- **GIVEN** a malformed handler path that leaks an open `sql` handle past its `finally`
-- **WHEN** `sb.run()` completes and `onRunFinished` fires
-- **THEN** `sql.end({timeout: 0})` SHALL be called on every handle the plugin created during that run
+- **GIVEN** guest code calls `await executeSql(conn, query, params)` and the query succeeds
+- **WHEN** the call returns
+- **THEN** a `system.request` event SHALL be emitted with `name = "executeSql"`
+- **AND** a `system.response` event SHALL follow with the matching ref via callId pairing
 
 ### Requirement: Hardened-egress coverage extension
 
@@ -868,25 +635,10 @@ The `assertHostIsPublic` primitive SHALL be called before socket creation by eve
 
 ### Requirement: SQL event param-value redaction
 
-The `sql.request` event SHALL carry `input.query` as the full SQL text the author supplied and SHALL NOT carry any param values. The descriptor's `logInput` SHALL emit `{engine, host, database, query, paramCount}` with `paramCount` being `params.length` (or `0` when `params` is omitted). No event emitted by `createSqlPlugin` — `sql.request`, `sql.response`, or `sql.error` — SHALL contain an element of `params`.
+`system.request` and `system.response` events emitted by the SQL plugin SHALL redact parameter values per the existing redaction rules (configurable via plugin config). The redaction SHALL apply uniformly regardless of the prefix consolidation; updating from `sql.*` to `system.*` SHALL NOT weaken redaction.
 
-#### Scenario: Param values never appear in sql.request
+#### Scenario: Parameter values are redacted in events
 
-- **GIVEN** the author passes `params: ["secret-token", 42, true]`
-- **WHEN** the plugin emits `sql.request`
-- **THEN** the event's `input` SHALL have `paramCount: 3`
-- **AND** the event payload (including `input` and `meta`) SHALL NOT contain the string `"secret-token"`, the number `42`, or the boolean `true` in a position attributable to a param
-
-#### Scenario: Param values never appear in sql.response
-
-- **GIVEN** a successful query with `params: ["secret-token"]`
-- **WHEN** the plugin emits `sql.response`
-- **THEN** the event's `output` SHALL be `{rowCount, durationMs}` only
-- **AND** the event payload SHALL NOT contain the string `"secret-token"`
-
-#### Scenario: Param values never appear in sql.error
-
-- **GIVEN** a query that fails while referencing `params: ["secret-token"]`
-- **WHEN** the plugin emits `sql.error`
-- **THEN** the event's `output` SHALL be `{message, code?}` only
-- **AND** the event payload SHALL NOT contain the string `"secret-token"`
+- **GIVEN** an SQL plugin configured with the default redaction rule
+- **WHEN** guest code calls `executeSql(conn, "SELECT $1", ["secret"])`
+- **THEN** the emitted `system.request` event's input SHALL NOT contain the literal value `"secret"`

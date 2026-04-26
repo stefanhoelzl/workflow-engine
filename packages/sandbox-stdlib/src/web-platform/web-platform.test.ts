@@ -18,16 +18,17 @@ function recordingCtx(): SandboxContext & { events: EmittedEvent[] } {
 	const events: EmittedEvent[] = [];
 	return {
 		events,
-		emit(kind, name, extra) {
-			events.push({ kind, name, extra });
+		emit(kind, options) {
+			events.push({ kind, name: options.name, extra: options });
+			return 0 as never;
 		},
-		request(_prefix, _name, _extra, fn) {
+		request(_prefix, _options, fn) {
 			return fn();
 		},
 	};
 }
 
-describe("web-platform plugin (§10 shape)", () => {
+describe("web-platform plugin", () => {
 	it("has the expected name and exposes the private reportError host descriptor", () => {
 		expect(WEB_PLATFORM_PLUGIN_NAME).toBe("web-platform");
 		const ctx = recordingCtx();
@@ -42,30 +43,23 @@ describe("web-platform plugin (§10 shape)", () => {
 		expect(typeof guest).toBe("function");
 	});
 
-	it("reportErrorHost handler emits an uncaught-error leaf event with the serialised payload", () => {
+	it("reportErrorHost descriptor emits via auto-wrap as a system.exception leaf", () => {
 		const ctx = recordingCtx();
 		const setup = worker(ctx);
 		const gf = setup.guestFunctions?.[0];
-		const handler = gf?.handler as unknown as (
-			payload: ReportErrorPayload,
-		) => void;
-		handler({
+		// The descriptor's `log` config drives the auto-wrap in
+		// guest-function-install. Per the bridge-main-sequencing change,
+		// uncaught errors emit as `system.exception` leaf events.
+		expect(gf?.log).toEqual({ event: "system.exception" });
+		// logName uses the reported error's class name for visual
+		// disambiguation in the dashboard.
+		const payload: ReportErrorPayload = {
 			name: "TypeError",
 			message: "boom",
 			stack: "Error: boom\n  at eval",
-		});
-		expect(ctx.events).toEqual([
-			{
-				kind: "uncaught-error",
-				name: "reportError",
-				extra: {
-					input: {
-						name: "TypeError",
-						message: "boom",
-						stack: "Error: boom\n  at eval",
-					},
-				},
-			},
-		]);
+		};
+		expect(gf?.logName?.([payload])).toBe("TypeError");
+		// logInput passes the full payload through as the event's input.
+		expect(gf?.logInput?.([payload])).toEqual(payload);
 	});
 });

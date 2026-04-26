@@ -66,12 +66,12 @@ function validOpts(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("mail plugin — descriptor shape", () => {
-	it("exposes name + dependsOn + dispatcher descriptor with log.request:'mail'", () => {
+	it("exposes name + dependsOn + dispatcher descriptor with log.request:'system'", () => {
 		const noopCtx: SandboxContext = {
 			emit() {
-				/* no-op */
+				return 0 as never;
 			},
-			request(_p, _n, _e, fn) {
+			request(_p, _o, fn) {
 				return fn();
 			},
 		};
@@ -80,15 +80,15 @@ describe("mail plugin — descriptor shape", () => {
 		const gf = setup.guestFunctions?.[0];
 		expect(gf?.name).toBe(MAIL_DISPATCHER_NAME);
 		expect(gf?.public).toBe(false);
-		expect(gf?.log).toEqual({ request: "mail" });
+		expect(gf?.log).toEqual({ request: "system" });
 	});
 
 	it("logName uses the first recipient", () => {
 		const noopCtx: SandboxContext = {
 			emit() {
-				/* no-op */
+				return 0 as never;
 			},
-			request(_p, _n, _e, fn) {
+			request(_p, _o, fn) {
 				return fn();
 			},
 		};
@@ -96,15 +96,15 @@ describe("mail plugin — descriptor shape", () => {
 		const name = gf?.logName?.([
 			{ to: ["a@example.com", "b@example.com"] } as unknown,
 		]);
-		expect(name).toBe("mail to a@example.com");
+		expect(name).toBe("sendMail a@example.com");
 	});
 
 	it("logInput strips text/html/attachments AND smtp.auth", () => {
 		const noopCtx: SandboxContext = {
 			emit() {
-				/* no-op */
+				return 0 as never;
 			},
-			request(_p, _n, _e, fn) {
+			request(_p, _o, fn) {
 				return fn();
 			},
 		};

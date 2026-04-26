@@ -12,9 +12,9 @@ import {
 
 const ctx: SandboxContext = {
 	emit() {
-		/* no-op */
+		return 0 as never;
 	},
-	request(_p, _n, _e, fn) {
+	request(_p, _o, fn) {
 		return fn();
 	},
 };

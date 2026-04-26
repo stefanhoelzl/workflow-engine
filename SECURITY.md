@@ -428,21 +428,32 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   complete. Cleanup runs inside the run's refStack frame so audit events
   parent correctly.
 - **ctx-only emission (S14).** All events flow through `ctx.emit` /
-  `ctx.request`. `seq`/`ref`/`ts`/`at`/`id` are stamped internally and
-  never exposed to plugin code. Direct `bridge.*` mutation from plugin
-  code is prohibited by convention and reviewed per plugin (catalog is
-  small — ~8 plugins).
-- **Reserved event prefixes.** `trigger`, `action`, `fetch`, `mail`,
-  `sql`, `timer`, `console`, `wasi`, `uncaught-error` are reserved for
-  stdlib / runtime plugins. Third-party plugins use domain-specific
-  prefixes to avoid conflating with core audit categories.
-- **SQL event param-value redaction.** `sql.request` events MAY carry
-  the full `query` text (authors see it in the dashboard for
-  debugging) but MUST NOT carry any param *values*. The
-  `createSqlPlugin` descriptor's `logInput` emits
+  `ctx.request`. `ts`/`at`/`kind`/`name`/`callId` are bridge-stamped
+  (worker-side); `seq`/`ref` are Sandbox-stamped (main-side, by the
+  `RunSequencer` per the `bridge-main-sequencing` change); `id`/`owner`/
+  `repo`/`workflow`/`workflowSha`/`invocationId`/`meta.dispatch` are
+  runtime-stamped (in the executor's `sb.onEvent` widener). No layer
+  may stamp fields that belong to another layer; in particular plugin
+  code MUST NOT touch `seq`/`ref`/`callId` and the worker MUST NOT
+  parse the `kind` string for framing — the typed `type` field on
+  `WireEvent` is the framing discriminator.
+- **Reserved event prefixes.** `trigger`, `action`, `system` are
+  reserved for stdlib / runtime plugins. Third-party plugins use
+  domain-specific prefixes to avoid conflating with core audit
+  categories. Per the `bridge-main-sequencing` change, the previously
+  separate `fetch`, `mail`, `sql`, `timer`, `console`, `wasi`, and
+  `uncaught-error` prefixes were consolidated under `system.*` with
+  the operation identity carried in the event's `name` field
+  (e.g. `system.request name="fetch"`, `system.call name="setTimeout"`,
+  `system.exception name="TypeError"`).
+- **SQL event param-value redaction.** SQL `system.request` events
+  (with `name="executeSql"`) MAY carry the full `query` text (authors
+  see it in the dashboard for debugging) but MUST NOT carry any param
+  *values*. The `createSqlPlugin` descriptor's `logInput` emits
   `{engine, host, database, query, paramCount}` — `paramCount` is the
   length of the params array; the values themselves never appear in
-  any `sql.request`, `sql.response`, or `sql.error` event payload.
+  any SQL `system.request`, `system.response`, or `system.error`
+  event payload (filtered by `name="executeSql"`).
   This matches the `mail` plugin's "log envelope, not body" discipline:
   param values are the most common carrier of PII / PHI / tokens flowing
   through SQL calls, and the event stream is operator-visible.
@@ -553,16 +564,19 @@ plugin, and every change that adds a guest-visible surface.
    pending `Callable`s, in-flight fetches, etc.) MUST implement
    `onRunFinished` to release / dispose that state. Cleanup MUST route
    through the same code paths as guest-initiated teardown so audit
-   events fire (e.g. the `timers` plugin emits a `timer.clear` leaf per
-   pending timer at run end). Skipping this rule leaks state across runs
-   and de-correlates the event stream.
+   events fire (e.g. the `timers` plugin emits a `system.call` leaf
+   per pending timer at run end with `name="clearTimeout"` /
+   `name="clearInterval"`). Skipping this rule leaks state across
+   runs and de-correlates the event stream.
 5. **R-5 ctx-only emission.** All events flow through `ctx.emit` /
    `ctx.request`. Direct `bridge.*` mutation from plugin code is
-   prohibited. `seq`, `ref`, `ts`, `at`, and `id` are stamped by the
-   sandbox; plugin authors never construct these fields. A plugin that
-   needs a frame-producing event uses `createsFrame: true` /
-   `closesFrame: true` options on `ctx.emit`; it never computes a ref
-   value itself.
+   prohibited. `seq`, `ref`, `ts`, `at`, and `callId` are stamped by
+   the sandbox; plugin authors never construct these fields. A plugin
+   that needs a frame-producing event passes `type: "open"` on
+   `ctx.emit` (capturing the returned `CallId`) and a matching
+   `type: { close: callId }` on the close — it never computes a ref
+   value itself, and the worker→main wire pipeline never parses the
+   `kind` string for framing.
 6. **R-6 Worker-only execution.** Plugin code executes in the Node
    worker thread exclusively. No cross-thread method calls. Plugin
    configs passed to `descriptor.config` MUST be JSON-serializable
@@ -570,16 +584,26 @@ plugin, and every change that adds a guest-visible surface.
    Main-thread state (connection pools, persistent caches) cannot live
    in a plugin — it must be passed in as serialized config or reached
    via a descriptor-bridged guest function that the plugin registers.
-7. **R-7 Reserved prefixes.** Event prefixes `trigger`, `action`,
-   `fetch`, `mail`, `timer`, `console`, `wasi`, and `uncaught-error`
-   are reserved for stdlib / runtime plugins. Third-party plugins use
-   domain-specific prefixes (e.g. `mypkg.request` /
+7. **R-7 Reserved prefixes.** Event prefixes `trigger`, `action`, and
+   `system` are reserved for stdlib / runtime plugins. Third-party
+   plugins use domain-specific prefixes (e.g. `mypkg.request` /
    `mypkg.response`) to avoid conflating with core audit categories.
-8. **R-8 No runtime metadata in the sandbox.** The sandbox stamps only
-   intrinsic event fields: `kind`, `name`, `id`, `seq`, `ref`, `ts`,
-   `at`, and `input?` / `output?` / `error?`. Owner, repo, workflow,
-   workflowSha, and invocationId are stamped by the runtime in its
-   `sb.onEvent` receiver before forwarding events to the bus. A plugin
+   Per the `bridge-main-sequencing` change, host-call kinds previously
+   under `fetch.*`, `mail.*`, `sql.*`, `timer.*`, `console.*`, `wasi.*`,
+   and `uncaught-error` are consolidated under `system.*` with the
+   operation identity carried in the event's `name` field.
+8. **R-8 Stamping-boundary discipline.** Event-field stamping is split
+   across three layers:
+   - **Bridge-stamped (worker-side):** `kind`, `name`, `ts`, `at`,
+     `input?`, `output?`, `error?`, plus the wire-only `type` framing
+     discriminator and (for opens) a worker-minted `callId`.
+   - **Sandbox-stamped (main-side, by `RunSequencer`):** `seq` (per-run
+     monotonic from 0) and `ref` (parent-frame seq, looked up by
+     `callId` for closes; refStack-top for opens and leaves).
+   - **Runtime-stamped (executor's `sb.onEvent` widener):** `id`,
+     `owner`, `repo`, `workflow`, `workflowSha`, `invocationId`, and
+     (on `trigger.request` only) `meta.dispatch`.
+   No layer may stamp fields owned by another layer. A plugin
    that needs to attach an owner, repo, or workflow label is doing
    something wrong — that labelling belongs on the runtime side.
 9. **R-9 Runtime-only dispatch provenance.** `InvocationEvent.meta` and

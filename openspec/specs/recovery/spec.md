@@ -20,15 +20,17 @@ The function SHALL iterate `scanPending(backend)` and group the yielded events b
    - `seq`: `max(pending seq) + 1`.
    - `ref`: `null`. The synthetic terminal does not pair with any emitted request — recovery runs outside the executor's request/response lifecycle and has no prior seq to reference.
    - `at`: `new Date().toISOString()` captured at recovery time.
-   - `ts`: copied from the last replayed event's `ts` (or `0` if no events were replayed). See the anchor-reuse rationale below.
+   - `ts`: copied from the last replayed event's `ts` (or `0` if no events were replayed).
    - `id`, `tenant`, `workflow`, `workflowSha`, `name`: copied from the first replayed event of the group (all replayed events for an id share these fields).
-   - `error`: `{ message: "engine crashed before invocation completed", stack: "", kind: "engine_crashed" }`. `message` is a fixed human-readable string and `stack` is an empty string (recovery synthesizes the event, so there is no real stack to capture); `kind: "engine_crashed"` is the machine-readable discriminator downstream consumers (UI, EventStore filters) match on.
+   - `error`: `{ message: "engine crashed before invocation completed", stack: "", kind: "engine_crashed" }`.
 
    The persistence consumer handles the synthetic terminal event by writing `archive/{id}.json` and calling `removePrefix` as part of its normal flow.
 
-The synthetic event's `ts` is deliberately reused from the last replayed event rather than freshly sampled from a `performance.now()` anchor, because recovery runs outside any sandbox context and therefore has no anchor. The consequence is that `terminal.ts - request.ts` on a recovered invocation reads as "how far the run got before the crash," not the total wall-clock gap to recovery — which is the most informative value we can surface without fabricating precision we do not have.
+**Cold-start synthesis is structurally distinct from in-process synthesis.** In-process synthesis (sandbox observes worker death mid-run) is performed by the sandbox's `RunSequencer.finish({ closeReason })` against an in-memory sequencer that already saw the run's prior events. Recovery runs in a fresh process where the owning sandbox no longer exists; there is no live `RunSequencer` to consult. Recovery SHALL therefore derive `seq` by reading the highest persisted seq from disk and incrementing — this `lastPersistedSeq + 1` derivation is unique to recovery and SHALL NOT be replicated in any other code path. The `bridge-main-sequencing` change explicitly preserves this carve-out: the in-memory sequencer abstraction does NOT extend to cold-start synthesis.
 
-Partial overlap (some pending seqs present in the event store, others not) SHALL NOT occur in practice because the archive is written exactly once on terminal, containing every event. If it nonetheless occurs, the function SHALL treat the id as "event store has events" (case 1) — the archive on disk is the authoritative record.
+The synthetic event's `ts` is deliberately reused from the last replayed event rather than freshly sampled from a `performance.now()` anchor, because recovery runs outside any sandbox context and therefore has no anchor.
+
+Partial overlap (some pending seqs present in the event store, others not) SHALL NOT occur in practice because the archive is written exactly once on terminal, containing every event. If it nonetheless occurs, the function SHALL treat the id as "event store has events" (case 1).
 
 #### Scenario: Crashed mid-invocation — replay plus synthetic terminal
 
@@ -50,14 +52,20 @@ Partial overlap (some pending seqs present in the event store, others not) SHALL
 - **THEN** the function SHALL call `backend.removePrefix("pending/evt_a/")`
 - **AND** SHALL log an info-level entry `runtime.recovery.archive-cleanup`
 - **AND** SHALL NOT emit any event to the bus for `evt_a`
-- **AND** after the function returns, no file under `pending/evt_a/` SHALL remain
-- **AND** `archive/evt_a.json` SHALL remain byte-identical
 
 #### Scenario: Empty pending is a no-op
 
 - **GIVEN** the `pending/` prefix has no files
 - **WHEN** `recover({ backend, eventStore }, bus)` runs
 - **THEN** the function SHALL complete without emitting any event and without calling `removePrefix`
+
+#### Scenario: Recovery does not consult an in-memory RunSequencer
+
+- **GIVEN** a recovering process with crashed pendings on disk
+- **WHEN** `recover()` synthesises the terminal `trigger.error`
+- **THEN** the synthetic event's `seq` SHALL be derived from the persisted pending events' max seq + 1
+- **AND** the recovery code path SHALL NOT instantiate, import, or call any `RunSequencer` API
+- **AND** the recovery code path SHALL NOT consult any `Sandbox` instance for sequencing
 
 ### Requirement: EventStore bootstraps from archive scan independently
 

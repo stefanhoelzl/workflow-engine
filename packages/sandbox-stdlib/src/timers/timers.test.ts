@@ -23,21 +23,34 @@ interface RecordingCtx extends SandboxContext {
 
 function recordingCtx(): RecordingCtx {
 	const events: EmittedEvent[] = [];
+	let nextCallId = 0;
 	return {
 		events,
-		emit(kind, name, extra) {
-			events.push({ kind, name, extra });
+		emit(kind, options) {
+			events.push({
+				kind,
+				name: options.name,
+				extra: {
+					...(options.input === undefined ? {} : { input: options.input }),
+					...(options.output === undefined ? {} : { output: options.output }),
+					...(options.error === undefined ? {} : { error: options.error }),
+				},
+			});
+			if (options.type === "open") {
+				return nextCallId++ as never;
+			}
+			return 0 as never;
 		},
-		request(prefix, name, extra, fn) {
+		request(prefix, options, fn) {
 			// Real sandbox emission would be <prefix>.request/response/error;
 			// the timers plugin only needs to observe that ctx.request is
 			// called with the right prefix and input, not replicate the
 			// full seq/ref stamping. Record as a synthetic event for test
 			// observability.
-			const input = (extra as { input?: unknown }).input;
+			const input = options.input;
 			events.push({
 				kind: `${prefix}.request`,
-				name,
+				name: options.name,
 				extra: { input },
 			});
 			try {
@@ -47,7 +60,7 @@ function recordingCtx(): RecordingCtx {
 						(v) => {
 							events.push({
 								kind: `${prefix}.response`,
-								name,
+								name: options.name,
 								extra: { input, output: v },
 							});
 							return v;
@@ -55,7 +68,7 @@ function recordingCtx(): RecordingCtx {
 						(e: unknown) => {
 							events.push({
 								kind: `${prefix}.error`,
-								name,
+								name: options.name,
 								extra: { input, error: e },
 							});
 							throw e;
@@ -64,14 +77,14 @@ function recordingCtx(): RecordingCtx {
 				}
 				events.push({
 					kind: `${prefix}.response`,
-					name,
+					name: options.name,
 					extra: { input, output: r },
 				});
 				return r;
 			} catch (e) {
 				events.push({
 					kind: `${prefix}.error`,
-					name,
+					name: options.name,
 					extra: { input, error: e },
 				});
 				throw e;
@@ -132,10 +145,10 @@ describe("createTimersPlugin", () => {
 			["clearInterval", "clearTimeout", "setInterval", "setTimeout"].sort(),
 		);
 		expect(byName.setTimeout?.public).toBe(true);
-		expect(byName.setTimeout?.log).toEqual({ event: "timer.set" });
-		expect(byName.setInterval?.log).toEqual({ event: "timer.set" });
-		expect(byName.clearTimeout?.log).toEqual({ event: "timer.clear" });
-		expect(byName.clearInterval?.log).toEqual({ event: "timer.clear" });
+		expect(byName.setTimeout?.log).toEqual({ event: "system.call" });
+		expect(byName.setInterval?.log).toEqual({ event: "system.call" });
+		expect(byName.clearTimeout?.log).toEqual({ event: "system.call" });
+		expect(byName.clearInterval?.log).toEqual({ event: "system.call" });
 	});
 
 	it("setTimeout schedules a Node timer that invokes the callable via ctx.request when it fires", async () => {
@@ -161,8 +174,8 @@ describe("createTimersPlugin", () => {
 		// we assert.
 		await vi.advanceTimersByTimeAsync(20);
 		expect(ctx.events.map((e) => e.kind)).toEqual([
-			"timer.request",
-			"timer.response",
+			"system.request",
+			"system.response",
 		]);
 		expect(cb.invocations).toBe(1);
 		expect(cb.disposed).toBe(true);
@@ -215,9 +228,10 @@ describe("createTimersPlugin", () => {
 		)(cb2, 2000);
 		// Don't advance — both remain pending.
 		setup.onRunFinished?.(OK, RUN_INPUT);
-		const clears = ctx.events.filter((e) => e.kind === "timer.clear");
+		const clears = ctx.events.filter(
+			(e) => e.kind === "system.call" && e.name === "clearTimeout",
+		);
 		expect(clears).toHaveLength(2);
-		expect(clears.every((e) => e.name === "clearTimeout")).toBe(true);
 		expect(cb1.disposed).toBe(true);
 		expect(cb2.disposed).toBe(true);
 		// Advancing now should NOT fire the cleared timers.

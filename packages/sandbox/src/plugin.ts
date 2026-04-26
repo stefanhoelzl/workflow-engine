@@ -1,3 +1,4 @@
+import type { InvocationEventError } from "@workflow-engine/core";
 import type { ArgSpec, GuestValue, ResultSpec } from "./plugin-types.js";
 import type { WorkerToMain } from "./protocol.js";
 
@@ -42,28 +43,64 @@ interface Callable {
 
 type EventKind = string;
 
-interface EventExtra {
-	readonly input?: unknown;
-	readonly output?: unknown;
-	readonly error?: unknown;
-}
+/** Worker-local pairing token. Minted by the bridge for `type: "open"`,
+ * echoed by the SDK caller on `type: { close: callId }`. Not visible at the
+ * Sandbox-Executor boundary. */
+type CallId = number;
+
+/**
+ * SDK-input framing discriminator. Callers pass this on `ctx.emit` via
+ * `options.type`. The bridge transforms `"open"` into wire `{ open: <id> }`
+ * by minting a CallId from its per-run counter; `"leaf"` and `{ close }`
+ * pass through unchanged on the wire (asymmetric SDK-input vs wire types).
+ */
+type EmitFraming = "leaf" | "open" | { readonly close: CallId };
 
 interface EmitOptions {
-	readonly createsFrame?: boolean;
-	readonly closesFrame?: boolean;
+	readonly name: string;
+	readonly input?: unknown;
+	readonly output?: unknown;
+	readonly error?: InvocationEventError;
+	/** Defaults to `"leaf"` when omitted. */
+	readonly type?: EmitFraming;
 }
 
+interface RequestOptions {
+	readonly name: string;
+	readonly input?: unknown;
+}
+
+/**
+ * Conditional return type for `SandboxContext.emit`. The bridge only mints a
+ * CallId on `type: "open"`; for leaves and closes there is no meaningful id
+ * to return. Encoding that in the type means a caller writing
+ * `const x = ctx.emit(k, {name})` against a leaf is a compile error rather
+ * than a latent footgun (the runtime would otherwise return 0, which
+ * collides with the first minted CallId).
+ */
+type EmitReturn<O extends { readonly type?: EmitFraming }> = O extends {
+	readonly type: "open";
+}
+	? CallId
+	: // biome-ignore lint/suspicious/noConfusingVoidType: `void` here is the conditional return for non-open framings — using `undefined` would force callers to write `void ctx.emit(...)` to discard, which is worse ergonomics
+		void;
+
 interface SandboxContext {
-	emit(
-		kind: EventKind,
-		name: string,
-		extra: EventExtra,
-		options?: EmitOptions,
-	): void;
+	/**
+	 * Emit a single bus event. Returns a `CallId` only when
+	 * `options.type === "open"` (capture it to pair with a future close).
+	 * For leaves (default) and closes, the return type is `void` — assigning
+	 * the result is a compile-time error.
+	 */
+	emit<O extends EmitOptions>(kind: EventKind, options: O): EmitReturn<O>;
+	/**
+	 * Wrap `fn` with paired open/close events. Emits `${prefix}.request` on
+	 * entry, then `${prefix}.response` (success) or `${prefix}.error`
+	 * (failure). Pairing is via a closure-captured CallId.
+	 */
 	request<T>(
 		prefix: string,
-		name: string,
-		extra: { readonly input?: unknown },
+		options: RequestOptions,
 		fn: () => T | Promise<T>,
 	): T | Promise<T>;
 }
@@ -196,9 +233,10 @@ interface Plugin<Config extends SerializableConfig = SerializableConfig> {
 
 export type {
 	Callable,
+	CallId,
 	DepsMap,
+	EmitFraming,
 	EmitOptions,
-	EventExtra,
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
@@ -206,6 +244,7 @@ export type {
 	Plugin,
 	PluginDescriptor,
 	PluginSetup,
+	RequestOptions,
 	RunInput,
 	RunResult,
 	SandboxContext,

@@ -12,9 +12,9 @@ import {
 
 const noopCtx: SandboxContext = {
 	emit() {
-		/* no-op */
+		return 0 as never;
 	},
-	request(_prefix, _name, _extra, fn) {
+	request(_prefix, _options, fn) {
 		return fn();
 	},
 };
@@ -25,13 +25,13 @@ describe("fetch plugin (§10 shape)", () => {
 		expect(FETCH_DEPENDS_ON).toEqual(["web-platform"]);
 	});
 
-	it('worker() registers the private dispatcher descriptor with log.request:"fetch"', () => {
+	it('worker() registers the private dispatcher descriptor with log.request:"system"', () => {
 		const setup = worker(noopCtx);
 		expect(setup.guestFunctions).toHaveLength(1);
 		const gf = setup.guestFunctions?.[0];
 		expect(gf?.name).toBe(FETCH_DISPATCHER_NAME);
 		expect(gf?.public).toBe(false);
-		expect(gf?.log).toEqual({ request: "fetch" });
+		expect(gf?.log).toEqual({ request: "system" });
 	});
 
 	it("dispatcher handler invokes the supplied fetch impl and returns a wire-serialised response", async () => {

@@ -10,7 +10,6 @@ import type {
 import {
 	collectGuestFunctions,
 	type DanglingFrameWarning,
-	type FrameTracker,
 	type GlobalBinder,
 	loadPluginModules,
 	type ModuleLoader,
@@ -21,15 +20,16 @@ import {
 	runPhaseSourceEval,
 	runPhaseWorker,
 	type SourceEvaluator,
-	truncateFinalRefStack,
 } from "./plugin-runtime.js";
 import type { WorkerToMain } from "./protocol.js";
 
 const noopCtx: SandboxContext = {
+	// Cast to `never` matches the boundary cast in `createSandboxContext` —
+	// `emit` has a conditional return type that narrows per call site.
 	emit() {
-		/* no-op */
+		return 0 as never;
 	},
-	request(_prefix, _name, _extra, fn) {
+	request(_prefix, _options, fn) {
 		return fn();
 	},
 };
@@ -324,31 +324,6 @@ describe("runPhasePrivateDelete", () => {
 	});
 });
 
-function makeTracker(): FrameTracker & {
-	push(): void;
-	frames: number[];
-} {
-	const frames: number[] = [];
-	let nextId = 1;
-	return {
-		frames,
-		push() {
-			frames.push(nextId++);
-		},
-		depth() {
-			return frames.length;
-		},
-		truncateTo(d) {
-			if (d < 0 || d > frames.length) {
-				return 0;
-			}
-			const dropped = frames.length - d;
-			frames.length = d;
-			return dropped;
-		},
-	};
-}
-
 function setups(
 	o: Record<string, PluginSetup>,
 ): ReadonlyMap<string, PluginSetup> {
@@ -364,19 +339,19 @@ const OK_RESULT: RunResult = { ok: true, output: { y: 2 } };
 const ERR_RESULT: RunResult = { ok: false, error: new Error("boom") };
 
 describe("runOnBeforeRunStarted", () => {
-	it("invokes hooks in topo order and leaves frames pushed by truthy-returning hooks", () => {
-		const tracker = makeTracker();
+	it("invokes hooks in topo order", () => {
 		const order = ["a", "b"];
+		const calls: string[] = [];
 		const map = setups({
 			a: {
 				onBeforeRunStarted: () => {
-					tracker.push();
+					calls.push("a");
 					return true;
 				},
 			},
 			b: {
 				onBeforeRunStarted: () => {
-					tracker.push();
+					calls.push("b");
 					return true;
 				},
 			},
@@ -385,42 +360,14 @@ describe("runOnBeforeRunStarted", () => {
 			setups: map,
 			order,
 			runInput: SAMPLE_RUN_INPUT,
-			tracker,
 		});
-		expect(tracker.depth()).toBe(2);
+		expect(calls).toEqual(["a", "b"]);
 	});
 
-	it("truncates frames pushed by a hook that returns falsy/void and warns per dropped frame", () => {
-		const tracker = makeTracker();
-		const warns: DanglingFrameWarning[] = [];
-		const map = setups({
-			misbehaving: {
-				onBeforeRunStarted: () => {
-					tracker.push();
-					tracker.push();
-					// intentionally return nothing
-				},
-			},
-		});
-		runOnBeforeRunStarted({
-			setups: map,
-			order: ["misbehaving"],
-			runInput: SAMPLE_RUN_INPUT,
-			tracker,
-			warn: (w) => warns.push(w),
-		});
-		expect(tracker.depth()).toBe(0);
-		expect(warns).toEqual([
-			{ phase: "onBeforeRunStarted", plugin: "misbehaving", dropped: 2 },
-		]);
-	});
-
-	it("truncates partial frames on a hook throw and annotates the plugin name", () => {
-		const tracker = makeTracker();
+	it("annotates a thrown hook error with the plugin name and rethrows", () => {
 		const map = setups({
 			blown: {
 				onBeforeRunStarted: () => {
-					tracker.push();
 					throw new Error("oops");
 				},
 			},
@@ -430,14 +377,11 @@ describe("runOnBeforeRunStarted", () => {
 				setups: map,
 				order: ["blown"],
 				runInput: SAMPLE_RUN_INPUT,
-				tracker,
 			}),
 		).toThrow(/plugin "blown" threw in onBeforeRunStarted: oops/);
-		expect(tracker.depth()).toBe(0);
 	});
 
 	it("passes the run input through to every hook", () => {
-		const tracker = makeTracker();
 		const received: RunInput[] = [];
 		const map = setups({
 			a: {
@@ -455,7 +399,6 @@ describe("runOnBeforeRunStarted", () => {
 			setups: map,
 			order: ["a", "b"],
 			runInput: SAMPLE_RUN_INPUT,
-			tracker,
 		});
 		expect(received).toEqual([SAMPLE_RUN_INPUT, SAMPLE_RUN_INPUT]);
 	});
@@ -544,46 +487,17 @@ describe("runOnRunFinished", () => {
 	});
 });
 
-describe("truncateFinalRefStack", () => {
-	it("drops all remaining frames and warns when any are dropped", () => {
-		const tracker = makeTracker();
-		tracker.push();
-		tracker.push();
-		tracker.push();
-		const warns: DanglingFrameWarning[] = [];
-		const dropped = truncateFinalRefStack(tracker, (w) => warns.push(w));
-		expect(dropped).toBe(3);
-		expect(tracker.depth()).toBe(0);
-		expect(warns).toEqual([{ phase: "final", dropped: 3 }]);
-	});
-
-	it("is silent when nothing needs truncation", () => {
-		const tracker = makeTracker();
-		const warn = vi.fn();
-		const dropped = truncateFinalRefStack(tracker, warn);
-		expect(dropped).toBe(0);
-		expect(warn).not.toHaveBeenCalled();
-	});
-});
-
 describe("runOnBeforeRunStarted + runOnRunFinished together", () => {
-	it("preserves a frame opened by onBeforeRunStarted so onRunFinished can close it", () => {
-		const tracker = makeTracker();
+	it("invokes both hooks in the right phases for a trigger-shaped plugin", () => {
 		const events: string[] = [];
 		const map = setups({
 			trigger: {
 				onBeforeRunStarted: () => {
-					events.push(`open@${tracker.depth()}`);
-					tracker.push();
+					events.push("open");
 					return true;
 				},
 				onRunFinished: () => {
-					// At this point the frame opened in onBeforeRunStarted is still
-					// present; a real plugin would emit closesFrame here and
-					// truncate via ctx / bridge.popRef. For this unit test we
-					// assert only that depth is 1 (the preserved frame).
-					events.push(`close@${tracker.depth()}`);
-					tracker.truncateTo(tracker.depth() - 1);
+					events.push("close");
 				},
 			},
 		});
@@ -591,17 +505,14 @@ describe("runOnBeforeRunStarted + runOnRunFinished together", () => {
 			setups: map,
 			order: ["trigger"],
 			runInput: SAMPLE_RUN_INPUT,
-			tracker,
 		});
-		expect(tracker.depth()).toBe(1);
 		runOnRunFinished({
 			setups: map,
 			order: ["trigger"],
 			result: OK_RESULT,
 			runInput: SAMPLE_RUN_INPUT,
 		});
-		expect(tracker.depth()).toBe(0);
-		expect(events).toEqual(["open@0", "close@1"]);
+		expect(events).toEqual(["open", "close"]);
 	});
 });
 
@@ -642,12 +553,11 @@ describe("runOnPost", () => {
 		type: "event",
 		event: {
 			kind: "action.request",
-			seq: 1,
-			ref: null,
 			at: "2026-04-24T00:00:00.000Z",
 			ts: 1000,
 			name: "foo",
 			input: "hello world",
+			type: { open: 7 },
 		},
 	};
 	const READY_MSG: WorkerToMain = { type: "ready" };

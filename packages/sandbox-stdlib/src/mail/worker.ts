@@ -415,14 +415,14 @@ function mailDispatcherDescriptor(): GuestFunctionDescription {
 			const result = await dispatchMailSend(opts);
 			return result as unknown as Record<string, unknown>;
 		}) as unknown as GuestFunctionDescription["handler"],
-		log: { request: "mail" },
+		log: { request: "system" },
 		logName: (args) => {
 			const opts = args[0] as MailOptsWire | undefined;
 			if (!opts || typeof opts !== "object") {
-				return "mail send";
+				return "sendMail";
 			}
 			const to = (opts as { to?: Recipient }).to;
-			return `mail to ${to ? firstRecipient(to) : "unknown"}`;
+			return `sendMail ${to ? firstRecipient(to) : "unknown"}`;
 		},
 		// Log envelope only — bodies + attachments routinely contain PII and
 		// can be multi-MB. smtp.auth is also dropped: by the same

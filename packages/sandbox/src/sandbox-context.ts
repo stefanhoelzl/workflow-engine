@@ -1,58 +1,11 @@
-import type { EventKind as CoreEventKind } from "@workflow-engine/core";
 import type { Bridge } from "./bridge-factory.js";
 import type {
+	CallId,
 	EmitOptions,
-	EventExtra,
 	EventKind,
+	RequestOptions,
 	SandboxContext,
 } from "./plugin.js";
-
-// Bridge.buildEvent expects the narrow core EventKind union; plugin kinds are
-// open-ended strings. Narrow at the boundary — kinds that don't match the
-// core union still flow through the bridge as opaque strings (at runtime,
-// EventKind is just a string label on the emitted event).
-function asCoreKind(kind: EventKind): CoreEventKind {
-	return kind as CoreEventKind;
-}
-
-interface EmitArgs {
-	readonly kind: EventKind;
-	readonly name: string;
-	readonly extra: EventExtra;
-	readonly options?: EmitOptions;
-}
-
-/**
- * Public emit — frame-aware event emission exposed via `ctx.emit`.
- *
- * - No options or both flags false: emits a leaf event (ref = current refStack top).
- * - createsFrame: emits with ref = current top, then pushes this event's seq onto
- *   the stack so subsequent sibling emissions nest under it.
- * - closesFrame: emits with ref = current top (the matching "open" event's seq),
- *   then pops the stack.
- * - Both flags true: treated as a leaf (no stack change); a plugin emitting an
- *   "instant" span that opens and closes in one event is just a leaf.
- */
-function pluginEmit(bridge: Bridge, args: EmitArgs): void {
-	const { kind, name, extra, options } = args;
-	const seq = bridge.nextSeq();
-	const ref = bridge.currentRef();
-	const event = bridge.buildEvent(asCoreKind(kind), seq, ref, name, extra);
-	if (event !== null) {
-		bridge.emit(event);
-	}
-	if (options === undefined) {
-		return;
-	}
-	const creates = options.createsFrame === true;
-	const closes = options.closesFrame === true;
-	if (creates && !closes) {
-		bridge.pushRef(seq);
-	} else if (closes && !creates) {
-		bridge.popRef();
-	}
-	// Both flags set or both false: no stack change (leaf semantics).
-}
 
 interface LifecycleError {
 	readonly message: string;
@@ -75,97 +28,6 @@ function serializeLifecycleError(err: unknown): LifecycleError {
 	return { message: String(err), stack: "" };
 }
 
-interface RequestEmission {
-	readonly prefix: string;
-	readonly name: string;
-	readonly input: unknown;
-}
-
-interface TerminalEmission extends RequestEmission {
-	readonly reqSeq: number;
-}
-
-/**
- * Emits a `<prefix>.request` event, returns its seq, and pushes the seq onto
- * the refStack. Subsequent emissions (from inside fn's body or from async work
- * escaping fn) can nest under the request via the stack OR via the returned seq
- * being passed explicitly as ref.
- */
-function emitRequest(bridge: Bridge, args: RequestEmission): number {
-	const reqSeq = bridge.nextSeq();
-	const parentRef = bridge.currentRef();
-	const extra = args.input === undefined ? {} : { input: args.input };
-	const event = bridge.buildEvent(
-		asCoreKind(`${args.prefix}.request`),
-		reqSeq,
-		parentRef,
-		args.name,
-		extra,
-	);
-	if (event !== null) {
-		bridge.emit(event);
-	}
-	bridge.pushRef(reqSeq);
-	return reqSeq;
-}
-
-/**
- * Emits a `<prefix>.response` event with ref = reqSeq (explicit — so async work
- * that resumes after other frames have been pushed/popped still correctly
- * parents to the matching request) and pops the stack (removing reqSeq).
- */
-function emitResponse(
-	bridge: Bridge,
-	args: TerminalEmission,
-	output: unknown,
-): void {
-	const resSeq = bridge.nextSeq();
-	const extra: { input?: unknown; output?: unknown } = {};
-	if (args.input !== undefined) {
-		extra.input = args.input;
-	}
-	if (output !== undefined) {
-		extra.output = output;
-	}
-	const event = bridge.buildEvent(
-		asCoreKind(`${args.prefix}.response`),
-		resSeq,
-		args.reqSeq,
-		args.name,
-		extra,
-	);
-	if (event !== null) {
-		bridge.emit(event);
-	}
-	bridge.popRef();
-}
-
-/**
- * Emits a `<prefix>.error` event with ref = reqSeq and pops the stack. The
- * thrown error is serialized into the event's `error` field; the caller is
- * responsible for rethrowing the original exception.
- */
-function emitError(bridge: Bridge, args: TerminalEmission, err: unknown): void {
-	const errSeq = bridge.nextSeq();
-	const extra: { input?: unknown; error?: unknown } = {
-		error: serializeLifecycleError(err),
-	};
-	if (args.input !== undefined) {
-		extra.input = args.input;
-	}
-	const event = bridge.buildEvent(
-		asCoreKind(`${args.prefix}.error`),
-		errSeq,
-		args.reqSeq,
-		args.name,
-		extra,
-	);
-	if (event !== null) {
-		bridge.emit(event);
-	}
-	bridge.popRef();
-}
-
 function isPromiseLike(value: unknown): value is Promise<unknown> {
 	return (
 		value !== null &&
@@ -174,53 +36,90 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 	);
 }
 
-interface RequestCall<T> {
-	readonly prefix: string;
-	readonly name: string;
-	readonly extra: { readonly input?: unknown };
-	readonly fn: () => T | Promise<T>;
+/**
+ * Public emit — single SDK signature dispatching on `options.type` (default
+ * `"leaf"`). Returns the worker-minted CallId for opens (so callers capture
+ * it to pair with a future close); leaves and closes return an opaque
+ * value callers ignore. Framing is explicit at the API boundary; `kind` is
+ * free-form metadata that the worker→main pipeline does not parse.
+ */
+function pluginEmit(
+	bridge: Bridge,
+	kind: EventKind,
+	options: EmitOptions,
+): CallId {
+	const framing = options.type ?? "leaf";
+	const extra: { input?: unknown; output?: unknown; error?: unknown } = {};
+	if (options.input !== undefined) {
+		extra.input = options.input;
+	}
+	if (options.output !== undefined) {
+		extra.output = options.output;
+	}
+	if (options.error !== undefined) {
+		extra.error = options.error;
+	}
+	return bridge.buildEvent(kind, options.name, framing, extra);
 }
 
 /**
- * Wraps a unit of work in `<prefix>.request`/`<prefix>.response`/`<prefix>.error`
- * lifecycle events. The request event is emitted synchronously before `fn` runs;
- * response (on success) or error (on throw/reject) is emitted after.
+ * Wraps a unit of work in `<prefix>.request`/`<prefix>.response`/
+ * `<prefix>.error` lifecycle events. Captures the open's CallId in closure
+ * and passes it back on the matching close, so concurrent calls (Promise.all
+ * shape) pair correctly via the explicit token.
  *
- * For sync `fn`, the stack push from the request event is still on top when
- * response/error fires, so stack state remains clean. For async `fn`, the
- * captured `reqSeq` is used as the explicit `ref` for response/error events,
- * so other frames pushed during the await don't interfere with parenting.
- *
- * The original thrown exception (or rejected promise reason) is re-thrown after
- * emitting the error event, so callers see the same failure they would without
- * the wrap.
+ * The original thrown exception (or rejected promise reason) is re-thrown
+ * after emitting the error event, so callers see the same failure they
+ * would without the wrap.
  */
 function pluginRequest<T>(
 	bridge: Bridge,
-	call: RequestCall<T>,
+	prefix: string,
+	options: RequestOptions,
+	fn: () => T | Promise<T>,
 ): T | Promise<T> {
-	const { prefix, name, extra, fn } = call;
-	const input = extra.input;
-	const reqSeq = emitRequest(bridge, { prefix, name, input });
-	const terminal: TerminalEmission = { prefix, name, input, reqSeq };
+	const callId = pluginEmit(bridge, `${prefix}.request`, {
+		name: options.name,
+		...(options.input === undefined ? {} : { input: options.input }),
+		type: "open",
+	});
+
+	function emitResponse(output: unknown): void {
+		pluginEmit(bridge, `${prefix}.response`, {
+			name: options.name,
+			...(options.input === undefined ? {} : { input: options.input }),
+			...(output === undefined ? {} : { output }),
+			type: { close: callId },
+		});
+	}
+
+	function emitError(err: unknown): void {
+		pluginEmit(bridge, `${prefix}.error`, {
+			name: options.name,
+			...(options.input === undefined ? {} : { input: options.input }),
+			error: serializeLifecycleError(err),
+			type: { close: callId },
+		});
+	}
+
 	let maybeResult: T | Promise<T>;
 	try {
 		maybeResult = fn();
 	} catch (err) {
-		emitError(bridge, terminal, err);
+		emitError(err);
 		throw err;
 	}
 	if (!isPromiseLike(maybeResult)) {
-		emitResponse(bridge, terminal, maybeResult as unknown);
+		emitResponse(maybeResult as unknown);
 		return maybeResult;
 	}
 	return (maybeResult as Promise<T>).then(
 		(value) => {
-			emitResponse(bridge, terminal, value);
+			emitResponse(value);
 			return value;
 		},
 		(err: unknown) => {
-			emitError(bridge, terminal, err);
+			emitError(err);
 			throw err;
 		},
 	);
@@ -228,22 +127,21 @@ function pluginRequest<T>(
 
 /**
  * Builds the SandboxContext exposed to plugin.worker(). Wraps the underlying
- * Bridge's emit/stamp primitives with the public ctx.emit / ctx.request surface.
- * Seq and refStack state stays inside the bridge; the ctx has no primitives for
- * reading or mutating it directly.
+ * Bridge's emit primitives with the public ctx.emit / ctx.request surface.
+ * The bridge mints CallIds for opens; the sequencer (on main) stamps seq/ref.
  */
 function createSandboxContext(bridge: Bridge): SandboxContext {
 	return {
-		emit(kind, name, extra, options) {
-			pluginEmit(bridge, {
-				kind,
-				name,
-				extra,
-				...(options === undefined ? {} : { options }),
-			});
+		// The cast to `never` (then to the conditional return) is the
+		// implementation-side acknowledgement that the type system narrows
+		// the return per call site (`CallId` for opens, `void` otherwise);
+		// the runtime always produces a number, but leaves/closes' callers
+		// get `void` and cannot inspect it.
+		emit(kind, options) {
+			return pluginEmit(bridge, kind, options) as never;
 		},
-		request(prefix, name, extra, fn) {
-			return pluginRequest(bridge, { prefix, name, extra, fn });
+		request(prefix, options, fn) {
+			return pluginRequest(bridge, prefix, options, fn);
 		},
 	};
 }

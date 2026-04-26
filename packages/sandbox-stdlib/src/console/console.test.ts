@@ -18,7 +18,7 @@ describe("console plugin (§10 shape)", () => {
 		);
 	});
 
-	it("registers one private descriptor per method, each emitting console.<method> as a leaf event", () => {
+	it("registers one private descriptor per method, each emitting a system.call leaf event with name console.<method>", () => {
 		const setup = worker();
 		expect(setup.guestFunctions).toHaveLength(CONSOLE_METHODS.length);
 		for (const method of CONSOLE_METHODS) {
@@ -27,7 +27,9 @@ describe("console plugin (§10 shape)", () => {
 			);
 			expect(gf).toBeDefined();
 			expect(gf?.public).toBe(false);
-			expect(gf?.log).toEqual({ event: `console.${method}` });
+			expect(gf?.log).toEqual({ event: "system.call" });
+			// logName carries the operation identity in the event's `name` field.
+			expect(gf?.logName?.([])).toBe(`console.${method}`);
 			expect(gf?.args).toHaveLength(1);
 			expect(gf?.args[0]?.kind).toBe("raw");
 			expect(gf?.handler()).toBeUndefined();

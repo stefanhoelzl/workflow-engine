@@ -53,9 +53,10 @@ function disposeAndStop(entry: PendingTimer): void {
 }
 
 // Cross-run-leak prevention — matches globals.ts `clearActive`. Each
-// still-pending timer is cleared and its timer.clear leaf emitted so the
-// run archive records the cleanup; Node timer ids are stopped and
-// callables disposed; the map is emptied so the next run starts clean.
+// still-pending timer is cleared and its `system.call name="clear*"` leaf
+// emitted so the run archive records the cleanup; Node timer ids are
+// stopped and callables disposed; the map is emptied so the next run
+// starts clean.
 function clearAllPending(
 	ctx: SandboxContext,
 	pending: Map<number, PendingTimer>,
@@ -63,7 +64,7 @@ function clearAllPending(
 	for (const [id, entry] of pending) {
 		const clearKind: ClearKind =
 			entry.kind === "setTimeout" ? "clearTimeout" : "clearInterval";
-		ctx.emit("timer.clear", clearKind, { input: { timerId: id } });
+		ctx.emit("system.call", { name: clearKind, input: { timerId: id } });
 		disposeAndStop(entry);
 	}
 	pending.clear();
@@ -77,7 +78,7 @@ function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
 		if (!entry) {
 			return;
 		}
-		ctx.request("timer", kind, { input: { timerId: numId } }, () =>
+		ctx.request("system", { name: kind, input: { timerId: numId } }, () =>
 			entry.callable(),
 		);
 		if (kind === "setTimeout") {
@@ -143,7 +144,7 @@ function setDescriptor(
 		result: Guest.number(),
 		handler: ((cb: Callable, delay: unknown) =>
 			schedule(cb, delay)) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.set" },
+		log: { event: "system.call" },
 		logInput: timerSetLogInput,
 		public: true,
 	};
@@ -166,7 +167,7 @@ function clearDescriptor(
 				cancel(n);
 			}
 		}) as unknown as GuestFunctionDescription["handler"],
-		log: { event: "timer.clear" },
+		log: { event: "system.call" },
 		public: true,
 	};
 }
@@ -188,13 +189,14 @@ function timersGuestFunctions(
  *
  * Emission shape per timer callback:
  *   setTimeout(cb, 10) from guest →
- *     timer.set {input:{delay, timerId}}                              (leaf)
+ *     system.call   {name:"setTimeout", input:{delay}}                (leaf)
  *     … delay ms later, when the Node timer fires:
- *     timer.request {input:{timerId}}                                 (open)
- *     (any events emitted inside cb nest under timer.request)
- *     timer.response {output} or timer.error {error}                  (close)
+ *     system.request  {name:"setTimeout", input:{timerId}}            (open)
+ *     (any events emitted inside cb nest under this open)
+ *     system.response {name:"setTimeout", output} or
+ *     system.error    {name:"setTimeout", error}                      (close)
  *   clearTimeout(id) from guest →
- *     timer.clear {input:{timerId}}                                   (leaf)
+ *     system.call   {name:"clearTimeout", input:{timerId}}            (leaf)
  */
 const name = "timers";
 
