@@ -30,6 +30,22 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
       - run: pnpm test:wpt
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-pnpm
+      # Cache binaries downloaded by phases that land later (PR 15: pg, PR 16:
+      # playwright). Wired up here so the cache is warm by the time those PRs
+      # need it.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/embedded-postgres
+            ~/.cache/ms-playwright
+          key: e2e-binaries-${{ runner.os }}-v1
+      - run: pnpm test:e2e
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
