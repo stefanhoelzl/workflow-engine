@@ -81,6 +81,9 @@ importers:
       '@duckdb/node-api':
         specifier: 1.5.1-r.1
         version: 1.5.1-r.1
+      '@duckdb/node-bindings':
+        specifier: 1.5.1-r.1
+        version: 1.5.1-r.1
       '@hono/node-server':
         specifier: ^1.19.12
         version: 1.19.12(hono@4.12.10)

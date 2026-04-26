@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -19,6 +20,15 @@ import {
 
 function resolveWorkerUrl(): URL {
 	const here = dirname(fileURLToPath(import.meta.url));
+	// When sandbox source is inlined into a runtime SSR bundle (the runtime's
+	// vite plugin emits a sibling `worker.js` next to `dist/main.js`), prefer
+	// that sibling. Otherwise resolve relative to sandbox's own source tree:
+	// from `<sandbox>/src/sandbox.ts` (vite-node dev) or `<sandbox>/dist/src/
+	// sandbox.js` (compiled) → `<sandbox>/dist/src/worker.js`.
+	const sibling = resolve(here, "worker.js");
+	if (existsSync(sibling)) {
+		return pathToFileURL(sibling);
+	}
 	const distSrcDir = here.includes(`${resolve("/dist/src")}`)
 		? here
 		: resolve(here, "..", "dist", "src");
