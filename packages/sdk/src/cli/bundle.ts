@@ -96,7 +96,21 @@ function manifestNeedsSealing(manifest: UnsealedManifest): boolean {
  * the deployable artifact: server's `ManifestSchema` accepts it directly.
  */
 async function bundle(options: BundleOptions): Promise<Uint8Array> {
-	const { files, manifest } = await buildWorkflows({ cwd: options.cwd });
+	// Forward `options.env` to `buildWorkflows` so the IIFE-eval VM sees the
+	// caller's env (rather than process.env) when resolving build-time
+	// `env({...})` bindings. The CLI passes nothing → falls back to
+	// process.env. The e2e test framework passes a hermetic `buildEnv`.
+	const buildEnvOverride = options.env
+		? Object.fromEntries(
+				Object.entries(options.env).filter(
+					(entry): entry is [string, string] => entry[1] !== undefined,
+				),
+			)
+		: undefined;
+	const { files, manifest } = await buildWorkflows({
+		cwd: options.cwd,
+		...(buildEnvOverride === undefined ? {} : { env: buildEnvOverride }),
+	});
 	const env =
 		options.env ??
 		// biome-ignore lint/style/noProcessEnv: bundle reads env at CLI invocation time for sealing

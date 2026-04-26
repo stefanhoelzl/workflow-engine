@@ -6,6 +6,11 @@ interface UploadFixtureOptions {
 	owner: string;
 	repo: string;
 	user: string;
+	// Hermetic env passed through to `bundle()`'s IIFE-eval VM and to its
+	// secret-binding sealing pass. Mirrors what the framework already passed
+	// to `buildFixture` so the cached build and the upload bundle agree on
+	// what env was visible at build time.
+	buildEnv?: Record<string, string>;
 }
 
 async function uploadFixture(opts: UploadFixtureOptions): Promise<void> {
@@ -15,6 +20,7 @@ async function uploadFixture(opts: UploadFixtureOptions): Promise<void> {
 		owner: opts.owner,
 		repo: opts.repo,
 		user: opts.user,
+		...(opts.buildEnv === undefined ? {} : { env: opts.buildEnv }),
 	});
 	if (result.failed > 0) {
 		throw new Error(

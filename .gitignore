@@ -3,4 +3,4 @@ dist/
 *.tsbuildinfo
 .persistence/
 scripts/.dev-imap-cert/
-packages/tests/.fixtures/
+packages/tests/.cache/

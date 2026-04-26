@@ -9,6 +9,6 @@
 		"types": ["node"]
 	},
 	"include": ["src", "test", "vitest.config.ts"],
-	"exclude": [".fixtures"],
+	"exclude": [".cache"],
 	"references": [{ "path": "../sdk" }, { "path": "../core" }]
 }

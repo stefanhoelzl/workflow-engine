@@ -45,13 +45,21 @@ PR 3 also drops `STANDARD_CRON_RE` from the manifest layer; `cron-parser` (alrea
 - [x] 5.3 Write test #19: same workflow source uploaded under three different `(owner, repo)` tuples; webhook fires against each; expect each invocation attributed to its tuple; expect events scoped correctly
 - [x] 5.4 Verify cross-tuple isolation in events
 
-## 6. (Optional) Perf PR — Fixture build cache
+## 6. PR 6 — e2e perf realignment (spawn dist + parallelism + fixture cache)
 
-- [ ] 6.1 Implement `packages/tests/src/fixtures/cache.ts`: cache key `sha256([source, name, owner, repo])`, path `node_modules/.cache/wfe-tests/<key>/`
-- [ ] 6.2 Implement `globalSetup` for the cache: compute SDK+core dist hash, compare to `.build-hash` sentinel, wipe `wfe-tests/*` and rewrite sentinel if mismatch
-- [ ] 6.3 Use `mkdtemp` + atomic `rename` for concurrent writes
-- [ ] 6.4 Verify cache hit on second test run (build time drops to ~0 for cached fixtures)
-- [ ] 6.5 Verify SDK src edit + `pnpm build` causes cache wipe and rebuild
+Perf-only PR; no behaviour change. Realigns three deviations from
+`design.md`: vite-node spawn → `node packages/runtime/dist/main.js` (now
+viable post-`6c7387fe`); `fileParallelism: false` → vitest default pool;
+adds the fixture cache the design called out as "(Optional) Perf PR".
+
+- [x] 6.1 Switch `spawn.ts` to `node packages/runtime/dist/main.js`; drop the stale vite-node comment + `RUNTIME_DEV_ENTRY` constant; add `quickjs-wasi` to `packages/runtime/package.json` so pnpm strict isolation hoists it next to `dist/worker.js`
+- [x] 6.2 Remove `fileParallelism: false` from `packages/tests/vitest.config.ts`; vitest default per-CPU fork pool now distributes the 5 test files in parallel
+- [x] 6.3 Add `env?: Record<string,string>` to `BuildWorkflowsOptions` / `build()` / `bundle()` / `upload()`; `runIifeInVmContext` falls back to `process.env` only when no override is passed (CLI behaviour preserved)
+- [x] 6.4 `describe.ts` no longer mutates `process.env`; `buildEnv` flows through `getActiveContext()` → `scenario.flushUploads` → `buildFixture` / `uploadFixture` so fixture builds see only the per-describe declared env
+- [x] 6.5 Implement `packages/tests/src/fixtures/cache.ts`: per-fixture key `sha256([sortedWorkflows{name,source}, sortedBuildEnv])` (owner/repo excluded — they don't affect the bundle); cache root at `packages/tests/.cache/wfe-tests/<key>/` (kept inside packages/tests so NodeNext walks up into `packages/tests/node_modules/@workflow-engine/sdk` for typecheck); staging via `mkdtemp` inside the cache dir + atomic `rename`
+- [x] 6.6 Implement `globalSetup` (`packages/tests/src/global-setup.ts` + `vitest.config.ts`): mtime+size manifest of `packages/sdk/dist` + `packages/core/dist` → sentinel; wipe + rewrite on mismatch; `runtime/dist` excluded so a runtime-only change doesn't invalidate fixtures
+- [x] 6.7 Update `.gitignore` (`packages/tests/.cache/`), `packages/tests/tsconfig.json` (`exclude: [".cache"]`), and `biome.jsonc` (`!packages/tests/.cache`) for the new cache location
+- [x] 6.8 Verify cold-cache `pnpm test:e2e` ≈ 11 s and warm-cache ≈ 5 s (down from 53 s); `pnpm validate` stays green (1179 tests)
 
 ## 7. PR 6 — Labels + LogStream waitFor/query + test #5 (re-upload + eviction log)
 

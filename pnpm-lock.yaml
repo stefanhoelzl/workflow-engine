@@ -132,6 +132,9 @@ importers:
       postal-mime:
         specifier: ^2.7.4
         version: 2.7.4
+      quickjs-wasi:
+        specifier: ^2.2.0
+        version: 2.2.0(patch_hash=fa11241a114784dd6e66974914f3c064196ecca4df32f079177b25b2351c4410)
       tar-stream:
         specifier: ^3.1.8
         version: 3.1.8

@@ -134,6 +134,7 @@ async function flushUploads(
 		const repo = key.slice(sep + 1);
 		const fixture = await buildFixture({
 			workflows: group.map((wf) => ({ name: wf.name, source: wf.source })),
+			buildEnv: ctx.buildEnv,
 		});
 		await uploadFixture({
 			cwd: fixture.cwd,
@@ -141,6 +142,7 @@ async function flushUploads(
 			owner,
 			repo,
 			user: DEFAULT_USER,
+			buildEnv: ctx.buildEnv,
 		});
 		for (const wf of group) {
 			state.workflows.push({ name: wf.name, sha: "", owner, repo });
