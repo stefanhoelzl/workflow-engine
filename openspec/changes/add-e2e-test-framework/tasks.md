@@ -102,9 +102,9 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 12. PR 11 — `.fetch` + test #4 (health endpoint)
 
-- [ ] 12.1 Implement `.fetch(path, opts)`: GET (default) or method specified in opts; capture status/headers/body into `state.fetches` (CapturedSeq); `as: "json"|"text"|"response"` controls body parsing (default infers from content-type)
-- [ ] 12.2 Write test #4: chain just calls `.fetch("/health")`, expects `fetches[0].status === 200` and shape matches `{eventStore: "ok", storage: "ok", version: any}`
-- [ ] 12.3 Verify health endpoint reachable after spawn
+- [x] 12.1 Implement `.fetch(path, opts)`: GET (default) or method specified in opts; capture status/headers/body into `state.fetches` (CapturedSeq); `as: "json"|"text"|"response"` controls body parsing (default infers from content-type)
+- [x] 12.2 Write test #4: chain just calls `.fetch("/health")`, expects `fetches[0].status === 200` and shape matches `{eventStore: "ok", storage: "ok", version: any}`
+- [x] 12.3 Verify health endpoint reachable after spawn
 
 ## 13. PR 12 — `.fetch` auth resolution + test #8 (cross-owner 404 isolation)
 

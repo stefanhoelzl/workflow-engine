@@ -6,6 +6,8 @@ import type { SpawnedChild } from "./spawn.js";
 import type {
 	BrowserContext,
 	EventFilter,
+	FetchOpts,
+	FetchResult,
 	HttpResponse,
 	InvocationEvent,
 	LogLine,
@@ -59,6 +61,8 @@ interface MutableState {
 	uploadLabels: Map<string, UploadEntry>;
 	responses: (HttpResponse | { error: string })[];
 	responseLabels: Map<string, HttpResponse | { error: string }>;
+	fetches: FetchResult[];
+	fetchLabels: Map<string, FetchResult>;
 	// In-flight fetch promises from fire-and-forget `.webhook` / `.manual`.
 	// Drained at each `.expect` (so the callback sees a terminal response,
 	// never a placeholder) and before each new `.webhook` (so back-to-back
@@ -77,8 +81,6 @@ function methodPr(method: string): string {
 	switch (method) {
 		case "manual":
 			return "(later)";
-		case "fetch":
-			return "11";
 		case "browser":
 			return "16";
 		default:
@@ -118,7 +120,7 @@ function freshScenarioState(
 		workflows: createCapturedSeq(state.workflows, state.workflowLabels),
 		uploads: createCapturedSeq(state.uploads, state.uploadLabels),
 		responses: createCapturedSeq(state.responses, state.responseLabels),
-		fetches: empty as ScenarioState["fetches"],
+		fetches: createCapturedSeq(state.fetches, state.fetchLabels),
 		events,
 		archives: empty as ScenarioState["archives"],
 		logs,
@@ -265,6 +267,42 @@ async function fireWebhook(
 		}
 	})();
 	state.inFlight.push(p);
+}
+
+function inferAs(contentType: string): "json" | "text" {
+	return contentType.includes("json") ? "json" : "text";
+}
+
+async function runFetch(
+	state: MutableState,
+	ctx: ScenarioRunContext,
+	path: string,
+	opts: FetchOpts,
+): Promise<void> {
+	if (opts.auth !== undefined) {
+		throw new Error(
+			"Scenario.fetch: opts.auth is not implemented in this build (PR 12)",
+		);
+	}
+	const url = `${ctx.getChild().baseUrl}${path}`;
+	const { as, label, ...init } = opts;
+	const res = await fetch(url, init as RequestInit);
+	const contentType = res.headers.get("content-type") ?? "";
+	const mode = as ?? inferAs(contentType);
+	let body: unknown;
+	if (mode === "response") {
+		body = undefined;
+	} else if (mode === "json") {
+		const text = await res.text();
+		body = text === "" ? undefined : JSON.parse(text);
+	} else {
+		body = await res.text();
+	}
+	const entry: FetchResult = { status: res.status, headers: res.headers, body };
+	state.fetches.push(entry);
+	if (label !== undefined) {
+		state.fetchLabels.set(label, entry);
+	}
 }
 
 async function awaitInFlight(state: MutableState): Promise<void> {
@@ -504,8 +542,13 @@ function createScenario(): Scenario & ScenarioInternals {
 			});
 			return scenario;
 		},
-		fetch(): Scenario {
-			return notImplemented("fetch");
+		fetch(path: string, opts?: FetchOpts) {
+			const fixed = opts ?? {};
+			steps.push(async (state, ctx) => {
+				await flushUploads(queue, state, ctx);
+				await runFetch(state, ctx, path, fixed);
+			});
+			return scenario;
 		},
 		manual(): Scenario {
 			return notImplemented("manual");
@@ -537,6 +580,8 @@ function createScenario(): Scenario & ScenarioInternals {
 				uploadLabels: new Map(),
 				responses: [],
 				responseLabels: new Map(),
+				fetches: [],
+				fetchLabels: new Map(),
 				inFlight: [],
 				invocationLabels: new Map(),
 			};
