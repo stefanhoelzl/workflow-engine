@@ -140,6 +140,7 @@ function makeDescriptor(
 interface RecordedEntry {
 	entry: TriggerEntry<ImapTriggerDescriptor>;
 	fire: ReturnType<typeof vi.fn>;
+	exception: ReturnType<typeof vi.fn>;
 }
 
 function makeEntry(
@@ -147,12 +148,30 @@ function makeEntry(
 	fireImpl: (input: unknown) => Promise<InvokeResult<unknown>>,
 ): RecordedEntry {
 	const fire = vi.fn(fireImpl);
+	const exception = vi.fn(async () => undefined);
 	const entry: TriggerEntry<ImapTriggerDescriptor> = {
 		descriptor,
 		fire,
-		exception: vi.fn(async () => undefined),
+		exception,
 	};
-	return { entry, fire };
+	return { entry, fire, exception };
+}
+
+async function waitForExceptionCount(
+	exception: ReturnType<typeof vi.fn>,
+	count: number,
+	timeoutMs = 5000,
+): Promise<void> {
+	const start = Date.now();
+	while (exception.mock.calls.length < count) {
+		if (Date.now() - start > timeoutMs) {
+			throw new Error(
+				`timeout: exception called ${exception.mock.calls.length}/${count}`,
+			);
+		}
+		// biome-ignore lint/performance/noAwaitInLoops: poll loop — sequential by intent
+		await new Promise((r) => setTimeout(r, 10));
+	}
 }
 
 async function withClient<T>(
@@ -453,7 +472,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		expect(uid1).toBe(uid2);
 	});
 
-	it("7.8 bad credentials log auth-failed without leaking user/password", async () => {
+	it("7.8 bad credentials emit trigger.exception without leaking user/password", async () => {
 		const logger = makeLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
@@ -464,41 +483,36 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
 
 		await source.reconfigure("o", "r", [rec.entry]);
-		// hoodiecrow returns generic "Command failed" on bad LOGIN — the source's
-		// classifier only labels it `auth-failed` when the error text matches
-		// `authenticationfailed`/`auth`. Either label is acceptable for this
-		// negative-credentials probe; the test asserts the warn fires AND that
-		// no credential strings leak into the structured payload.
-		await waitForLog(logger, "warn", (m) => m === "imap.connect-failed");
+		await waitForExceptionCount(rec.exception, 1);
 		await source.stop();
 
-		const calls = logger.warn.mock.calls.filter(
+		const params = rec.exception.mock.calls[0]?.[0] as {
+			name: string;
+			error: { message: string };
+			details: { stage: string; failedUids: number[] };
+		};
+		expect(params.name).toBe("imap.poll-failed");
+		expect(params.details.stage).toBe("connect");
+		expect(params.details.failedUids).toEqual([]);
+		// Credentials must never appear in the emitted payload.
+		const blob = JSON.stringify(params);
+		expect(blob).not.toContain("WRONG_SECRET");
+		// imap.connect-failed Pino log is REMOVED — assert silence.
+		const connectLogs = logger.warn.mock.calls.filter(
 			(c: unknown[]) => c[0] === "imap.connect-failed",
 		);
-		expect(calls.length).toBeGreaterThan(0);
-		const data = calls[0]?.[1] as Record<string, unknown>;
-		expect(data.host).toBe("127.0.0.1");
-		expect(data.port).toBe(server.port);
-		// Must not mention user or password values anywhere in the structured data.
-		const blob = JSON.stringify(data);
-		expect(blob).not.toContain("WRONG_SECRET");
-		// `dev` is too short and might collide; instead assert the user field
-		// is not present at all.
-		expect(data.user).toBeUndefined();
-		expect(data.password).toBeUndefined();
+		expect(connectLogs).toHaveLength(0);
 		expect(rec.fire).not.toHaveBeenCalled();
 	});
 
-	it("7.9 failing disposition logs disposition-failed and stops batch", async () => {
+	it("7.9 failing disposition emits trigger.exception(stage=disposition) and stops batch", async () => {
 		await appendMessage(server.port, "INBOX", "msgA");
 		await appendMessage(server.port, "INBOX", "msgB");
 		const logger = makeLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 		// Use an unknown IMAP verb so the disposition's raw-exec fallback path
-		// receives a `BAD` from the server. (Hoodiecrow silently returns `false`
-		// from MOVE/COPY to a nonexistent folder rather than rejecting — see
-		// inline note in test for the deviation from spec task 7.9.)
+		// receives a `BAD` from the server.
 		const rec = makeEntry(desc, async () => ({
 			ok: true,
 			output: { command: ["BOGUSVERB"] },
@@ -506,12 +520,23 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 		await source.reconfigure("o", "r", [rec.entry]);
 		await waitForFireCount(rec.fire, 1);
-		await waitForLog(logger, "warn", (m) => m === "imap.disposition-failed");
+		await waitForExceptionCount(rec.exception, 1);
 		await source.stop();
 
-		// Batch stopped after first failure: only one fire even though there
-		// were two matching UIDs.
+		const params = rec.exception.mock.calls[0]?.[0] as {
+			name: string;
+			details: { stage: string; failedUids: number[] };
+		};
+		expect(params.name).toBe("imap.poll-failed");
+		expect(params.details.stage).toBe("disposition");
+		expect(params.details.failedUids).toHaveLength(1);
+		// Batch stopped after first failure.
 		expect(rec.fire).toHaveBeenCalledTimes(1);
+		// imap.disposition-failed Pino log is REMOVED.
+		const dispLogs = logger.warn.mock.calls.filter(
+			(c: unknown[]) => c[0] === "imap.disposition-failed",
+		);
+		expect(dispLogs).toHaveLength(0);
 	});
 
 	it("7.10 next poll's batch is serial — fires sequenced, no overlap", async () => {
@@ -553,6 +578,78 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		expect(gap2).toBeGreaterThanOrEqual(SOFT_GAP_MS);
 		// Total elapsed at least 3 * 100ms.
 		expect(Date.now() - start).toBeGreaterThanOrEqual(300);
+	});
+
+	it("7.12 connect refused emits one trigger.exception(stage=connect)", async () => {
+		const logger = makeLogger();
+		const source = createImapTriggerSource({ logger });
+		// Deliberately wrong port — TCP RST.
+		const refusedPort = await freePort();
+		const desc = makeDescriptor({ port: refusedPort });
+		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
+
+		await source.reconfigure("o", "r", [rec.entry]);
+		await waitForExceptionCount(rec.exception, 1);
+		await source.stop();
+
+		expect(rec.exception).toHaveBeenCalledTimes(1);
+		const params = rec.exception.mock.calls[0]?.[0] as {
+			name: string;
+			error: { message: string };
+			details: { stage: string; failedUids: number[] };
+		};
+		expect(params.name).toBe("imap.poll-failed");
+		expect(params.details.stage).toBe("connect");
+		expect(params.details.failedUids).toEqual([]);
+		// Classification embedded in error.message text, not as a separate field.
+		expect(params.error.message).toMatch(
+			/connect-failed|tls-failed|auth-failed/,
+		);
+		expect(rec.fire).not.toHaveBeenCalled();
+		// No Pino warn for connect/search/fetch/disposition stages.
+		const warnNames = logger.warn.mock.calls.map((c: unknown[]) => c[0]);
+		expect(warnNames).not.toContain("imap.connect-failed");
+	});
+
+	it("7.13 search rejected emits one trigger.exception(stage=search)", async () => {
+		const logger = makeLogger();
+		const source = createImapTriggerSource({ logger });
+		// Hoodiecrow rejects unknown SEARCH keywords with BAD.
+		const desc = makeDescriptor({
+			port: server.port,
+			search: "BOGUSKEYWORD",
+		});
+		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
+
+		await source.reconfigure("o", "r", [rec.entry]);
+		await waitForExceptionCount(rec.exception, 1);
+		await source.stop();
+
+		const params = rec.exception.mock.calls[0]?.[0] as {
+			name: string;
+			details: { stage: string; failedUids: number[] };
+		};
+		expect(params.name).toBe("imap.poll-failed");
+		expect(params.details.stage).toBe("search");
+		expect(params.details.failedUids).toEqual([]);
+		expect(rec.fire).not.toHaveBeenCalled();
+	});
+
+	it("7.14 successful empty cycle emits no trigger.exception", async () => {
+		const logger = makeLogger();
+		const source = createImapTriggerSource({ logger });
+		const desc = makeDescriptor({ port: server.port, search: "UNSEEN" });
+		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
+
+		await source.reconfigure("o", "r", [rec.entry]);
+		// Give the cycle time to run end-to-end. INBOX is empty → no fires.
+		await new Promise((r) => setTimeout(r, 500));
+		await source.stop();
+
+		expect(rec.fire).not.toHaveBeenCalled();
+		expect(rec.exception).not.toHaveBeenCalled();
+		// No Pino warn lines either.
+		expect(logger.warn).not.toHaveBeenCalled();
 	});
 
 	it("7.11 sentinel resolution is the registry's responsibility (covered by workflow-registry.test.ts)", () => {

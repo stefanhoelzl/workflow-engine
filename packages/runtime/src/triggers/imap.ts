@@ -28,10 +28,16 @@ import type {
 //     failures (connect / TLS / auth / search / fetch). One successful
 //     batch resets cadence to `POLL_INTERVAL_MS`.
 //
-// Source-level errors (auth-failed, connect-failed, …) are routed through
-// `deps.logger` only — they do not synthesize sandbox-emitted
-// `trigger.error` events. Handler-failed events are emitted by the
-// in-sandbox `trigger` plugin via `entry.fire`'s normal path.
+// Author-fixable poll-cycle failures (connect refused, mailbox missing,
+// search rejected, fetch failed, disposition rejected) are aggregated
+// per `runPoll()` call and surfaced through `entry.exception(...)` at
+// most once per cycle as a `trigger.exception` leaf event. The IMAP
+// source never imports `EventBus`, the executor, or any stamping
+// helper — `entry.exception` is its only outbound channel for failures.
+// Engine-bug paths (the registry-built `entry.fire` closure itself
+// throws) stay log-only via `deps.logger.error("imap.fire-threw", …)`.
+// Handler-failed events are emitted by the in-sandbox `trigger` plugin
+// via `entry.fire`'s normal path.
 
 const POLL_INTERVAL_MS = 60_000;
 const BACKOFF_CAP_MINUTES = 15;
@@ -579,6 +585,21 @@ function createImapTriggerSource(
 		};
 		let client: ImapFlow | undefined;
 		let pollFailed = false;
+		// Per-cycle aggregator. `firstFatal` captures the first stage that
+		// aborts the cycle (connect / mailboxOpen / search / disposition).
+		// `failedFetchUids` accumulates per-UID fetch failures, which do
+		// NOT abort the batch; `lastFetchErr` retains the most recent
+		// fetch error message so the β.2 "fetch-only" emission has a
+		// concrete `error.message` to carry.
+		let firstFatal:
+			| {
+					readonly stage: "connect" | "mailboxOpen" | "search" | "disposition";
+					readonly failedUid?: number;
+					readonly error: { readonly message: string };
+			  }
+			| undefined;
+		const failedFetchUids: number[] = [];
+		let lastFetchErr: { readonly message: string } | undefined;
 		try {
 			client = new ImapFlow({
 				host: d.host,
@@ -592,23 +613,20 @@ function createImapTriggerSource(
 			try {
 				await client.connect();
 			} catch (err) {
-				deps.logger.warn("imap.connect-failed", {
-					...logCtx,
-					reason: classifyConnectErr(err),
-					error: errMessage(err),
-				});
+				firstFatal = {
+					stage: "connect",
+					error: { message: connectErrText(err) },
+				};
 				pollFailed = true;
 				return;
 			}
 			try {
 				await client.mailboxOpen(d.folder);
 			} catch (err) {
-				deps.logger.warn("imap.search-failed", {
-					...logCtx,
+				firstFatal = {
 					stage: "mailboxOpen",
-					folder: d.folder,
-					error: errMessage(err),
-				});
+					error: { message: errMessage(err) },
+				};
 				pollFailed = true;
 				return;
 			}
@@ -616,12 +634,10 @@ function createImapTriggerSource(
 			try {
 				uids = await execUidSearch(client, d.search);
 			} catch (err) {
-				deps.logger.warn("imap.search-failed", {
-					...logCtx,
+				firstFatal = {
 					stage: "search",
-					search: d.search,
-					error: errMessage(err),
-				});
+					error: { message: errMessage(err) },
+				};
 				pollFailed = true;
 				return;
 			}
@@ -637,20 +653,14 @@ function createImapTriggerSource(
 						uid: true,
 					});
 					if (fetched === false || !fetched.source) {
-						deps.logger.warn("imap.fetch-failed", {
-							...logCtx,
-							uid,
-							reason: "no-source",
-						});
+						failedFetchUids.push(uid);
+						lastFetchErr = { message: "no-source" };
 						continue;
 					}
 					parsedMsg = await parseRfc822(fetched.source, uid);
 				} catch (err) {
-					deps.logger.warn("imap.fetch-failed", {
-						...logCtx,
-						uid,
-						error: errMessage(err),
-					});
+					failedFetchUids.push(uid);
+					lastFetchErr = { message: errMessage(err) };
 					continue;
 				}
 				let result: { ok: true; output: unknown } | { ok: false };
@@ -659,6 +669,8 @@ function createImapTriggerSource(
 						| { ok: true; output: unknown }
 						| { ok: false };
 				} catch (err) {
+					// Engine bug: the registry-built fire closure itself threw.
+					// Stays log-only — NOT routed through entry.exception.
 					deps.logger.error("imap.fire-threw", {
 						...logCtx,
 						uid,
@@ -675,12 +687,11 @@ function createImapTriggerSource(
 				try {
 					await applyDispositions(client, dispositions);
 				} catch (err) {
-					deps.logger.warn("imap.disposition-failed", {
-						...logCtx,
-						uid,
-						commands: dispositions,
-						error: errMessage(err),
-					});
+					firstFatal = {
+						stage: "disposition",
+						failedUid: uid,
+						error: { message: errMessage(err) },
+					};
 					pollFailed = true;
 					return;
 				}
@@ -689,6 +700,34 @@ function createImapTriggerSource(
 			if (client !== undefined) {
 				try {
 					await client.logout();
+				} catch {
+					// best-effort
+				}
+			}
+			// Aggregator → at most one entry.exception per cycle. Fatal stage
+			// wins over per-UID fetch failures; a clean cycle emits nothing.
+			if (firstFatal !== undefined) {
+				const failedUids =
+					firstFatal.stage === "disposition" &&
+					firstFatal.failedUid !== undefined
+						? [firstFatal.failedUid]
+						: [];
+				try {
+					await srcEntry.entry.exception({
+						name: "imap.poll-failed",
+						error: firstFatal.error,
+						details: { stage: firstFatal.stage, failedUids },
+					});
+				} catch {
+					// best-effort: never let an emission failure crash the timer
+				}
+			} else if (failedFetchUids.length > 0) {
+				try {
+					await srcEntry.entry.exception({
+						name: "imap.poll-failed",
+						error: lastFetchErr ?? { message: "fetch failed" },
+						details: { stage: "fetch", failedUids: [...failedFetchUids] },
+					});
 				} catch {
 					// best-effort
 				}
@@ -755,6 +794,10 @@ function createImapTriggerSource(
 
 // ---------------------------------------------------------------------------
 // Helpers
+
+function connectErrText(err: unknown): string {
+	return `${classifyConnectErr(err)}: ${errMessage(err)}`;
+}
 
 function classifyConnectErr(err: unknown): string {
 	const msg = errMessage(err).toLowerCase();
