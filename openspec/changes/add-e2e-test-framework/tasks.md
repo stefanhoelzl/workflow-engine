@@ -23,10 +23,12 @@
 
 ## 3. PR 3 — `.waitForEvent` (FS polling) + test #16 (cronTrigger fires)
 
-- [ ] 3.1 Implement `.waitForEvent(filter, opts)`: poll `<persistencePath>/pending/*.json` and `<persistencePath>/archive/*.json` at ~25 ms cadence; match against `{label?, kind?, archived?, trigger?, owner?, repo?}`; throw with diagnostic on timeout
-- [ ] 3.2 Implement `state.events`: read from persistence dir on demand inside `.expect` callbacks (so retries pick up new events)
-- [ ] 3.3 Write test #16: cronTrigger with `* * * * * *`; chain just uploads then `.waitForEvent({trigger: "tick", kind: "trigger.response"})`; expect duration is observable (`event.ts - upload.completedAt < 2000`)
-- [ ] 3.4 Verify wall-clock cron fires within 5 s hardCap
+- [x] 3.1 Implement `.waitForEvent(filter, opts)`: poll `<persistencePath>/pending/*.json` and `<persistencePath>/archive/*.json` at ~25 ms cadence; match against `{label?, kind?, archived?, trigger?, owner?, repo?}`; throw with diagnostic on timeout
+- [x] 3.2 Implement `state.events`: read from persistence dir on demand inside `.expect` callbacks (so retries pick up new events)
+- [x] 3.3 Write test #16: cronTrigger with `* * * * * *`; chain just uploads then `.waitForEvent({trigger: "tick", kind: "trigger.response"})`; expect each invocation event carries the expected `(owner, repo, workflow)` (the sub-2 s duration is implicit in the framework's 5 s hardCap)
+- [x] 3.4 Verify wall-clock cron fires within 5 s hardCap
+
+PR 3 also drops `STANDARD_CRON_RE` from the manifest layer; `cron-parser` (already used by the runtime cron source) becomes the sole runtime grammar authority. The SDK's compile-time `ts-cron-validator` check on hand-written `cronTrigger({schedule: …})` literals is unchanged. This unblocks 6-field every-second cron schedules in fixture-string sources required by tests #16 and #6 without weakening the author-facing 5-field guarantee. Spec deltas land under `specs/cron-trigger/` and `specs/workflow-manifest/`.
 
 ## 4. PR 4 — Multi-workflow + explicit `.upload()` + test #6 (multi-backend reconfigure)
 

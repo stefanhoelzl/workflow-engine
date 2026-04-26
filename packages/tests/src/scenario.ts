@@ -1,9 +1,12 @@
 import { createCapturedSeq } from "./captured-seq.js";
+import { scanEvents, waitForEvent } from "./events.js";
 import { buildFixture } from "./fixtures.js";
 import type { SpawnedChild } from "./spawn.js";
 import type {
 	BrowserContext,
+	EventFilter,
 	HttpResponse,
+	InvocationEvent,
 	MockClient,
 	Scenario,
 	ScenarioState,
@@ -51,8 +54,6 @@ function methodPr(method: string): string {
 			return "(later)";
 		case "fetch":
 			return "11";
-		case "waitForEvent":
-			return "3";
 		case "sigterm":
 			return "10";
 		case "sigkill":
@@ -86,14 +87,17 @@ function throwingMockClient<T extends { ts: number; slug?: string }>(
 	};
 }
 
-function freshScenarioState(state: MutableState): ScenarioState {
+function freshScenarioState(
+	state: MutableState,
+	events: readonly InvocationEvent[],
+): ScenarioState {
 	const empty = createCapturedSeq([]);
 	return {
 		workflows: createCapturedSeq(state.workflows),
 		uploads: createCapturedSeq(state.uploads),
 		responses: createCapturedSeq(state.responses),
 		fetches: empty as ScenarioState["fetches"],
-		events: [],
+		events,
 		archives: empty as ScenarioState["archives"],
 		logs: [],
 		http: throwingMockClient("http"),
@@ -207,18 +211,19 @@ async function fireWebhook(
 
 async function runExpect(
 	state: MutableState,
+	ctx: ScenarioRunContext,
 	callback: (s: ScenarioState) => void | Promise<void>,
 	hardCap: number,
 ): Promise<void> {
 	const deadline = Date.now() + hardCap;
 	let lastErr: unknown;
-	// Retry-on-state-change: PR 1's state is fully populated at .expect() time
-	// (sync upload + webhook), so the first attempt usually wins. The retry
-	// loop is here to keep the contract for PR 3+ (FS-polled events). Run at
-	// least once even if hardCap is 0.
+	// Retry-on-state-change: events are re-scanned from the spawned child's
+	// persistence dir on every attempt, so callbacks asserting on
+	// `state.events` pick up freshly-flushed pending/archive files.
 	do {
+		const events = await scanEvents(ctx.child.persistencePath);
 		try {
-			await callback(freshScenarioState(state));
+			await callback(freshScenarioState(state, events));
 			return;
 		} catch (err) {
 			lastErr = err;
@@ -252,7 +257,7 @@ function createScenario(): Scenario & ScenarioInternals {
 		},
 		expect(callback, opts) {
 			const hardCap = opts?.hardCap ?? DEFAULT_EXPECT_HARDCAP_MS;
-			steps.push((state) => runExpect(state, callback, hardCap));
+			steps.push((state, ctx) => runExpect(state, ctx, callback, hardCap));
 			return scenario;
 		},
 		upload(): Scenario {
@@ -264,8 +269,16 @@ function createScenario(): Scenario & ScenarioInternals {
 		manual(): Scenario {
 			return notImplemented("manual");
 		},
-		waitForEvent(): Scenario {
-			return notImplemented("waitForEvent");
+		waitForEvent(filter: EventFilter, opts?: { hardCap?: number }) {
+			steps.push(async (state, ctx) => {
+				// Implicit flush so cron-only chains (no `.webhook`/`.manual`
+				// firing step before the wait) still register their workflow
+				// with the runtime — otherwise the cron source has nothing to
+				// arm and the wait would simply time out.
+				await flushUploads(queue, state, ctx);
+				await waitForEvent(ctx.child.persistencePath, filter, opts);
+			});
+			return scenario;
 		},
 		sigterm(): Scenario {
 			return notImplemented("sigterm");

@@ -266,7 +266,11 @@ describe("workflow registry", () => {
 		expect(result.ok).toBe(false);
 	});
 
-	it("rejects upload with cron trigger having a malformed schedule", async () => {
+	it("rejects upload with cron trigger having an empty schedule", async () => {
+		// Cron grammar is no longer enforced at the manifest layer; the
+		// runtime cron source's `cron-parser` is the authoritative parser
+		// (and surfaces malformed schedules via `cron.schedule-invalid`).
+		// The manifest layer still rejects an empty schedule string.
 		const logger = makeLogger();
 		registry = createWorkflowRegistry({
 			logger,
@@ -281,7 +285,7 @@ describe("workflow registry", () => {
 						{
 							name: "bad",
 							type: "cron",
-							schedule: "not-a-cron",
+							schedule: "",
 							tz: "UTC",
 							inputSchema: { type: "object" },
 							outputSchema: {},

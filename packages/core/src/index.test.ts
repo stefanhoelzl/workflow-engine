@@ -138,14 +138,31 @@ describe("ManifestSchema cron trigger", () => {
 		expect(trigger.tz).toBe("UTC");
 	});
 
-	it("rejects a malformed schedule", () => {
-		const bad = { ...validCron, schedule: "not-a-cron" };
+	it("rejects an empty schedule", () => {
+		const bad = { ...validCron, schedule: "" };
 		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
 	});
 
-	it("rejects a 6-field schedule (non-standard)", () => {
-		const bad = { ...validCron, schedule: "0 0 9 * * *" };
-		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	it("accepts a 6-field schedule (delegates parsing to cron-parser)", () => {
+		const ok = { ...validCron, schedule: "* * * * * *" };
+		const parsed = ManifestSchema.parse(base([ok]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "cron") {
+			throw new Error("expected cron");
+		}
+		expect(trigger.schedule).toBe("* * * * * *");
+	});
+
+	it("accepts an arbitrary non-empty schedule string at the manifest layer", () => {
+		// Genuinely malformed schedules surface at runtime via the cron source's
+		// `CronExpressionParser.parse` catch, not at manifest validation time.
+		const ok = { ...validCron, schedule: "not-a-cron" };
+		const parsed = ManifestSchema.parse(base([ok]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "cron") {
+			throw new Error("expected cron");
+		}
+		expect(trigger.schedule).toBe("not-a-cron");
 	});
 
 	it("rejects an unknown timezone", () => {

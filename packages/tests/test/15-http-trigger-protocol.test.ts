@@ -13,9 +13,7 @@ describe("httpTrigger protocol adapter", () => {
 			.workflow(
 				"echo",
 				`
-import {defineWorkflow, httpTrigger, z} from "@workflow-engine/sdk";
-
-export const workflow = defineWorkflow({});
+import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const echo = httpTrigger({
 	body: z.object({greet: z.string()}),
@@ -69,9 +67,7 @@ export const echo = httpTrigger({
 			.workflow(
 				"strict",
 				`
-import {defineWorkflow, httpTrigger, z} from "@workflow-engine/sdk";
-
-export const workflow = defineWorkflow({});
+import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const strict = httpTrigger({
 	body: z.object({greet: z.string()}),

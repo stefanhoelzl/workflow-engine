@@ -191,10 +191,6 @@ const httpTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
-// Standard 5-field cron grammar: each field is one or more of the allowed
-// chars (digit, `*`, `,`, `-`, `/`). Non-standard extensions (L, W, #, ?,
-// named months/days, 6-field) are rejected here.
-const STANDARD_CRON_RE = /^[0-9*,\-/]+(\s+[0-9*,\-/]+){4}$/;
 
 // `Intl.supportedValuesOf('timeZone')` returns only the "preferred" IANA zones
 // and omits aliases like `UTC`, `Etc/UTC`, `GMT`. The authoritative validator
@@ -239,9 +235,9 @@ const cronTriggerManifestSchema = z.object({
 	type: z.literal("cron"),
 	schedule: z
 		.string()
-		.refine((v) => containsSentinel(v) || STANDARD_CRON_RE.test(v), {
+		.refine((v) => containsSentinel(v) || v.trim().length > 0, {
 			error:
-				"must be a standard 5-field cron expression, or a workflow-secret reference",
+				"must be a non-empty cron expression, or a workflow-secret reference",
 		}),
 	tz: z.string().refine((v) => containsSentinel(v) || isValidTimezone(v), {
 		error: "must be a supported IANA timezone, or a workflow-secret reference",
