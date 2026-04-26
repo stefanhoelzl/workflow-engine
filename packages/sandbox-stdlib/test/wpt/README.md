@@ -17,7 +17,7 @@ pnpm test:wpt
   Runs the suite. Reads manifest + skip.ts; runs every file not matched
   by skip.ts. Pass is implicit.
   Env overrides:
-    WPT_CONCURRENCY   default max(4, cpus × 2)
+    WPT_CONCURRENCY   default max(1, cpus / 2)
 ```
 
 `pnpm test` does NOT include the WPT suite — it's separate to keep the

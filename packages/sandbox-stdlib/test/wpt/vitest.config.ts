@@ -8,7 +8,7 @@ import { WptReporter } from "./harness/wpt-reporter.js";
 // sandbox, which is too heavy for the default `pnpm test` local loop.
 //
 // Parallelism is OWNED by the runner itself (top-level-await + limitedAll
-// with WPT_CONCURRENCY = max(4, cpus × 2)), so vitest's own pool cap is
+// with WPT_CONCURRENCY = max(1, cpus / 2)), so vitest's own pool cap is
 // set conservatively — each test file does its own fan-out.
 
 const FIVE_MINUTES_MS = 5 * 60_000;

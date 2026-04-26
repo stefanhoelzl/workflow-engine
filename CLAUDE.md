@@ -10,7 +10,7 @@
 - `pnpm lint` — Biome linter
 - `pnpm check` — TypeScript type checking
 - `pnpm test` — Vitest test suite (unit + integration, excludes WPT)
-- `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`); honours `WPT_CONCURRENCY` env override (default: `max(4, cpus × 2)`)
+- `pnpm test:wpt` — WPT compliance suite (subtest-level report, separate from `pnpm test`); honours `WPT_CONCURRENCY` env override (default: `max(1, cpus / 2)`)
 - `pnpm test:wpt:refresh` — regenerate `packages/sandbox-stdlib/test/wpt/vendor/` from upstream WPT
 - `pnpm build` — Recursively runs workspace builds (`pnpm -r build`): `vite build` (runtime → `dist/main.js`, sandbox) + `tsc --build` (sdk); workflows emit per-file `workflows/dist/<name>.js` only — no `manifest.json`, no `bundle.tar.gz`. The deployable tenant tarball is produced on-demand, in memory, by `wfe upload` (which calls the internal `bundle()` to seal secrets against the server pubkey before POSTing). Per-workspace: `pnpm --filter @workflow-engine/runtime build`, `pnpm --filter @workflow-engine/sandbox build`, `pnpm --filter @workflow-engine/sdk build`.
 - `pnpm start` — `pnpm build` then `pnpm dev` (builds workspaces, then boots the dev runtime with auto-upload of `workflows/src/demo.ts`)
