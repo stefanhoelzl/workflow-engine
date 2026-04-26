@@ -76,6 +76,25 @@ describe("host-call-action plugin (§10 shape)", () => {
 		expect(() => validateAction("a", { foo: "bar" })).not.toThrow();
 	});
 
+	it("an open '{}' schema (e.g. from a schemaless action) accepts arbitrary inputs and outputs", () => {
+		const config = configFor(
+			manifestWith([{ name: "a", input: {}, output: {} }]),
+		);
+		const setup = worker(ctx, {} as DepsMap, config);
+		const validateAction = setup.exports?.validateAction as (
+			name: string,
+			input: unknown,
+		) => void;
+		const validateActionOutput = setup.exports?.validateActionOutput as (
+			name: string,
+			output: unknown,
+		) => unknown;
+		for (const value of [null, 42, "hello", [], { deeply: { nested: true } }]) {
+			expect(() => validateAction("a", value)).not.toThrow();
+			expect(validateActionOutput("a", value)).toBe(value);
+		}
+	});
+
 	it("throws ValidationError with issues + errors on schema mismatch", () => {
 		const config = configFor(
 			manifestWith([

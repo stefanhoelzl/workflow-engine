@@ -59,6 +59,15 @@ describe("brands and type guards", () => {
 		expect((a as unknown as Record<string, unknown>).handler).toBeUndefined();
 	});
 
+	it("action defaults input and output to z.any() when omitted", () => {
+		const a = action({ handler: async (x) => x, name: "anything" });
+		expect(() => a.input.parse(42)).not.toThrow();
+		expect(() => a.input.parse({ nested: { deep: true } })).not.toThrow();
+		expect(() => a.input.parse(null)).not.toThrow();
+		expect(() => a.output.parse("string")).not.toThrow();
+		expect(() => a.output.parse(undefined)).not.toThrow();
+	});
+
 	it("httpTrigger() returns a callable branded with HTTP_TRIGGER_BRAND", () => {
 		const t = httpTrigger({
 			body: z.object({}),
@@ -199,11 +208,14 @@ describe("brands and type guards", () => {
 		expect((t as unknown as Record<string, unknown>).handler).toBeUndefined();
 	});
 
-	it("manualTrigger defaults inputSchema to z.object({}) and outputSchema to z.unknown()", () => {
+	it("manualTrigger defaults inputSchema and outputSchema to z.any()", () => {
 		const t = manualTrigger({ handler: async () => {} });
-		// Defaults should parse the corresponding shapes without throwing.
+		// Defaults accept arbitrary shapes including non-object inputs.
 		expect(() => t.inputSchema.parse({})).not.toThrow();
+		expect(() => t.inputSchema.parse(42)).not.toThrow();
+		expect(() => t.inputSchema.parse("hello")).not.toThrow();
 		expect(() => t.outputSchema.parse(42)).not.toThrow();
+		expect(() => t.outputSchema.parse(null)).not.toThrow();
 	});
 
 	it("manualTrigger callable invokes the handler with the input", async () => {

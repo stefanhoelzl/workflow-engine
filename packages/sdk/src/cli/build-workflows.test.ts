@@ -316,6 +316,35 @@ describe("buildWorkflows: brand-based discovery", () => {
 		expect(bundleSrc).not.toContain("__emitEvent");
 	});
 
+	it("emits open '{}' JSON Schema when action input/output are omitted", async () => {
+		const SCHEMALESS_ACTION = `
+import { action, defineWorkflow } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const passthrough = action({
+	handler: async (x) => x,
+});
+`;
+		const { result } = await buildFixture({
+			files: { "schemaless.ts": SCHEMALESS_ACTION },
+			workflows: ["./schemaless.ts"],
+		});
+		const manifest = getManifest(result, "schemaless");
+		const action = manifest.actions[0];
+		expect(action).toBeDefined();
+		// z.any() → JSON Schema with only the $schema marker. After
+		// stripping/reading via toJSONSchema(), no `type` constraint, no
+		// `properties`, and no `required` — i.e. accepts anything.
+		const inputSchema = action?.input as Record<string, unknown>;
+		expect(inputSchema.type).toBeUndefined();
+		expect(inputSchema.properties).toBeUndefined();
+		expect(inputSchema.required).toBeUndefined();
+		const outputSchema = action?.output as Record<string, unknown>;
+		expect(outputSchema.type).toBeUndefined();
+		expect(outputSchema.properties).toBeUndefined();
+	});
+
 	it("generates JSON Schema for input, output, and trigger body", async () => {
 		const { result } = await buildFixture({
 			files: { "basic.ts": BASIC_WORKFLOW },
