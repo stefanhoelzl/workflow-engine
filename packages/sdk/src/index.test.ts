@@ -162,10 +162,10 @@ describe("brands and type guards", () => {
 		// These assignments pass through the ts-cron-validator template-literal
 		// type. `tsc --build` (run as part of `pnpm check` / `pnpm validate`)
 		// would fail if any of the `@ts-expect-error` lines compiled cleanly.
-		// @ts-expect-error "not-a-cron" is not a valid StandardCRON literal
+		// @ts-expect-error "not-a-cron" is not a valid CRON literal
 		cronTrigger({ schedule: "not-a-cron", handler: async () => {} });
-		// @ts-expect-error 6-field cron is non-standard
-		cronTrigger({ schedule: "0 0 9 * * *", handler: async () => {} });
+		// 6-field cron (seconds-prefixed) is accepted by `CRON<S>`.
+		cronTrigger({ schedule: "0 0 0 9 * *", handler: async () => {} });
 		// @ts-expect-error minute out of range
 		cronTrigger({ schedule: "60 9 * * *", handler: async () => {} });
 		// @ts-expect-error too few fields

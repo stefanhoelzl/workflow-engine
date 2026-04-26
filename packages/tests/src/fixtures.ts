@@ -6,14 +6,18 @@ import { build } from "@workflow-engine/sdk/cli";
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const FIXTURE_ROOT = join(REPO_ROOT, "packages", "tests", ".fixtures");
 
-interface BuildFixtureOptions {
+interface FixtureWorkflow {
 	name: string;
 	source: string;
 }
 
+interface BuildFixtureOptions {
+	workflows: readonly FixtureWorkflow[];
+}
+
 interface BuildFixtureResult {
 	cwd: string;
-	name: string;
+	names: readonly string[];
 }
 
 // Writes the inline workflow source to a one-off fixture project under
@@ -46,9 +50,11 @@ async function buildFixture(
 		)}\n`,
 		"utf8",
 	);
-	await writeFile(join(cwd, "src", `${opts.name}.ts`), opts.source, "utf8");
+	for (const wf of opts.workflows) {
+		await writeFile(join(cwd, "src", `${wf.name}.ts`), wf.source, "utf8");
+	}
 	await build({ cwd });
-	return { cwd, name: opts.name };
+	return { cwd, names: opts.workflows.map((w) => w.name) };
 }
 
 function sourceHash(source: string): string {

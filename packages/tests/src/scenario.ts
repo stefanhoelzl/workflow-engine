@@ -48,8 +48,6 @@ type Step = (state: MutableState, ctx: ScenarioRunContext) => Promise<void>;
 
 function methodPr(method: string): string {
 	switch (method) {
-		case "upload":
-			return "4";
 		case "manual":
 			return "(later)";
 		case "fetch":
@@ -134,18 +132,8 @@ async function flushUploads(
 		const sep = key.indexOf("/");
 		const owner = key.slice(0, sep);
 		const repo = key.slice(sep + 1);
-		if (group.length !== 1) {
-			throw new Error(
-				"PR 1 supports at most one workflow per (owner, repo); multi-workflow uploads land in PR 4",
-			);
-		}
-		const wf = group[0];
-		if (!wf) {
-			continue;
-		}
 		const fixture = await buildFixture({
-			name: wf.name,
-			source: wf.source,
+			workflows: group.map((wf) => ({ name: wf.name, source: wf.source })),
 		});
 		await uploadFixture({
 			cwd: fixture.cwd,
@@ -154,11 +142,13 @@ async function flushUploads(
 			repo,
 			user: DEFAULT_USER,
 		});
-		state.workflows.push({ name: wf.name, sha: "", owner, repo });
+		for (const wf of group) {
+			state.workflows.push({ name: wf.name, sha: "", owner, repo });
+		}
 		state.uploads.push({
 			owner,
 			repo,
-			workflows: [{ name: wf.name, sha: "" }],
+			workflows: group.map((wf) => ({ name: wf.name, sha: "" })),
 		});
 	}
 }
@@ -260,8 +250,11 @@ function createScenario(): Scenario & ScenarioInternals {
 			steps.push((state, ctx) => runExpect(state, ctx, callback, hardCap));
 			return scenario;
 		},
-		upload(): Scenario {
-			return notImplemented("upload");
+		upload(_opts?: { label?: string }) {
+			steps.push(async (state, ctx) => {
+				await flushUploads(queue, state, ctx);
+			});
+			return scenario;
 		},
 		fetch(): Scenario {
 			return notImplemented("fetch");
