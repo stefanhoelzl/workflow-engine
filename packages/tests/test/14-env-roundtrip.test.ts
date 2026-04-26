@@ -29,11 +29,9 @@ export const ping = httpTrigger({
 			.webhook("ping", { body: {} })
 			.expect((state) => {
 				expect(state.responses).toHaveLength(1);
-				const res = state.responses.byIndex(0);
-				if ("error" in res) {
-					throw new Error(`webhook errored: ${res.error}`);
-				}
-				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ g: "hello-from-cli" });
+				expect(state.responses.byIndex(0)).toMatchObject({
+					status: 200,
+					body: { g: "hello-from-cli" },
+				});
 			}));
 });

@@ -7,6 +7,7 @@ import type {
 	EventFilter,
 	HttpResponse,
 	InvocationEvent,
+	LogLine,
 	MockClient,
 	Scenario,
 	ScenarioState,
@@ -36,12 +37,16 @@ interface QueuedWorkflow {
 	source: string;
 	owner: string;
 	repo: string;
+	label?: string;
 }
 
 interface MutableState {
 	workflows: WorkflowRef[];
+	workflowLabels: Map<string, WorkflowRef>;
 	uploads: UploadEntry[];
+	uploadLabels: Map<string, UploadEntry>;
 	responses: (HttpResponse | { error: string })[];
+	responseLabels: Map<string, HttpResponse | { error: string }>;
 }
 
 type Step = (state: MutableState, ctx: ScenarioRunContext) => Promise<void>;
@@ -88,16 +93,17 @@ function throwingMockClient<T extends { ts: number; slug?: string }>(
 function freshScenarioState(
 	state: MutableState,
 	events: readonly InvocationEvent[],
+	logs: readonly LogLine[],
 ): ScenarioState {
 	const empty = createCapturedSeq([]);
 	return {
-		workflows: createCapturedSeq(state.workflows),
-		uploads: createCapturedSeq(state.uploads),
-		responses: createCapturedSeq(state.responses),
+		workflows: createCapturedSeq(state.workflows, state.workflowLabels),
+		uploads: createCapturedSeq(state.uploads, state.uploadLabels),
+		responses: createCapturedSeq(state.responses, state.responseLabels),
 		fetches: empty as ScenarioState["fetches"],
 		events,
 		archives: empty as ScenarioState["archives"],
-		logs: [],
+		logs,
 		http: throwingMockClient("http"),
 		smtp: throwingMockClient("smtp"),
 		sql: throwingMockClient("sql"),
@@ -116,6 +122,7 @@ async function flushUploads(
 	queue: QueueState,
 	state: MutableState,
 	ctx: ScenarioRunContext,
+	uploadLabel?: string,
 ): Promise<void> {
 	if (queue.pending.length === 0) {
 		return;
@@ -144,14 +151,31 @@ async function flushUploads(
 			user: DEFAULT_USER,
 			buildEnv: ctx.buildEnv,
 		});
+		const shaByName = new Map(fixture.workflows.map((w) => [w.name, w.sha]));
 		for (const wf of group) {
-			state.workflows.push({ name: wf.name, sha: "", owner, repo });
+			const ref: WorkflowRef = {
+				name: wf.name,
+				sha: shaByName.get(wf.name) ?? "",
+				owner,
+				repo,
+			};
+			state.workflows.push(ref);
+			if (wf.label !== undefined) {
+				state.workflowLabels.set(wf.label, ref);
+			}
 		}
-		state.uploads.push({
+		const entry: UploadEntry = {
 			owner,
 			repo,
-			workflows: group.map((wf) => ({ name: wf.name, sha: "" })),
-		});
+			workflows: group.map((wf) => ({
+				name: wf.name,
+				sha: shaByName.get(wf.name) ?? "",
+			})),
+		};
+		state.uploads.push(entry);
+		if (uploadLabel !== undefined) {
+			state.uploadLabels.set(uploadLabel, entry);
+		}
 	}
 }
 
@@ -187,17 +211,20 @@ async function fireWebhook(
 		}
 		init.body = JSON.stringify(opts.body);
 	}
+	let entry: HttpResponse | { error: string };
 	try {
 		const res = await fetch(url, init);
 		const ct = res.headers.get("content-type") ?? "";
 		const body: unknown = ct.includes("application/json")
 			? await res.json()
 			: await res.text();
-		state.responses.push({ status: res.status, headers: res.headers, body });
+		entry = { status: res.status, headers: res.headers, body };
 	} catch (err) {
-		state.responses.push({
-			error: err instanceof Error ? err.message : String(err),
-		});
+		entry = { error: err instanceof Error ? err.message : String(err) };
+	}
+	state.responses.push(entry);
+	if (opts.label !== undefined) {
+		state.responseLabels.set(opts.label, entry);
 	}
 }
 
@@ -215,7 +242,7 @@ async function runExpect(
 	do {
 		const events = await scanEvents(ctx.child.persistencePath);
 		try {
-			await callback(freshScenarioState(state, events));
+			await callback(freshScenarioState(state, events, ctx.child.logs));
 			return;
 		} catch (err) {
 			lastErr = err;
@@ -236,7 +263,17 @@ function createScenario(): Scenario & ScenarioInternals {
 		workflow(name: string, source: string, opts?: WorkflowOpts) {
 			const owner = opts?.owner ?? DEFAULT_OWNER;
 			const repo = opts?.repo ?? DEFAULT_REPO;
-			queue.pending.push({ name, source, owner, repo });
+			const queued: QueuedWorkflow = { name, source, owner, repo };
+			if (opts?.label !== undefined) {
+				queued.label = opts.label;
+			}
+			// Enqueue lazily so a later `.workflow(...)` call after an
+			// `.upload()` / `.webhook()` doesn't leak into an earlier upload's
+			// flush. Sequencing is decided by step order, not chain-build order.
+			steps.push(() => {
+				queue.pending.push(queued);
+				return Promise.resolve();
+			});
 			return scenario;
 		},
 		webhook(triggerName: string, opts?: WebhookOpts) {
@@ -252,9 +289,10 @@ function createScenario(): Scenario & ScenarioInternals {
 			steps.push((state, ctx) => runExpect(state, ctx, callback, hardCap));
 			return scenario;
 		},
-		upload(_opts?: { label?: string }) {
+		upload(opts?: { label?: string }) {
+			const label = opts?.label;
 			steps.push(async (state, ctx) => {
-				await flushUploads(queue, state, ctx);
+				await flushUploads(queue, state, ctx, label);
 			});
 			return scenario;
 		},
@@ -287,8 +325,11 @@ function createScenario(): Scenario & ScenarioInternals {
 		async run(ctx: ScenarioRunContext) {
 			const state: MutableState = {
 				workflows: [],
+				workflowLabels: new Map(),
 				uploads: [],
+				uploadLabels: new Map(),
 				responses: [],
+				responseLabels: new Map(),
 			};
 			for (const step of steps) {
 				await step(state, ctx);

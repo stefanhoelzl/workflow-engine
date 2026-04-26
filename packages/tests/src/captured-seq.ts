@@ -1,7 +1,5 @@
 import type { CapturedSeq } from "./types.js";
 
-// PR 1 ships the wrapper shape; `byLabel` throws "not implemented" until
-// PR 6 (when `.workflow`/`.upload`/`.fetch`/etc. accept `label`).
 function createCapturedSeq<T>(
 	items: readonly T[],
 	labelMap?: ReadonlyMap<string, T>,
@@ -22,16 +20,18 @@ function createCapturedSeq<T>(
 		},
 		enumerable: false,
 	});
+	const map = labelMap ?? new Map<string, T>();
 	Object.defineProperty(arr, "byLabel", {
 		value(name: string): T {
-			if (!labelMap) {
-				throw new Error(
-					"CapturedSeq.byLabel: not implemented in this build (PR 6)",
-				);
-			}
-			const item = labelMap.get(name);
+			const item = map.get(name);
 			if (item === undefined) {
-				throw new Error(`CapturedSeq.byLabel("${name}"): no such label`);
+				const known =
+					map.size === 0
+						? "(no labels recorded)"
+						: `known labels: ${[...map.keys()].map((k) => `"${k}"`).join(", ")}`;
+				throw new Error(
+					`CapturedSeq.byLabel("${name}"): no such label; ${known}`,
+				);
 			}
 			return item;
 		},

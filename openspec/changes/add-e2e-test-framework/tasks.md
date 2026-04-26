@@ -63,11 +63,11 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 7. PR 6 — Labels + LogStream waitFor/query + test #5 (re-upload + eviction log)
 
-- [ ] 7.1 Add `label?: string` opt to `.workflow`, `.upload`, `.fetch`, `.webhook`, `.manual`
-- [ ] 7.2 Implement `CapturedSeq.byLabel`: throw with clear error when label not found
-- [ ] 7.3 Implement `LogStream.waitFor(predicate, opts)` and `LogStream.query(predicate)` reading from the buffered pino lines
-- [ ] 7.4 Write test #5: scenario uploads `reup` with v1, webhooks, expects v1 ran; uploads `reup` with v2, webhooks, expects v2 ran AND `state.logs` contains a `sandbox evicted` line carrying v1's sha (read via `state.uploads[0].workflows[0].sha`)
-- [ ] 7.5 Verify eviction log captured and matched
+- [x] 7.1 Add `label?: string` opt to `.workflow`, `.upload`, `.fetch`, `.webhook`, `.manual`
+- [x] 7.2 Implement `CapturedSeq.byLabel`: throw with clear error when label not found
+- [x] 7.3 Implement `LogStream.waitFor(predicate, opts)` and `LogStream.query(predicate)` reading from the buffered pino lines
+- [x] 7.4 Write test #5: scenario uploads `reup` with v1, webhooks, expects v1 ran; uploads `reup` with v2, webhooks, expects v2 ran AND `state.logs` contains a `sandbox evicted` line carrying v1's sha (read via `state.uploads[0].workflows[0].sha`)
+- [x] 7.5 Verify eviction log captured and matched
 
 ## 8. PR 7 — `describe(name, {env}, body)` + test #7 (LRU eviction under count pressure)
 

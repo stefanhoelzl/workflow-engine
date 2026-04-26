@@ -73,12 +73,10 @@ describe("owner/repo scoping", () => {
 				// Each webhook produced a 200 response.
 				expect(state.responses).toHaveLength(3);
 				for (let i = 0; i < state.responses.length; i++) {
-					const res = state.responses.byIndex(i);
-					if ("error" in res) {
-						throw new Error(`webhook errored: ${res.error}`);
-					}
-					expect(res.status).toBe(200);
-					expect(res.body).toBe("pong");
+					expect(state.responses.byIndex(i)).toMatchObject({
+						status: 200,
+						body: "pong",
+					});
 				}
 
 				// Cross-tuple isolation: each tuple sees its own
@@ -92,11 +90,7 @@ describe("owner/repo scoping", () => {
 							e.repo === repo,
 					);
 					expect(responses).toHaveLength(1);
-					const ev = responses[0];
-					if (!ev) {
-						throw new Error("unreachable");
-					}
-					expect(ev.workflow).toBe("scoped");
+					expect(responses[0]).toMatchObject({ workflow: "scoped" });
 				}
 
 				// No event leaked into a tuple that didn't fire it: every
