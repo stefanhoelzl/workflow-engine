@@ -151,6 +151,8 @@ const actionManifestSchema = z.object({
 	output: jsonSchemaValidator,
 });
 
+const OWNER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
+const REPO_NAME_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 const httpTriggerManifestSchema = z.object({
@@ -530,7 +532,10 @@ export {
 	IIFE_NAMESPACE,
 	installGuestGlobals,
 	ManifestSchema,
+	OWNER_NAME_RE,
+	REPO_NAME_RE,
 	SECRETS_KEY_ID_BYTES,
 	SENTINEL_SUBSTRING_RE,
+	TRIGGER_NAME_RE,
 	z,
 };

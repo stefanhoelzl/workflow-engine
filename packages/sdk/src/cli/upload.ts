@@ -1,9 +1,8 @@
+import { OWNER_NAME_RE, REPO_NAME_RE } from "@workflow-engine/core";
 import { bundle, MissingSecretEnvError } from "./bundle.js";
 import { PublicKeyFetchError } from "./seal-http.js";
 
 const TRAILING_SLASHES = /\/+$/;
-const OWNER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
-const REPO_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 
 interface UploadOptions {
 	cwd: string;
@@ -199,13 +198,13 @@ function resolveAuth(options: UploadOptions): {
 async function upload(options: UploadOptions): Promise<UploadResult> {
 	const auth = resolveAuth(options);
 
-	if (!OWNER_RE.test(options.owner)) {
+	if (!OWNER_NAME_RE.test(options.owner)) {
 		throw new Error(
-			`owner "${options.owner}" must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}`,
+			`owner "${options.owner}" must match ${OWNER_NAME_RE.source}`,
 		);
 	}
-	if (!REPO_RE.test(options.repo)) {
-		throw new Error(`repo "${options.repo}" must match [a-zA-Z0-9._-]{1,100}`);
+	if (!REPO_NAME_RE.test(options.repo)) {
+		throw new Error(`repo "${options.repo}" must match ${REPO_NAME_RE.source}`);
 	}
 
 	let tarBytes: Uint8Array;
