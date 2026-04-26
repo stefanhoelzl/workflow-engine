@@ -486,6 +486,113 @@ describe("end-to-end event flow", () => {
 			),
 		).toBeUndefined();
 	});
+
+	// Regression: the trigger plugin's onBeforeRunStarted / onRunFinished close
+	// over the SandboxContext built at boot. After every run the sandbox swaps
+	// VMs via snapshot-restore; if the bridge those hooks emit through is not
+	// rebound, only the first run produces trigger.request / .response — every
+	// later invocation lands in pending/ forever and is invisible to the
+	// dashboard. Fire the same trigger twice and assert both invocations
+	// archive end-to-end.
+	it("re-firing the same trigger emits trigger.request/response on every invocation and archives both", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		store = await createEventStore({ persistence: { backend }, logger });
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		const sandboxFactory = createSandboxFactory({ logger });
+		const stubKeyStore = {
+			getPrimary: () => ({
+				keyId: "0000000000000000",
+				pk: new Uint8Array(32),
+				sk: new Uint8Array(32),
+			}),
+			lookup: () => undefined,
+			allKeyIds: () => ["0000000000000000"],
+		};
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 100,
+		});
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore: stubKeyStore,
+		});
+		await registry.registerOwner(
+			"acme",
+			"demo",
+			new Map([
+				["manifest.json", JSON.stringify(OWNER_MANIFEST)],
+				["demo.js", BUNDLE],
+			]),
+		);
+		const entry = registry.list("acme")[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "ping");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a ping trigger descriptor");
+		}
+
+		const r1 = await executor.invoke(
+			"acme",
+			"demo",
+			entry.workflow,
+			descriptor,
+			{ body: { msg: "first" } },
+			{ bundleSource: entry.bundleSource },
+		);
+		const r2 = await executor.invoke(
+			"acme",
+			"demo",
+			entry.workflow,
+			descriptor,
+			{ body: { msg: "second" } },
+			{ bundleSource: entry.bundleSource },
+		);
+		expect(r1.ok).toBe(true);
+		expect(r2.ok).toBe(true);
+
+		await new Promise((r) => setImmediate(r));
+
+		const triggerRows = await store
+			.query([{ owner: "acme", repo: "demo" }])
+			.where("kind", "=", "trigger.request")
+			.selectAll()
+			.execute();
+		expect(triggerRows).toHaveLength(2);
+		const ids = triggerRows.map((r) => r.id as string).sort();
+
+		const pending: string[] = [];
+		for await (const p of backend.list("pending/")) {
+			pending.push(p);
+		}
+		expect(pending).toEqual([]);
+
+		const archive: string[] = [];
+		for await (const p of backend.list("archive/")) {
+			archive.push(p);
+		}
+		expect(archive.sort()).toEqual(
+			ids.map((id) => `archive/${id}.json`).sort(),
+		);
+
+		const archives = (await Promise.all(
+			ids.map(async (id) =>
+				JSON.parse(await backend.read(`archive/${id}.json`)),
+			),
+		)) as Array<Array<{ kind: string }>>;
+		for (const archived of archives) {
+			expect(archived[0]?.kind).toBe("trigger.request");
+			expect(archived.at(-1)?.kind).toBe("trigger.response");
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

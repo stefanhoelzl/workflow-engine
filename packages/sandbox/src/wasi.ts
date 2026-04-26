@@ -1,5 +1,4 @@
 import { performance } from "node:perf_hooks";
-import type { Bridge } from "./bridge-factory.js";
 import type {
 	WasiClockArgs,
 	WasiClockResult,
@@ -29,9 +28,6 @@ interface WasiSlots {
 }
 
 interface WasiState {
-	// Populated after createBridge; the wasi factory's closures read this to
-	// emit system.call events and to gate emission on an active run context.
-	bridge: Bridge | null;
 	// Shared monotonic anchor cell — written by bridge.resetAnchor(), read by
 	// wasiClockTimeGet for the MONOTONIC branch. Seeded at worker init (before
 	// QuickJS.create) so the WASI clock returns small values during VM init,
@@ -46,7 +42,6 @@ interface WasiState {
 
 function createWasiState(): WasiState {
 	return {
-		bridge: null,
 		anchor: { ns: 0n },
 		fdLineBuffer: new Map<number, string>(),
 		slots: { clockTimeGet: null, randomGet: null, fdWrite: null },
