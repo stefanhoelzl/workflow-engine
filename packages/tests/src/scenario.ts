@@ -1,6 +1,7 @@
 import { createCapturedSeq } from "./captured-seq.js";
 import { scanEvents, waitForEvent } from "./events.js";
 import { buildFixture } from "./fixtures.js";
+import type { Marker } from "./log-stream.js";
 import type { SpawnedChild } from "./spawn.js";
 import type {
 	BrowserContext,
@@ -30,6 +31,9 @@ interface ScenarioRunContext {
 	// IIFE-eval VM). PR 1 always passes `GREETING=hello-from-cli` for the env
 	// round-trip test; later PRs may make this configurable.
 	buildEnv: Record<string, string>;
+	// Marker captured at test start; `state.logs` is sliced from here so
+	// each test only sees its own log lines (PR 8).
+	logMarker: Marker;
 }
 
 interface QueuedWorkflow {
@@ -241,8 +245,9 @@ async function runExpect(
 	// `state.events` pick up freshly-flushed pending/archive files.
 	do {
 		const events = await scanEvents(ctx.child.persistencePath);
+		const logs = ctx.child.logStream.since(ctx.logMarker);
 		try {
-			await callback(freshScenarioState(state, events, ctx.child.logs));
+			await callback(freshScenarioState(state, events, logs));
 			return;
 		} catch (err) {
 			lastErr = err;

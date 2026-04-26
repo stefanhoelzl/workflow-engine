@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createLogStream, type LogStream } from "./log-stream.js";
 import type { LogLine } from "./types.js";
 
 const READY_MSG_RE = /^Runtime listening on port (\d+)$/;
@@ -40,6 +41,7 @@ interface RuntimeChild {
 	readonly baseUrl: string;
 	readonly persistencePath: string;
 	readonly logs: readonly LogLine[];
+	readonly logStream: LogStream;
 	stop(): Promise<void>;
 }
 
@@ -206,7 +208,8 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 		await rm(persistencePath, { recursive: true, force: true });
 	}
 
-	return { baseUrl, persistencePath, logs, proc, stop };
+	const logStream = createLogStream(logs);
+	return { baseUrl, persistencePath, logs, logStream, proc, stop };
 }
 
 export type { RuntimeChild, SpawnedChild };
