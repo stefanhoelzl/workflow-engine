@@ -199,6 +199,30 @@ describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
 		expect(e).not.toHaveProperty("workflow");
 		expect(e).not.toHaveProperty("workflowSha");
 	});
+
+	// Regression guard: plugin lifecycle hooks (here, onBeforeRunStarted)
+	// close over the SandboxContext built at boot. Snapshot-restore between
+	// runs swaps the underlying QuickJS VM; if the bridge those hooks emit
+	// through is not rebound to the new VM, only the first run produces
+	// events. Repro of the multi-trigger dashboard bug where every
+	// invocation after the first lost its trigger.request/response/error.
+	it("invokes onBeforeRunStarted on every run, including after snapshot restore", async () => {
+		const sb = await sandbox({
+			source: defaultHandler("return 'ok';"),
+			plugins: [STAMP_PLUGIN],
+		});
+		const events: SandboxEvent[] = [];
+		sb.onEvent((e) => events.push(e));
+		try {
+			await sb.run("default", {});
+			await sb.run("default", {});
+			await sb.run("default", {});
+		} finally {
+			sb.dispose();
+		}
+		const pings = events.filter((e) => (e.kind as string) === "test.ping");
+		expect(pings.length).toBe(3);
+	});
 });
 
 describe("sandbox memory limit", () => {

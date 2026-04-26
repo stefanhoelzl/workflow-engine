@@ -40,7 +40,6 @@ interface RestExtractor<T> {
 // behaviour without requiring the bridge to know about run metadata.
 
 interface Bridge {
-	readonly vm: QuickJS;
 	readonly arg: {
 		readonly string: RequiredExtractor<string>;
 		readonly number: RequiredExtractor<number>;
@@ -78,7 +77,15 @@ interface Bridge {
 	resetAnchor(): void;
 	anchorNs(): bigint;
 	tsUs(): number;
-	dispose(): void;
+	// Re-point the bridge at a new VM after a snapshot restore. Resets per-run
+	// state (runActive, seq, refStack); preserves sink + anchor so plugin
+	// lifecycle hooks (which closed over this bridge at boot via
+	// SandboxContext) keep emitting against the live VM. Without this, the
+	// bridge's marshal closures would still hold the disposed VM and
+	// onBeforeRunStarted/onRunFinished emissions would silently no-op on
+	// every run after the first — see openspec note re. trigger.request
+	// missing on second-and-later runs.
+	rebind(newVm: QuickJS): void;
 }
 
 // --- Extractor construction ---
@@ -102,6 +109,7 @@ const ARG_EXTRACTORS = {
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: bridge groups VM closures, sync/async wrappers, run-active state, and event emission as one cohesive unit
 function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
+	let currentVm: QuickJS = vm;
 	let runActive = false;
 	let seq = 0;
 	const refStack: number[] = [];
@@ -117,12 +125,12 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	}
 
 	const marshal = {
-		string: (value: string) => vm.newString(value),
-		number: (value: number) => vm.newNumber(value),
-		json: (value: unknown) => vm.hostToHandle(value),
-		boolean: (value: unknown) => (value ? vm.true : vm.false),
+		string: (value: string) => currentVm.newString(value),
+		number: (value: number) => currentVm.newNumber(value),
+		json: (value: unknown) => currentVm.hostToHandle(value),
+		boolean: (value: unknown) => (value ? currentVm.true : currentVm.false),
 		// biome-ignore lint/suspicious/noConfusingVoidType: must accept void return values from impl
-		void: (_value: void) => vm.undefined,
+		void: (_value: void) => currentVm.undefined,
 	};
 
 	function emit(event: SandboxEvent): void {
@@ -165,7 +173,6 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	}
 
 	return {
-		vm,
 		arg: ARG_EXTRACTORS,
 		marshal,
 		setRunActive() {
@@ -218,8 +225,11 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 			return anchor.ns;
 		},
 		tsUs,
-		dispose() {
-			/* nothing to release — keys live in WASM, not on the host */
+		rebind(newVm: QuickJS) {
+			currentVm = newVm;
+			runActive = false;
+			seq = 0;
+			refStack.length = 0;
 		},
 	};
 }

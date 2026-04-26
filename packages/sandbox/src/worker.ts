@@ -146,7 +146,13 @@ type RunState = "ready" | "running" | "restoring" | "dead";
 
 interface SandboxState {
 	vm: QuickJS;
-	bridge: Bridge;
+	// Bridge and ctx are built once at init and survive every snapshot
+	// restore via `bridge.rebind(newVm)`. Plugin lifecycle hooks closed
+	// over `ctx` at boot — keeping the same instance across restores is
+	// what makes onBeforeRunStarted / onRunFinished emit through the live
+	// VM on every run, not just the first.
+	readonly bridge: Bridge;
+	readonly ctx: SandboxContext;
 	currentAbort: AbortController | null;
 	pluginLifecycle: PluginLifecycleState;
 	// Snapshot-restore bookkeeping. After init, the worker takes one
@@ -227,7 +233,6 @@ async function handleInit(
 		vm = await QuickJS.create(createOptions);
 
 		bridge = createBridge(vm, wasiState.anchor);
-		wasiState.bridge = bridge;
 		bridge.setSink((event) => post({ type: "event", event }));
 
 		// Phases 1a–3: plugin-boot pipeline. Performs the full
@@ -251,6 +256,7 @@ async function handleInit(
 		state = {
 			vm,
 			bridge,
+			ctx: bootResult.ctx,
 			currentAbort: null,
 			pluginLifecycle: bootResult.pluginLifecycle,
 			snapshotRef,
@@ -269,7 +275,6 @@ async function handleInit(
 		if (err instanceof JSException) {
 			err.dispose();
 		}
-		bridge?.dispose();
 		vm?.dispose();
 		post({ type: "init-error", error: serialized });
 		process.exit(0);
@@ -279,6 +284,7 @@ async function handleInit(
 interface BootPipelineResult {
 	readonly pluginLifecycle: PluginLifecycleState;
 	readonly guestFunctions: readonly GuestFunctionEntry[];
+	readonly ctx: SandboxContext;
 }
 
 async function runPluginBootPipeline(
@@ -335,31 +341,27 @@ async function runPluginBootPipeline(
 	return {
 		pluginLifecycle: { setups: phase1.setups, order: phase1.order },
 		guestFunctions,
+		ctx,
 	};
 }
 
-// Rebuild the host-side identities that are NOT captured in a quickjs-wasi
-// snapshot: a fresh Bridge bound to the restored VM, a fresh
-// SandboxContext, and host-callback registrations for every guest function
-// descriptor. Returns the new bridge + ctx so the caller can swap them
-// onto the shared state. `wasiState.bridge` is reassigned as a side effect
-// so the WASI factory's clock/random overrides route events through the
-// new bridge.
-function rebindRestoredVm(
+// Re-register host callbacks against the restored VM. The Bridge and
+// SandboxContext are reused across restores (bridge.rebind switches the
+// underlying VM in place), so plugin lifecycle hooks (which closed over the
+// boot ctx via `pluginLifecycle.setups`) keep emitting through the live
+// bridge. Only guest-function host callbacks need rebinding because they
+// are registered on a specific QuickJS instance.
+function rebindGuestCallbacks(
 	vm: QuickJS,
+	ctx: SandboxContext,
 	guestFunctions: readonly GuestFunctionEntry[],
-): { bridge: Bridge; ctx: SandboxContext } {
-	const bridge = createBridge(vm, wasiState.anchor);
-	wasiState.bridge = bridge;
-	bridge.setSink((event) => post({ type: "event", event }));
-	const ctx = createSandboxContext(bridge);
+): void {
 	for (const { descriptor } of guestFunctions) {
 		vm.registerHostCallback(
 			descriptor.name,
 			buildGuestFunctionHandler(vm, ctx, descriptor),
 		);
 	}
-	return { bridge, ctx };
 }
 
 // Kick off the async post-run restore. Returns the in-flight promise so
@@ -399,16 +401,15 @@ function startRestore(currentState: SandboxState): Promise<void> {
 			currentState.createOptions,
 		);
 		const oldVm = currentState.vm;
-		const oldBridge = currentState.bridge;
-		const { bridge: newBridge } = rebindRestoredVm(
-			newVm,
-			currentState.guestFunctions,
-		);
+		// Re-point the bridge at the restored VM in place. ctx + pluginLifecycle
+		// setups close over this same bridge instance; rebinding here is what
+		// keeps onBeforeRunStarted / onRunFinished emitting on every run, not
+		// just the first.
+		currentState.bridge.rebind(newVm);
+		rebindGuestCallbacks(newVm, currentState.ctx, currentState.guestFunctions);
 		currentState.vm = newVm;
-		currentState.bridge = newBridge;
 		currentState.runState = "ready";
 		currentState.restorePromise = null;
-		oldBridge.dispose();
 		oldVm.dispose();
 	})();
 	// Surface failures through Node's uncaught-error pathway so the worker
