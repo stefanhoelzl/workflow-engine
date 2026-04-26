@@ -7,7 +7,7 @@ import type {
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
 import { encodeSentinel, ManifestSchema, z } from "@workflow-engine/core";
-import type { StandardCRON } from "ts-cron-validator";
+import type { CRON } from "ts-cron-validator";
 // biome-ignore lint/style/noExportedImports: sendMail is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
 import { sendMail } from "./mail.js";
 // biome-ignore lint/style/noExportedImports: executeSql is re-exported from the unified @workflow-engine/sdk barrel so workflow authors get one entry point
@@ -437,7 +437,7 @@ const DEFAULT_TIME_ZONE: string = (() => {
 })();
 
 function cronTrigger<const S extends string>(config: {
-	schedule: StandardCRON<S> extends never ? never : S;
+	schedule: CRON<S> extends never ? never : S;
 	tz?: string;
 	handler: () => Promise<unknown>;
 }): CronTrigger {

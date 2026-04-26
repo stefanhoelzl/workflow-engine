@@ -191,7 +191,6 @@ const httpTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
-
 // `Intl.supportedValuesOf('timeZone')` returns only the "preferred" IANA zones
 // and omits aliases like `UTC`, `Etc/UTC`, `GMT`. The authoritative validator
 // is `new Intl.DateTimeFormat({timeZone: v})`, which accepts anything the ICU

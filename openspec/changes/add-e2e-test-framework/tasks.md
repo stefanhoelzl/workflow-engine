@@ -32,11 +32,11 @@ PR 3 also drops `STANDARD_CRON_RE` from the manifest layer; `cron-parser` (alrea
 
 ## 4. PR 4 — Multi-workflow + explicit `.upload()` + test #6 (multi-backend reconfigure)
 
-- [ ] 4.1 Allow `.workflow()` to be called multiple times before an upload; queue per `(owner, repo)` group
-- [ ] 4.2 Implement `.upload({label?})`: explicit flush of queued workflows, one upload per `(owner, repo)`; populate `state.uploads`
-- [ ] 4.3 Implement implicit upload before any fire step that needs registered workflows
-- [ ] 4.4 Write test #6: one workflow with both `httpTrigger("ping")` and `cronTrigger(every-second, "tick")`; upload once; webhook fires; waitForEvent for both `ping` and `tick` trigger.response events
-- [ ] 4.5 Verify both triggers reachable after one upload
+- [x] 4.1 Allow `.workflow()` to be called multiple times before an upload; queue per `(owner, repo)` group
+- [x] 4.2 Implement `.upload({label?})`: explicit flush of queued workflows, one upload per `(owner, repo)`; populate `state.uploads`
+- [x] 4.3 Implement implicit upload before any fire step that needs registered workflows
+- [x] 4.4 Write test #6: one workflow with both `httpTrigger("ping")` and `cronTrigger(every-second, "tick")`; upload once; webhook fires; waitForEvent for both `ping` and `tick` trigger.response events
+- [x] 4.5 Verify both triggers reachable after one upload
 
 ## 5. PR 5 — Owner/repo opts + test #19 (owner/repo scoping)
 
