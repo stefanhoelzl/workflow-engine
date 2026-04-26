@@ -228,15 +228,80 @@ const manualTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
+// Disposition envelope returned from an imap handler (and declared on
+// imapTrigger.onError). Each string in `command` is a raw IMAP command
+// suffix that the runtime passes verbatim to imapflow's connection.exec()
+// against the current IMAP session after the handler completes. Authors
+// write the full UID-scoped command (e.g. `UID STORE 42 +FLAGS (\Seen)`);
+// the runtime does not bind UIDs for them.
+const imapTriggerResultSchema = z.object({
+	command: z.array(z.string()).optional(),
+});
+
+const imapAddressSchema = z.object({
+	name: z.string().optional(),
+	address: z.string(),
+});
+
+// Parsed message payload delivered to the imap handler. Attachments are
+// base64-inline because the main/sandbox bridge is JSON-only — File/Blob
+// objects do not survive the crossing.
+const imapMessageSchema = z.object({
+	uid: z.number(),
+	messageId: z.string().optional(),
+	inReplyTo: z.string().optional(),
+	references: z.array(z.string()),
+	from: imapAddressSchema,
+	to: z.array(imapAddressSchema),
+	cc: z.array(imapAddressSchema),
+	bcc: z.array(imapAddressSchema),
+	replyTo: z.array(imapAddressSchema).optional(),
+	subject: z.string(),
+	date: z.string(),
+	text: z.string().optional(),
+	html: z.string().optional(),
+	headers: z.record(z.string(), z.array(z.string())),
+	attachments: z.array(
+		z.object({
+			filename: z.string().optional(),
+			contentType: z.string(),
+			size: z.number(),
+			contentId: z.string().optional(),
+			contentDisposition: z.enum(["inline", "attachment"]).optional(),
+			content: z.string(),
+		}),
+	),
+});
+
+const imapTriggerManifestSchema = z.object({
+	name: z.string().regex(TRIGGER_NAME_RE),
+	type: z.literal("imap"),
+	host: z.string(),
+	port: z.number(),
+	tls: z.enum(["required", "starttls", "none"]),
+	insecureSkipVerify: z.boolean(),
+	user: z.string(),
+	password: z.string(),
+	folder: z.string(),
+	search: z.string(),
+	onError: imapTriggerResultSchema,
+	inputSchema: jsonSchemaValidator,
+	outputSchema: jsonSchemaValidator,
+});
+
 const triggerManifestSchema = z.discriminatedUnion("type", [
 	httpTriggerManifestSchema,
 	cronTriggerManifestSchema,
 	manualTriggerManifestSchema,
+	imapTriggerManifestSchema,
 ]);
 
 type HttpTriggerManifest = z.infer<typeof httpTriggerManifestSchema>;
 type CronTriggerManifest = z.infer<typeof cronTriggerManifestSchema>;
 type ManualTriggerManifest = z.infer<typeof manualTriggerManifestSchema>;
+type ImapTriggerManifest = z.infer<typeof imapTriggerManifestSchema>;
+type ImapMessage = z.infer<typeof imapMessageSchema>;
+type ImapTriggerResult = z.infer<typeof imapTriggerResultSchema>;
 type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 
 const SECRETS_KEY_ID_PATTERN = /^[0-9a-f]{16}$/;
@@ -444,6 +509,9 @@ export type {
 	HttpTriggerManifest,
 	HttpTriggerPayload,
 	HttpTriggerResult,
+	ImapMessage,
+	ImapTriggerManifest,
+	ImapTriggerResult,
 	InvocationEvent,
 	InvocationEventError,
 	Manifest,

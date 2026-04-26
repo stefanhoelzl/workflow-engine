@@ -147,6 +147,8 @@ async function waitForPort(port: number, timeoutMs: number): Promise<void> {
 // precedence because the existing value is preserved.
 const DEV_SECRET_DEFAULTS: Record<string, string> = {
 	WEBHOOK_TOKEN: "dev-webhook-token",
+	IMAP_USER: "dev@localhost",
+	IMAP_PASSWORD: "devpass",
 };
 for (const [envName, fallback] of Object.entries(DEV_SECRET_DEFAULTS)) {
 	process.env[envName] ??= fallback;

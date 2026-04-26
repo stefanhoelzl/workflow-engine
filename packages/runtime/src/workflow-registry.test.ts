@@ -880,4 +880,135 @@ describe("registry — trigger-config secrets", () => {
 			registry.dispose();
 		}
 	});
+
+	// -------------------------------------------------------------------------
+	// IMAP trigger — descriptor shape + sentinel resolution for imap fields
+	// -------------------------------------------------------------------------
+
+	function imapWorkflow(opts: {
+		name: string;
+		user: string;
+		password: string;
+		secretsKeyId?: string;
+		secrets?: Record<string, string>;
+	}): WorkflowManifest {
+		const { name, user, password, secretsKeyId, secrets } = opts;
+		const wf: WorkflowManifest = {
+			name,
+			module: `${name}.js`,
+			sha: "0".repeat(64),
+			env: {},
+			actions: [],
+			triggers: [
+				{
+					name: "inbound",
+					type: "imap",
+					host: "imap.example.com",
+					port: 993,
+					tls: "required",
+					insecureSkipVerify: false,
+					user,
+					password,
+					folder: "INBOX",
+					search: "UNSEEN",
+					onError: {},
+					inputSchema: { type: "object" },
+					outputSchema: { type: "object" },
+				},
+			],
+		};
+		if (secretsKeyId && secrets) {
+			(wf as unknown as Record<string, unknown>).secretsKeyId = secretsKeyId;
+			(wf as unknown as Record<string, unknown>).secrets = secrets;
+		}
+		return wf;
+	}
+
+	it("resolves imap user + password sentinels to plaintext in descriptor", async () => {
+		const { keyStore, pk } = freshKeystore();
+		const keyId = await computeKeyIdB64(pk);
+		const workflow = imapWorkflow({
+			name: "demo",
+			user: encodeSentinel("IMAP_USER"),
+			password: encodeSentinel("IMAP_PASSWORD"),
+			secretsKeyId: keyId,
+			secrets: {
+				IMAP_USER: sealValue(pk, "dev@localhost"),
+				IMAP_PASSWORD: sealValue(pk, "devpass"),
+			},
+		});
+		const files = new Map([
+			["manifest.json", JSON.stringify({ workflows: [workflow] })],
+			["demo.js", BUNDLE_SOURCE],
+		]);
+		const logger = makeLogger();
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			keyStore,
+		});
+		try {
+			const result = await registry.registerOwner("acme", "demo", files);
+			expect(result.ok).toBe(true);
+			const entries = registry.list("acme", "demo");
+			const descriptor = entries[0]?.triggers[0];
+			if (!descriptor || descriptor.kind !== "imap") {
+				throw new Error("expected imap descriptor");
+			}
+			expect(descriptor.user).toBe("dev@localhost");
+			expect(descriptor.password).toBe("devpass");
+			// No sentinel bytes should survive into the descriptor.
+			expect(descriptor.user).not.toContain("\x00secret:");
+			expect(descriptor.password).not.toContain("\x00secret:");
+			// Non-string fields passed through unchanged.
+			expect(descriptor.host).toBe("imap.example.com");
+			expect(descriptor.port).toBe(993);
+			expect(descriptor.tls).toBe("required");
+			expect(descriptor.folder).toBe("INBOX");
+			expect(descriptor.search).toBe("UNSEEN");
+		} finally {
+			registry.dispose();
+		}
+	});
+
+	it("rejects imap manifest when the imap backend is not registered", async () => {
+		const { keyStore } = freshKeystore();
+		const workflow = imapWorkflow({
+			name: "demo",
+			user: "u",
+			password: "p",
+		});
+		const files = new Map([
+			["manifest.json", JSON.stringify({ workflows: [workflow] })],
+			["demo.js", BUNDLE_SOURCE],
+		]);
+		const logger = makeLogger();
+		// Construct a registry whose backends explicitly exclude "imap".
+		const httpBackend: import("./triggers/source.js").TriggerSource = {
+			kind: "http",
+			async start() {},
+			async stop() {},
+			async reconfigure() {
+				return { ok: true };
+			},
+		};
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			keyStore,
+			backends: [httpBackend],
+		});
+		try {
+			const result = await registry.registerOwner("acme", "demo", files);
+			expect(result.ok).toBe(false);
+			if (result.ok) {
+				throw new Error("expected failure");
+			}
+			// The error surface exposes "imap" somewhere in the message.
+			expect(JSON.stringify(result)).toContain("imap");
+			expect(registry.list("acme", "demo")).toHaveLength(0);
+		} finally {
+			registry.dispose();
+		}
+	});
 });

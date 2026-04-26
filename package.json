@@ -25,7 +25,10 @@
 		"local:destroy": "tofu -chdir=infrastructure/envs/local destroy --auto-approve; bash scripts/local-destroy.sh",
 		"upload": "pnpm --filter=workflows exec wfe upload",
 		"upload:local": "pnpm upload --url=https://localhost:8443",
-		"upload:dev": "pnpm upload --url=http://localhost:8080"
+		"upload:dev": "pnpm upload --url=http://localhost:8080",
+		"imap": "tsx scripts/imap.ts",
+		"imap:send": "tsx scripts/imap-send.ts",
+		"imap:kill": "tsx scripts/imap-kill.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.10",
@@ -34,6 +37,8 @@
 		"@types/node": "^25.5.2",
 		"@workflow-engine/sdk": "workspace:*",
 		"concurrently": "^9.2.1",
+		"hoodiecrow-imap": "^2.1.0",
+		"imapflow": "^1.3.2",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.2",
 		"vite": "^8.0.8",

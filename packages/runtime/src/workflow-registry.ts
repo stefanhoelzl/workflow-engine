@@ -4,6 +4,7 @@ import { createGunzip } from "node:zlib";
 import {
 	type CronTriggerManifest,
 	type HttpTriggerManifest,
+	type ImapTriggerManifest,
 	type Manifest,
 	ManifestSchema,
 	type ManualTriggerManifest,
@@ -15,6 +16,7 @@ import type { Executor } from "./executor/index.js";
 import type {
 	CronTriggerDescriptor,
 	HttpTriggerDescriptor,
+	ImapTriggerDescriptor,
 	ManualTriggerDescriptor,
 	TriggerDescriptor,
 } from "./executor/types.js";
@@ -145,6 +147,36 @@ function buildManualDescriptor(
 	};
 }
 
+function buildImapDescriptor(
+	workflowName: string,
+	entry: ImapTriggerManifest,
+): ImapTriggerDescriptor {
+	// `onError.command` is zod-optional (so typed `string[] | undefined`), but
+	// `ImapTriggerDescriptor.onError.command` is exactOptional; build the
+	// envelope conditionally rather than widening the descriptor type.
+	const onError: { readonly command?: readonly string[] } =
+		entry.onError.command === undefined
+			? {}
+			: { command: entry.onError.command };
+	return {
+		kind: "imap",
+		type: "imap",
+		name: entry.name,
+		workflowName,
+		host: entry.host,
+		port: entry.port,
+		tls: entry.tls,
+		insecureSkipVerify: entry.insecureSkipVerify,
+		user: entry.user,
+		password: entry.password,
+		folder: entry.folder,
+		search: entry.search,
+		onError,
+		inputSchema: entry.inputSchema as Record<string, unknown>,
+		outputSchema: entry.outputSchema as Record<string, unknown>,
+	};
+}
+
 function buildDescriptors(
 	workflow: WorkflowManifest,
 	allowedKinds: ReadonlySet<string> | undefined,
@@ -180,6 +212,8 @@ function buildDescriptors(
 			descriptor = buildCronDescriptor(workflow.name, entry);
 		} else if (entry.type === "manual") {
 			descriptor = buildManualDescriptor(workflow.name, entry);
+		} else if (entry.type === "imap") {
+			descriptor = buildImapDescriptor(workflow.name, entry);
 		} else {
 			// Shouldn't happen — allowedKinds is derived from registered backends
 			// and the parser's union covers every registered kind. Guard anyway.

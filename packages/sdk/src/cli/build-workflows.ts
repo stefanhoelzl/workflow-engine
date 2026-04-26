@@ -10,9 +10,11 @@ import {
 	type Action,
 	type CronTrigger,
 	type HttpTrigger,
+	type ImapTrigger,
 	isAction,
 	isCronTrigger,
 	isHttpTrigger,
+	isImapTrigger,
 	isManualTrigger,
 	isWorkflow,
 	type ManualTrigger,
@@ -283,19 +285,38 @@ interface ManifestManualTriggerEntry {
 	outputSchema: Record<string, unknown>;
 }
 
+interface ManifestImapTriggerEntry {
+	name: string;
+	type: "imap";
+	host: string;
+	port: number;
+	tls: "required" | "starttls" | "none";
+	insecureSkipVerify: boolean;
+	user: string;
+	password: string;
+	folder: string;
+	search: string;
+	onError: { command?: string[] };
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown>;
+}
+
 type ManifestTriggerEntry =
 	| ManifestHttpTriggerEntry
 	| ManifestCronTriggerEntry
-	| ManifestManualTriggerEntry;
+	| ManifestManualTriggerEntry
+	| ManifestImapTriggerEntry;
 
 interface DiscoveredExports {
 	workflowEntries: [string, Workflow][];
 	actionEntries: [string, Action][];
 	httpTriggerEntries: [string, HttpTrigger][];
 	cronTriggerEntries: [string, CronTrigger][];
+	imapTriggerEntries: [string, ImapTrigger][];
 	manualTriggerEntries: [string, ManualTrigger][];
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear if/else chain dispatching by trigger brand — each branch is a simple isX(value) → push; refactoring into a registry would obscure the per-kind discovery contract
 function discoverExports(
 	mod: Record<string, unknown>,
 	filestem: string,
@@ -305,6 +326,7 @@ function discoverExports(
 	const httpTriggerEntries: [string, HttpTrigger][] = [];
 	const cronTriggerEntries: [string, CronTrigger][] = [];
 	const manualTriggerEntries: [string, ManualTrigger][] = [];
+	const imapTriggerEntries: [string, ImapTrigger][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
 		if (exportName === "default" && isAction(value)) {
 			buildContext.error(
@@ -321,6 +343,8 @@ function discoverExports(
 			cronTriggerEntries.push([exportName, value]);
 		} else if (isManualTrigger(value)) {
 			manualTriggerEntries.push([exportName, value]);
+		} else if (isImapTrigger(value)) {
+			imapTriggerEntries.push([exportName, value]);
 		}
 	}
 	return {
@@ -329,6 +353,7 @@ function discoverExports(
 		httpTriggerEntries,
 		cronTriggerEntries,
 		manualTriggerEntries,
+		imapTriggerEntries,
 	};
 }
 
@@ -457,6 +482,89 @@ function cronOutputJsonSchema(): Record<string, unknown> {
 	return { $schema: JSON_SCHEMA_DRAFT };
 }
 
+function imapAddressJsonSchema(): Record<string, unknown> {
+	return {
+		type: "object",
+		properties: {
+			name: { type: "string" },
+			address: { type: "string" },
+		},
+		required: ["address"],
+		additionalProperties: false,
+	};
+}
+
+function imapInputJsonSchema(): Record<string, unknown> {
+	return {
+		$schema: JSON_SCHEMA_DRAFT,
+		type: "object",
+		properties: {
+			uid: { type: "number" },
+			messageId: { type: "string" },
+			inReplyTo: { type: "string" },
+			references: { type: "array", items: { type: "string" } },
+			from: imapAddressJsonSchema(),
+			to: { type: "array", items: imapAddressJsonSchema() },
+			cc: { type: "array", items: imapAddressJsonSchema() },
+			bcc: { type: "array", items: imapAddressJsonSchema() },
+			replyTo: { type: "array", items: imapAddressJsonSchema() },
+			subject: { type: "string" },
+			date: { type: "string" },
+			text: { type: "string" },
+			html: { type: "string" },
+			headers: {
+				type: "object",
+				additionalProperties: { type: "array", items: { type: "string" } },
+			},
+			attachments: {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						filename: { type: "string" },
+						contentType: { type: "string" },
+						size: { type: "number" },
+						contentId: { type: "string" },
+						contentDisposition: {
+							type: "string",
+							enum: ["inline", "attachment"],
+						},
+						content: { type: "string" },
+					},
+					required: ["contentType", "size", "content"],
+					additionalProperties: false,
+				},
+			},
+		},
+		required: [
+			"uid",
+			"references",
+			"from",
+			"to",
+			"cc",
+			"bcc",
+			"subject",
+			"date",
+			"headers",
+			"attachments",
+		],
+		additionalProperties: false,
+	};
+}
+
+function imapOutputJsonSchema(): Record<string, unknown> {
+	return {
+		$schema: JSON_SCHEMA_DRAFT,
+		type: "object",
+		properties: {
+			command: { type: "array", items: { type: "string" } },
+		},
+		additionalProperties: false,
+	};
+}
+
+// Zod emits `{type: "unknown"}` for z.unknown() in some configurations; mirror
+// the historical "body:{}" form for the unbodied HTTP case.
 function bodyJsonSchemaOrEmpty(
 	body: unknown,
 	label: string,
@@ -536,6 +644,42 @@ function buildCronTriggerEntry(
 	};
 }
 
+function buildImapTriggerEntry(
+	exportName: string,
+	trigger: ImapTrigger,
+	workflowName: string,
+): ManifestImapTriggerEntry {
+	if (typeof trigger !== "function") {
+		buildContext.error(
+			`Workflow "${workflowName}": imap trigger "${exportName}" is missing a handler function`,
+		);
+	}
+	if (!TRIGGER_NAME_RE.test(exportName)) {
+		buildContext.error(
+			`Workflow "${workflowName}": imap trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
+		);
+	}
+	const onError: { command?: string[] } =
+		trigger.onError && Array.isArray(trigger.onError.command)
+			? { command: [...trigger.onError.command] }
+			: {};
+	return {
+		name: exportName,
+		type: "imap",
+		host: trigger.host,
+		port: trigger.port,
+		tls: trigger.tls,
+		insecureSkipVerify: trigger.insecureSkipVerify,
+		user: trigger.user,
+		password: trigger.password,
+		folder: trigger.folder,
+		search: trigger.search,
+		onError,
+		inputSchema: imapInputJsonSchema(),
+		outputSchema: imapOutputJsonSchema(),
+	};
+}
+
 function buildManualTriggerEntry(
 	exportName: string,
 	trigger: ManualTrigger,
@@ -583,6 +727,7 @@ function buildManifestFromMod(
 		httpTriggerEntries,
 		cronTriggerEntries,
 		manualTriggerEntries,
+		imapTriggerEntries,
 	} = discoverExports(mod, filestem);
 
 	if (workflowEntries.length > 1) {
@@ -621,6 +766,7 @@ function buildManifestFromMod(
 		...manualTriggerEntries.map(([k, v]) =>
 			buildManualTriggerEntry(k, v, name),
 		),
+		...imapTriggerEntries.map(([k, v]) => buildImapTriggerEntry(k, v, name)),
 	];
 
 	const built: UnsealedWorkflowManifest = {

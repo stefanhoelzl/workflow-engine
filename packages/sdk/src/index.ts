@@ -1,6 +1,8 @@
 import type {
 	HttpTriggerPayload,
 	HttpTriggerResult,
+	ImapMessage,
+	ImapTriggerResult,
 	RuntimeWorkflow,
 } from "@workflow-engine/core";
 // biome-ignore lint/style/noExportedImports: z and ManifestSchema are re-exported for workflow authors alongside locally defined exports
@@ -50,6 +52,9 @@ const CRON_TRIGGER_BRAND: unique symbol = Symbol.for(
 );
 const MANUAL_TRIGGER_BRAND: unique symbol = Symbol.for(
 	"@workflow-engine/manual-trigger",
+);
+const IMAP_TRIGGER_BRAND: unique symbol = Symbol.for(
+	"@workflow-engine/imap-trigger",
 );
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
@@ -559,10 +564,132 @@ function isManualTrigger(value: unknown): value is ManualTrigger {
 }
 
 // ---------------------------------------------------------------------------
+// IMAP trigger
+// ---------------------------------------------------------------------------
+
+type ImapTls = "required" | "starttls" | "none";
+
+interface ImapTrigger {
+	(msg: ImapMessage): Promise<ImapTriggerResult>;
+	readonly [IMAP_TRIGGER_BRAND]: true;
+	readonly host: string;
+	readonly port: number;
+	readonly tls: ImapTls;
+	readonly insecureSkipVerify: boolean;
+	readonly user: string;
+	readonly password: string;
+	readonly folder: string;
+	readonly search: string;
+	readonly onError: ImapTriggerResult;
+	readonly inputSchema: z.ZodType;
+	readonly outputSchema: z.ZodType;
+}
+
+// Structural schema constants reused by every imapTrigger() call. Kept as
+// module-level constants (not per-call closures) so reference equality
+// holds across triggers and zod's `.parse` caches stay warm.
+const imapAddressSchema = z.object({
+	name: z.string().optional(),
+	address: z.string(),
+});
+const imapMessageSchema = z.object({
+	uid: z.number(),
+	messageId: z.string().optional(),
+	inReplyTo: z.string().optional(),
+	references: z.array(z.string()),
+	from: imapAddressSchema,
+	to: z.array(imapAddressSchema),
+	cc: z.array(imapAddressSchema),
+	bcc: z.array(imapAddressSchema),
+	replyTo: z.array(imapAddressSchema).optional(),
+	subject: z.string(),
+	date: z.string(),
+	text: z.string().optional(),
+	html: z.string().optional(),
+	headers: z.record(z.string(), z.array(z.string())),
+	attachments: z.array(
+		z.object({
+			filename: z.string().optional(),
+			contentType: z.string(),
+			size: z.number(),
+			contentId: z.string().optional(),
+			contentDisposition: z.enum(["inline", "attachment"]).optional(),
+			content: z.string(),
+		}),
+	),
+});
+const imapTriggerResultSchema = z.object({
+	command: z.array(z.string()).optional(),
+});
+
+function imapTrigger(config: {
+	host: string;
+	port: number;
+	tls?: ImapTls;
+	insecureSkipVerify?: boolean;
+	user: string;
+	password: string;
+	folder: string;
+	search: string;
+	onError?: ImapTriggerResult;
+	handler: (msg: ImapMessage) => Promise<ImapTriggerResult>;
+}): ImapTrigger {
+	if (typeof config.handler !== "function") {
+		throw new Error("imapTrigger(...) is missing a handler function");
+	}
+	const resolvedTls: ImapTls = config.tls ?? "required";
+	const resolvedInsecure = config.insecureSkipVerify ?? false;
+	const resolvedOnError: ImapTriggerResult = config.onError ?? {};
+	const handler = config.handler;
+	const callable = function callImapTrigger(
+		msg: ImapMessage,
+	): Promise<ImapTriggerResult> {
+		return handler(msg);
+	};
+	Object.defineProperty(callable, IMAP_TRIGGER_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
+	});
+	for (const [key, value] of Object.entries({
+		host: config.host,
+		port: config.port,
+		tls: resolvedTls,
+		insecureSkipVerify: resolvedInsecure,
+		user: config.user,
+		password: config.password,
+		folder: config.folder,
+		search: config.search,
+		onError: resolvedOnError,
+		inputSchema: imapMessageSchema,
+		outputSchema: imapTriggerResultSchema,
+	})) {
+		Object.defineProperty(callable, key, {
+			value,
+			enumerable: true,
+			writable: false,
+			configurable: false,
+		});
+	}
+	return callable as unknown as ImapTrigger;
+}
+
+function isImapTrigger(value: unknown): value is ImapTrigger {
+	if (value === null || value === undefined) {
+		return false;
+	}
+	if (typeof value !== "object" && typeof value !== "function") {
+		return false;
+	}
+	return (value as Record<symbol, unknown>)[IMAP_TRIGGER_BRAND] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Trigger union
 // ---------------------------------------------------------------------------
 
-type Trigger = HttpTrigger | CronTrigger | ManualTrigger;
+type Trigger = HttpTrigger | CronTrigger | ManualTrigger | ImapTrigger;
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -571,6 +698,8 @@ type Trigger = HttpTrigger | CronTrigger | ManualTrigger;
 export type {
 	HttpTriggerPayload,
 	HttpTriggerResult,
+	ImapMessage,
+	ImapTriggerResult,
 	Manifest,
 } from "@workflow-engine/core";
 export type {
@@ -599,6 +728,7 @@ export type {
 	CronTrigger,
 	EnvRef,
 	HttpTrigger,
+	ImapTrigger,
 	ManualTrigger,
 	Trigger,
 	Workflow,
@@ -613,10 +743,13 @@ export {
 	executeSql,
 	HTTP_TRIGGER_BRAND,
 	httpTrigger,
+	IMAP_TRIGGER_BRAND,
+	imapTrigger,
 	isAction,
 	isCronTrigger,
 	isEnvRef,
 	isHttpTrigger,
+	isImapTrigger,
 	isManualTrigger,
 	isSecret,
 	isWorkflow,

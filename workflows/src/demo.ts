@@ -5,6 +5,7 @@ import {
 	env,
 	executeSql,
 	httpTrigger,
+	imapTrigger,
 	manualTrigger,
 	secret,
 	sendMail,
@@ -56,6 +57,8 @@ export const workflow = defineWorkflow({
 		RNACENTRAL_DB: env({ default: "pfmegrnargs" }),
 		// biome-ignore lint/security/noSecrets: RNAcentral publishes this credential publicly; see RNACENTRAL_HOST comment above
 		RNACENTRAL_PASSWORD: env({ default: "NWDMCE5xdipIjRrp" }),
+		IMAP_USER: env({ secret: true }),
+		IMAP_PASSWORD: env({ secret: true }),
 	},
 });
 
@@ -513,3 +516,41 @@ export const fail = manualTrigger({
 	output: z.null(),
 	handler: async ({ reason }) => boom({ reason }),
 });
+
+// imapTrigger — exercises the imap source against the local hoodiecrow dev
+// server (`pnpm imap`). Credentials come from sealed `IMAP_USER` /
+// `IMAP_PASSWORD` workflow env, which the runtime registry resolves from the
+// build-time `\x00secret:NAME\x00` sentinels into plaintext before this
+// descriptor reaches the source.
+//
+// Note on `onError`: the descriptor's `onError.command` is a static string
+// array — it cannot reference `msg.uid` because the trigger config is fixed
+// at build time. The handler therefore catches `runDemo` failures internally
+// and always returns a `\\Seen` disposition for the current UID, so a
+// transient handler failure never infinite-loops the same message. `onError`
+// remains the default `{}` and only fires if the handler-wrapper itself
+// throws (which it cannot for this body).
+export const inbound = imapTrigger({
+	host: "localhost",
+	port: 3993,
+	tls: "required",
+	insecureSkipVerify: true,
+	user: workflow.env.IMAP_USER,
+	password: workflow.env.IMAP_PASSWORD,
+	folder: "INBOX",
+	search: "UNSEEN",
+	handler: async (msg) => {
+		try {
+			await runDemo({ name: msg.subject || "email" });
+		} catch (err) {
+			// biome-ignore lint/suspicious/noConsole: intentional — demo surface for handler-internal error capture; the disposition still applies so the message is not re-fired
+			console.log(
+				`inbound handler caught: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		return { command: [`UID STORE ${msg.uid} +FLAGS (\\Seen)`] };
+	},
+});
+// touch 1777132961
+// touch 1777133002067206031
+// 1777133094851549106
