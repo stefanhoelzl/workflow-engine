@@ -13,6 +13,11 @@
 			"!**/node_modules",
 			"!**/dist",
 			"!.persistence",
+			// E2E test fixtures: per-test workflow projects written to disk by
+			// `packages/tests/src/fixtures.ts`. The source strings come from
+			// inline test bodies and are linted there, not in the materialized
+			// fixture dirs.
+			"!packages/tests/.fixtures",
 			"!**/.terraform",
 			// Pre-bundled sandbox shims — checked in as plain `.js` so they can be
 			// inlined verbatim into the guest preamble. Biome's TS-oriented rules
@@ -53,7 +58,7 @@
 		{
 			// Vite/Vitest config files require default exports by convention and
 			// read environment variables during config load.
-			"includes": ["**/vite.config.ts", "vitest.config.ts"],
+			"includes": ["**/vite.config.ts", "**/vitest.config.ts"],
 			"linter": {
 				"rules": {
 					"style": {
@@ -157,6 +162,36 @@
 						"noMagicNumbers": "off",
 						"noProcessEnv": "off",
 						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
+			// E2E test framework: spawn-and-drive infrastructure that mirrors
+			// the relaxations applied to repo tooling scripts. The framework
+			// reads env vars, sequences child-process work with `await` in
+			// loops (semantically required), embeds env-var keys (PATH/HOME/
+			// PORT) as upper-case object keys when composing subprocess env,
+			// and re-exports a frozen public surface as a barrel.
+			"includes": ["packages/tests/**/*.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveCognitiveComplexity": "off",
+						"noExcessiveLinesPerFunction": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off",
+						"useTopLevelRegex": "off"
+					},
+					"style": {
+						"noDoneCallback": "off",
+						"noMagicNumbers": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					},
+					"suspicious": {
+						"noEmptyBlockStatements": "off"
 					}
 				}
 			}

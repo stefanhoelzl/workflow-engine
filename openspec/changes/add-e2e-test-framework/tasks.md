@@ -1,18 +1,18 @@
 ## 1. PR 1 — Framework MVP + test #14 (plain env round-trip)
 
-- [ ] 1.1 Create `packages/tests/` with `package.json` (private, name `@workflow-engine/tests`, deps on vitest, runtime, sdk, core), `tsconfig.json`, `vitest.config.ts` (project name `tests`, include `test/**/*.test.ts`)
-- [ ] 1.2 Add root `package.json` script `"test:e2e": "pnpm build && vitest run --project tests"`
-- [ ] 1.3 Implement `packages/tests/src/index.ts` exporting exactly `{describe, test, expect}` (expect re-exported from vitest); export the FROZEN type signatures for the entire framework surface (Scenario, ScenarioState, CapturedSeq, MockClient, BrowserContext, all opts types) so PRs 2-17 don't refactor signatures
-- [ ] 1.4 Implement `packages/tests/src/spawn.ts`: spawn child runtime, tail stdout, parse pino JSON lines, resolve when `http.listening` line appears, expose stop() + sigterm/sigkill helpers
-- [ ] 1.5 Implement `packages/tests/src/fixtures.ts`: write inline source to tmp `.ts`, run `build()` from `@workflow-engine/sdk/cli` (no cache yet), return bundle dir path
-- [ ] 1.6 Implement `packages/tests/src/upload.ts`: thin wrapper calling `upload()` from `@workflow-engine/sdk/cli`
-- [ ] 1.7 Implement `packages/tests/src/scenario.ts`: lazy chain queue, `.workflow(name, source)`, `.webhook(name, {body})`, `.expect(callback)` with retry-on-state-change + hardCap, internal `.run()`. Stub `.upload`, `.fetch`, `.manual`, `.waitForEvent`, `.sigterm`, `.sigkill`, `.browser` to throw "not implemented in this build"
-- [ ] 1.8 Implement `packages/tests/src/describe.ts` (vitest describe wrapper, manages app lifecycle, exposes app via context) and `packages/tests/src/test.ts` (vitest test wrapper, builds scenario, calls .run)
-- [ ] 1.9 Implement `CapturedSeq<T>` (readonly array + `byIndex` + `byLabel`); `byLabel` throws "not implemented" until PR 6
-- [ ] 1.10 Stub `state.workflows`, `state.uploads`, `state.fetches`, `state.events`, `state.archives`, `state.logs` as empty CapturedSeq / empty arrays; stub `state.http`, `state.smtp`, `state.sql` as MockClient placeholders that throw on any method call
-- [ ] 1.11 Write test #14 at `packages/tests/test/14-env-roundtrip.test.ts`: workflow with `wf.env.GREETING`, webhook fires, expect response body equals `{g: "hello-from-cli"}`
-- [ ] 1.12 Add new GitHub Actions job for `pnpm test:e2e`, advisory only initially (does not block merges); cache `~/.cache/embedded-postgres` and `~/.cache/ms-playwright` for later phases
-- [ ] 1.13 Verify `pnpm test:e2e` passes locally and in CI
+- [x] 1.1 Create `packages/tests/` with `package.json` (private, name `@workflow-engine/tests`, deps on vitest, runtime, sdk, core), `tsconfig.json`, `vitest.config.ts` (project name `tests`, include `test/**/*.test.ts`)
+- [x] 1.2 Add root `package.json` script `"test:e2e": "pnpm build && vitest run --project tests"`
+- [x] 1.3 Implement `packages/tests/src/index.ts` exporting exactly `{describe, test, expect}` (expect re-exported from vitest); export the FROZEN type signatures for the entire framework surface (Scenario, ScenarioState, CapturedSeq, MockClient, BrowserContext, all opts types) so PRs 2-17 don't refactor signatures
+- [x] 1.4 Implement `packages/tests/src/spawn.ts`: spawn child runtime, tail stdout, parse pino JSON lines, resolve when `http.listening` line appears, expose stop() + sigterm/sigkill helpers
+- [x] 1.5 Implement `packages/tests/src/fixtures.ts`: write inline source to tmp `.ts`, run `build()` from `@workflow-engine/sdk/cli` (no cache yet), return bundle dir path
+- [x] 1.6 Implement `packages/tests/src/upload.ts`: thin wrapper calling `upload()` from `@workflow-engine/sdk/cli`
+- [x] 1.7 Implement `packages/tests/src/scenario.ts`: lazy chain queue, `.workflow(name, source)`, `.webhook(name, {body})`, `.expect(callback)` with retry-on-state-change + hardCap, internal `.run()`. Stub `.upload`, `.fetch`, `.manual`, `.waitForEvent`, `.sigterm`, `.sigkill`, `.browser` to throw "not implemented in this build"
+- [x] 1.8 Implement `packages/tests/src/describe.ts` (vitest describe wrapper, manages app lifecycle, exposes app via context) and `packages/tests/src/test.ts` (vitest test wrapper, builds scenario, calls .run)
+- [x] 1.9 Implement `CapturedSeq<T>` (readonly array + `byIndex` + `byLabel`); `byLabel` throws "not implemented" until PR 6
+- [x] 1.10 Stub `state.workflows`, `state.uploads`, `state.fetches`, `state.events`, `state.archives`, `state.logs` as empty CapturedSeq / empty arrays; stub `state.http`, `state.smtp`, `state.sql` as MockClient placeholders that throw on any method call
+- [x] 1.11 Write test #14 at `packages/tests/test/14-env-roundtrip.test.ts`: workflow with `wf.env.GREETING`, webhook fires, expect response body equals `{g: "hello-from-cli"}`
+- [x] 1.12 Add new GitHub Actions job for `pnpm test:e2e` as a parallel job in `.github/workflows/ci.yml` (required check from PR 1, superseding the proposal's "advisory for ~one week" plan); cache `~/.cache/embedded-postgres` and `~/.cache/ms-playwright` for later phases
+- [x] 1.13 Verify `pnpm test:e2e` passes locally and in CI
 
 ## 2. PR 2 — `.webhook` body/headers/query + test #15 (httpTrigger protocol adapter)
 
@@ -147,6 +147,6 @@
 
 ## 19. CI promotion
 
-- [ ] 19.1 After PR 1 lands and ~one week of green `test:e2e` runs, promote the job to a required check on `main`
+- [x] 19.1 After PR 1 lands and ~one week of green `test:e2e` runs, promote the job to a required check on `main` (done in PR 1: the job is part of `ci.yml` from the outset, no `continue-on-error`)
 - [ ] 19.2 Update `CLAUDE.md` "Definition of Done" section pointing at `pnpm test:e2e` (separate from `pnpm validate`)
 - [ ] 19.3 Add `packages/tests/README.md` documenting the test-author surface (the three exports, the chain DSL, the no-escape-hatch rule, the slug convention, mock interaction patterns)

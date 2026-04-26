@@ -1,0 +1,22 @@
+{
+	"name": "@workflow-engine/tests",
+	"description": "End-to-end test framework for the workflow-engine runtime; spawns the assembled binary and drives it through a frozen chain DSL.",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"build": "tsc --build"
+	},
+	"dependencies": {
+		"@workflow-engine/core": "workspace:*",
+		"@workflow-engine/runtime": "workspace:*",
+		"@workflow-engine/sdk": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^6.0.2",
+		"vitest": "^4.1.4"
+	}
+}

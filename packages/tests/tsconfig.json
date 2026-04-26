@@ -1,0 +1,14 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"composite": true,
+		"declaration": true,
+		"noEmit": false,
+		"rootDir": ".",
+		"outDir": "dist",
+		"types": ["node"]
+	},
+	"include": ["src", "test", "vitest.config.ts"],
+	"exclude": [".fixtures"],
+	"references": [{ "path": "../sdk" }, { "path": "../core" }]
+}
