@@ -10,7 +10,21 @@ import {
 	findReason,
 } from "./harness/match.js";
 import { runWpt, type SubtestResult } from "./harness/runner.js";
-import skip from "./skip.js";
+import skipJson from "./skip.json" with { type: "json" };
+
+// Skip map for the WPT runner. Pass is implicit: any applicable test
+// (worker-globals-applicable per WPT META; see wpt-refresh.ts) that is NOT
+// matched by an entry here is expected to pass.
+//
+// Keys are glob patterns or file:subtest strings. Values are the human
+// reason. Most-specific match wins. There is no override mechanism — a
+// glob skip swallows every file underneath, so if you ever need a narrower
+// pass you must expand the glob into per-file entries first.
+//
+// Polyfill backlog: every reason that names a polyfill follows the
+// convention `"needs <X> polyfill"`. Reconstruct the queue with:
+//   grep '"needs .* polyfill"' skip.json
+const skip = skipJson as Record<string, string>;
 
 interface RunnableEntry {
 	scripts: string[];

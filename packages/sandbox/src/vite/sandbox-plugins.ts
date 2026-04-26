@@ -51,7 +51,7 @@ const JSON_FILE_RE = /\.json$/;
 const WEB_PLATFORM_SIDE_EFFECTS_RE =
 	/[\\/]sandbox-stdlib[\\/]src[\\/]web-platform[\\/]/;
 const SELF_INSTALLING_POLYFILLS_RE =
-	/[\\/]node_modules[\\/](?:urlpattern-polyfill|scheduler-polyfill)[\\/]/;
+	/[\\/]node_modules[\\/](?:urlpattern-polyfill|scheduler-polyfill|core-js)[\\/]/;
 
 const esbuild = ((esbuildMod as { default?: unknown }).default ??
 	esbuildMod) as (opts: Record<string, unknown>) => RollupPlugin;
@@ -177,6 +177,9 @@ function guestSyntheticEntryPlugin(
 //   • web-platform/**            — guest polyfill chain (entry.ts et al)
 //   • urlpattern-polyfill        — self-installs via its package index
 //   • scheduler-polyfill         — self-installs via its package index
+//   • core-js                    — feature-detected ES polyfills; each
+//                                  `core-js/stable/<feature>` import is a
+//                                  pure side-effect that mutates intrinsics
 //
 // Regression check: `pnpm test:wpt` loads `webPlatformPlugin.guestSource`
 // into a real QuickJS sandbox via the same `?sandbox-plugin` pipeline used

@@ -262,13 +262,32 @@ global requires adding or extending a plugin AND extending the list here.
   `DecompressionStream`, `scheduler`, `TaskController`, `TaskSignal`,
   `TaskPriorityChangeEvent`, `Observable`, `Subscriber`,
   `EventTarget.prototype.when`, the WHATWG Streams family, IndexedDB
-  family, User Timing Level 3 entries, `structuredClone` override, and
-  the fetch interfaces (`Blob`, `File`, `FormData`, `Request`, `Response`).
+  family, User Timing Level 3 entries, `structuredClone` override,
+  `URL.prototype.searchParams` accessor (live two-way bound
+  URLSearchParams; patches the WASM-ext URL constructor via a
+  construct-trap Proxy), and the fetch interfaces (`Blob`, `File`,
+  `FormData`, `Request`, `Response`).
   Pinned polyfills: `event-target-shim@^6`, `urlpattern-polyfill@10.0.0`,
   `fflate@^0.8.2`, `web-streams-polyfill@^4.2.0`, `fetch-blob@^4.0.0`,
   `formdata-polyfill@^4.0.10`, `@ungap/structured-clone@^1.3.0`,
   `fake-indexeddb@^6.2.5`, `scheduler-polyfill@^1.3.0`,
   `observable-polyfill@^0.0.29`. Version bumps require a §2 re-audit PR.
+- **core-js conformance surface** (`core-js@^3`, targeted modules
+  only): pure-JS, feature-detected ES gap fillers — Iterator helpers
+  (`Iterator.from` + `Iterator.prototype.{map,filter,take,drop,reduce,
+  toArray,forEach,some,every,find,flatMap}`), new Set methods
+  (`intersection`, `union`, `difference`, `symmetricDifference`,
+  `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`),
+  `Promise.withResolvers`, `Object.groupBy`, `Map.groupBy`,
+  `Array.fromAsync`, and `ArrayBuffer.prototype.transfer` /
+  `transferToFixedLength` / `resize`. The aggregate `core-js/stable`
+  is intentionally **not** imported: it would replace the more
+  conformant WASM-ext `URL` / `URLSearchParams` / `DOMException` and
+  the existing `urlpattern-polyfill` / `@ungap/structured-clone` /
+  `event-target.ts` shims with less-conformant pure-JS variants
+  (regresses ~98 WPT subtests, including surrogate handling). No host
+  bridges, no Node surface; lives entirely in linear memory. Version
+  bump requires a §2 re-audit PR.
 - From `fetch`: `globalThis.fetch` (WHATWG shape around the private
   dispatcher `$fetch/do`). Default implementation closes over
   `hardenedFetch` (see R-4 below).

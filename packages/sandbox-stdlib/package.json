@@ -12,6 +12,7 @@
 		"@ungap/structured-clone": "^1.3.0",
 		"@workflow-engine/core": "workspace:*",
 		"@workflow-engine/sandbox": "workspace:*",
+		"core-js": "^3.49.0",
 		"event-target-shim": "^6.0.2",
 		"fake-indexeddb": "^6.2.5",
 		"fetch-blob": "^4.0.0",
