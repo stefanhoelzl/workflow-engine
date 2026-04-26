@@ -1,5 +1,11 @@
+import { rm } from "node:fs/promises";
 import { afterAll, beforeAll, describe as vitestDescribe } from "vitest";
-import { type SpawnedChild, spawnRuntime } from "./spawn.js";
+import {
+	buildSpawnSpec,
+	type SpawnedChild,
+	type SpawnSpec,
+	spawnRuntime,
+} from "./spawn.js";
 import type { AppHandle } from "./types.js";
 
 interface DescribeOpts {
@@ -12,6 +18,7 @@ interface DescribeOpts {
 
 interface DescribeContext {
 	getChild(): SpawnedChild;
+	respawnChild(): Promise<void>;
 	getBuildEnv(): Record<string, string>;
 }
 
@@ -45,6 +52,7 @@ function describe(
 
 	vitestDescribe(name, () => {
 		let child: SpawnedChild | null = null;
+		let spec: SpawnSpec | null = null;
 		const app: AppHandle = {
 			get baseUrl(): string {
 				if (!child) {
@@ -54,18 +62,25 @@ function describe(
 			},
 		};
 
-		// `buildEnv` is hermetic: it travels via `getActiveContext()` to the
-		// scenario, which forwards it to `build({env})` and `upload({env})`.
-		// The IIFE-eval VM sees only what the describe declared — no leak of
-		// the runner's `process.env`, and no mutation of the runner.
 		beforeAll(async () => {
-			child = await spawnRuntime({ env: opts.env ?? {} });
+			spec = await buildSpawnSpec({ env: opts.env ?? {} });
+			child = await spawnRuntime(spec);
 			activeContext = {
 				getChild: () => {
 					if (!child) {
 						throw new Error("runtime not spawned");
 					}
 					return child;
+				},
+				respawnChild: async () => {
+					if (!spec) {
+						throw new Error("respawnChild: no spec available");
+					}
+					// Caller has already terminated the prior child (sigkill /
+					// sigterm step). Same SpawnSpec → same port,
+					// persistencePath, secretsKey, env → recovery sweep observes
+					// the prior pending files.
+					child = await spawnRuntime(spec);
 				},
 				getBuildEnv: () => opts.buildEnv ?? {},
 			};
@@ -76,6 +91,10 @@ function describe(
 			if (child) {
 				await child.stop();
 				child = null;
+			}
+			if (spec) {
+				await rm(spec.persistencePath, { recursive: true, force: true });
+				spec = null;
 			}
 		});
 

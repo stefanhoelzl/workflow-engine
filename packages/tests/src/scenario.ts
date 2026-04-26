@@ -1,5 +1,5 @@
 import { createCapturedSeq } from "./captured-seq.js";
-import { scanEvents, waitForEvent } from "./events.js";
+import { type InternalFilter, scanEvents, waitForEvent } from "./events.js";
 import { buildFixture } from "./fixtures.js";
 import type { Marker } from "./log-stream.js";
 import type { SpawnedChild } from "./spawn.js";
@@ -12,6 +12,7 @@ import type {
 	MockClient,
 	Scenario,
 	ScenarioState,
+	SignalOpts,
 	UploadEntry,
 	WebhookOpts,
 	WorkflowOpts,
@@ -24,16 +25,15 @@ const DEFAULT_REPO = "e2e";
 const DEFAULT_USER = "dev";
 const DEFAULT_EXPECT_HARDCAP_MS = 5000;
 const EXPECT_RETRY_INTERVAL_MS = 50;
+const POLL_INTERVAL_MS = 25;
+const DEFAULT_HARDCAP_MS = 5000;
 
 interface ScenarioRunContext {
-	child: SpawnedChild;
-	// Per-test env overrides forwarded to the fixture build (read by the
-	// IIFE-eval VM). PR 1 always passes `GREETING=hello-from-cli` for the env
-	// round-trip test; later PRs may make this configurable.
+	getChild(): SpawnedChild;
+	respawn(): Promise<void>;
 	buildEnv: Record<string, string>;
-	// Marker captured at test start; `state.logs` is sliced from here so
-	// each test only sees its own log lines (PR 8).
-	logMarker: Marker;
+	getLogMarker(): Marker;
+	resetLogMarker(): void;
 }
 
 interface QueuedWorkflow {
@@ -44,6 +44,14 @@ interface QueuedWorkflow {
 	label?: string;
 }
 
+interface InvocationLabel {
+	owner: string;
+	repo: string;
+	trigger: string;
+	preFireIds: Set<string>;
+	resolvedId?: string;
+}
+
 interface MutableState {
 	workflows: WorkflowRef[];
 	workflowLabels: Map<string, WorkflowRef>;
@@ -51,6 +59,16 @@ interface MutableState {
 	uploadLabels: Map<string, UploadEntry>;
 	responses: (HttpResponse | { error: string })[];
 	responseLabels: Map<string, HttpResponse | { error: string }>;
+	// In-flight fetch promises from fire-and-forget `.webhook` / `.manual`.
+	// Drained at each `.expect` (so the callback sees a terminal response,
+	// never a placeholder) and before each new `.webhook` (so back-to-back
+	// fires sequence cleanly without re-introducing a fully synchronous
+	// webhook semantics that would deadlock the crash-recovery test).
+	inFlight: Promise<void>[];
+	// Labeled fire registers an `InvocationLabel`. The first
+	// `.waitForEvent({label})` resolves the label to the new invocation id;
+	// subsequent waits filter by that exact id.
+	invocationLabels: Map<string, InvocationLabel>;
 }
 
 type Step = (state: MutableState, ctx: ScenarioRunContext) => Promise<void>;
@@ -63,8 +81,6 @@ function methodPr(method: string): string {
 			return "11";
 		case "sigterm":
 			return "10";
-		case "sigkill":
-			return "9";
 		case "browser":
 			return "16";
 		default:
@@ -149,7 +165,7 @@ async function flushUploads(
 		});
 		await uploadFixture({
 			cwd: fixture.cwd,
-			url: ctx.child.baseUrl,
+			url: ctx.getChild().baseUrl,
 			owner,
 			repo,
 			user: DEFAULT_USER,
@@ -200,7 +216,7 @@ async function fireWebhook(
 		);
 	}
 	const url = new URL(
-		`${ctx.child.baseUrl}/webhooks/${owner}/${repo}/${wfRef.name}/${triggerName}`,
+		`${ctx.getChild().baseUrl}/webhooks/${owner}/${repo}/${wfRef.name}/${triggerName}`,
 	);
 	if (opts.query) {
 		for (const [k, v] of Object.entries(opts.query)) {
@@ -215,21 +231,50 @@ async function fireWebhook(
 		}
 		init.body = JSON.stringify(opts.body);
 	}
-	let entry: HttpResponse | { error: string };
-	try {
-		const res = await fetch(url, init);
-		const ct = res.headers.get("content-type") ?? "";
-		const body: unknown = ct.includes("application/json")
-			? await res.json()
-			: await res.text();
-		entry = { status: res.status, headers: res.headers, body };
-	} catch (err) {
-		entry = { error: err instanceof Error ? err.message : String(err) };
-	}
-	state.responses.push(entry);
+
+	// Snapshot known invocation ids BEFORE firing so a labeled wait can
+	// distinguish this fire's invocation from any prior one.
 	if (opts.label !== undefined) {
-		state.responseLabels.set(opts.label, entry);
+		const events = await scanEvents(ctx.getChild().persistencePath);
+		state.invocationLabels.set(opts.label, {
+			owner,
+			repo,
+			trigger: triggerName,
+			preFireIds: new Set(events.map((e) => e.id)),
+		});
 	}
+
+	// Fire-and-forget per spec: kick the request off and track its promise.
+	// Destructive steps (`.sigkill`, `.sigterm`) can land on the in-flight
+	// invocation. `.expect` drains in-flight before each retry attempt.
+	const slot = state.responses.length;
+	state.responses.push({ error: "(in-flight)" });
+	const p = (async () => {
+		let entry: HttpResponse | { error: string };
+		try {
+			const res = await fetch(url, init);
+			const ct = res.headers.get("content-type") ?? "";
+			const body: unknown = ct.includes("application/json")
+				? await res.json()
+				: await res.text();
+			entry = { status: res.status, headers: res.headers, body };
+		} catch (err) {
+			entry = { error: err instanceof Error ? err.message : String(err) };
+		}
+		state.responses[slot] = entry;
+		if (opts.label !== undefined) {
+			state.responseLabels.set(opts.label, entry);
+		}
+	})();
+	state.inFlight.push(p);
+}
+
+async function awaitInFlight(state: MutableState): Promise<void> {
+	if (state.inFlight.length === 0) {
+		return;
+	}
+	const pending = state.inFlight.splice(0);
+	await Promise.allSettled(pending);
 }
 
 async function runExpect(
@@ -238,14 +283,12 @@ async function runExpect(
 	callback: (s: ScenarioState) => void | Promise<void>,
 	hardCap: number,
 ): Promise<void> {
+	await awaitInFlight(state);
 	const deadline = Date.now() + hardCap;
 	let lastErr: unknown;
-	// Retry-on-state-change: events are re-scanned from the spawned child's
-	// persistence dir on every attempt, so callbacks asserting on
-	// `state.events` pick up freshly-flushed pending/archive files.
 	do {
-		const events = await scanEvents(ctx.child.persistencePath);
-		const logs = ctx.child.logStream.since(ctx.logMarker);
+		const events = await scanEvents(ctx.getChild().persistencePath);
+		const logs = ctx.getChild().logStream.since(ctx.getLogMarker());
 		try {
 			await callback(freshScenarioState(state, events, logs));
 			return;
@@ -260,6 +303,141 @@ async function runExpect(
 	throw lastErr;
 }
 
+const TRIGGER_KINDS = new Set<string>([
+	"trigger.request",
+	"trigger.response",
+	"trigger.error",
+]);
+
+function matchesInternal(
+	event: InvocationEvent,
+	filter: InternalFilter,
+): boolean {
+	if (filter.kind !== undefined && event.kind !== filter.kind) {
+		return false;
+	}
+	if (filter.owner !== undefined && event.owner !== filter.owner) {
+		return false;
+	}
+	if (filter.repo !== undefined && event.repo !== filter.repo) {
+		return false;
+	}
+	if (filter.id !== undefined && event.id !== filter.id) {
+		return false;
+	}
+	if (filter.trigger !== undefined) {
+		if (!TRIGGER_KINDS.has(event.kind)) {
+			return false;
+		}
+		if (event.name !== filter.trigger) {
+			return false;
+		}
+	}
+	return true;
+}
+
+async function pollForLabelMatch(
+	persistencePath: string,
+	internal: InternalFilter,
+	excludeIds: Set<string>,
+	hardCap = DEFAULT_HARDCAP_MS,
+): Promise<InvocationEvent> {
+	const deadline = Date.now() + hardCap;
+	let latestEvents: InvocationEvent[] = [];
+	const archivedScope: { archived?: boolean } = {};
+	if (internal.archived !== undefined) {
+		archivedScope.archived = internal.archived;
+	}
+	while (true) {
+		latestEvents = await scanEvents(persistencePath, archivedScope);
+		const found = latestEvents.find(
+			(e) => !excludeIds.has(e.id) && matchesInternal(e, internal),
+		);
+		if (found) {
+			return found;
+		}
+		if (Date.now() >= deadline) {
+			break;
+		}
+		await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
+	}
+	const summary = latestEvents
+		.slice(0, 20)
+		.map((e) => `  - ${e.kind} name=${e.name} id=${e.id}`)
+		.join("\n");
+	throw new Error(
+		`waitForEvent timed out after ${String(hardCap)}ms\nfilter: ${JSON.stringify(
+			internal,
+		)} (excluding ${String(excludeIds.size)} pre-fire ids)\nobserved events (${String(latestEvents.length)}):\n${summary}`,
+	);
+}
+
+interface WaitForEventArgs {
+	state: MutableState;
+	ctx: ScenarioRunContext;
+	queue: QueueState;
+	filter: EventFilter;
+	opts: { hardCap?: number } | undefined;
+}
+
+async function runWaitForEvent(args: WaitForEventArgs): Promise<void> {
+	const { state, ctx, queue, filter, opts } = args;
+	await flushUploads(queue, state, ctx);
+
+	const internal: InternalFilter = { ...filter };
+
+	if (filter.label !== undefined) {
+		const entry = state.invocationLabels.get(filter.label);
+		if (!entry) {
+			throw new Error(
+				`waitForEvent: label "${filter.label}" was not registered by any prior fire step`,
+			);
+		}
+		if (entry.resolvedId === undefined) {
+			internal.owner = filter.owner ?? entry.owner;
+			internal.repo = filter.repo ?? entry.repo;
+			if (filter.trigger === undefined) {
+				internal.trigger = entry.trigger;
+			}
+			const resolved = await pollForLabelMatch(
+				ctx.getChild().persistencePath,
+				internal,
+				entry.preFireIds,
+				opts?.hardCap,
+			);
+			entry.resolvedId = resolved.id;
+			return;
+		}
+		internal.id = entry.resolvedId;
+	}
+
+	const { label: _stripped, ...rest } = internal;
+	if (_stripped !== undefined) {
+		// label was already resolved into rest.id above; strip the public
+		// field from what we hand to waitForEvent.
+	}
+	await waitForEvent(ctx.getChild().persistencePath, rest, opts);
+}
+
+async function runSigkill(
+	state: MutableState,
+	ctx: ScenarioRunContext,
+	opts: SignalOpts,
+): Promise<void> {
+	const child = ctx.getChild();
+	const wait = child.exited();
+	child.signal("SIGKILL");
+	await wait;
+	// In-flight fetches still attached to the dead socket reject (ECONNRESET).
+	// Drain them so they don't leak as unhandled rejections; their entries
+	// land as `{error: ...}` in `state.responses`.
+	await awaitInFlight(state);
+	if (opts.restart === true) {
+		await ctx.respawn();
+		ctx.resetLogMarker();
+	}
+}
+
 function createScenario(): Scenario & ScenarioInternals {
 	const steps: Step[] = [];
 	const queue: QueueState = { pending: [] };
@@ -272,9 +450,6 @@ function createScenario(): Scenario & ScenarioInternals {
 			if (opts?.label !== undefined) {
 				queued.label = opts.label;
 			}
-			// Enqueue lazily so a later `.workflow(...)` call after an
-			// `.upload()` / `.webhook()` doesn't leak into an earlier upload's
-			// flush. Sequencing is decided by step order, not chain-build order.
 			steps.push(() => {
 				queue.pending.push(queued);
 				return Promise.resolve();
@@ -284,6 +459,12 @@ function createScenario(): Scenario & ScenarioInternals {
 		webhook(triggerName: string, opts?: WebhookOpts) {
 			const fixedOpts = opts ?? {};
 			steps.push(async (state, ctx) => {
+				// Sequence fires: each `.webhook` waits for any prior in-flight
+				// fire to settle before issuing its own request. This makes
+				// back-to-back `.webhook(v1).webhook(v2)` behave intuitively
+				// (v1 completes before v2 starts) without reintroducing fully
+				// synchronous webhooks (which would deadlock crash-recovery).
+				await awaitInFlight(state);
 				await flushUploads(queue, state, ctx);
 				await fireWebhook(state, ctx, triggerName, fixedOpts);
 			});
@@ -308,21 +489,18 @@ function createScenario(): Scenario & ScenarioInternals {
 			return notImplemented("manual");
 		},
 		waitForEvent(filter: EventFilter, opts?: { hardCap?: number }) {
-			steps.push(async (state, ctx) => {
-				// Implicit flush so cron-only chains (no `.webhook`/`.manual`
-				// firing step before the wait) still register their workflow
-				// with the runtime — otherwise the cron source has nothing to
-				// arm and the wait would simply time out.
-				await flushUploads(queue, state, ctx);
-				await waitForEvent(ctx.child.persistencePath, filter, opts);
-			});
+			steps.push((state, ctx) =>
+				runWaitForEvent({ state, ctx, queue, filter, opts }),
+			);
 			return scenario;
 		},
 		sigterm(): Scenario {
 			return notImplemented("sigterm");
 		},
-		sigkill(): Scenario {
-			return notImplemented("sigkill");
+		sigkill(opts?: SignalOpts) {
+			const fixed = opts ?? {};
+			steps.push((state, ctx) => runSigkill(state, ctx, fixed));
+			return scenario;
 		},
 		browser(_cb: (c: BrowserContext) => Promise<void>): Scenario {
 			return notImplemented("browser");
@@ -335,9 +513,15 @@ function createScenario(): Scenario & ScenarioInternals {
 				uploadLabels: new Map(),
 				responses: [],
 				responseLabels: new Map(),
+				inFlight: [],
+				invocationLabels: new Map(),
 			};
-			for (const step of steps) {
-				await step(state, ctx);
+			try {
+				for (const step of steps) {
+					await step(state, ctx);
+				}
+			} finally {
+				await awaitInFlight(state);
 			}
 		},
 	};

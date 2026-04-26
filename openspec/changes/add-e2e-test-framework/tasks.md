@@ -85,11 +85,11 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 10. PR 9 — `.sigkill` + restart + test #2 (crash recovery)
 
-- [ ] 10.1 Implement `.sigkill(opts)`: send SIGKILL to child, await `exit` event
-- [ ] 10.2 Implement `{restart: true}`: respawn against same `PERSISTENCE_PATH` and other env from original spawn; await `http.listening` of the new child
-- [ ] 10.3 Write test #2: workflow with manualTrigger that sleeps via setTimeout 5s; chain fires it (labeled), waitForEvent `{label, archived: false}` (pending file landed), sigkill with restart, waitForEvent `{label, archived: true}`, expect events contains a `trigger.error` with `error.kind: "engine_crashed"`
-- [ ] 10.4 Verify the action does NOT complete naturally (would be a test-bug-detector — handler throws after sleep)
-- [ ] 10.5 Verify recover() sweep produces engine_crashed on respawn
+- [x] 10.1 Implement `.sigkill(opts)`: send SIGKILL to child, await `exit` event
+- [x] 10.2 Implement `{restart: true}`: respawn against same `PERSISTENCE_PATH` and other env from original spawn; await `http.listening` of the new child
+- [x] 10.3 Write test #2: workflow with manualTrigger that sleeps via setTimeout 5s; chain fires it (labeled), waitForEvent `{label, archived: false}` (pending file landed), sigkill with restart, waitForEvent `{label, archived: true}`, expect events contains a `trigger.error` with `error.kind: "engine_crashed"` (implemented with httpTrigger + fire-and-forget webhook since `.manual` is not yet wired; the invariant — slow handler + sigkill → engine_crashed — is identical)
+- [x] 10.4 Verify the action does NOT complete naturally (would be a test-bug-detector — handler throws after sleep)
+- [x] 10.5 Verify recover() sweep produces engine_crashed on respawn
 
 ## 11. PR 10 — `.sigterm` + `shutdown.complete` runtime line + test #3 (SIGTERM drain)
 
