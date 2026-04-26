@@ -93,12 +93,12 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 11. PR 10 — `.sigterm` + `shutdown.complete` runtime line + test #3 (SIGTERM drain)
 
-- [ ] 11.1 Add `runtimeLogger.info("shutdown.complete", {code, durationMs})` to `packages/runtime/src/main.ts` shutdown handler, after Promise.allSettled of service stops, before `process.exit(code)`
-- [ ] 11.2 Update `service-lifecycle/spec.md` with the new requirement (already drafted in the change's spec delta — copy at archive time)
-- [ ] 11.3 Implement `.sigterm(opts)`: send SIGTERM, await `shutdown.complete` log line on stdout before child exits
-- [ ] 11.4 Implement `.sigterm({restart: true})`: respawn after graceful shutdown
-- [ ] 11.5 Write test #3: workflow with manualTrigger that sleeps 500ms then returns; chain fires, waitForEvent `{label, archived: false}`, sigterm with restart, waitForEvent `{label, archived: true, kind: "trigger.response"}`; expect no `engine_crashed` and archive contains the success output
-- [ ] 11.6 Verify in-flight invocation drained to a successful archive
+- [x] 11.1 Add `runtimeLogger.info("shutdown.complete", {code, durationMs})` to `packages/runtime/src/main.ts` shutdown handler, after Promise.allSettled of service stops, before `process.exit(code)`
+- [x] 11.2 Update `service-lifecycle/spec.md` with the new requirement (already drafted in the change's spec delta — copy at archive time)
+- [x] 11.3 Implement `.sigterm(opts)`: send SIGTERM, await `shutdown.complete` log line on stdout before child exits
+- [x] 11.4 Implement `.sigterm({restart: true})`: respawn after graceful shutdown
+- [x] 11.5 Write test #3: workflow with manualTrigger that sleeps 500ms then returns; chain fires, waitForEvent `{label, archived: false}`, sigterm with restart, waitForEvent `{label, archived: true, kind: "trigger.response"}`; expect no `engine_crashed` and archive contains the success output
+- [x] 11.6 Verify in-flight invocation drained to a successful archive
 
 ## 12. PR 11 — `.fetch` + test #4 (health endpoint)
 

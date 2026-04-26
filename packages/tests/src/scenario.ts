@@ -79,8 +79,6 @@ function methodPr(method: string): string {
 			return "(later)";
 		case "fetch":
 			return "11";
-		case "sigterm":
-			return "10";
 		case "browser":
 			return "16";
 		default:
@@ -438,6 +436,30 @@ async function runSigkill(
 	}
 }
 
+const SIGTERM_DRAIN_HARDCAP_MS = 15_000;
+
+async function runSigterm(
+	state: MutableState,
+	ctx: ScenarioRunContext,
+	opts: SignalOpts,
+): Promise<void> {
+	const child = ctx.getChild();
+	const exitedWait = child.exited();
+	child.signal("SIGTERM");
+	// `shutdown.complete` is the runtime's last log line before exit; awaiting
+	// it as the synchronization signal that all in-flight invocations have
+	// drained (see openspec service-lifecycle spec).
+	await child.logStream.waitFor((l) => l.msg === "shutdown.complete", {
+		hardCap: SIGTERM_DRAIN_HARDCAP_MS,
+	});
+	await exitedWait;
+	await awaitInFlight(state);
+	if (opts.restart === true) {
+		await ctx.respawn();
+		ctx.resetLogMarker();
+	}
+}
+
 function createScenario(): Scenario & ScenarioInternals {
 	const steps: Step[] = [];
 	const queue: QueueState = { pending: [] };
@@ -494,8 +516,10 @@ function createScenario(): Scenario & ScenarioInternals {
 			);
 			return scenario;
 		},
-		sigterm(): Scenario {
-			return notImplemented("sigterm");
+		sigterm(opts?: SignalOpts) {
+			const fixed = opts ?? {};
+			steps.push((state, ctx) => runSigterm(state, ctx, fixed));
+			return scenario;
 		},
 		sigkill(opts?: SignalOpts) {
 			const fixed = opts ?? {};
