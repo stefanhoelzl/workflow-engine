@@ -40,10 +40,10 @@ PR 3 also drops `STANDARD_CRON_RE` from the manifest layer; `cron-parser` (alrea
 
 ## 5. PR 5 — Owner/repo opts + test #19 (owner/repo scoping)
 
-- [ ] 5.1 Add `{owner?, repo?}` opts to `.workflow`, `.webhook`, `.manual`; default to `(dev, e2e)`
-- [ ] 5.2 Extend `state.workflows` entries to carry `{name, sha, owner, repo}`
-- [ ] 5.3 Write test #19: same workflow source uploaded under three different `(owner, repo)` tuples; webhook fires against each; expect each invocation attributed to its tuple; expect events scoped correctly
-- [ ] 5.4 Verify cross-tuple isolation in events
+- [x] 5.1 Add `{owner?, repo?}` opts to `.workflow`, `.webhook`, `.manual`; default to `(dev, e2e)`
+- [x] 5.2 Extend `state.workflows` entries to carry `{name, sha, owner, repo}`
+- [x] 5.3 Write test #19: same workflow source uploaded under three different `(owner, repo)` tuples; webhook fires against each; expect each invocation attributed to its tuple; expect events scoped correctly
+- [x] 5.4 Verify cross-tuple isolation in events
 
 ## 6. (Optional) Perf PR — Fixture build cache
 
