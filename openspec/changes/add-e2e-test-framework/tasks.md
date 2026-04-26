@@ -77,11 +77,11 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 9. PR 8 — Log scoping (mark/since) + assertNotPresent + test #1 (sealed secret)
 
-- [ ] 9.1 Implement `LogStream.mark()` returning an opaque marker; `LogStream.query` and `LogStream.assertNotPresent` accept `{since?: marker}` and default to the test's auto-mark
-- [ ] 9.2 Wire framework `beforeEach` to call `mark()` per test; framework auto-randomizes secret values per test as belt-and-braces
-- [ ] 9.3 Implement secret support in inline source via `secret(name)` from sdk; framework passes secret value at upload time (sealed against the runtime's pubkey via the existing upload flow)
-- [ ] 9.4 Write test #1: workflow with `secret('API_KEY')`, handler echoes the plaintext, webhook fires, expect response body contains the plaintext, AND `state.logs` does not contain the plaintext (auto-randomized per test)
-- [ ] 9.5 Verify positive (handler reads plaintext) AND negative (no plaintext in any log line) both pass
+- [x] 9.1 Implement `LogStream.mark()` returning an opaque marker; `LogStream.query` and `LogStream.assertNotPresent` accept `{since?: marker}` and default to the test's auto-mark
+- [x] 9.2 Wire framework `beforeEach` to call `mark()` per test; framework auto-randomizes secret values per test as belt-and-braces
+- [x] 9.3 Implement secret support in inline source via `secret(name)` from sdk; framework passes secret value at upload time (sealed against the runtime's pubkey via the existing upload flow)
+- [x] 9.4 Write test #1: workflow with `secret('API_KEY')`, handler echoes the plaintext, webhook fires, expect response body contains the plaintext, AND `state.logs` does not contain the plaintext (auto-randomized per test)
+- [x] 9.5 Verify positive (handler reads plaintext) AND negative (no plaintext in any log line) both pass
 
 ## 10. PR 9 — `.sigkill` + restart + test #2 (crash recovery)
 
