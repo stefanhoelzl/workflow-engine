@@ -11,6 +11,11 @@ interface UploadOptions {
 	repo: string;
 	user?: string;
 	token?: string;
+	// Hermetic env for build-time `env({...})` resolution and secret-binding
+	// sealing. Defaults to `process.env` (the CLI's behaviour). The e2e test
+	// framework passes a per-describe `buildEnv` so fixture builds don't
+	// leak the runner's env.
+	env?: Record<string, string | undefined>;
 }
 
 interface UploadResult {
@@ -215,6 +220,7 @@ async function upload(options: UploadOptions): Promise<UploadResult> {
 			owner: options.owner,
 			user: auth.user,
 			token: auth.token,
+			...(options.env === undefined ? {} : { env: options.env }),
 		});
 	} catch (err) {
 		const failure = bundleFailureToUploadFailure(

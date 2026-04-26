@@ -54,19 +54,11 @@ function describe(
 			},
 		};
 
-		// describe-level `buildEnv` is applied to the parent process for the
-		// lifetime of the spawned child. The SDK's `buildWorkflows` (used by
-		// both `build()` and `bundle()` during upload) reads `process.env`
-		// inside its IIFE-eval VM context to resolve `env()` bindings; routing
-		// through `process.env` is the simplest way to thread per-test values
-		// without altering the public CLI signature.
-		const restored: Record<string, string | undefined> = {};
-
+		// `buildEnv` is hermetic: it travels via `getActiveContext()` to the
+		// scenario, which forwards it to `build({env})` and `upload({env})`.
+		// The IIFE-eval VM sees only what the describe declared — no leak of
+		// the runner's `process.env`, and no mutation of the runner.
 		beforeAll(async () => {
-			for (const [key, value] of Object.entries(opts.buildEnv ?? {})) {
-				restored[key] = process.env[key];
-				process.env[key] = value;
-			}
 			child = await spawnRuntime({ env: opts.env ?? {} });
 			activeContext = {
 				getChild: () => {
@@ -84,13 +76,6 @@ function describe(
 			if (child) {
 				await child.stop();
 				child = null;
-			}
-			for (const [key, prev] of Object.entries(restored)) {
-				if (prev === undefined) {
-					delete process.env[key];
-				} else {
-					process.env[key] = prev;
-				}
 			}
 		});
 

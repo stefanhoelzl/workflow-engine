@@ -29,6 +29,7 @@
 		"kysely": "^0.28.15",
 		"pino": "^10.3.1",
 		"postal-mime": "^2.7.4",
+		"quickjs-wasi": "^2.2.0",
 		"tar-stream": "^3.1.8"
 	},
 	"devDependencies": {

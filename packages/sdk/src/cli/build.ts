@@ -18,10 +18,16 @@ class NoWorkflowsFoundError extends Error {
  * The deployable tenant tarball is produced by `bundle()` (called from
  * `wfe upload`), not here.
  */
-async function build(options: { cwd: string }): Promise<void> {
+async function build(options: {
+	cwd: string;
+	env?: Record<string, string>;
+}): Promise<void> {
 	let result: Awaited<ReturnType<typeof buildWorkflows>>;
 	try {
-		result = await buildWorkflows({ cwd: options.cwd });
+		result = await buildWorkflows({
+			cwd: options.cwd,
+			...(options.env === undefined ? {} : { env: options.env }),
+		});
 	} catch (error) {
 		if (
 			error instanceof BuildWorkflowsError &&

@@ -106,6 +106,11 @@ interface BuildWorkflowsOptions {
 	// lib-resolution errors otherwise. Production callers (CLI) MUST NOT set
 	// this flag.
 	skipTypecheck?: boolean;
+	// Override the env visible to the IIFE-eval VM context. When omitted,
+	// `runIifeInVmContext` falls back to `process.env` (the CLI's behaviour
+	// for `wfe upload`). The e2e test framework passes a hermetic
+	// `describe.buildEnv` so fixture builds don't leak the runner's env.
+	env?: Record<string, string>;
 }
 
 interface UnsealedWorkflowManifest {
@@ -159,7 +164,12 @@ async function buildWorkflows(
 		workflows.map((wf) => {
 			const workflowPath = resolve(root, wf);
 			const filestem = basename(wf, ".ts");
-			return buildOneWorkflow({ workflowPath, filestem, root });
+			return buildOneWorkflow({
+				workflowPath,
+				filestem,
+				root,
+				...(opts.env === undefined ? {} : { env: opts.env }),
+			});
 		}),
 	);
 
@@ -177,6 +187,7 @@ interface BuildOneWorkflowArgs {
 	workflowPath: string;
 	filestem: string;
 	root: string;
+	env?: Record<string, string>;
 }
 
 interface BuiltWorkflow {
@@ -187,13 +198,13 @@ interface BuiltWorkflow {
 async function buildOneWorkflow(
 	args: BuildOneWorkflowArgs,
 ): Promise<BuiltWorkflow> {
-	const { workflowPath, filestem, root } = args;
+	const { workflowPath, filestem, root, env } = args;
 
 	// Pass 1 — manifest build, zod inlined. The VM reads the branded
 	// exports' zod-bearing config properties so the plugin can emit JSON
 	// Schemas into the manifest. This bundle is discarded.
 	const manifestSource = await bundleWorkflowForManifest(workflowPath, root);
-	const mod = runIifeInVmContext(manifestSource, filestem);
+	const mod = runIifeInVmContext(manifestSource, filestem, env);
 
 	// Pass 2 — runtime build, factory configs stripped of `input`/`output`/
 	// `body`/`responseBody`. Zod tree-shakes out. This bundle is what ships
@@ -208,6 +219,7 @@ async function buildOneWorkflow(
 function runIifeInVmContext(
 	bundleSource: string,
 	filestem: string,
+	envOverride?: Record<string, string>,
 ): Record<string, unknown> {
 	// The IIFE bundle is a script that declares `var <IIFE_NAMESPACE> = (...)(...)`.
 	// Running it via vm.createContext()/vm.runInContext() gives the script a
@@ -218,10 +230,13 @@ function runIifeInVmContext(
 	// V8 contexts in the same process.
 	//
 	// Inject the host's `process.env` so workflow authors can reference real
-	// env vars at build time (e.g. `env({ name: "API_URL" })`).
+	// env vars at build time (e.g. `env({ name: "API_URL" })`). Callers can
+	// pass `envOverride` for hermetic builds (the e2e test framework does this
+	// so a fixture sees only the describe-declared `buildEnv`, not the
+	// runner's PATH/HOME/etc).
 	const sandboxGlobal: Record<string, unknown> = {
 		// biome-ignore lint/style/noProcessEnv: build-time wiring; workflow authors deliberately reference host env vars via env()
-		process: { env: process.env },
+		process: { env: envOverride ?? process.env },
 	};
 	const context = createContext(sandboxGlobal);
 	try {

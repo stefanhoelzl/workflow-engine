@@ -10,23 +10,12 @@ const READY_MSG_RE = /^Runtime listening on port (\d+)$/;
 const READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-// We spawn through `pnpm --filter @workflow-engine/runtime dev` (vite-node)
-// rather than `node packages/runtime/dist/main.js` directly. The vite-bundled
-// main.js inlines the sandbox's worker.js path resolution at the wrong
-// (post-bundle) `import.meta.url` location, so a freshly-built `dist/main.js`
-// fails its first sandbox.run() with `Cannot find module .../dist/src/worker.js`.
-// Production deployments work around this via `pnpm deploy --shamefully-hoist`
-// which restructures node_modules so the unbundled sandbox dist sits beside
-// the deploy root. The framework cannot easily replicate that layout per test,
-// and the design's wall-clock target (<30 s) precludes running `pnpm deploy`
-// per describe. vite-node is the layout the existing `pnpm dev` already
-// validates daily.
-const RUNTIME_DEV_ENTRY = join(
+const RUNTIME_DIST_MAIN = join(
 	REPO_ROOT,
 	"packages",
 	"runtime",
-	"src",
-	"main.ts",
+	"dist",
+	"main.js",
 );
 
 function freePort(): Promise<number> {
@@ -75,32 +64,16 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 		...(opts.env ?? {}),
 	};
 
-	const proc = spawn(
-		"pnpm",
-		[
-			"--filter",
-			"@workflow-engine/runtime",
-			"exec",
-			"vite-node",
-			RUNTIME_DEV_ENTRY,
-		],
-		{
-			env,
-			stdio: ["ignore", "pipe", "pipe"],
-			cwd: REPO_ROOT,
-			// `detached: true` puts pnpm + its `/bin/sh` wrapper + the leaf
-			// `vite-node`/`node` child into a fresh process group whose pgid
-			// equals the pnpm pid. Without this, `proc.kill(SIGTERM)` only
-			// signals pnpm — neither pnpm nor `/bin/sh -c` forward signals to
-			// the leaf node process, so the runtime re-parents to PID 1 and
-			// keeps its HTTP server + event bus alive forever. Every leaked
-			// runtime holds 150–300 MB RSS plus a bound port and the
-			// persistence dir's file handles; accumulating dozens freezes the
-			// machine. With the dedicated pgid, `process.kill(-pid, signal)`
-			// in `stop()` reaches every descendant in one call.
-			detached: true,
-		},
-	);
+	const proc = spawn("node", [RUNTIME_DIST_MAIN], {
+		env,
+		stdio: ["ignore", "pipe", "pipe"],
+		cwd: REPO_ROOT,
+		// Dedicated process group so `process.kill(-pid, signal)` in stop()
+		// reaches every descendant if node ever spawns helpers. Belt-and-braces:
+		// the direct `node` child has no shell wrapper, but keeping the pgid
+		// pattern means stop() stays correct under future changes.
+		detached: true,
+	});
 
 	const logs: LogLine[] = [];
 	const stderrBuf: string[] = [];

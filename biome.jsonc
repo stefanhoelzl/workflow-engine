@@ -17,7 +17,7 @@
 			// `packages/tests/src/fixtures.ts`. The source strings come from
 			// inline test bodies and are linted there, not in the materialized
 			// fixture dirs.
-			"!packages/tests/.fixtures",
+			"!packages/tests/.cache",
 			"!**/.terraform",
 			// Pre-bundled sandbox shims — checked in as plain `.js` so they can be
 			// inlined verbatim into the guest preamble. Biome's TS-oriented rules
