@@ -256,15 +256,22 @@ interface Action<I = unknown, O = unknown> {
 	readonly name: string;
 }
 
-function action<I, O>(config: {
-	input: z.ZodType<I>;
-	output: z.ZodType<O>;
-	handler: (input: I) => Promise<O>;
+function action<
+	Input extends z.ZodType = z.ZodAny,
+	Output extends z.ZodType = z.ZodAny,
+>(config: {
+	input?: Input;
+	output?: Output;
+	handler: (input: z.infer<Input>) => Promise<z.infer<Output>>;
 	name?: string;
-}): Action<I, O> {
+}): Action<z.infer<Input>, z.infer<Output>> {
 	const assignedName = config.name;
 	const handler = config.handler;
-	const callable = async function callAction(input: I): Promise<O> {
+	const inputSchema = (config.input ?? z.any()) as Input;
+	const outputSchema = (config.output ?? z.any()) as Output;
+	const callable = async function callAction(
+		input: z.infer<Input>,
+	): Promise<z.infer<Output>> {
 		if (assignedName === undefined || assignedName === "") {
 			throw new Error(
 				"Action constructed without a name; build via the wfe CLI (which name-injects via AST transform)",
@@ -274,7 +281,7 @@ function action<I, O>(config: {
 			assignedName,
 			input,
 			handler as (input: unknown) => Promise<unknown>,
-		)) as O;
+		)) as z.infer<Output>;
 	};
 	Object.defineProperty(callable, ACTION_BRAND, {
 		value: true,
@@ -283,13 +290,13 @@ function action<I, O>(config: {
 		configurable: false,
 	});
 	Object.defineProperty(callable, "input", {
-		value: config.input,
+		value: inputSchema,
 		enumerable: true,
 		writable: false,
 		configurable: false,
 	});
 	Object.defineProperty(callable, "output", {
-		value: config.output,
+		value: outputSchema,
 		enumerable: true,
 		writable: false,
 		configurable: false,
@@ -299,7 +306,7 @@ function action<I, O>(config: {
 		writable: false,
 		configurable: false,
 	});
-	return callable as unknown as Action<I, O>;
+	return callable as unknown as Action<z.infer<Input>, z.infer<Output>>;
 }
 
 function isAction(value: unknown): value is Action {
@@ -332,7 +339,7 @@ interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
 }
 
 function httpTrigger<
-	B extends z.ZodType = z.ZodUnknown,
+	B extends z.ZodType = z.ZodAny,
 	R extends z.ZodType | undefined = undefined,
 >(config: {
 	method?: string;
@@ -349,7 +356,7 @@ function httpTrigger<
 				}
 			: HttpTriggerResult
 	>;
-}): HttpTrigger<B extends z.ZodType ? B : z.ZodUnknown> {
+}): HttpTrigger<B extends z.ZodType ? B : z.ZodAny> {
 	if (typeof config.handler !== "function") {
 		throw new Error("httpTrigger(...) is missing a handler function");
 	}
@@ -365,9 +372,7 @@ function httpTrigger<
 		body: config.body,
 		responseBody: config.responseBody,
 	});
-	return callable as unknown as HttpTrigger<
-		B extends z.ZodType ? B : z.ZodUnknown
-	>;
+	return callable as unknown as HttpTrigger<B extends z.ZodType ? B : z.ZodAny>;
 }
 
 interface TriggerMetadata {
@@ -511,12 +516,7 @@ interface ManualTrigger<I extends z.ZodType = z.ZodType> {
 	readonly outputSchema: z.ZodType;
 }
 
-const manualTriggerDefaultInputSchema = z.object({});
-const manualTriggerDefaultOutputSchema = z.unknown();
-
-function manualTrigger<
-	I extends z.ZodType = typeof manualTriggerDefaultInputSchema,
->(config: {
+function manualTrigger<I extends z.ZodType = z.ZodAny>(config: {
 	input?: I;
 	output?: z.ZodType;
 	handler: (input: z.infer<I>) => Promise<unknown>;
@@ -524,8 +524,8 @@ function manualTrigger<
 	if (typeof config.handler !== "function") {
 		throw new Error("manualTrigger(...) is missing a handler function");
 	}
-	const inputSchema = (config.input ?? manualTriggerDefaultInputSchema) as I;
-	const outputSchema = config.output ?? manualTriggerDefaultOutputSchema;
+	const inputSchema = (config.input ?? z.any()) as I;
+	const outputSchema = config.output ?? z.any();
 	const handler = config.handler;
 	const callable = function callManualTrigger(
 		input: z.infer<I>,
