@@ -1,5 +1,10 @@
 import { constants } from "node:http2";
-import type { HttpTriggerResult } from "@workflow-engine/core";
+import {
+	type HttpTriggerResult,
+	OWNER_NAME_RE,
+	REPO_NAME_RE,
+	TRIGGER_NAME_RE,
+} from "@workflow-engine/core";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type {
@@ -50,9 +55,6 @@ const HTTP_UNPROCESSABLE_ENTITY =
 	constants.HTTP_STATUS_UNPROCESSABLE_ENTITY as ContentfulStatusCode;
 const DEFAULT_HTTP_STATUS = 200;
 const HTTP_INTERNAL_ERROR = 500;
-const OWNER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
-const REPO_NAME_RE = /^[a-zA-Z0-9._-]{1,100}$/;
-const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 // The webhook URL is exactly `/webhooks/<owner>/<repo>/<workflow>/
 // <trigger-name>` — four segments after the prefix, no more, no less.
 const URL_SEGMENT_COUNT = 4;

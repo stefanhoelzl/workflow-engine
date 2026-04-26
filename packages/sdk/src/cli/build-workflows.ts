@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
-import { IIFE_NAMESPACE } from "@workflow-engine/core";
+import { IIFE_NAMESPACE, TRIGGER_NAME_RE } from "@workflow-engine/core";
 import MagicString from "magic-string";
 import ts from "typescript";
 import { build, type Plugin } from "vite";
@@ -20,12 +20,6 @@ import {
 	type ManualTrigger,
 	type Workflow,
 } from "../index.js";
-
-// URL-safe trigger-export-name regex. Matches a JS identifier (no `$`),
-// length-capped at 63 to mirror the owner regex. Enforced at manifest
-// emission so the export name can be used directly as the webhook URL's
-// trailing segment — see the `http-trigger` capability spec.
-const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 interface BuildContext {
 	error(message: string): never;
