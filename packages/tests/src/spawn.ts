@@ -88,6 +88,17 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 			env,
 			stdio: ["ignore", "pipe", "pipe"],
 			cwd: REPO_ROOT,
+			// `detached: true` puts pnpm + its `/bin/sh` wrapper + the leaf
+			// `vite-node`/`node` child into a fresh process group whose pgid
+			// equals the pnpm pid. Without this, `proc.kill(SIGTERM)` only
+			// signals pnpm — neither pnpm nor `/bin/sh -c` forward signals to
+			// the leaf node process, so the runtime re-parents to PID 1 and
+			// keeps its HTTP server + event bus alive forever. Every leaked
+			// runtime holds 150–300 MB RSS plus a bound port and the
+			// persistence dir's file handles; accumulating dozens freezes the
+			// machine. With the dedicated pgid, `process.kill(-pid, signal)`
+			// in `stop()` reaches every descendant in one call.
+			detached: true,
 		},
 	);
 
@@ -185,6 +196,20 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 
 	const baseUrl = `http://127.0.0.1:${String(port)}`;
 
+	function killGroup(signal: NodeJS.Signals): void {
+		if (proc.pid === undefined) {
+			return;
+		}
+		try {
+			// Negative pid = signal the entire process group (pgid set up by
+			// `detached: true`). Reaches pnpm + sh wrapper + leaf node child
+			// in one call so nothing re-parents to PID 1 and leaks.
+			process.kill(-proc.pid, signal);
+		} catch {
+			// already gone, or pgid no longer exists; nothing to do
+		}
+	}
+
 	async function stop(): Promise<void> {
 		if (exited) {
 			await rm(persistencePath, { recursive: true, force: true });
@@ -197,18 +222,10 @@ async function spawnRuntime(opts: SpawnOptions = {}): Promise<SpawnedChild> {
 			}
 			proc.once("exit", () => res());
 		});
-		try {
-			proc.kill("SIGTERM");
-		} catch {
-			// already gone
-		}
+		killGroup("SIGTERM");
 		const timeout = setTimeout(() => {
 			if (!exited) {
-				try {
-					proc.kill("SIGKILL");
-				} catch {
-					// already gone
-				}
+				killGroup("SIGKILL");
 			}
 		}, SHUTDOWN_TIMEOUT_MS);
 		await exitPromise;
