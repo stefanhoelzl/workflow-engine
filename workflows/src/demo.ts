@@ -112,11 +112,7 @@ export const parseUrl = action({
 	}),
 	handler: ({ url }) => {
 		const parsed = new URL(url);
-		const params = new URLSearchParams(parsed.search);
-		const query: Record<string, string> = {};
-		params.forEach((value, key) => {
-			query[key] = value;
-		});
+		const query = Object.fromEntries(parsed.searchParams);
 		return Promise.resolve({ host: parsed.host, query });
 	},
 });

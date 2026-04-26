@@ -5,9 +5,10 @@
 		"declaration": true,
 		"noEmit": false,
 		"outDir": "dist",
-		"types": ["node"]
+		"types": ["node"],
+		"resolveJsonModule": true
 	},
-	"include": ["src", "test/wpt/harness", "test/wpt/*.ts"],
+	"include": ["src", "test/wpt/harness", "test/wpt/*.ts", "test/wpt/skip.json"],
 	"exclude": ["test/wpt/vendor/**"],
 	"references": [{ "path": "../core" }, { "path": "../sandbox" }]
 }
