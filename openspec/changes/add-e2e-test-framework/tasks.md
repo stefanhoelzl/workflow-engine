@@ -71,9 +71,9 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 8. PR 7 — `describe(name, {env}, body)` + test #7 (LRU eviction under count pressure)
 
-- [ ] 8.1 Implement `describe(name, opts, body)` overload accepting `{env?: Record<string, string>}`; merge into spawned child env
-- [ ] 8.2 Write test #7 inside `describe("LRU", {env: {SANDBOX_MAX_COUNT: "2"}}, app => ...)`: upload 3 fixtures sequentially, fire each, expect a `sandbox evicted` log line with `reason: "lru"` after the 3rd upload
-- [ ] 8.3 Verify LRU eviction triggered by count pressure with the specific log shape
+- [x] 8.1 Implement `describe(name, opts, body)` overload accepting `{env?: Record<string, string>}`; merge into spawned child env
+- [x] 8.2 Write test #7 inside `describe("LRU", {env: {SANDBOX_MAX_COUNT: "2"}}, app => ...)`: upload 3 fixtures sequentially, fire each, expect a `sandbox evicted` log line with `reason: "lru"` after the 3rd upload
+- [x] 8.3 Verify LRU eviction triggered by count pressure with the specific log shape
 
 ## 9. PR 8 — Log scoping (mark/since) + assertNotPresent + test #1 (sealed secret)
 
