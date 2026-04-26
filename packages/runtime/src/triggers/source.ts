@@ -1,4 +1,5 @@
 import type { DispatchMeta } from "@workflow-engine/core";
+import type { TriggerExceptionParams } from "../executor/exception.js";
 import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 
 // ---------------------------------------------------------------------------
@@ -13,9 +14,11 @@ import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
 // On every repo-upload the registry calls `reconfigure(owner, repo, entries)`
 // on every backend in parallel. Each backend replaces its per-(owner, repo)
 // state atomically; empty entries removes the repo. Backends never touch the
-// Executor — they invoke `entry.fire(input)` with a normalized protocol
-// input; the closure (constructed by the registry via `buildFire`) validates
-// input and dispatches through the executor.
+// Executor or the EventBus directly — they invoke `entry.fire(input)` for
+// handler dispatch and `entry.exception(params)` for author-fixable
+// pre-dispatch failures. Both closures are constructed by the registry
+// (`buildFire`, `buildException`) and bound to identity at construction
+// time.
 
 interface TriggerEntry<
 	D extends BaseTriggerDescriptor<string> = BaseTriggerDescriptor<string>,
@@ -29,6 +32,15 @@ interface TriggerEntry<
 		input: unknown,
 		dispatch?: DispatchMeta,
 	) => Promise<InvokeResult<unknown>>;
+	// Backends call `exception(params)` to surface *author-fixable
+	// pre-dispatch failures* (IMAP misconfig, broken cron expression,
+	// etc.) into the dashboard. Each call produces exactly one
+	// `trigger.exception` leaf event on the bus, fully stamped with this
+	// entry's identity. Engine-bug failures (e.g. `entry.fire` itself
+	// throws) do NOT route through here — they stay log-only via
+	// `Logger.error` at the call site. See `triggers` spec
+	// "Backend surfaces pre-dispatch failure via entry.exception".
+	readonly exception: (params: TriggerExceptionParams) => Promise<void>;
 }
 
 // User-facing configuration error. Maps to 4xx on the upload API. Never

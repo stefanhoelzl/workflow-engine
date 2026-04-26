@@ -147,7 +147,11 @@ function makeEntry(
 	fireImpl: (input: unknown) => Promise<InvokeResult<unknown>>,
 ): RecordedEntry {
 	const fire = vi.fn(fireImpl);
-	const entry: TriggerEntry<ImapTriggerDescriptor> = { descriptor, fire };
+	const entry: TriggerEntry<ImapTriggerDescriptor> = {
+		descriptor,
+		fire,
+		exception: vi.fn(async () => undefined),
+	};
 	return { entry, fire };
 }
 

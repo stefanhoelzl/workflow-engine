@@ -6,6 +6,10 @@ import type {
 import type { Sandbox } from "@workflow-engine/sandbox";
 import type { EventBus } from "../event-bus/index.js";
 import type { SandboxStore } from "../sandbox-store.js";
+import {
+	emitTriggerException,
+	type TriggerExceptionParams,
+} from "./exception.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";
 import type { InvokeResult, TriggerDescriptor } from "./types.js";
 
@@ -53,6 +57,19 @@ interface Executor {
 		input: unknown,
 		options: InvokeOptions,
 	): Promise<InvokeResult<unknown>>;
+	// Sibling to invoke for *author-fixable pre-dispatch failures* — emits
+	// one `trigger.exception` leaf event onto the bus with no sandbox, no
+	// run queue, no frame. Called only from `buildException` closures,
+	// which are themselves called only via `entry.exception(...)` on a
+	// TriggerEntry. SECURITY.md §2 R-8 host-side carve-out lives in the
+	// `emitTriggerException` primitive imported above.
+	fail(
+		owner: string,
+		repo: string,
+		workflow: WorkflowManifest,
+		descriptor: TriggerDescriptor,
+		params: TriggerExceptionParams,
+	): Promise<void>;
 }
 
 function newInvocationId(): string {
@@ -211,9 +228,24 @@ function createExecutor(options: ExecutorOptions): Executor {
 				),
 			);
 		},
+		// biome-ignore lint/complexity/useMaxParams: matches Executor.fail contract
+		async fail(owner, repo, workflow, descriptor, params) {
+			// No sandbox lookup, no run queue, no `sb.onEvent` widener — the
+			// pre-dispatch failure has nothing to run. Stamping happens in
+			// the emitTriggerException primitive (the R-8 chokepoint).
+			await emitTriggerException(
+				bus,
+				owner,
+				repo,
+				workflow,
+				descriptor,
+				params,
+			);
+		},
 	};
 }
 
+export type { TriggerExceptionParams } from "./exception.js";
 export type { RunQueue } from "./run-queue.js";
 // biome-ignore lint/performance/noBarrelFile: executor entry point re-exports its siblings (run-queue, descriptors) so consumers have a single module to import from
 export { createRunQueue } from "./run-queue.js";

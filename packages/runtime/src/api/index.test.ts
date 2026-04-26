@@ -32,6 +32,7 @@ const logger = {
 
 const stubExecutor: Executor = {
 	invoke: vi.fn(async () => ({ ok: true as const, output: {} })),
+	fail: vi.fn(async () => undefined),
 };
 
 interface MountOpts {

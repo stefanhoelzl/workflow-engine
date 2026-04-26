@@ -43,7 +43,11 @@ const httpKind: KindFactory<"http"> = {
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		};
-		return { descriptor, fire: vi.fn<Fire>(stubFire) };
+		return {
+			descriptor,
+			fire: vi.fn<Fire>(stubFire),
+			exception: vi.fn(async () => undefined),
+		};
 	},
 	createSource() {
 		return createHttpTriggerSource() as unknown as TriggerSource;
@@ -67,7 +71,11 @@ const cronKind: KindFactory<"cron"> = {
 			},
 			outputSchema: {},
 		};
-		return { descriptor, fire: vi.fn<Fire>(stubFire) };
+		return {
+			descriptor,
+			fire: vi.fn<Fire>(stubFire),
+			exception: vi.fn(async () => undefined),
+		};
 	},
 	createSource() {
 		return createCronTriggerSource({
@@ -91,7 +99,11 @@ const manualKind: KindFactory<"manual"> = {
 			},
 			outputSchema: {},
 		};
-		return { descriptor, fire: vi.fn<Fire>(stubFire) };
+		return {
+			descriptor,
+			fire: vi.fn<Fire>(stubFire),
+			exception: vi.fn(async () => undefined),
+		};
 	},
 	createSource() {
 		return createManualTriggerSource() as unknown as TriggerSource;

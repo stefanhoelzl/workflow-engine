@@ -894,9 +894,39 @@ function buildTriggeredBy(events: readonly InvocationEvent[]) {
 		: "";
 }
 
+// Synthetic single-leaf `trigger.exception` invocation — no
+// `trigger.request`, no frame, no paired bars to lay out. Render an instant
+// marker carrying the failure cause so the author sees "imap.poll-failed:
+// ECONNREFUSED" (or similar) without expanding further. Per
+// `dashboard-list-view` spec "Single-leaf invocation flamegraph renders
+// the leaf event".
+function renderTriggerExceptionFragment(event: InvocationEvent) {
+	// `event.name` carries the failure-category discriminator
+	// (e.g. "imap.poll-failed"). Stage-specific payload (e.g. IMAP's
+	// `stage`) lives under `event.input.{stage,…}` per the
+	// `executor.fail` stamping contract.
+	const stage = (event.input as { stage?: unknown } | undefined)?.stage;
+	const cause = event.name;
+	const message = event.error?.message ?? "";
+	const stageSuffix = typeof stage === "string" && stage ? ` (${stage})` : "";
+	const title = message
+		? `${cause}${stageSuffix}: ${message}`
+		: `${cause}${stageSuffix}`;
+	return html`<div class="flame-fragment flame-fragment--exception">
+  <div class="flame-exception" role="img" aria-label="${title}">
+    <span class="flame-exception-name">${cause}${stageSuffix}</span>
+    <span class="flame-exception-sep">·</span>
+    <span class="flame-exception-message">${message}</span>
+  </div>
+</div>`;
+}
+
 function renderFlamegraph(events: readonly InvocationEvent[]) {
 	if (events.length === 0) {
 		return renderEmpty();
+	}
+	if (events.length === 1 && events[0]?.kind === "trigger.exception") {
+		return renderTriggerExceptionFragment(events[0]);
 	}
 	const layout = computeLayout(events);
 	if (!layout) {

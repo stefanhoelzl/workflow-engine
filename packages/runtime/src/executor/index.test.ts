@@ -396,6 +396,110 @@ describe("executor", () => {
 	});
 });
 
+describe("executor.fail (trigger.exception emission)", () => {
+	function setup() {
+		const seen: InvocationEvent[] = [];
+		const bus: EventBus = {
+			emit: async (e) => {
+				seen.push(e);
+			},
+		};
+		const sandbox = makeSandbox();
+		const store = makeStore(sandbox);
+		const executor = createExecutor({ bus, sandboxStore: store });
+		return { executor, sandbox, store, seen };
+	}
+
+	it("emits one fully-stamped trigger.exception leaf event", async () => {
+		const { executor, seen } = setup();
+		const workflow = makeManifest("wf", "a".repeat(64));
+		const descriptor = makeDescriptor("inbound");
+
+		await executor.fail("acme", "billing", workflow, descriptor, {
+			name: "imap.poll-failed",
+			error: { message: "ECONNREFUSED" },
+			details: { stage: "connect", failedUids: [] },
+		});
+
+		expect(seen).toHaveLength(1);
+		const evt = seen[0];
+		if (!evt) {
+			throw new Error("expected one event");
+		}
+		expect(evt.kind).toBe("trigger.exception");
+		expect(evt.name).toBe("imap.poll-failed");
+		expect(evt.seq).toBe(0);
+		expect(evt.ref).toBe(0);
+		expect(evt.ts).toBe(0);
+		expect(evt.id).toMatch(EVT_ID_RE);
+		expect(evt.owner).toBe("acme");
+		expect(evt.repo).toBe("billing");
+		expect(evt.workflow).toBe("wf");
+		expect(evt.workflowSha).toBe(workflow.sha);
+		expect(evt.error).toEqual({ message: "ECONNREFUSED" });
+		expect(evt.error?.stack).toBeUndefined();
+		expect(evt.meta).toBeUndefined();
+		// Trigger declaration name lives under input.trigger so the dashboard
+		// query can reconstruct synthetic invocation rows without a
+		// trigger.request to join against.
+		expect((evt.input as Record<string, unknown> | undefined)?.trigger).toBe(
+			"inbound",
+		);
+		expect((evt.input as Record<string, unknown> | undefined)?.stage).toBe(
+			"connect",
+		);
+	});
+
+	it("does not touch the SandboxStore or run queue", async () => {
+		const { executor, store } = setup();
+		await executor.fail(
+			"acme",
+			"billing",
+			makeManifest("wf"),
+			makeDescriptor("inbound"),
+			{ name: "imap.poll-failed", error: { message: "boom" } },
+		);
+		expect(store.get).not.toHaveBeenCalled();
+	});
+
+	it("mints a fresh evt_* invocation id on each call", async () => {
+		const { executor, seen } = setup();
+		const workflow = makeManifest("wf");
+		const descriptor = makeDescriptor("t");
+		await executor.fail("o", "r", workflow, descriptor, {
+			name: "imap.poll-failed",
+			error: { message: "x" },
+		});
+		await executor.fail("o", "r", workflow, descriptor, {
+			name: "imap.poll-failed",
+			error: { message: "y" },
+		});
+		expect(seen).toHaveLength(2);
+		expect(seen[0]?.id).not.toBe(seen[1]?.id);
+		expect(seen[0]?.id).toMatch(EVT_ID_RE);
+		expect(seen[1]?.id).toMatch(EVT_ID_RE);
+	});
+
+	it("strips the stack trace even when the caller passes one", async () => {
+		const { executor, seen } = setup();
+		await executor.fail(
+			"o",
+			"r",
+			makeManifest("wf"),
+			makeDescriptor("t"),
+			// @ts-expect-error — TriggerExceptionParams.error is `{ message }`
+			// only by contract; verifying runtime defense in depth.
+			{ name: "imap.poll-failed", error: { message: "boom", stack: "x:1" } },
+		);
+		const evt = seen[0];
+		if (!evt) {
+			throw new Error("expected event");
+		}
+		expect(evt.error?.message).toBe("boom");
+		expect(evt.error?.stack).toBeUndefined();
+	});
+});
+
 // Decrypt coverage moved to packages/runtime/src/secrets/decrypt-workflow.test.ts
 // — sandbox-store now owns the decrypt step at construction time, not the
 // executor. Executor is crypto-agnostic after workflow-secrets.

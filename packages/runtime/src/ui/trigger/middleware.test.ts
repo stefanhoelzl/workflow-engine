@@ -121,6 +121,7 @@ function makeHttpStub(
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: fire ?? defaultFire,
+		exception: vi.fn(async () => undefined),
 	};
 	return {
 		owner,
@@ -172,6 +173,7 @@ function makeCronStub(
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: fire ?? defaultFire,
+		exception: vi.fn(async () => undefined),
 	};
 	return {
 		owner,
@@ -234,6 +236,7 @@ function makeManualStub(
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: fire ?? defaultFire,
+		exception: vi.fn(async () => undefined),
 	};
 	return {
 		owner,
@@ -287,6 +290,7 @@ function makeImapStub(
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: async () => ({ ok: true, output: undefined }),
+		exception: vi.fn(async () => undefined),
 	};
 	return {
 		owner,

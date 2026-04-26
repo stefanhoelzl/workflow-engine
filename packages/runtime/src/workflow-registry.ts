@@ -24,6 +24,7 @@ import type { Logger } from "./logger.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 import type { StorageBackend } from "./storage/index.js";
+import { buildException } from "./triggers/build-exception.js";
 import { buildFire } from "./triggers/build-fire.js";
 import { resolveSecretSentinels } from "./triggers/resolve-secret-sentinels.js";
 import type {
@@ -269,6 +270,7 @@ interface UnresolvedSecretFailure {
 }
 
 // biome-ignore lint/complexity/useMaxParams: orthogonal inputs (owner, repo, manifest, files, deps); packaging would just shuffle the same fields
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: linear pipeline — manifest validation, secret resolution, descriptor build, fire+exception closure construction; splitting fragments the per-workflow loop
 function buildOwnerRepoState(
 	owner: string,
 	repo: string,
@@ -316,7 +318,18 @@ function buildOwnerRepoState(
 				bundleSource,
 				deps.logger,
 			);
-			entries.set(`${wf.name}/${descriptor.name}`, { descriptor, fire });
+			const exception = buildException(
+				deps.executor,
+				owner,
+				repo,
+				wf,
+				descriptor,
+			);
+			entries.set(`${wf.name}/${descriptor.name}`, {
+				descriptor,
+				fire,
+				exception,
+			});
 		}
 	}
 	if (secretFailures.length > 0) {

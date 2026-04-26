@@ -592,8 +592,18 @@ plugin, and every change that adds a guest-visible surface.
    under `fetch.*`, `mail.*`, `sql.*`, `timer.*`, `console.*`, `wasi.*`,
    and `uncaught-error` are consolidated under `system.*` with the
    operation identity carried in the event's `name` field.
+
+   The `trigger.*` family is currently `trigger.request`, `trigger.response`,
+   `trigger.error`, and `trigger.exception`. The first three are the
+   handler-frame triplet emitted by the in-sandbox trigger plugin
+   (paired open/close around `entry.fire`). `trigger.exception` is a
+   *leaf* event for author-fixable pre-dispatch failures (IMAP
+   misconfig, broken cron expression, etc.) — host-emitted by the
+   runtime helper `emitTriggerException`, no paired `trigger.request`,
+   no frame, no sequencer involvement. See R-8 for the carve-out and
+   `openspec/specs/invocations/spec.md` for the full contract.
 8. **R-8 Stamping-boundary discipline.** Event-field stamping is split
-   across three layers:
+   across four layers:
    - **Bridge-stamped (worker-side):** `kind`, `name`, `ts`, `at`,
      `input?`, `output?`, `error?`, plus the wire-only `type` framing
      discriminator and (for opens) a worker-minted `callId`.
@@ -603,6 +613,16 @@ plugin, and every change that adds a guest-visible surface.
    - **Runtime-stamped (executor's `sb.onEvent` widener):** `id`,
      `owner`, `repo`, `workflow`, `workflowSha`, `invocationId`, and
      (on `trigger.request` only) `meta.dispatch`.
+   - **Runtime-stamped (host-side `emitTriggerException` helper, no
+     sandbox involved):** all of `id`, `kind`, `name`, `seq=0`,
+     `ref=0`, `ts=0`, `at`, plus `owner`/`repo`/`workflow`/
+     `workflowSha`/`invocationId`. This carve-out exists because
+     pre-dispatch failures have no run, no sandbox, and no
+     `RunSequencer` to stamp the worker-owned scalars. **The carve-out
+     covers `trigger.exception` ONLY.** The helper hard-codes
+     `kind: "trigger.exception"` and asserts on it; no other kind may
+     bypass the sandbox/sequencer. A future contributor extending the
+     helper to additional kinds is breaking R-8.
    No layer may stamp fields owned by another layer. A plugin
    that needs to attach an owner, repo, or workflow label is doing
    something wrong — that labelling belongs on the runtime side.

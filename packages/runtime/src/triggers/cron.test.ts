@@ -47,6 +47,7 @@ function makeEntry(
 	const entry: TriggerEntry<CronTriggerDescriptor> = {
 		descriptor: makeDescriptor(name, schedule, tz, workflowName),
 		fire,
+		exception: vi.fn(async () => undefined),
 	};
 	return { entry, fire };
 }

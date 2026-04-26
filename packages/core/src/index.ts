@@ -32,6 +32,15 @@ interface HttpTriggerPayload<Body = unknown> {
  * exceptions bubbled via the `reportError` polyfill (replaces the previous
  * top-level `uncaught-error` kind).
  *
+ * `trigger.exception` is a leaf for *author-fixable* trigger setup failures
+ * that happen host-side before any handler runs (e.g. IMAP host wrong,
+ * SEARCH expression rejected, server refuses connection). Unlike
+ * `trigger.error`, it has no paired `trigger.request` and does not close any
+ * frame — it mirrors `system.exception`'s leaf semantics but lives in the
+ * `trigger.*` family because it carries trigger-scoped context (workflow,
+ * trigger name, owner-stamped invocationId). Emitted ONLY by the runtime
+ * helper `emitTriggerException`, never by sandbox or plugin code.
+ *
  * Plugin authors disambiguate which underlying operation produced an event
  * via the event's `name` field — e.g. `system.request name="fetch"` versus
  * `system.request name="sendMail"` versus `system.call name="setTimeout"`.
@@ -44,6 +53,7 @@ type EventKind =
 	| "trigger.request"
 	| "trigger.response"
 	| "trigger.error"
+	| "trigger.exception"
 	| "action.request"
 	| "action.response"
 	| "action.error"

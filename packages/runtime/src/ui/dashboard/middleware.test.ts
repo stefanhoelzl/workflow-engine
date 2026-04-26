@@ -263,6 +263,107 @@ describe("dashboard middleware — scoped flat list", () => {
 	});
 });
 
+describe("dashboard middleware — single-leaf trigger.exception invocations", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	it("renders a synthetic failed row with setup-failed glyph for a lone trigger.exception", async () => {
+		await store.handle(
+			event({
+				id: "evt_setup",
+				kind: "trigger.exception",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "imap.poll-failed",
+				input: {
+					trigger: "inbound",
+					stage: "connect",
+					failedUids: [],
+				},
+				error: { message: "ECONNREFUSED" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		// Synthetic rows render as failed entries scoped to the trigger
+		// declaration name parsed from input.trigger.
+		expect(html).toContain('id="inv-evt_setup"');
+		expect(html).toMatch(/<span class="entry-trigger">inbound<\/span>/);
+		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
+		// The wrench glyph + accessible "trigger setup failed" tooltip
+		// distinguish the row from a handler-throw failure.
+		expect(html).toContain('aria-label="trigger setup failed"');
+		expect(html).toContain("trigger setup failed");
+		// No dispatch chip on synthetic invocations — they have no
+		// trigger.request to carry meta.dispatch.
+		expect(html).not.toMatch(/class="entry-dispatch"/);
+	});
+
+	it("emits no synthetic row when the failure category has no input.trigger", async () => {
+		// Defensive — should not happen via executor.fail, but guards the
+		// query against malformed/legacy events.
+		await store.handle(
+			event({
+				id: "evt_no_trigger",
+				kind: "trigger.exception",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "imap.poll-failed",
+				input: { stage: "connect" },
+				error: { message: "x" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).not.toContain('id="inv-evt_no_trigger"');
+	});
+
+	it("filters synthetic rows when a per-trigger URL is requested", async () => {
+		await store.handle(
+			event({
+				id: "evt_setup_a",
+				kind: "trigger.exception",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "imap.poll-failed",
+				input: { trigger: "inbound" },
+				error: { message: "x" },
+			}),
+		);
+		await store.handle(
+			event({
+				id: "evt_setup_b",
+				kind: "trigger.exception",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "imap.poll-failed",
+				input: { trigger: "outbound" },
+				error: { message: "x" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0/wf/inbound", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_setup_a"');
+		expect(html).not.toContain('id="inv-evt_setup_b"');
+	});
+});
+
 describe("dashboard middleware — auth scoping", () => {
 	let store: EventStore;
 
