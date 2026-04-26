@@ -276,9 +276,13 @@ function start(
 			return;
 		}
 		shuttingDown = true;
+		const startedAt = Date.now();
 		logger.info(code === 0 ? "shutting-down" : "shutting-down-on-error");
 		await Promise.allSettled(services.map((s) => s.stop()));
-		logger.info("main.shutdown");
+		logger.info("shutdown.complete", {
+			code,
+			durationMs: Date.now() - startedAt,
+		});
 		setImmediate(() => process.exit(code));
 	};
 

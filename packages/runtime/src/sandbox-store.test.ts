@@ -678,6 +678,8 @@ describe("sandbox-store: LRU eviction", () => {
 		// a is mid-run → not evicted; cache holds both (soft cap exceeded).
 		expect(a.disposeSpy).not.toHaveBeenCalled();
 		expect(b.disposeSpy).not.toHaveBeenCalled();
+		// Clear the active flag so dispose's drain loop exits immediately.
+		a.setActive(false);
 		await store.dispose();
 	});
 

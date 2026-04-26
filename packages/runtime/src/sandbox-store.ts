@@ -67,6 +67,9 @@ interface CacheEntry {
 	runCount: number;
 }
 
+const DRAIN_TIMEOUT_MS = 10_000;
+const DRAIN_POLL_MS = 25;
+
 function storeKey(owner: string, sha: string): string {
 	return `${owner}/${sha}`;
 }
@@ -239,6 +242,27 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 			return promise;
 		},
 		async dispose() {
+			// Drain: poll until every cached sandbox reports !isActive (or
+			// hits the deadline). The shutdown handler in main.ts emits
+			// `shutdown.complete` only after this resolves, giving in-flight
+			// invocations a chance to land their terminal events through the
+			// bus before the sandbox is destroyed (see openspec
+			// service-lifecycle spec).
+			const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
+			while (Date.now() < drainDeadline) {
+				let anyActive = false;
+				for (const entry of cache.values()) {
+					if (entry.sandbox?.isActive === true) {
+						anyActive = true;
+						break;
+					}
+				}
+				if (!anyActive) {
+					break;
+				}
+				// biome-ignore lint/performance/noAwaitInLoops: drain poll is intentionally sequential — each iteration must observe the result of the previous wait
+				await new Promise((r) => setTimeout(r, DRAIN_POLL_MS));
+			}
 			const remaining: Promise<void>[] = [];
 			for (const entry of cache.values()) {
 				const p = entry.promise
