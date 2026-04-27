@@ -273,7 +273,14 @@ interface ManifestHttpTriggerEntry {
 	name: string;
 	type: "http";
 	method: string;
-	body: Record<string, unknown>;
+	request: {
+		body: Record<string, unknown>;
+		headers: Record<string, unknown>;
+	};
+	response?: {
+		body?: Record<string, unknown>;
+		headers?: Record<string, unknown>;
+	};
 	inputSchema: Record<string, unknown>;
 	outputSchema: Record<string, unknown>;
 }
@@ -434,6 +441,7 @@ function stripDraftMarker(
 
 function composeHttpInputSchema(
 	bodyJsonSchema: Record<string, unknown>,
+	headersJson: Record<string, unknown>,
 	method: string,
 ): Record<string, unknown> {
 	return {
@@ -441,7 +449,7 @@ function composeHttpInputSchema(
 		type: "object",
 		properties: {
 			body: stripDraftMarker(bodyJsonSchema),
-			headers: headersJsonSchema(),
+			headers: stripDraftMarker(headersJson),
 			url: { type: "string" },
 			method: { default: method, type: "string" },
 		},
@@ -452,7 +460,12 @@ function composeHttpInputSchema(
 
 function composeHttpOutputSchema(
 	responseBodyJsonSchema: Record<string, unknown> | undefined,
+	responseHeadersJsonSchema: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
+	const headersSlot =
+		responseHeadersJsonSchema === undefined
+			? headersJsonSchema()
+			: stripDraftMarker(responseHeadersJsonSchema);
 	if (responseBodyJsonSchema === undefined) {
 		return {
 			$schema: JSON_SCHEMA_DRAFT,
@@ -460,7 +473,7 @@ function composeHttpOutputSchema(
 			properties: {
 				status: { type: "number" },
 				body: {},
-				headers: headersJsonSchema(),
+				headers: headersSlot,
 			},
 			additionalProperties: false,
 		};
@@ -471,7 +484,7 @@ function composeHttpOutputSchema(
 		properties: {
 			status: { type: "number" },
 			body: stripDraftMarker(responseBodyJsonSchema),
-			headers: headersJsonSchema(),
+			headers: headersSlot,
 		},
 		required: ["body"],
 		additionalProperties: false,
@@ -586,6 +599,50 @@ function bodyJsonSchemaOrEmpty(
 	return toJsonSchema(body, label, workflowName);
 }
 
+interface HttpTriggerJsonSchemas {
+	bodyJson: Record<string, unknown>;
+	headersJson: Record<string, unknown>;
+	responseBodyJson: Record<string, unknown> | undefined;
+	responseHeadersJson: Record<string, unknown> | undefined;
+}
+
+function extractHttpTriggerJsonSchemas(
+	exportName: string,
+	trigger: HttpTrigger,
+	workflowName: string,
+): HttpTriggerJsonSchemas {
+	const bodyLabel = `trigger "${exportName}".request.body`;
+	const bodyJson = bodyJsonSchemaOrEmpty(
+		trigger.request.body,
+		bodyLabel,
+		workflowName,
+	);
+	const headersLabel = `trigger "${exportName}".request.headers`;
+	assertZodSchema(trigger.request.headers, headersLabel, workflowName);
+	const headersJson = toJsonSchema(
+		trigger.request.headers,
+		headersLabel,
+		workflowName,
+	);
+	let responseBodyJson: Record<string, unknown> | undefined;
+	if (trigger.response.body !== undefined) {
+		const label = `trigger "${exportName}".response.body`;
+		assertZodSchema(trigger.response.body, label, workflowName);
+		responseBodyJson = toJsonSchema(trigger.response.body, label, workflowName);
+	}
+	let responseHeadersJson: Record<string, unknown> | undefined;
+	if (trigger.response.headers !== undefined) {
+		const label = `trigger "${exportName}".response.headers`;
+		assertZodSchema(trigger.response.headers, label, workflowName);
+		responseHeadersJson = toJsonSchema(
+			trigger.response.headers,
+			label,
+			workflowName,
+		);
+	}
+	return { bodyJson, headersJson, responseBodyJson, responseHeadersJson };
+}
+
 function buildTriggerEntry(
 	exportName: string,
 	trigger: HttpTrigger,
@@ -601,26 +658,32 @@ function buildTriggerEntry(
 			`Workflow "${workflowName}": trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
 		);
 	}
-	const bodyLabel = `trigger "${exportName}".body`;
-	const bodyJson = bodyJsonSchemaOrEmpty(trigger.body, bodyLabel, workflowName);
-	const responseBodyLabel = `trigger "${exportName}".responseBody`;
-	let responseBodyJson: Record<string, unknown> | undefined;
-	if (trigger.responseBody !== undefined) {
-		assertZodSchema(trigger.responseBody, responseBodyLabel, workflowName);
-		responseBodyJson = toJsonSchema(
-			trigger.responseBody,
-			responseBodyLabel,
-			workflowName,
-		);
-	}
-	return {
+	const { bodyJson, headersJson, responseBodyJson, responseHeadersJson } =
+		extractHttpTriggerJsonSchemas(exportName, trigger, workflowName);
+	const entry: ManifestHttpTriggerEntry = {
 		name: exportName,
 		type: "http",
 		method: trigger.method,
-		body: bodyJson,
-		inputSchema: composeHttpInputSchema(bodyJson, trigger.method),
-		outputSchema: composeHttpOutputSchema(responseBodyJson),
+		request: {
+			body: bodyJson,
+			headers: stripDraftMarker(headersJson),
+		},
+		inputSchema: composeHttpInputSchema(bodyJson, headersJson, trigger.method),
+		outputSchema: composeHttpOutputSchema(
+			responseBodyJson,
+			responseHeadersJson,
+		),
 	};
+	if (responseBodyJson !== undefined || responseHeadersJson !== undefined) {
+		entry.response = {};
+		if (responseBodyJson !== undefined) {
+			entry.response.body = stripDraftMarker(responseBodyJson);
+		}
+		if (responseHeadersJson !== undefined) {
+			entry.response.headers = stripDraftMarker(responseHeadersJson);
+		}
+	}
+	return entry;
 }
 
 function buildCronTriggerEntry(

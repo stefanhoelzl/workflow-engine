@@ -46,7 +46,14 @@ const WORKFLOW: WorkflowManifest = {
 			name: "onPing",
 			type: "http",
 			method: "POST",
-			body: { type: "object" },
+			request: {
+				body: { type: "object" },
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				},
+			},
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		},
@@ -489,7 +496,14 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 					name: "onPing",
 					type: "http" as const,
 					method: "POST",
-					body: { type: "object" },
+					request: {
+						body: { type: "object" },
+						headers: {
+							type: "object",
+							properties: {},
+							additionalProperties: false,
+						},
+					},
 					inputSchema: { type: "object" },
 					outputSchema: { type: "object" },
 				},

@@ -61,10 +61,15 @@ const WORKFLOW = {
 		{
 			name: "ping",
 			type: "http",
-			path: "ping",
 			method: "POST",
-			body: { type: "object" },
-			params: [],
+			request: {
+				body: { type: "object" },
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				},
+			},
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		},
@@ -1061,10 +1066,15 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 						{
 							name: "leak",
 							type: "http",
-							path: "leak",
 							method: "POST",
-							body: { type: "object" },
-							params: [],
+							request: {
+								body: { type: "object" },
+								headers: {
+									type: "object",
+									properties: {},
+									additionalProperties: false,
+								},
+							},
 							inputSchema: { type: "object" },
 							outputSchema: { type: "object" },
 						},
@@ -1207,10 +1217,15 @@ var __wfe_exports__ = (function(exports) {
 						{
 							name: "leak",
 							type: "http",
-							path: "leak",
 							method: "POST",
-							body: { type: "object" },
-							params: [],
+							request: {
+								body: { type: "object" },
+								headers: {
+									type: "object",
+									properties: {},
+									additionalProperties: false,
+								},
+							},
 							inputSchema: { type: "object" },
 							outputSchema: { type: "object" },
 						},

@@ -97,7 +97,7 @@ export const sendNotification = action({
 });
 
 export const onEvent = httpTrigger({
-	body: z.object({ id: z.string() }),
+	request: { body: z.object({ id: z.string() }) },
 	handler: async ({ body }) => {
 		const result = await sendNotification({ message: body.id });
 		return { status: 202, body: result };
@@ -233,7 +233,7 @@ import { cronTrigger, defineWorkflow, httpTrigger, z } from "@workflow-engine/sd
 export const workflow = defineWorkflow();
 
 export const ping = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => ({}),
 });
 
@@ -369,8 +369,10 @@ export const passthrough = action({
 		expect(outputSchema.type).toBe("object");
 		expect(outputSchema.properties).toHaveProperty("ok");
 
-		const trigger = manifest.triggers[0] as { body: Record<string, unknown> };
-		const bodySchema = trigger.body as {
+		const trigger = manifest.triggers[0] as {
+			request: { body: Record<string, unknown> };
+		};
+		const bodySchema = trigger.request.body as {
 			type: string;
 			properties: Record<string, unknown>;
 		};
@@ -570,6 +572,110 @@ export const broken = httpTrigger({ path: "x" } as any);
 				workflows: ["./nohandler.ts"],
 			}),
 		).rejects.toThrow(ERR_MISSING_HANDLER);
+	});
+
+	it("emits strip=true on declared request.headers in the manifest", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const signed = httpTrigger({
+	request: {
+		headers: z.object({ "x-hub-signature-256": z.string() }),
+	},
+	handler: async () => ({}),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "signed.ts": wf },
+			workflows: ["./signed.ts"],
+		});
+		const manifest = getManifest(result, "signed");
+		const trigger = manifest.triggers[0] as {
+			request: { headers: Record<string, unknown> };
+		};
+		expect(trigger.request.headers.strip).toBe(true);
+		expect(trigger.request.headers.additionalProperties).toBe(false);
+	});
+
+	it("emits strip=true on default empty-record request.headers", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const noHeaders = httpTrigger({
+	handler: async () => ({}),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "default.ts": wf },
+			workflows: ["./default.ts"],
+		});
+		const manifest = getManifest(result, "default");
+		const trigger = manifest.triggers[0] as {
+			request: { headers: Record<string, unknown> };
+		};
+		expect(trigger.request.headers.strip).toBe(true);
+		expect(trigger.request.headers.additionalProperties).toBe(false);
+		expect(
+			Object.keys(
+				trigger.request.headers.properties as Record<string, unknown>,
+			),
+		).toEqual([]);
+	});
+
+	it("does NOT fail when author writes .loose() on request.headers (auto-wrap is overridable)", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const loose = httpTrigger({
+	request: {
+		headers: z.object({ "x-trace-id": z.string() }).loose(),
+	},
+	handler: async () => ({}),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "loose.ts": wf },
+			workflows: ["./loose.ts"],
+		});
+		const manifest = getManifest(result, "loose");
+		const trigger = manifest.triggers[0] as {
+			request: { headers: Record<string, unknown> };
+		};
+		// .loose() emits additionalProperties: {} (any). No `strip` marker
+		// added — author chose passthrough explicitly; SDK respects it.
+		expect(trigger.request.headers.additionalProperties).toEqual({});
+		expect("strip" in trigger.request.headers).toBe(false);
+	});
+
+	it("does NOT fail when author writes .meta({ strip: false }) on request.headers", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const explicitStrict = httpTrigger({
+	request: {
+		headers: z.object({ "x-trace-id": z.string() }).meta({ strip: false }),
+	},
+	handler: async () => ({}),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "explicit.ts": wf },
+			workflows: ["./explicit.ts"],
+		});
+		const manifest = getManifest(result, "explicit");
+		const trigger = manifest.triggers[0] as {
+			request: { headers: Record<string, unknown> };
+		};
+		// Author's `strip: false` wins over the SDK auto-wrap.
+		expect(trigger.request.headers.strip).toBe(false);
 	});
 
 	it("fails when an action's input is not a Zod schema", async () => {

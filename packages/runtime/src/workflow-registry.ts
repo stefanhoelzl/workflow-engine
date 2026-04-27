@@ -103,6 +103,60 @@ async function extractOwnerTarGz(
 // Descriptor construction (manifest entry -> TriggerDescriptor)
 // ---------------------------------------------------------------------------
 
+// Walk a rehydrated zod tree and reconstruct each `ZodObject` whose
+// `.meta().strip === true` in default `.strip()` mode. Recovers author
+// intent across the lossy zod ↔ JSON Schema round-trip, where
+// `additionalProperties: false` collapses both strip-default `.object()`
+// and `.strict()` modes into the same JSON Schema and `fromJSONSchema`
+// always re-emits as `.strict()`.
+//
+// .meta() survives the full round-trip natively in zod v4 (toJSONSchema
+// flattens custom keys to the schema root; fromJSONSchema reads them back),
+// so this walk operates on the rehydrated zod tree alone — no parallel
+// JSON Schema walk. See http-trigger spec "Object schema strip-mode marker
+// (`strip`)" requirement.
+function applyStripMarkers(zod: z.ZodType<unknown>): z.ZodType<unknown> {
+	if (!(zod instanceof z.ZodObject)) {
+		return zod;
+	}
+	const oldShape = zod.shape as Record<string, z.ZodType<unknown>>;
+	const newShape: Record<string, z.ZodType<unknown>> = {};
+	let childrenChanged = false;
+	for (const [k, v] of Object.entries(oldShape)) {
+		const rebuilt = applyStripMarkers(v);
+		if (rebuilt !== v) {
+			childrenChanged = true;
+		}
+		newShape[k] = rebuilt;
+	}
+	const meta: Record<string, unknown> =
+		// biome-ignore lint/suspicious/noExplicitAny: zod v4's .meta() return
+		((zod as any).meta?.() as Record<string, unknown> | undefined) ?? {};
+	const stripMarked = meta.strip === true;
+	if (!(stripMarked || childrenChanged)) {
+		return zod;
+	}
+	// Detect parent catchall to preserve mode when only children changed.
+	const catchallType: string | undefined =
+		// biome-ignore lint/suspicious/noExplicitAny: zod v4 internal
+		(zod as any)._def?.catchall?.def?.type;
+	let rebuilt: z.ZodType<unknown>;
+	if (stripMarked) {
+		rebuilt = z.object(newShape) as z.ZodType<unknown>; // strip default
+	} else if (catchallType === "never") {
+		rebuilt = z.strictObject(newShape) as z.ZodType<unknown>;
+	} else if (catchallType === "any" || catchallType === "unknown") {
+		rebuilt = z.object(newShape).loose() as z.ZodType<unknown>;
+	} else {
+		rebuilt = z.object(newShape) as z.ZodType<unknown>;
+	}
+	if (Object.keys(meta).length > 0) {
+		// biome-ignore lint/suspicious/noExplicitAny: zod v4 .meta() return type
+		rebuilt = (rebuilt as any).meta(meta);
+	}
+	return rebuilt;
+}
+
 // Rehydrate a manifest JSON Schema into a Zod schema. Throws with a
 // trigger-scoped message when `z.fromJSONSchema` rejects the structure;
 // `buildDescriptors` translates the throw into a registration failure.
@@ -113,7 +167,8 @@ function rehydrateSchema(
 	schema: Record<string, unknown>,
 ): z.ZodType<unknown> {
 	try {
-		return z.fromJSONSchema(schema) as z.ZodType<unknown>;
+		const base = z.fromJSONSchema(schema) as z.ZodType<unknown>;
+		return applyStripMarkers(base);
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		throw new Error(
@@ -121,6 +176,16 @@ function rehydrateSchema(
 				`failed to rehydrate JSON Schema (${reason})`,
 		);
 	}
+}
+
+// Public helper for non-registry callers (the test descriptor helper). Same
+// rehydration path the registry uses internally; throws are bare here because
+// callers handle their own error context.
+function rehydrateSchemaForTests(
+	schema: Record<string, unknown>,
+): z.ZodType<unknown> {
+	const base = z.fromJSONSchema(schema) as z.ZodType<unknown>;
+	return applyStripMarkers(base);
 }
 
 // Pre-resolution descriptor (before sentinel resolution + Zod attachment).
@@ -137,16 +202,36 @@ function buildHttpDescriptor(
 	workflowName: string,
 	entry: HttpTriggerManifest,
 ): Omit<HttpTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
-	return {
+	const descriptor: Omit<
+		HttpTriggerDescriptor,
+		"zodInputSchema" | "zodOutputSchema"
+	> = {
 		kind: "http",
 		type: "http",
 		name: entry.name,
 		workflowName,
 		method: entry.method,
-		body: entry.body as Record<string, unknown>,
+		request: {
+			body: entry.request.body as Record<string, unknown>,
+			headers: entry.request.headers as Record<string, unknown>,
+		},
 		inputSchema: entry.inputSchema as Record<string, unknown>,
 		outputSchema: entry.outputSchema as Record<string, unknown>,
 	};
+	if (entry.response !== undefined) {
+		const response: {
+			body?: Record<string, unknown>;
+			headers?: Record<string, unknown>;
+		} = {};
+		if (entry.response.body !== undefined) {
+			response.body = entry.response.body as Record<string, unknown>;
+		}
+		if (entry.response.headers !== undefined) {
+			response.headers = entry.response.headers as Record<string, unknown>;
+		}
+		(descriptor as { response?: typeof response }).response = response;
+	}
+	return descriptor;
 }
 
 function buildCronDescriptor(
@@ -1058,4 +1143,4 @@ export type {
 	WorkflowRegistry,
 	WorkflowRegistryOptions,
 };
-export { createWorkflowRegistry, extractOwnerTarGz };
+export { createWorkflowRegistry, extractOwnerTarGz, rehydrateSchemaForTests };

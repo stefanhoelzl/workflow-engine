@@ -62,7 +62,11 @@ const URL_SEGMENT_COUNT = 4;
 function headersToRecord(headers: Headers): Record<string, string> {
 	const out: Record<string, string> = {};
 	headers.forEach((v, k) => {
-		out[k] = v;
+		// Explicit lowercase: HTTP header names are case-insensitive, and the
+		// load-bearing contract for author-facing zod schemas is that incoming
+		// names are normalized to lowercase before validation. Don't rely on
+		// undici's Headers#forEach lowercasing — make the contract grep-able.
+		out[k.toLowerCase()] = v;
 	});
 	return out;
 }
@@ -77,18 +81,32 @@ function validationFailure(
 	);
 }
 
+function hasContentTypeHeader(headers: Record<string, string>): boolean {
+	for (const k of Object.keys(headers)) {
+		if (k.toLowerCase() === "content-type") {
+			return true;
+		}
+	}
+	return false;
+}
+
 function serializeHttpResult(c: Context, output: unknown): Response {
 	const result = (output ?? {}) as HttpTriggerResult;
 	const status = (result.status ?? DEFAULT_HTTP_STATUS) as ContentfulStatusCode;
-	const body = result.body ?? "";
 	const headers: Record<string, string> = { ...(result.headers ?? {}) };
-	if (typeof body === "string") {
-		return c.body(body, status, headers);
+	if (result.body === null || result.body === undefined) {
+		return c.body(null, status, headers);
 	}
-	if (body === null || body === undefined) {
-		return c.body("", status, headers);
+	if (typeof result.body === "string") {
+		if (!hasContentTypeHeader(headers)) {
+			headers["content-type"] = "text/plain; charset=UTF-8";
+		}
+		return c.body(result.body, status, headers);
 	}
-	return c.json(body, status, headers);
+	if (!hasContentTypeHeader(headers)) {
+		headers["content-type"] = "application/json; charset=UTF-8";
+	}
+	return c.body(JSON.stringify(result.body), status, headers);
 }
 
 function internalErrorResponse(c: Context): Response {

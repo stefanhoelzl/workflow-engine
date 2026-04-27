@@ -12,7 +12,10 @@ function makeDescriptor(
 		name: "t",
 		workflowName: "w",
 		method: "POST",
-		body: { type: "object" },
+		request: {
+			body: { type: "object" },
+			headers: { type: "object", properties: {}, additionalProperties: false },
+		},
 		inputSchema,
 		outputSchema: { type: "object" },
 	});

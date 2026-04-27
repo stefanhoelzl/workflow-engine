@@ -53,7 +53,10 @@ function makeDescriptor(
 		name,
 		workflowName,
 		method: "POST",
-		body: { type: "object" },
+		request: {
+			body: { type: "object" },
+			headers: { type: "object", properties: {}, additionalProperties: false },
+		},
 		inputSchema: { type: "object" },
 		outputSchema: { type: "object" },
 	});

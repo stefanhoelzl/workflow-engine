@@ -60,10 +60,34 @@ function sortedOwners(c: Context): string[] {
 	return user ? Array.from(ownerSet(user)).sort() : [];
 }
 
+function isEnvelope(
+	value: unknown,
+): value is { body?: unknown; headers?: Record<string, string> } {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
+	const v = value as Record<string, unknown>;
+	const ks = Object.keys(v);
+	// Treat as envelope only when at least one of `body`/`headers` is present
+	// AND every present key is one of {body, headers}. A bare body that
+	// happens to contain a `body` field (e.g. `{ body: "comment text" }`) is
+	// still treated as bare unless `headers` is also present.
+	const hasEnvelopeKey = "headers" in v;
+	if (!hasEnvelopeKey) {
+		return false;
+	}
+	for (const k of ks) {
+		if (k !== "body" && k !== "headers") {
+			return false;
+		}
+	}
+	return true;
+}
+
 // biome-ignore lint/complexity/useMaxParams: wraps posted body into the kind-specific input shape; parts are already available at the call site
 function wrapInputForDescriptor(
 	descriptor: BaseTriggerDescriptor<string>,
-	body: unknown,
+	posted: unknown,
 	owner: string,
 	repo: string,
 	workflowName: string,
@@ -73,17 +97,29 @@ function wrapInputForDescriptor(
 		const http = descriptor as HttpTriggerDescriptor;
 		// Server-side synthesis: build the full HttpTriggerPayload the HTTP
 		// trigger backend would normally construct from a real webhook
-		// request. Headers are intentionally empty (leaking dispatch-path
-		// specifics into guest-visible headers would be wrong); url is the
-		// canonical relative webhook path; method comes from the descriptor.
+		// request. Accept either a bare body (today's shape, when the trigger
+		// declares no headers schema) or a `{body, headers}` envelope (when
+		// the card collects header inputs from a declared headers schema).
+		// url is the canonical relative webhook path; method comes from the
+		// descriptor.
+		let body: unknown;
+		let headers: Record<string, string> = {};
+		if (isEnvelope(posted)) {
+			body = posted.body;
+			if (posted.headers && typeof posted.headers === "object") {
+				headers = posted.headers as Record<string, string>;
+			}
+		} else {
+			body = posted;
+		}
 		return {
 			body,
-			headers: {},
+			headers,
 			url: `/webhooks/${owner}/${repo}/${workflowName}/${triggerName}`,
 			method: http.method,
 		};
 	}
-	return body;
+	return posted;
 }
 
 function buildDispatch(c: Context): DispatchMeta {
