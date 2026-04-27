@@ -31,6 +31,12 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 			secretAccessKey: options.secretAccessKey,
 		},
 		region: options.region ?? "us-east-1",
+		// Pre-flagday integrity behaviour: only attach a checksum when the op
+		// requires one (DeleteObjects → Content-MD5). The post-flagday default
+		// (`WHEN_SUPPORTED` + CRC32 via `x-amz-sdk-checksum-algorithm`) is
+		// rejected by UpCloud Object Storage's S3 surface.
+		requestChecksumCalculation: "WHEN_REQUIRED",
+		responseChecksumValidation: "WHEN_REQUIRED",
 		...(options.endpoint
 			? { endpoint: options.endpoint, forcePathStyle: true }
 			: {}),
