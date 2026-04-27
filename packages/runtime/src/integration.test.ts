@@ -1362,7 +1362,7 @@ describe("sandbox cpu terminal limit — full runtime pipeline", () => {
 		store = await createEventStore({ persistence: { backend }, logger });
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({
 			logger,
