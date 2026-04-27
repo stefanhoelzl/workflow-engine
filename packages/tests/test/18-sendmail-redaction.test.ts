@@ -20,17 +20,17 @@ import { getMocks } from "@workflow-engine/tests/mocks";
 // describe without this env, so its loopback-rejection invariant is
 // preserved.
 
-const mocks = getMocks();
+const { smtp } = getMocks();
 const SLUG = "sendmail-happy";
 
 describe("sendMail happy path + log redaction", {
 	env: { WFE_TEST_DISABLE_SSRF_PROTECTION: "true" },
 	buildEnv: {
-		SMTP_HOST: mocks.smtp.host,
-		SMTP_PORT: String(mocks.smtp.port),
-		SMTP_USER: mocks.smtp.user,
-		SMTP_PASS: mocks.smtp.pass,
-		SMTP_RCPT: mocks.smtp.recipient(SLUG),
+		SMTP_HOST: smtp.host,
+		SMTP_PORT: String(smtp.port),
+		SMTP_USER: smtp.user,
+		SMTP_PASS: smtp.pass,
+		SMTP_RCPT: smtp.recipient(SLUG),
 	},
 }, () => {
 	test("sendMail delivers to mock and password never lands in logs", (s) =>
@@ -77,10 +77,10 @@ export const send = httpTrigger({
 				expect(captures).toHaveLength(1);
 				expect(captures[0]).toMatchObject({
 					subject: "hello",
-					to: [mocks.smtp.recipient(SLUG)],
+					to: [smtp.recipient(SLUG)],
 				});
 				for (const line of state.logs) {
-					expect(JSON.stringify(line)).not.toContain(mocks.smtp.pass);
+					expect(JSON.stringify(line)).not.toContain(smtp.pass);
 				}
 			}));
 });

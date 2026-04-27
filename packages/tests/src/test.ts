@@ -4,7 +4,12 @@ import type { Marker } from "./log-stream.js";
 import { createMockClient } from "./mocks/client.js";
 import "./mocks/provided.js";
 import { createScenario } from "./scenario.js";
-import type { HttpCapture, MailCapture, Scenario } from "./types.js";
+import type {
+	HttpCapture,
+	MailCapture,
+	Scenario,
+	SqlCapture,
+} from "./types.js";
 
 function test(name: string, body: (s: Scenario) => Scenario): void {
 	vitestTest(name, async () => {
@@ -15,6 +20,9 @@ function test(name: string, body: (s: Scenario) => Scenario): void {
 		});
 		const smtpClient = createMockClient<MailCapture>({
 			adminUrl: mocks.smtp.adminUrl,
+		});
+		const sqlClient = createMockClient<SqlCapture>({
+			adminUrl: mocks.pg.adminUrl,
 		});
 		// Auto-mark per test so `state.logs` only includes lines emitted
 		// during this test's execution. After a respawn the LogStream is a
@@ -28,6 +36,7 @@ function test(name: string, body: (s: Scenario) => Scenario): void {
 			buildEnv: ctx.getBuildEnv(),
 			httpClient,
 			smtpClient,
+			sqlClient,
 			getLogMarker: () => marker,
 			resetLogMarker: () => {
 				marker = ctx.getChild().logStream.mark();

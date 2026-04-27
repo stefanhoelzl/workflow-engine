@@ -17,6 +17,7 @@ import type {
 	Scenario,
 	ScenarioState,
 	SignalOpts,
+	SqlCapture,
 	UploadEntry,
 	WebhookOpts,
 	WorkflowOpts,
@@ -38,6 +39,7 @@ interface ScenarioRunContext {
 	buildEnv: Record<string, string>;
 	httpClient: MockClient<HttpCapture>;
 	smtpClient: MockClient<MailCapture>;
+	sqlClient: MockClient<SqlCapture>;
 	getLogMarker(): Marker;
 	resetLogMarker(): void;
 }
@@ -107,34 +109,19 @@ function notImplemented(method: string): never {
 	);
 }
 
-function throwingMockClient<T extends { ts: number; slug?: string }>(
-	name: string,
-): MockClient<T> {
-	const fail = (op: string) =>
-		Promise.reject(
-			new Error(
-				`state.${name}.${op}: mock infrastructure not implemented in this build (PR 13+)`,
-			),
-		);
-	return {
-		captures: () => fail("captures") as Promise<readonly T[]>,
-		waitFor: () => fail("waitFor") as Promise<T>,
-		reset: () => fail("reset") as Promise<void>,
-	};
-}
-
 interface FreshScenarioStateInputs {
 	events: readonly InvocationEvent[];
 	logs: readonly LogLine[];
 	httpClient: MockClient<HttpCapture>;
 	smtpClient: MockClient<MailCapture>;
+	sqlClient: MockClient<SqlCapture>;
 }
 
 function freshScenarioState(
 	state: MutableState,
 	inputs: FreshScenarioStateInputs,
 ): ScenarioState {
-	const { events, logs, httpClient, smtpClient } = inputs;
+	const { events, logs, httpClient, smtpClient, sqlClient } = inputs;
 	const empty = createCapturedSeq([]);
 	return {
 		workflows: createCapturedSeq(state.workflows, state.workflowLabels),
@@ -146,7 +133,7 @@ function freshScenarioState(
 		logs,
 		http: httpClient,
 		smtp: smtpClient,
-		sql: throwingMockClient("sql"),
+		sql: sqlClient,
 	};
 }
 
@@ -400,6 +387,7 @@ async function runExpect(
 					logs,
 					httpClient: ctx.httpClient,
 					smtpClient: ctx.smtpClient,
+					sqlClient: ctx.sqlClient,
 				}),
 			);
 			return;
