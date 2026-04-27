@@ -18,11 +18,11 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Sync rulesets
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_UPLOAD_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
