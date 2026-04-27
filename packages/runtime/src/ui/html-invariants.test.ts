@@ -1,6 +1,7 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it } from "vitest";
+import { withZodSchemas } from "../triggers/test-descriptors.js";
 import type { WorkflowEntry } from "../workflow-registry.js";
 import { renderFlamegraph } from "./dashboard/flamegraph.js";
 import {
@@ -49,7 +50,7 @@ function makeWorkflowEntry(): WorkflowEntry {
 		},
 		bundleSource: "",
 		triggers: [
-			{
+			withZodSchemas({
 				kind: "http",
 				type: "http",
 				name: "t",
@@ -61,7 +62,7 @@ function makeWorkflowEntry(): WorkflowEntry {
 					properties: { body: { type: "object" } },
 				},
 				outputSchema: { type: "object" },
-			},
+			}),
 		],
 	};
 }

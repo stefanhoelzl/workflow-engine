@@ -1050,7 +1050,7 @@ plugins: [
   createFetchPlugin(),                      // sandbox-stdlib (hardenedFetch default)
   createTimersPlugin(),                     // sandbox-stdlib
   createConsolePlugin(),                    // sandbox-stdlib
-  createHostCallActionPlugin({ manifest }), // runtime (Ajv validators from manifest)
+  createHostCallActionPlugin({ manifest }), // runtime (schema validators rehydrated from manifest)
   createSdkSupportPlugin(),                 // sdk (__sdk.dispatchAction)
   createTriggerPlugin(),                    // runtime (trigger.* lifecycle emission)
 ]

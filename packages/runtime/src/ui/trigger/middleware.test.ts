@@ -9,6 +9,7 @@ import type {
 	ManualTriggerDescriptor,
 } from "../../executor/types.js";
 import type { TriggerEntry } from "../../triggers/source.js";
+import { withZodSchemas } from "../../triggers/test-descriptors.js";
 import { validate } from "../../triggers/validator.js";
 import type {
 	WorkflowEntry,
@@ -95,7 +96,7 @@ function makeHttpStub(
 	},
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: HttpTriggerDescriptor = {
+	const descriptor: HttpTriggerDescriptor = withZodSchemas({
 		kind: "http",
 		type: "http",
 		name: spec.name,
@@ -104,7 +105,7 @@ function makeHttpStub(
 		body: spec.body ?? { type: "object" },
 		inputSchema: spec.inputSchema ?? { type: "object" },
 		outputSchema: { type: "object" },
-	};
+	});
 	const defaultFire: Fire = async (input) => {
 		const v = validate(descriptor, input);
 		if (!v.ok) {
@@ -152,7 +153,7 @@ function makeCronStub(
 	spec: { name: string; schedule: string; tz: string },
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: CronTriggerDescriptor = {
+	const descriptor: CronTriggerDescriptor = withZodSchemas({
 		kind: "cron",
 		type: "cron",
 		name: spec.name,
@@ -165,7 +166,7 @@ function makeCronStub(
 			additionalProperties: false,
 		},
 		outputSchema: {},
-	};
+	});
 	const defaultFire: Fire = async () => ({
 		ok: true,
 		output: undefined,
@@ -208,7 +209,7 @@ function makeManualStub(
 	},
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: ManualTriggerDescriptor = {
+	const descriptor: ManualTriggerDescriptor = withZodSchemas({
 		kind: "manual",
 		type: "manual",
 		name: spec.name,
@@ -219,7 +220,7 @@ function makeManualStub(
 			additionalProperties: false,
 		},
 		outputSchema: spec.outputSchema ?? {},
-	};
+	});
 	const defaultFire: Fire = async (input) => {
 		const v = validate(descriptor, input);
 		if (!v.ok) {
@@ -266,7 +267,7 @@ function makeImapStub(
 	workflowName: string,
 	spec: { name: string; host?: string; port?: number; folder?: string },
 ): StubEntry {
-	const descriptor: ImapTriggerDescriptor = {
+	const descriptor: ImapTriggerDescriptor = withZodSchemas({
 		kind: "imap",
 		type: "imap",
 		name: spec.name,
@@ -286,7 +287,7 @@ function makeImapStub(
 			additionalProperties: true,
 		},
 		outputSchema: {},
-	};
+	});
 	const triggerEntry: TriggerEntry = {
 		descriptor,
 		fire: async () => ({ ok: true, output: undefined }),

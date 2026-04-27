@@ -16,14 +16,15 @@ import {
 // ---------------------------------------------------------------------------
 //
 // Backends receive `TriggerEntry { descriptor, fire }`. Calling `fire(input)`:
-//   1. Validates `input` against `descriptor.inputSchema` (Ajv, shared
-//      `validate()` helper).
+//   1. Validates `input` against `descriptor.zodInputSchema` (pre-rehydrated
+//      at WorkflowRegistry registration time, via the shared `validate()`
+//      helper).
 //   2. On validation failure: resolves to `{ok: false, error: {message,
 //      issues}}` without dispatching through the executor.
 //   3. On validation success: dispatches via `executor.invoke(owner, repo,
 //      workflow, descriptor, validatedInput, bundleSource)`.
 //   4. On `{ok: true, output}`: validates `output` against
-//      `descriptor.outputSchema` (Ajv). On mismatch — the handler returned
+//      `descriptor.zodOutputSchema`. On mismatch — the handler returned
 //      a value that violates its own contract — resolves to `{ok: false,
 //      error: {message}}` **without** `issues`, so the HTTP backend's
 //      `no-issues → 500` rule correctly routes this as a server bug

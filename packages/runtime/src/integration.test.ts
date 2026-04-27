@@ -194,7 +194,7 @@ describe("end-to-end event flow", () => {
 		expect(kinds.at(-1)).toBe("trigger.response");
 		expect(kinds).toContain("action.request");
 		expect(kinds).toContain("action.response");
-		// system.* retired under plugin composition (§10): host-side Ajv
+		// system.* retired under plugin composition (§10): host-side schema
 		// validation no longer fires system.request/system.response pairs —
 		// validation is now a plugin-internal call (`deps["host-call-action"]
 		// .validateAction`) and the action.* pair fully covers the audit trail.

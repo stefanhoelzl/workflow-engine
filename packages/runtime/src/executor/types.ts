@@ -2,6 +2,8 @@
 // Action + trigger descriptors (shared by executor + workflow-registry)
 // ---------------------------------------------------------------------------
 
+import type { z } from "@workflow-engine/core";
+
 interface ActionDescriptor {
 	readonly name: string;
 	readonly input: { parse(data: unknown): unknown };
@@ -22,6 +24,12 @@ interface BaseTriggerDescriptor<K extends string> {
 	readonly inputSchema: Record<string, unknown>;
 	// JSON Schema (from manifest) describing the handler's return shape.
 	readonly outputSchema: Record<string, unknown>;
+	// Zod schema rehydrated from `inputSchema` once at WorkflowRegistry
+	// registration time. Reused for every fire() invocation; per-request
+	// rehydration is forbidden. See payload-validation/spec.md.
+	readonly zodInputSchema: z.ZodType<unknown>;
+	// Zod schema rehydrated from `outputSchema` once at registration time.
+	readonly zodOutputSchema: z.ZodType<unknown>;
 }
 
 interface HttpTriggerDescriptor extends BaseTriggerDescriptor<"http"> {

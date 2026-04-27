@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HttpTriggerDescriptor, InvokeResult } from "../executor/types.js";
 import { createHttpTriggerSource } from "./http.js";
 import type { TriggerEntry } from "./source.js";
+import { withZodSchemas } from "./test-descriptors.js";
 import { validate } from "./validator.js";
 
 // ---------------------------------------------------------------------------
@@ -12,17 +13,18 @@ import { validate } from "./validator.js";
 function makeDescriptor(
 	overrides: Partial<HttpTriggerDescriptor> = {},
 ): HttpTriggerDescriptor {
-	return {
-		kind: "http",
-		type: "http",
+	const base = {
+		kind: "http" as const,
+		type: "http" as const,
 		name: "t",
 		workflowName: "w",
 		method: "POST",
-		body: { type: "object" },
-		inputSchema: { type: "object" },
-		outputSchema: { type: "object" },
+		body: { type: "object" } as Record<string, unknown>,
+		inputSchema: { type: "object" } as Record<string, unknown>,
+		outputSchema: { type: "object" } as Record<string, unknown>,
 		...overrides,
 	};
+	return withZodSchemas(base);
 }
 
 type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;

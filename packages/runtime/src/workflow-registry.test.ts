@@ -371,6 +371,28 @@ describe("workflow registry", () => {
 		expect(result.ok).toBe(true);
 		expect(registry.list("acme", "demo")).toHaveLength(1);
 	});
+
+	it("attaches pre-rehydrated Zod schemas to every registered descriptor", async () => {
+		// Pre-rehydration is a load-time invariant: after register succeeds,
+		// every descriptor SHALL carry a Zod schema instance ready for
+		// safeParse — per-request rehydration is forbidden.
+		const logger = makeLogger();
+		registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			keyStore: makeKeyStore(),
+		});
+		const result = await registry.registerOwner("acme", "demo", ownerFiles());
+		expect(result.ok).toBe(true);
+		const entries = registry.list("acme", "demo");
+		expect(entries).toHaveLength(1);
+		for (const entry of entries) {
+			for (const descriptor of entry.triggers) {
+				expect(typeof descriptor.zodInputSchema.safeParse).toBe("function");
+				expect(typeof descriptor.zodOutputSchema.safeParse).toBe("function");
+			}
+		}
+	});
 });
 
 describe("extractOwnerTarGz: decompressed size cap", () => {

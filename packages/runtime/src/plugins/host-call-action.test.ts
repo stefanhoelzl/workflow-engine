@@ -257,9 +257,10 @@ describe("host-call-action plugin (§10 shape)", () => {
 		);
 	});
 
-	it("worker bundle tree-shakes Ajv: the source of host-call-action.ts never imports ajv", async () => {
-		// Structural assertion that the plugin file itself does not reach Ajv
-		// — consumer code (sandbox-store via host-call-action-config.ts) does.
+	it("the plugin source never imports ajv (validator engine is Zod via z.fromJSONSchema)", async () => {
+		// Structural assertion — `unify-schema-validation-on-zod` removed every
+		// Ajv reference from the runtime. The plugin rehydrates Zod schemas
+		// from JSON Schema instead of instantiating Ajv standaloneCode source.
 		const { readFile } = await import("node:fs/promises");
 		const src = await readFile(
 			new URL("./host-call-action.ts", import.meta.url),

@@ -1,5 +1,5 @@
+import { z } from "@workflow-engine/core";
 import type { DepsMap, PluginSetup } from "@workflow-engine/sandbox";
-import { ajvPathToSegments } from "../ajv-shared.js";
 
 interface ValidationIssue {
 	readonly path: (string | number)[];
@@ -8,9 +8,11 @@ interface ValidationIssue {
 
 /**
  * Plain error subclass that the sdk-support plugin catches and surfaces to
- * the guest. Carries the Ajv errors array verbatim under `errors` plus a
- * normalized `issues` array (path-of-segments + message) — both shapes are
- * present so downstream handlers can introspect either.
+ * the guest. Carries the underlying validator's raw issue array under
+ * `errors` plus a normalised `issues` array (path-of-segments + message) —
+ * both shapes are present so downstream handlers can introspect either.
+ * After the Ajv→Zod swap the raw shape is `ZodIssue[]`; the normalised
+ * shape is engine-agnostic and unchanged.
  */
 class ValidationError extends Error {
 	readonly name = "ValidationError";
@@ -27,73 +29,71 @@ class ValidationError extends Error {
 	}
 }
 
-interface AjvValidatorFn {
-	(data: unknown): boolean;
-	errors?: ReadonlyArray<{ instancePath?: string; message?: string }> | null;
-}
-
 /**
- * Per-action JSON-schema validator source, produced by Ajv's
- * `standaloneCode` on the main thread. The worker `new Function`s each
- * source into a plain predicate; no Ajv runtime is bundled into the worker.
- * Input and output directions each have their own per-action map.
+ * Per-action JSON-Schema map shipped from the main thread. The plugin's
+ * `worker()` rehydrates each schema into a Zod validator via
+ * `z.fromJSONSchema()` at sandbox boot; per-call rehydration is forbidden.
+ * Both maps are JSON-serialisable (plain JSON Schema objects), which is the
+ * gate that lets them cross the worker-thread `postMessage` boundary.
  */
 interface Config {
-	readonly inputValidatorSources: Readonly<Record<string, string>>;
-	readonly outputValidatorSources: Readonly<Record<string, string>>;
+	readonly inputSchemas: Readonly<Record<string, Record<string, unknown>>>;
+	readonly outputSchemas: Readonly<Record<string, Record<string, unknown>>>;
 }
 
 const name = "host-call-action";
 const dependsOn: readonly string[] = [];
 
-/**
- * Instantiates pre-compiled per-action validators at `worker()` time and
- * exports `validateAction(name, input)` + `validateActionOutput(name, output)`
- * for consumption by sdk-support via `dependsOn: ["host-call-action"]`.
- * Registers no guest functions; the only consumer is another plugin, not
- * owner code. Validators persist for the sandbox's lifetime — no
- * recompilation between runs.
- */
-function compileValidators(
-	sources: Readonly<Record<string, string>>,
-): Map<string, AjvValidatorFn> {
-	const validators = new Map<string, AjvValidatorFn>();
-	for (const [actionName, source] of Object.entries(sources)) {
-		validators.set(actionName, instantiateValidator(source));
+function rehydrateValidators(
+	schemas: Readonly<Record<string, Record<string, unknown>>>,
+): Map<string, z.ZodType<unknown>> {
+	const validators = new Map<string, z.ZodType<unknown>>();
+	for (const [actionName, schema] of Object.entries(schemas)) {
+		validators.set(actionName, z.fromJSONSchema(schema) as z.ZodType<unknown>);
 	}
 	return validators;
 }
 
-function issuesFromAjv(
-	errors: ReadonlyArray<{ instancePath?: string; message?: string }>,
+function zodIssuesToValidationIssues(
+	issues: readonly z.core.$ZodIssue[],
 ): ValidationIssue[] {
-	return errors.map((err) => ({
-		path: ajvPathToSegments(err.instancePath ?? ""),
-		message: err.message ?? "validation failed",
+	return issues.map((issue) => ({
+		path: [...issue.path] as (string | number)[],
+		message: issue.message,
 	}));
 }
 
 function runValidator(
-	validators: Map<string, AjvValidatorFn>,
+	validators: Map<string, z.ZodType<unknown>>,
 	actionName: string,
 	value: unknown,
 	errorLabel: string,
-): void {
+): unknown {
 	const validator = validators.get(actionName);
 	if (!validator) {
 		throw new Error(`action "${actionName}" is not declared in the manifest`);
 	}
-	const ok = validator(value);
-	if (ok) {
-		return;
+	const result = validator.safeParse(value);
+	if (result.success) {
+		return result.data;
 	}
-	const ajvErrors = validator.errors ?? [];
-	throw new ValidationError(errorLabel, issuesFromAjv(ajvErrors), ajvErrors);
+	throw new ValidationError(
+		errorLabel,
+		zodIssuesToValidationIssues(result.error.issues),
+		result.error.issues,
+	);
 }
 
+/**
+ * Rehydrates per-action Zod validators at `worker()` boot and exports
+ * `validateAction(name, input)` + `validateActionOutput(name, output)` for
+ * consumption by sdk-support via `dependsOn: ["host-call-action"]`.
+ * Validators persist for the sandbox's lifetime; no rehydration between
+ * runs.
+ */
 function worker(_ctx: unknown, _deps: DepsMap, config: Config): PluginSetup {
-	const inputValidators = compileValidators(config.inputValidatorSources);
-	const outputValidators = compileValidators(config.outputValidatorSources);
+	const inputValidators = rehydrateValidators(config.inputSchemas);
+	const outputValidators = rehydrateValidators(config.outputSchemas);
 
 	const validateAction = (actionName: string, input: unknown): void => {
 		runValidator(
@@ -104,18 +104,13 @@ function worker(_ctx: unknown, _deps: DepsMap, config: Config): PluginSetup {
 		);
 	};
 
-	const validateActionOutput = (
-		actionName: string,
-		output: unknown,
-	): unknown => {
+	const validateActionOutput = (actionName: string, output: unknown): unknown =>
 		runValidator(
 			outputValidators,
 			actionName,
 			output,
 			"action output validation failed",
 		);
-		return output;
-	};
 
 	const exports: DepsMap["host-call-action"] = {
 		validateAction,
@@ -124,29 +119,5 @@ function worker(_ctx: unknown, _deps: DepsMap, config: Config): PluginSetup {
 	return { exports };
 }
 
-function instantiateValidator(source: string): AjvValidatorFn {
-	// Ajv's `standaloneCode` emits CJS-shaped source (`module.exports = validate;
-	// module.exports.default = validate;`). Wrap with a function-constructor
-	// invocation that provides a minimal CJS module shim and returns whatever
-	// the validator script installed onto module.exports.
-	const loader = new Function(
-		"module",
-		"exports",
-		`${source}; return module.exports;`,
-	);
-	const mod: { exports: unknown } = { exports: {} };
-	const exported = loader(mod, mod.exports);
-	const fn =
-		typeof exported === "function"
-			? exported
-			: (mod.exports as { default?: unknown }).default;
-	if (typeof fn !== "function") {
-		throw new Error(
-			"host-call-action: validator source did not default-export a function",
-		);
-	}
-	return fn as AjvValidatorFn;
-}
-
 export type { Config, ValidationIssue };
-export { dependsOn, instantiateValidator, name, ValidationError, worker };
+export { dependsOn, name, ValidationError, worker };

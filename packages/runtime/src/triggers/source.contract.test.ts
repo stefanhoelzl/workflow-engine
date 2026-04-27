@@ -10,6 +10,7 @@ import { createCronTriggerSource } from "./cron.js";
 import { createHttpTriggerSource } from "./http.js";
 import { createManualTriggerSource } from "./manual.js";
 import type { TriggerEntry, TriggerSource } from "./source.js";
+import { withZodSchemas } from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // TriggerSource contract tests — parameterised by kind
@@ -33,7 +34,7 @@ const stubFire: Fire = () =>
 const httpKind: KindFactory<"http"> = {
 	kind: "http",
 	makeEntry(name) {
-		const descriptor: HttpTriggerDescriptor = {
+		const descriptor: HttpTriggerDescriptor = withZodSchemas({
 			kind: "http",
 			type: "http",
 			name,
@@ -42,7 +43,7 @@ const httpKind: KindFactory<"http"> = {
 			body: { type: "object" },
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
-		};
+		});
 		return {
 			descriptor,
 			fire: vi.fn<Fire>(stubFire),
@@ -57,7 +58,7 @@ const httpKind: KindFactory<"http"> = {
 const cronKind: KindFactory<"cron"> = {
 	kind: "cron",
 	makeEntry(name) {
-		const descriptor: CronTriggerDescriptor = {
+		const descriptor: CronTriggerDescriptor = withZodSchemas({
 			kind: "cron",
 			type: "cron",
 			name,
@@ -70,7 +71,7 @@ const cronKind: KindFactory<"cron"> = {
 				additionalProperties: false,
 			},
 			outputSchema: {},
-		};
+		});
 		return {
 			descriptor,
 			fire: vi.fn<Fire>(stubFire),
@@ -87,7 +88,7 @@ const cronKind: KindFactory<"cron"> = {
 const manualKind: KindFactory<"manual"> = {
 	kind: "manual",
 	makeEntry(name) {
-		const descriptor: ManualTriggerDescriptor = {
+		const descriptor: ManualTriggerDescriptor = withZodSchemas({
 			kind: "manual",
 			type: "manual",
 			name,
@@ -98,7 +99,7 @@ const manualKind: KindFactory<"manual"> = {
 				additionalProperties: false,
 			},
 			outputSchema: {},
-		};
+		});
 		return {
 			descriptor,
 			fire: vi.fn<Fire>(stubFire),

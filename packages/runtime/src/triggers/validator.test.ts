@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { HttpTriggerDescriptor } from "../executor/types.js";
+import { withZodSchemas } from "./test-descriptors.js";
 import { validate } from "./validator.js";
 
 function makeDescriptor(
 	inputSchema: Record<string, unknown>,
 ): HttpTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "http",
 		type: "http",
 		name: "t",
@@ -14,7 +15,7 @@ function makeDescriptor(
 		body: { type: "object" },
 		inputSchema,
 		outputSchema: { type: "object" },
-	};
+	});
 }
 
 describe("validate", () => {
@@ -75,9 +76,10 @@ describe("validate", () => {
 		expect(result.ok).toBe(false);
 	});
 
-	it("caches compiled validators per schema identity", () => {
-		// Smoke test of the WeakMap cache; two consecutive parses on the same
-		// descriptor succeed (cache exercised — not measured).
+	it("reuses the descriptor's pre-rehydrated Zod schema across calls", () => {
+		// Two consecutive parses against the same descriptor share the same
+		// `zodInputSchema` instance — there is no per-call validator
+		// construction (pre-rehydration at registration time).
 		const schema = { type: "object", properties: { x: { type: "number" } } };
 		const descriptor = makeDescriptor(schema);
 		expect(validate(descriptor, { x: 1 }).ok).toBe(true);

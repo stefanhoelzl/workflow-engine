@@ -1,4 +1,3 @@
-import Ajv2020 from "ajv/dist/2020.js";
 // biome-ignore lint/style/noExportedImports: z is re-exported for consumers alongside locally defined exports
 import { z } from "zod";
 
@@ -150,15 +149,22 @@ function dispatchAction(
 // Manifest schema (v1)
 // ---------------------------------------------------------------------------
 
-const ajv = new Ajv2020.default();
-// biome-ignore lint/style/noNonNullAssertion: meta-schema is always available in Ajv2020
-const validateJsonSchema = ajv.getSchema(
-	"https://json-schema.org/draft/2020-12/schema",
-)!;
-
-const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) =>
-	validateJsonSchema(val),
-);
+// JSON-Schema-shape gate at upload time. We trust `z.fromJSONSchema` to
+// throw on values that aren't structurally valid JSON Schema; if it
+// rehydrates without throwing, we treat the value as a valid JSON Schema
+// for the purposes of `ManifestSchema`. Engine-name detail lives here, not
+// in the spec text — see `unify-schema-validation-on-zod`.
+const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) => {
+	if (typeof val !== "object" || val === null) {
+		return false;
+	}
+	try {
+		z.fromJSONSchema(val as Record<string, unknown>);
+		return true;
+	} catch {
+		return false;
+	}
+});
 
 const actionManifestSchema = z.object({
 	name: z.string(),

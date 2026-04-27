@@ -6,7 +6,7 @@ Provide `@workflow-engine/core` — an internal, private package that holds the 
 ## Requirements
 ### Requirement: Core package provides shared contract types
 
-The `@workflow-engine/core` package SHALL export the shared contract consumed by both SDK and runtime. It SHALL contain `ManifestSchema` (Zod validator), `Manifest` type, `HttpTriggerResult` type, `HttpTriggerPayload` type, and a `z` re-export from Zod v4. It SHALL depend only on `zod` and `ajv`.
+The `@workflow-engine/core` package SHALL export the shared contract consumed by both SDK and runtime. It SHALL contain `ManifestSchema` (Zod validator), `Manifest` type, `HttpTriggerResult` type, `HttpTriggerPayload` type, and a `z` re-export from Zod v4. It SHALL depend only on `zod`.
 
 #### Scenario: Runtime imports manifest validation from core
 
@@ -34,12 +34,12 @@ The `@workflow-engine/core` package SHALL NOT be published to npm. It SHALL be c
 
 ### Requirement: Core package has minimal dependencies
 
-The `@workflow-engine/core` package SHALL depend on `zod` (runtime), `ajv` (runtime, for JSON Schema validation inside `ManifestSchema`), and `libsodium-wrappers` (runtime, scoped to `secrets-crypto` and not transitively pulled into the sandbox bundle from the main entry). It SHALL NOT depend on vite, typescript, or any build tooling.
+The `@workflow-engine/core` package SHALL depend on `zod` (runtime) and `libsodium-wrappers` (runtime, scoped to `secrets-crypto` and not transitively pulled into the sandbox bundle from the main entry). It SHALL NOT depend on vite, typescript, or any build tooling. JSON Schema validation inside `ManifestSchema` SHALL be implemented via Zod's own JSON-Schema rehydration capability; no separate JSON-Schema validation library SHALL appear in the dependency list.
 
 #### Scenario: Core dependency list
 
 - **WHEN** inspecting `packages/core/package.json` dependencies
-- **THEN** it lists exactly `zod`, `ajv`, and `libsodium-wrappers`
+- **THEN** it lists exactly `zod` and `libsodium-wrappers`
 - **AND** it has no devDependencies related to build tooling
 
 #### Scenario: SDK and runtime no longer depend on libsodium directly
