@@ -114,15 +114,15 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 14. PR 13 — Mock infrastructure + HTTP echo mock + test #17 (fetch SSRF guard)
 
-- [ ] 14.1 Implement `MockCapture` interface and `Mock<TCapture, TConn>` interface
-- [ ] 14.2 Implement `createMockServer(mock)` factory: wires uniform admin server with `GET /captures?slug&since`, `GET /stream?slug` (SSE with replay-on-connect), `POST /reset?slug`
-- [ ] 14.3 Implement `MockClient<TCapture>` with `captures`, `waitFor` (SSE), `reset`; ECONNREFUSED detection with clear error
-- [ ] 14.4 Implement `HttpEchoMock` (request capture with slug derived from URL path)
-- [ ] 14.5 Implement `globalSetup` in vitest config to boot mocks once per suite, `provide("mocks", {...})`; `globalTeardown` to stop them
-- [ ] 14.6 Wire `inject("mocks")` in workers; populate `state.http` with a real MockClient pointing at `mocks.echo.adminUrl`
-- [ ] 14.7 Implement per-test slug derivation: `<file-basename>-<describe>-<test>`, slugified, hash-suffix overflow handling
-- [ ] 14.8 Write test #17: workflow handler tries `fetch(env.LOOPBACK_URL)`; chain uploads with `LOOPBACK_URL = mocks.echo.url + "/<slug>/"`, fires webhook, expects response body indicates SSRF rejection AND `mocks.http.captures({slug})` has zero entries
-- [ ] 14.9 Verify hardenedFetch rejects loopback at runtime; echo mock confirms request never arrived
+- [x] 14.1 Implement `MockCapture` interface and `Mock<TCapture, TConn>` interface
+- [x] 14.2 Implement `createMockServer(mock)` factory: wires uniform admin server with `GET /captures?slug&since`, `GET /stream?slug` (SSE with replay-on-connect), `POST /reset?slug`
+- [x] 14.3 Implement `MockClient<TCapture>` with `captures`, `waitFor` (SSE), `reset`; ECONNREFUSED detection with clear error
+- [x] 14.4 Implement `HttpEchoMock` (request capture with slug derived from URL path)
+- [x] 14.5 Implement `globalSetup` in vitest config to boot mocks once per suite, `provide("mocks", {...})`; `globalTeardown` to stop them
+- [x] 14.6 Wire `inject("mocks")` in workers; populate `state.http` with a real MockClient pointing at `mocks.echo.adminUrl`
+- [x] 14.7 Implement per-test slug derivation: `<file-basename>-<describe>-<test>`, slugified, hash-suffix overflow handling
+- [x] 14.8 Write test #17: workflow handler tries `fetch(env.LOOPBACK_URL)`; chain uploads with `LOOPBACK_URL = mocks.echo.url + "/<slug>/"`, fires webhook, expects response body indicates SSRF rejection AND `mocks.http.captures({slug})` has zero entries
+- [x] 14.9 Verify hardenedFetch rejects loopback at runtime; echo mock confirms request never arrived
 
 ## 15. PR 14 — SMTP catcher mock + test #18 (sendMail + redaction)
 

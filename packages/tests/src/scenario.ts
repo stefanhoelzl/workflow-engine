@@ -8,6 +8,7 @@ import type {
 	EventFilter,
 	FetchOpts,
 	FetchResult,
+	HttpCapture,
 	HttpResponse,
 	InvocationEvent,
 	LogLine,
@@ -34,6 +35,7 @@ interface ScenarioRunContext {
 	getChild(): SpawnedChild;
 	respawn(): Promise<void>;
 	buildEnv: Record<string, string>;
+	httpClient: MockClient<HttpCapture>;
 	getLogMarker(): Marker;
 	resetLogMarker(): void;
 }
@@ -123,6 +125,7 @@ function freshScenarioState(
 	state: MutableState,
 	events: readonly InvocationEvent[],
 	logs: readonly LogLine[],
+	httpClient: MockClient<HttpCapture>,
 ): ScenarioState {
 	const empty = createCapturedSeq([]);
 	return {
@@ -133,7 +136,7 @@ function freshScenarioState(
 		events,
 		archives: empty as ScenarioState["archives"],
 		logs,
-		http: throwingMockClient("http"),
+		http: httpClient,
 		smtp: throwingMockClient("smtp"),
 		sql: throwingMockClient("sql"),
 	};
@@ -383,7 +386,7 @@ async function runExpect(
 		const events = await scanEvents(ctx.getChild().persistencePath);
 		const logs = ctx.getChild().logStream.since(ctx.getLogMarker());
 		try {
-			await callback(freshScenarioState(state, events, logs));
+			await callback(freshScenarioState(state, events, logs, ctx.httpClient));
 			return;
 		} catch (err) {
 			lastErr = err;

@@ -14,15 +14,14 @@ import { describe, expect, test } from "@workflow-engine/tests";
 // either way — the upload user is just plumbing for getting a workflow into
 // acme without adding `user` to WorkflowOpts.
 
-describe(
-	"cross-owner enumeration returns 404",
-	{ env: { AUTH_ALLOW: "local:dev:acme,local:alice:acme,local:bob" } },
-	() => {
-		test("bob sees 404 for acme; alice sees 200", (s) =>
-			s
-				.workflow(
-					"scoped",
-					`
+describe("cross-owner enumeration returns 404", {
+	env: { AUTH_ALLOW: "local:dev:acme,local:alice:acme,local:bob" },
+}, () => {
+	test("bob sees 404 for acme; alice sees 200", (s) =>
+		s
+			.workflow(
+				"scoped",
+				`
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const ping = httpTrigger({
@@ -30,29 +29,28 @@ export const ping = httpTrigger({
 	handler: async () => ({status: 200, body: "pong"}),
 });
 `,
-					{ owner: "acme", repo: "e2e" },
-				)
-				// `/api/workflows/:owner/public-key` is the real `/api/*` surface
-				// behind `requireOwnerMember` — non-members get an opaque 404, members
-				// get a 200 with the X25519 pubkey JSON. Substitute for the proposal's
-				// `/api/workflows/acme` listing-style probe (no such GET route exists
-				// in v1; CLAUDE.md's example was stale).
-				.fetch("/api/workflows/acme/public-key", {
-					auth: { user: "bob", via: "api-header" },
-					label: "bobApi",
-				})
-				.fetch("/dashboard/acme", {
-					auth: { user: "bob", via: "cookie" },
-					label: "bobDash",
-				})
-				.fetch("/api/workflows/acme/public-key", {
-					auth: { user: "alice", via: "api-header" },
-					label: "aliceApi",
-				})
-				.expect((state) => {
-					expect(state.fetches.byLabel("bobApi").status).toBe(404);
-					expect(state.fetches.byLabel("bobDash").status).toBe(404);
-					expect(state.fetches.byLabel("aliceApi").status).toBe(200);
-				}));
-	},
-);
+				{ owner: "acme", repo: "e2e" },
+			)
+			// `/api/workflows/:owner/public-key` is the real `/api/*` surface
+			// behind `requireOwnerMember` — non-members get an opaque 404, members
+			// get a 200 with the X25519 pubkey JSON. Substitute for the proposal's
+			// `/api/workflows/acme` listing-style probe (no such GET route exists
+			// in v1; CLAUDE.md's example was stale).
+			.fetch("/api/workflows/acme/public-key", {
+				auth: { user: "bob", via: "api-header" },
+				label: "bobApi",
+			})
+			.fetch("/dashboard/acme", {
+				auth: { user: "bob", via: "cookie" },
+				label: "bobDash",
+			})
+			.fetch("/api/workflows/acme/public-key", {
+				auth: { user: "alice", via: "api-header" },
+				label: "aliceApi",
+			})
+			.expect((state) => {
+				expect(state.fetches.byLabel("bobApi").status).toBe(404);
+				expect(state.fetches.byLabel("bobDash").status).toBe(404);
+				expect(state.fetches.byLabel("aliceApi").status).toBe(200);
+			}));
+});
