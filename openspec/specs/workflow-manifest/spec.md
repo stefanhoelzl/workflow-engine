@@ -27,7 +27,7 @@ Each trigger entry SHALL have:
 - `type`: string --- discriminant for trigger kind (`"http"`, `"cron"`, or `"manual"`)
 - Type-specific fields.
   - For `type: "http"`: `method`, `body` (JSON Schema), `inputSchema` (JSON Schema for the composite payload `{body, headers, url, method}`), `outputSchema` (JSON Schema for `HttpTriggerResult`). HTTP entries SHALL NOT contain `path`, `params`, or `query` fields.
-  - For `type: "cron"`: `schedule` (string, standard 5-field cron), `tz` (string, IANA timezone identifier), `inputSchema` (JSON Schema for the empty input object), `outputSchema` (JSON Schema for `unknown`).
+  - For `type: "cron"`: `schedule` (non-empty string; grammar delegated to `cron-parser` at runtime — 5-field, 6-field, and any other form `cron-parser` accepts are valid), `tz` (string, IANA timezone identifier), `inputSchema` (JSON Schema for the empty input object), `outputSchema` (JSON Schema for `unknown`).
   - For `type: "manual"`: `inputSchema` (JSON Schema derived from the author-provided or default `z.object({})` input schema), `outputSchema` (JSON Schema derived from the author-provided or default `z.unknown()` output schema). Manual entries SHALL NOT contain `method`, `body`, `schedule`, `tz`, `path`, `params`, or `query` fields.
 
 The manifest SHALL NOT contain an `events` array, action `on`/`emits` fields, per-action `module` field, per-action `env` field, or trigger `response` field.
@@ -104,7 +104,7 @@ When `secrets` is present, `secretsKeyId` SHALL be required. When `secrets` is a
 
 Each action entry SHALL require `name`, `input`, `output`. Each trigger entry SHALL require `name`, `type` and the type-specific fields. The trigger `name` SHALL be validated against `/^[A-Za-z_][A-Za-z0-9_]{0,62}$/`; non-matching names SHALL fail validation.
 
-The `triggers[].type` discriminant SHALL accept the literals `"http"`, `"cron"`, and `"manual"`. HTTP entries SHALL require `name`, `method`, `body`, `inputSchema`, `outputSchema`; HTTP entries SHALL NOT accept `path`, `params`, or `query` (the Zod schema SHALL reject them as excess keys or by omission from the schema shape). Cron entries SHALL require `schedule` (validated against a standard 5-field cron regex), `tz` (validated against the host's IANA timezone set — see the "IANA timezone validation" requirement), `inputSchema`, and `outputSchema`. Manual entries SHALL require `name`, `type`, `inputSchema`, and `outputSchema`; manual entries SHALL NOT accept `method`, `body`, `schedule`, `tz`, `path`, `params`, or `query`.
+The `triggers[].type` discriminant SHALL accept the literals `"http"`, `"cron"`, and `"manual"`. HTTP entries SHALL require `name`, `method`, `body`, `inputSchema`, `outputSchema`; HTTP entries SHALL NOT accept `path`, `params`, or `query` (the Zod schema SHALL reject them as excess keys or by omission from the schema shape). Cron entries SHALL require `schedule` (a non-empty string; grammar is delegated to `cron-parser` at runtime — see the "Cron trigger schedule field" requirement), `tz` (validated against the host's IANA timezone set — see the "IANA timezone validation" requirement), `inputSchema`, and `outputSchema`. Manual entries SHALL require `name`, `type`, `inputSchema`, and `outputSchema`; manual entries SHALL NOT accept `method`, `body`, `schedule`, `tz`, `path`, `params`, or `query`.
 
 The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid manifests SHALL be rejected at upload with a `422` response carrying the validation issues.
 
@@ -153,10 +153,10 @@ The runtime SHALL parse every loaded manifest through `ManifestSchema`. Invalid 
 - **WHEN** a manifest contains an HTTP trigger entry with `name: "$weird"` or `name: "has space"`
 - **THEN** parsing through `ManifestSchema` SHALL throw a validation error identifying the `name` field as not matching the identifier regex
 
-#### Scenario: Cron trigger with invalid schedule fails
+#### Scenario: Cron trigger with empty schedule fails
 
-- **WHEN** a manifest contains a cron trigger with `schedule: "not a cron"` (does not match the 5-field pattern)
-- **THEN** parsing through `ManifestSchema` SHALL throw a validation error identifying the `schedule` field
+- **WHEN** a manifest contains a cron trigger with `schedule: ""`
+- **THEN** parsing through `ManifestSchema` SHALL throw a validation error identifying the `schedule` field as required to be non-empty
 
 #### Scenario: Cron trigger missing tz fails
 
@@ -224,3 +224,36 @@ The manifest is **repo-agnostic**: it MUST NOT declare an owner, repo, or reposi
 - **GIVEN** a manifest with a cron trigger whose `tz` is the empty string `""`
 - **WHEN** the manifest is uploaded
 - **THEN** the upload endpoint SHALL return `422`
+
+### Requirement: Cron trigger schedule field
+
+For trigger entries with `type: "cron"`, the manifest SHALL require:
+
+- `schedule`: `string` — a non-empty cron expression. The manifest layer SHALL NOT constrain the grammar beyond non-emptiness; the runtime cron source's `CronExpressionParser.parse` (cron-parser) is the authoritative grammar check. Schedules MAY be 5-field, 6-field (with seconds), or any other form `cron-parser` accepts. Schedules MAY also be a workflow-secret sentinel reference.
+- `tz`: `string` — an IANA timezone identifier (validated via the "IANA timezone validation" requirement) or a workflow-secret sentinel reference.
+- `inputSchema`: JSON Schema for the empty input object.
+- `outputSchema`: JSON Schema for `unknown`.
+
+#### Scenario: Cron trigger entry accepts 5-field schedule
+
+- **GIVEN** a cron trigger with `schedule: "0 2 * * *"` and `tz: "Europe/Berlin"`
+- **WHEN** the manifest is parsed
+- **THEN** the entry SHALL be accepted with `schedule: "0 2 * * *"` and `tz: "Europe/Berlin"`
+
+#### Scenario: Cron trigger entry accepts 6-field schedule
+
+- **GIVEN** a cron trigger with `schedule: "* * * * * *"` (every-second) and `tz: "UTC"`
+- **WHEN** the manifest is parsed
+- **THEN** the entry SHALL be accepted; `cron-parser` is the runtime authority for the grammar
+
+#### Scenario: Cron trigger with empty schedule fails
+
+- **WHEN** a manifest contains a cron trigger with `schedule: ""`
+- **THEN** parsing through `ManifestSchema` SHALL throw a validation error identifying the `schedule` field as required to be non-empty
+
+#### Scenario: Cron trigger with unparseable schedule reaches the runtime
+
+- **GIVEN** a manifest containing a cron trigger with `schedule: "not a cron"`
+- **WHEN** the manifest is parsed through `ManifestSchema`
+- **THEN** parsing SHALL succeed (the manifest layer is permissive)
+- **AND** the runtime cron source's `CronExpressionParser.parse` SHALL throw on first arm, surfacing as a `cron.schedule-invalid` log line and a no-op for that entry's timer
