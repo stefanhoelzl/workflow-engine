@@ -4,8 +4,9 @@ import type {
 	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 import type SmtpTransport from "nodemailer/lib/smtp-transport/index.js";
+import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
 import { assertHostIsPublic } from "../net-guard/index.js";
 import { MAIL_DISPATCHER_NAME } from "./descriptor-name.js";
 import type {
@@ -18,6 +19,26 @@ import type {
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+type SmtpTransporter = Transporter<
+	SmtpTransport.SentMessageInfo,
+	SmtpTransport.Options
+>;
+
+// `nodemailer.createTransport()` is synchronous and opens no socket — it
+// constructs an SMTPTransport + Mailer wrapper; sockets are opened lazily
+// inside `sendMail`. So `track` immediately after construction is correct:
+// the handle represents the future socket lifecycle bound to this Mail
+// instance. `Mail.close()` (verified against nodemailer 6.10.1) is sync,
+// idempotent under double-call (`removeAllListeners` + `emit('close')`,
+// no I/O), and cannot hang.
+const handles = createRunScopedHandles<SmtpTransporter>((transport) => {
+	try {
+		transport.close();
+	} catch {
+		// Idempotent under double-call against nodemailer 6.x.
+	}
+});
 
 function assertPositiveInt(value: unknown, path: string): number {
 	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
@@ -329,7 +350,7 @@ async function dispatchMailSend(opts: MailOptsWire): Promise<MailResultWire> {
 		transportOptions.ignoreTLS = true;
 	}
 
-	const transport = nodemailer.createTransport(transportOptions);
+	const transport = handles.track(nodemailer.createTransport(transportOptions));
 
 	const attachments = opts.attachments?.map((a) => {
 		const attachment: {
@@ -378,7 +399,7 @@ async function dispatchMailSend(opts: MailOptsWire): Promise<MailResultWire> {
 	} catch (err) {
 		throwStructured(err);
 	} finally {
-		transport.close();
+		await handles.release(transport);
 	}
 
 	const result: {
@@ -470,7 +491,10 @@ function mailDispatcherDescriptor(): GuestFunctionDescription {
 }
 
 function worker(_ctx: SandboxContext): PluginSetup {
-	return { guestFunctions: [mailDispatcherDescriptor()] };
+	return {
+		guestFunctions: [mailDispatcherDescriptor()],
+		onRunFinished: handles.drain,
+	};
 }
 
 export { classifyMailError, dispatchMailSend, worker };

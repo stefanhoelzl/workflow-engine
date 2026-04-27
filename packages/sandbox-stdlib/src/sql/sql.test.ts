@@ -659,7 +659,7 @@ describe("sql plugin — error shaping", () => {
 // ---------------------------------------------------------------------------
 
 describe("sql plugin — cleanup", () => {
-	it("awaits sql.end({timeout:5}) on success", async () => {
+	it("awaits sql.end({timeout:0}) on success", async () => {
 		mockPublicHost(PUBLIC_IP);
 		mockDriverRows([]);
 		await dispatchSqlExecute({
@@ -667,10 +667,10 @@ describe("sql plugin — cleanup", () => {
 			query: "SELECT 1",
 			params: [],
 		});
-		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 5 });
+		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 0 });
 	});
 
-	it("awaits sql.end({timeout:5}) on error", async () => {
+	it("awaits sql.end({timeout:0}) on error", async () => {
 		mockPublicHost(PUBLIC_IP);
 		mockDriverError(new Error("boom"));
 		await expect(
@@ -680,34 +680,49 @@ describe("sql plugin — cleanup", () => {
 				params: [],
 			}),
 		).rejects.toThrow(/boom/);
-		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 5 });
+		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 0 });
 	});
 
-	it("onRunFinished backstop closes leaked handles with {timeout:0}", async () => {
-		// Simulate a leaked handle: make sql.end in the finally throw, keeping
-		// the handle in `openHandles` past the dispatch (fail-then-recover).
+	it("onRunFinished resolves cleanly when per-call release already drained the set", async () => {
+		// After a successful per-call release, the handle is removed from the
+		// helper's tracking Set. The backstop's drain must find nothing to
+		// close and must resolve without throwing.
 		mockPublicHost(PUBLIC_IP);
 		mockDriverRows([]);
-		let callCount = 0;
-		pgMock.end.mockImplementation(async () => {
-			callCount += 1;
-			if (callCount === 1) {
-				throw new Error("end failed");
-			}
-			return;
-		});
 		await dispatchSqlExecute({
 			connection: "postgres://db.example.com/app",
 			query: "SELECT 1",
 			params: [],
 		});
-		// Backstop: invoke the worker's onRunFinished. With no leaked handles
-		// in `openHandles`, it must resolve without throwing.
 		const setup = worker(noopCtx());
 		await expect(
 			setup.onRunFinished?.({ ok: true, output: undefined }, {
 				event: undefined,
 			} as never),
 		).resolves.toBeUndefined();
+	});
+
+	it("fire-and-forgot handle is closed by onRunFinished", async () => {
+		mockPublicHost(PUBLIC_IP);
+		// Simulate a query that never resolves — the dispatcher's `await`
+		// parks, so the per-call `finally` does not run during the run window.
+		pgMock.unsafe.mockImplementationOnce(() => new Promise(() => {}));
+
+		// Kick off dispatch but do NOT await it. The catch silences the
+		// pending rejection so the test runner doesn't flag it as unhandled.
+		dispatchSqlExecute({
+			connection: "postgres://db.example.com/app",
+			query: "SELECT 1",
+			params: [],
+		}).catch(() => undefined);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// Run end: drain via the worker's onRunFinished.
+		const setup = worker(noopCtx());
+		await setup.onRunFinished?.({ ok: true, output: undefined }, {
+			event: undefined,
+		} as never);
+		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 0 });
 	});
 });

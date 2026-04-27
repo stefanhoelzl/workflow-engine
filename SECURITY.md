@@ -569,14 +569,45 @@ plugin, and every change that adds a guest-visible surface.
    `__pluginLoaderOverride` — a test-only path. Production composition
    MUST NOT pass a fetch override; tests that need a mock replace the
    plugin, not its default.
-4. **R-4 Per-run cleanup.** Plugins with long-lived state (timers,
-   pending `Callable`s, in-flight fetches, etc.) MUST implement
-   `onRunFinished` to release / dispose that state. Cleanup MUST route
-   through the same code paths as guest-initiated teardown so audit
-   events fire (e.g. the `timers` plugin emits a `system.call` leaf
-   per pending timer at run end with `name="clearTimeout"` /
-   `name="clearInterval"`). Skipping this rule leaks state across
-   runs and de-correlates the event stream.
+4. **R-4 Per-run cleanup.** Plugins that allocate **per-call host
+   resources** (a `Transport` per `sendMail`, a `postgres()` handle per
+   `executeSql`, a per-call `AbortController` per `fetch`, a pending
+   timer registered via `setTimeout`, a queued `Callable`, etc.) MUST
+   implement `onRunFinished` to release that state at run end. Stdlib
+   plugins SHOULD route per-call tracking through
+   `createRunScopedHandles` (`packages/sandbox-stdlib/src/internal/run-scoped-handles.ts`)
+   so the same closer drains both the per-call `finally` and the
+   run-end backstop with delete-before-close ordering and swallowed
+   closer errors.
+
+   **Per-call vs pool-shared.** Resources that live in a process-wide
+   pool (e.g. undici's cached `Agent` for fetch) are governed by their
+   pool, not the run, and MUST NOT be drained on `onRunFinished` —
+   tearing down the pool would leak state across plugin instances and
+   defeat connection reuse. Plugins MAY track and abort per-call
+   *tickets* (AbortControllers, in-flight request handles) against
+   such pools without touching the pool itself.
+
+   **Audit safety is independent of the backstop.** The worker-side
+   `bridge.clearRunActive()` gate (`packages/sandbox/src/worker.ts`)
+   silently suppresses any host-callback emission that arrives after
+   `onRunFinished` returns, and the main-thread `RunSequencer.finish()`
+   synthesizes close frames for any dangling open frames using the
+   current run's stamping. Late real events therefore never reach the
+   executor's `sb.onEvent` widener — they cannot be mis-tagged onto a
+   later run's `invocationId`. The backstop's job is **resource-lifetime
+   determinism and worker-time fairness** (in-flight I/O from run N
+   does not consume run N+1's worker-thread budget), not audit
+   correctness.
+
+   Cleanup that DOES route through guest-equivalent emission paths (the
+   `timers` plugin's `clearTimeout` audit event per still-live timer) is
+   preserved by this refinement; it is one specific contract on top of
+   R-4, not the rule itself.
+
+   Skipping R-4 leaks state across runs (sockets/handles persist past
+   the QuickJS snapshot-restore boundary because the Node worker thread
+   is not snapshot-managed) and starves the next run of worker time.
 5. **R-5 ctx-only emission.** All events flow through `ctx.emit` /
    `ctx.request`. Direct `bridge.*` mutation from plugin code is
    prohibited. `seq`, `ref`, `ts`, `at`, and `callId` are stamped by
@@ -775,6 +806,70 @@ Additional standing rules that predate the plugin rewrite:
   applies, say so in the change proposal; do not claim the sandbox
   "prevents" reaching an internal service beyond what `hardenedFetch`
   structurally blocks.
+
+### Adding a system-bridge plugin
+
+A "system-bridge plugin" is any sandbox-stdlib plugin that exposes a
+host-side I/O capability to the guest under the reserved `system.*`
+event prefix (R-7) — currently `fetch`, `mail`, `sql`. Adding a new one
+(IMAP host-side, S3 client, gRPC, LDAP, etc.) is a high-impact change:
+each item below has been the subject of a prior security finding or
+spec refinement, so the checklist is review-mandatory, not aspirational.
+
+Before merging a new system-bridge plugin, every item below MUST be
+satisfied (or explicitly justified in the change proposal):
+
+1. **Net-guard ordering.** Call `assertHostIsPublic(host)` from
+   `@workflow-engine/sandbox-stdlib/net-guard` BEFORE constructing any
+   driver-level resource. Pass the validated IP to the driver; pin the
+   ORIGINAL hostname as the TLS `servername` so SNI + cert verification
+   still bind to the user-supplied identity. Closes the TOCTOU window
+   between DNS validation and socket open. (R-S4 in §2 Mitigations;
+   canonical: `mail/worker.ts:307`, `sql/worker.ts:442`,
+   `fetch/hardened-fetch.ts` connector.)
+
+2. **Per-call resources track via `createRunScopedHandles`.** Wire
+   `track` on resource construction, `release` in the per-call
+   `finally`, and register `onRunFinished: handles.drain` on the
+   plugin's `PluginSetup`. Closer must be idempotent against the
+   delete-before-close ordering the helper enforces. Pool-shared
+   resources do NOT use this — see R-4 "per-call vs pool-shared".
+
+3. **Reserved prefix `system.*` (R-7).** Set `log: { request: "system" }`
+   on the guest function descriptor. The operation identity goes into
+   the event's `name` field (e.g. `system.request name="sendMail"`),
+   never into the prefix.
+
+4. **Structured errors.** Define a local `classify*Error(err)` and a
+   `throwStructured(err)` helper that surfaces `{ kind, message, code?,
+   ... }` to the guest. Authors must be able to discriminate failure
+   modes (auth vs timeout vs recipient-rejected vs ...) without parsing
+   the message string. Wire-shape MUST match the existing
+   `MailError` / `SqlError` precedent.
+
+5. **Redacted logging.** Implement `logInput` to drop credentials,
+   request bodies, query parameters, attachments, and any other
+   PII-bearing payload. Keep the envelope (host, port, method, URL
+   path, recipient list, query SQL skeleton) so the audit log stays
+   useful. The `Authorization` header rule from §4 applies: never
+   emit raw credentials under any prefix. The runtime `secrets`
+   plugin's `onPost` scrubber is the LAST-resort backstop, not a
+   substitute for plugin-side redaction.
+
+6. **Timeouts: default + ceiling.** Define `DEFAULT_TIMEOUT_MS` (typical
+   call) and `MAX_TIMEOUT_MS` (hard ceiling). Author-supplied timeouts
+   MUST be clamped to the ceiling. Document both at the top of the
+   worker module.
+
+7. **JSON-serializable config (R-6).** Plugin `descriptor.config` MUST
+   be JSON-serializable (verified by `assertSerializableConfig` at
+   sandbox construction). Main-thread state (connection pools,
+   persistent caches) cannot live in a plugin — pass it as serialized
+   config or reach it via a descriptor-bridged guest function.
+
+A proposal that adds a system-bridge plugin without addressing every
+item is incomplete. A new plugin author may copy `sql/worker.ts` or
+`mail/worker.ts` as the canonical reference; both follow this checklist.
 
 ### File references
 
