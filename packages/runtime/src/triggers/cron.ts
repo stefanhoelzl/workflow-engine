@@ -123,6 +123,7 @@ function createCronTriggerSource(
 		} catch (err) {
 			// Schedule or tz invalid — shouldn't reach here because the manifest
 			// Zod schema gates both at upload, but fail loudly if it does.
+			const message = err instanceof Error ? err.message : String(err);
 			deps.logger.error("cron.schedule-invalid", {
 				owner: srcEntry.owner,
 				repo: srcEntry.repo,
@@ -130,8 +131,29 @@ function createCronTriggerSource(
 				trigger: srcEntry.entry.descriptor.name,
 				schedule: srcEntry.entry.descriptor.schedule,
 				tz: srcEntry.entry.descriptor.tz,
-				error: err instanceof Error ? err.message : String(err),
+				error: message,
 			});
+			// Surface to the author via the dashboard. Single shared call site
+			// for cold-boot arm, post-fire re-arm, and reconfigure() re-arm —
+			// the assertion in `emitTriggerException` keeps this kind safe.
+			srcEntry.entry
+				.exception({
+					name: "cron.schedule-invalid",
+					error: { message },
+					input: {
+						schedule: srcEntry.entry.descriptor.schedule,
+						tz: srcEntry.entry.descriptor.tz,
+					},
+				})
+				.catch((emitErr) => {
+					deps.logger.error("cron.exception-emit-failed", {
+						owner: srcEntry.owner,
+						repo: srcEntry.repo,
+						workflow: srcEntry.entry.descriptor.workflowName,
+						trigger: srcEntry.entry.descriptor.name,
+						error: emitErr instanceof Error ? emitErr.message : String(emitErr),
+					});
+				});
 			return;
 		}
 		const clamped = Math.min(delay, MAX_TIMEOUT_MS);

@@ -364,6 +364,181 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 	});
 });
 
+describe("dashboard middleware — single-leaf trigger.rejection invocations", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	it("renders a synthetic failed row with rejected glyph + summary tooltip", async () => {
+		await store.handle(
+			event({
+				id: "evt_reject",
+				kind: "trigger.rejection",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "http.body-validation",
+				input: {
+					trigger: "ingest",
+					issues: [{ path: ["name"], message: "Required" }],
+					method: "POST",
+					path: "/webhooks/t0/r0/wf/ingest",
+				},
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_reject"');
+		expect(html).toMatch(/<span class="entry-trigger">ingest<\/span>/);
+		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
+		expect(html).toContain('aria-label="trigger rejected"');
+		// First-issue summary surfaces in the title attribute
+		expect(html).toContain("name: Required");
+		// No dispatch chip and no flamegraph expand affordance for rejection
+		expect(html).not.toContain('id="inv-evt_reject"></details>');
+		expect(html).not.toContain(
+			'hx-get="/dashboard/t0/r0/invocations/evt_reject',
+		);
+	});
+});
+
+describe("dashboard middleware — single-leaf system.upload invocations", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	it("renders an uploaded row with upload-arrow glyph and dispatch chip", async () => {
+		await store.handle(
+			event({
+				id: "evt_upload",
+				kind: "system.upload",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "demo",
+				workflow: "demo",
+				workflowSha: "abcdef0123456789".padEnd(64, "0"),
+				input: { name: "demo", module: "demo.js" },
+				meta: {
+					dispatch: {
+						source: "upload",
+						user: { login: "alice", mail: "alice@acme" },
+					},
+				},
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_upload"');
+		expect(html).toMatch(/<span class="entry-trigger">upload<\/span>/);
+		expect(html).toMatch(/<span class="badge uploaded">uploaded<\/span>/);
+		expect(html).toContain('aria-label="workflow uploaded"');
+		// sha-short surfaced in tooltip
+		expect(html).toContain("sha=abcdef01");
+		// dispatch chip shows uploader login + mail
+		expect(html).toMatch(
+			/class="entry-dispatch"[^>]*title="alice &lt;alice@acme&gt;"/,
+		);
+		expect(html).toContain(">upload</span>");
+		// no flamegraph expand affordance
+		expect(html).not.toContain(
+			'hx-get="/dashboard/t0/r0/invocations/evt_upload',
+		);
+	});
+});
+
+describe("dashboard middleware — sandbox-exhaustion pill", () => {
+	let store: EventStore;
+
+	beforeEach(async () => {
+		store = await createEventStore();
+	});
+
+	it("renders a CPU pill on a failed invocation associated with system.exhaustion", async () => {
+		// trigger.request → trigger.error pair plus a leading
+		// system.exhaustion event sharing the same id.
+		await store.handle(
+			event({ id: "evt_cpu", kind: "trigger.request", seq: 0, ref: null }),
+		);
+		await store.handle(
+			event({
+				id: "evt_cpu",
+				kind: "system.exhaustion",
+				seq: 1,
+				ref: 0,
+				name: "cpu",
+				input: { budget: 60_000, observed: 60_002 },
+			}),
+		);
+		await store.handle(
+			event({
+				id: "evt_cpu",
+				kind: "trigger.error",
+				seq: 2,
+				ref: 0,
+				error: { message: "limit:cpu" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_cpu"');
+		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
+		expect(html).toMatch(
+			/class="entry-exhaustion" title="budget=60000ms observed=60002ms">CPU<\/span>/,
+		);
+	});
+
+	it("does not render an exhaustion pill on a plain handler-throw failure", async () => {
+		await store.handle(
+			event({ id: "evt_throw", kind: "trigger.request", seq: 0, ref: null }),
+		);
+		await store.handle(
+			event({
+				id: "evt_throw",
+				kind: "trigger.error",
+				seq: 1,
+				ref: 0,
+				error: { message: "boom" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_throw"');
+		expect(html).not.toMatch(/class="entry-exhaustion"/);
+	});
+
+	it("does not render an exhaustion pill on a succeeded invocation", async () => {
+		await store.handle(
+			event({ id: "evt_ok", kind: "trigger.request", seq: 0, ref: null }),
+		);
+		await store.handle(
+			event({ id: "evt_ok", kind: "trigger.response", seq: 1, ref: 0 }),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		expect(html).not.toMatch(/class="entry-exhaustion"/);
+	});
+});
+
 describe("dashboard middleware — auth scoping", () => {
 	let store: EventStore;
 

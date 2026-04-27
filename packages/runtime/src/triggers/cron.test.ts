@@ -208,4 +208,73 @@ describe("createCronTriggerSource", () => {
 
 		await source.stop();
 	});
+
+	describe("trigger.exception emission on arm-time failure", () => {
+		it("emits trigger.exception when computeNextDelay throws on cold-boot arm", async () => {
+			vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
+			const source = createCronTriggerSource({ logger: silentLogger() });
+			// `Not/A_Zone` is not a valid IANA tz; cron-parser throws on
+			// unknown timezones at nextDate().
+			const rec = makeEntry("daily", "0 9 * * *", "Not/A_Zone");
+
+			await source.reconfigure("t0", "r0", [rec.entry]);
+			// Allow the floating .catch() in cron.ts emission path to settle.
+			await vi.runOnlyPendingTimersAsync();
+
+			expect(rec.entry.exception).toHaveBeenCalledTimes(1);
+			const params = (rec.entry.exception as ReturnType<typeof vi.fn>).mock
+				.calls[0]?.[0];
+			expect(params).toMatchObject({
+				name: "cron.schedule-invalid",
+				input: { schedule: "0 9 * * *", tz: "Not/A_Zone" },
+			});
+			expect(typeof params.error.message).toBe("string");
+			// No timer should have been armed for the failed entry.
+			expect(rec.fire).not.toHaveBeenCalled();
+
+			await source.stop();
+		});
+
+		it("emits trigger.exception when reconfigure swaps in a bad schedule", async () => {
+			vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
+			const source = createCronTriggerSource({ logger: silentLogger() });
+			const good = makeEntry("daily", "0 9 * * *", "UTC");
+			await source.reconfigure("t0", "r0", [good.entry]);
+			expect(good.entry.exception).not.toHaveBeenCalled();
+
+			// Hot-swap to a bad tz via reconfigure.
+			const bad = makeEntry("daily", "0 9 * * *", "Not/A_Zone");
+			await source.reconfigure("t0", "r0", [bad.entry]);
+			await vi.runOnlyPendingTimersAsync();
+
+			expect(bad.entry.exception).toHaveBeenCalledTimes(1);
+			expect(bad.fire).not.toHaveBeenCalled();
+
+			await source.stop();
+		});
+
+		it("emits trigger.exception on post-fire re-arm hot-swap to bad schedule", async () => {
+			// Simulate post-fire re-arm: arm a good entry, fire it once, then
+			// mutate the descriptor's tz to an invalid one before the next
+			// arm() runs. The post-fire arm() catches and emits.
+			vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
+			const source = createCronTriggerSource({ logger: silentLogger() });
+			const rec = makeEntry("daily", "0 9 * * *", "UTC");
+			await source.reconfigure("t0", "r0", [rec.entry]);
+
+			await vi.advanceTimersByTimeAsync(1500);
+			expect(rec.fire).toHaveBeenCalledTimes(1);
+			expect(rec.entry.exception).not.toHaveBeenCalled();
+
+			// Mutate descriptor in place — the cron source holds the entry
+			// reference, so the next post-fire arm() reads the mutated tz.
+			(rec.entry.descriptor as { tz: string }).tz = "Not/A_Zone";
+			await vi.advanceTimersByTimeAsync(1);
+			await vi.runOnlyPendingTimersAsync();
+
+			expect(rec.entry.exception).toHaveBeenCalledTimes(1);
+
+			await source.stop();
+		});
+	});
 });

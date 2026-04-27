@@ -15,6 +15,9 @@ import type { InvocationRow } from "./page.js";
 import { renderDashboardPage } from "./page.js";
 
 const DEFAULT_LIMIT = 500;
+// Length of the workflowSha prefix surfaced in the upload-row tooltip —
+// long enough to disambiguate at a glance, short enough to read.
+const SHA_SHORT_LEN = 8;
 
 interface DashboardMiddlewareDeps {
 	readonly eventStore: EventStore;
@@ -56,6 +59,18 @@ interface RawExceptionRow {
 	name: string;
 	at: string;
 	ts: number | bigint;
+	input: unknown;
+}
+
+interface RawSyntheticRow extends RawExceptionRow {
+	kind: string;
+	workflowSha: string;
+	meta: unknown;
+}
+
+interface RawExhaustionRow {
+	id: string;
+	name: string;
 	input: unknown;
 }
 
@@ -109,15 +124,30 @@ function extractDispatch(
 	if (!dispatch || typeof dispatch !== "object") {
 		return;
 	}
-	const d = dispatch as { source?: unknown; user?: { login?: unknown } };
-	if (d.source !== "manual" && d.source !== "trigger") {
+	const d = dispatch as {
+		source?: unknown;
+		user?: { login?: unknown; mail?: unknown };
+	};
+	if (
+		d.source !== "manual" &&
+		d.source !== "trigger" &&
+		d.source !== "upload"
+	) {
 		return;
 	}
 	const userLogin =
 		d.user && typeof d.user.login === "string" ? d.user.login : undefined;
+	const userMail =
+		d.user && typeof d.user.mail === "string" ? d.user.mail : undefined;
+	const user = userLogin
+		? {
+				login: userLogin,
+				...(userMail ? { mail: userMail } : {}),
+			}
+		: undefined;
 	return {
 		source: d.source,
-		...(userLogin ? { user: { login: userLogin } } : {}),
+		...(user ? { user } : {}),
 	};
 }
 
@@ -217,7 +247,7 @@ async function fetchInvocationRowsForScopes(
 		return row;
 	});
 
-	const exceptionRows = await fetchExceptionRows(
+	const exceptionRows = await fetchSyntheticRows(
 		eventStore,
 		registry,
 		scopes,
@@ -225,7 +255,8 @@ async function fetchInvocationRowsForScopes(
 		triggerFilter,
 	);
 
-	return [...handlerRows, ...exceptionRows];
+	const merged = [...handlerRows, ...exceptionRows];
+	return await attachExhaustion(eventStore, scopes, merged);
 }
 
 function extractTriggerName(rawInput: unknown): string | undefined {
@@ -237,30 +268,135 @@ function extractTriggerName(rawInput: unknown): string | undefined {
 	return typeof trigger === "string" ? trigger : undefined;
 }
 
+function summarizeIssues(rawInput: unknown): string | undefined {
+	const input = parseJsonField(rawInput);
+	if (!input || typeof input !== "object") {
+		return;
+	}
+	const issues = (input as { issues?: unknown }).issues;
+	if (!Array.isArray(issues) || issues.length === 0) {
+		return;
+	}
+	const first = issues[0];
+	if (!first || typeof first !== "object") {
+		return;
+	}
+	const path = (first as { path?: unknown }).path;
+	const message = (first as { message?: unknown }).message;
+	const pathStr = Array.isArray(path) ? path.map(String).join(".") : "";
+	if (typeof message !== "string") {
+		return pathStr || undefined;
+	}
+	return pathStr ? `${pathStr}: ${message}` : message;
+}
+
+function buildUploadRow(r: RawSyntheticRow): InvocationRow {
+	const ts = toNumber(r.ts);
+	const dispatch = extractDispatch(r.meta);
+	return {
+		id: r.id,
+		owner: r.owner,
+		repo: r.repo,
+		workflow: r.workflow,
+		trigger: "upload",
+		status: "uploaded",
+		startedAt: r.at,
+		completedAt: r.at,
+		startedTs: ts,
+		completedTs: ts,
+		synthetic: true,
+		syntheticKind: "system.upload",
+		uploadShaShort: r.workflowSha.slice(0, SHA_SHORT_LEN),
+		...(dispatch ? { dispatch } : {}),
+	};
+}
+
+function buildSyntheticTriggerRow(
+	r: RawSyntheticRow,
+	registry: WorkflowRegistry,
+	trigger: string,
+): InvocationRow {
+	const ts = toNumber(r.ts);
+	const kind = lookupTriggerKind(registry, {
+		owner: r.owner,
+		repo: r.repo,
+		workflow: r.workflow,
+		trigger,
+	});
+	const syntheticKind: InvocationRow["syntheticKind"] =
+		r.kind === "trigger.rejection" ? "trigger.rejection" : "trigger.exception";
+	const rejectionSummary =
+		syntheticKind === "trigger.rejection"
+			? summarizeIssues(r.input)
+			: undefined;
+	return {
+		id: r.id,
+		owner: r.owner,
+		repo: r.repo,
+		workflow: r.workflow,
+		trigger,
+		status: "failed",
+		startedAt: r.at,
+		completedAt: r.at,
+		startedTs: ts,
+		completedTs: ts,
+		synthetic: true,
+		syntheticKind,
+		...(kind ? { triggerKind: kind } : {}),
+		...(rejectionSummary ? { rejectionSummary } : {}),
+	};
+}
+
 // biome-ignore lint/complexity/useMaxParams: orthogonal inputs mirror fetchInvocationRowsForScopes
-async function fetchExceptionRows(
+async function fetchSyntheticRows(
 	eventStore: EventStore,
 	registry: WorkflowRegistry,
 	scopes: readonly Scope[],
 	limit: number,
 	triggerFilter?: { workflow: string; trigger: string },
 ): Promise<InvocationRow[]> {
-	const base = eventStore.query(scopes).where("kind", "=", "trigger.exception");
-	// Trigger declaration name lives in `input.trigger` (a JSON column), so
-	// the per-trigger filter is applied in memory after parsing. Workflow
-	// is a top-level column and SQL-filtered.
+	const base = eventStore
+		.query(scopes)
+		.where("kind", "in", [
+			"trigger.exception",
+			"trigger.rejection",
+			"system.upload",
+		]);
 	const filtered = triggerFilter
 		? base.where("workflow", "=", triggerFilter.workflow)
 		: base;
 	const rows = (await filtered
-		.select(["id", "owner", "repo", "workflow", "name", "at", "ts", "input"])
+		.select([
+			"id",
+			"owner",
+			"repo",
+			"workflow",
+			"workflowSha",
+			"name",
+			"kind",
+			"at",
+			"ts",
+			"input",
+			"meta",
+		])
 		.orderBy("at", "desc")
 		.orderBy("id", "desc")
 		.limit(limit)
-		.execute()) as RawExceptionRow[];
+		.execute()) as RawSyntheticRow[];
 
 	const out: InvocationRow[] = [];
 	for (const r of rows) {
+		if (r.kind === "system.upload") {
+			// per-trigger filter URLs do not surface upload rows.
+			if (triggerFilter) {
+				continue;
+			}
+			out.push(buildUploadRow(r));
+			continue;
+		}
+		// trigger.exception and trigger.rejection: `input.trigger` carries
+		// the trigger declaration name (stamped by the registry's
+		// buildException → executor.fail primitive).
 		const trigger = extractTriggerName(r.input);
 		if (trigger === undefined) {
 			continue;
@@ -268,29 +404,65 @@ async function fetchExceptionRows(
 		if (triggerFilter && trigger !== triggerFilter.trigger) {
 			continue;
 		}
-		const ts = toNumber(r.ts);
-		const kind = lookupTriggerKind(registry, {
-			owner: r.owner,
-			repo: r.repo,
-			workflow: r.workflow,
-			trigger,
-		});
-		out.push({
-			id: r.id,
-			owner: r.owner,
-			repo: r.repo,
-			workflow: r.workflow,
-			trigger,
-			status: "failed",
-			startedAt: r.at,
-			completedAt: r.at,
-			startedTs: ts,
-			completedTs: ts,
-			synthetic: true,
-			...(kind ? { triggerKind: kind } : {}),
-		});
+		out.push(buildSyntheticTriggerRow(r, registry, trigger));
 	}
 	return out;
+}
+
+function parseExhaustionInput(raw: unknown): {
+	budget?: number;
+	observed?: number;
+} {
+	const input = parseJsonField(raw);
+	if (!input || typeof input !== "object") {
+		return {};
+	}
+	const budget = (input as { budget?: unknown }).budget;
+	const observed = (input as { observed?: unknown }).observed;
+	const out: { budget?: number; observed?: number } = {};
+	if (typeof budget === "number") {
+		out.budget = budget;
+	}
+	if (typeof observed === "number") {
+		out.observed = observed;
+	}
+	return out;
+}
+
+async function attachExhaustion(
+	eventStore: EventStore,
+	scopes: readonly Scope[],
+	rows: InvocationRow[],
+): Promise<InvocationRow[]> {
+	const failedIds = rows.filter((r) => r.status === "failed").map((r) => r.id);
+	if (failedIds.length === 0) {
+		return rows;
+	}
+	const exhRows = (await eventStore
+		.query(scopes)
+		.where("kind", "=", "system.exhaustion")
+		.where("id", "in", failedIds)
+		.select(["id", "name", "input"])
+		.execute()) as RawExhaustionRow[];
+	if (exhRows.length === 0) {
+		return rows;
+	}
+	const byId = new Map<string, RawExhaustionRow>();
+	for (const e of exhRows) {
+		byId.set(e.id, e);
+	}
+	return rows.map((r) => {
+		const e = byId.get(r.id);
+		if (!e) {
+			return r;
+		}
+		const dim = e.name as NonNullable<InvocationRow["exhaustion"]>["dim"];
+		const exhaustion: InvocationRow["exhaustion"] = {
+			dim,
+			...parseExhaustionInput(e.input),
+		};
+		return { ...r, exhaustion };
+	});
 }
 
 async function fetchInvocationEvents(

@@ -21,16 +21,33 @@ interface InvocationRow {
 	readonly completedTs: number | null;
 	readonly triggerKind?: string;
 	readonly dispatch?: {
-		readonly source: "manual" | "trigger";
-		readonly user?: { readonly login: string };
+		readonly source: "manual" | "trigger" | "upload";
+		readonly user?: { readonly login: string; readonly mail?: string };
 	};
-	// Marks rows reconstructed from a single `trigger.exception` leaf event
-	// (author-fixable pre-dispatch failure: IMAP misconfig, broken cron
-	// expression, etc.). The renderer surfaces a distinct setup-failed
-	// glyph and tooltip so authors can tell setup failures apart from
-	// handler-throw failures at a glance. See `dashboard-list-view` spec
-	// "Single-leaf trigger.exception invocations render inline".
+	// Marks rows reconstructed from a single leaf event with no paired
+	// trigger.request. The discriminator drives the per-row glyph + chip:
+	//   "trigger.exception" → wrench (author-fixable trigger setup failure)
+	//   "trigger.rejection" → shield-cross (HTTP body schema rejection)
+	//   "system.upload"     → upload-arrow + status="uploaded"
+	// See `dashboard-list-view` spec "Single-leaf trigger.exception
+	// invocations render inline" (extended by `track-non-invocation-events`).
 	readonly synthetic?: boolean;
+	readonly syntheticKind?:
+		| "trigger.exception"
+		| "trigger.rejection"
+		| "system.upload";
+	// trigger.rejection: short summary of the first zod issue, surfaced in
+	// the row's `<title>` tooltip.
+	readonly rejectionSummary?: string;
+	// system.upload: short workflowSha (first 8 hex chars) for the tooltip.
+	readonly uploadShaShort?: string;
+	// Set when a `system.exhaustion` event was associated with a failed
+	// invocation. Drives the dimension pill next to the status badge.
+	readonly exhaustion?: {
+		readonly dim: "cpu" | "memory" | "output" | "pending";
+		readonly budget?: number;
+		readonly observed?: number;
+	};
 }
 
 // Flat-list sort order:
@@ -89,12 +106,91 @@ const setupFailedGlyphSvg = raw(
 	'<svg class="icon icon-setup-failed" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="false" role="img"><title>trigger setup failed</title><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
 );
 
-function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
-	if (!dispatch || dispatch.source !== "manual") {
+// Shield-cross glyph for `trigger.rejection` (HTTP body schema rejection)
+// rows. Distinct from the wrench so authors can tell "your body schema
+// rejected a caller" apart from "your trigger config is wrong".
+const rejectedGlyphSvg = raw(
+	'<svg class="icon icon-rejected" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="false" role="img"><title>trigger rejected</title><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/></svg>',
+);
+
+// Upload-arrow glyph for `system.upload` rows.
+const uploadGlyphSvg = raw(
+	// biome-ignore lint/security/noSecrets: inline SVG markup, not a secret
+	'<svg class="icon icon-upload" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="false" role="img"><title>workflow uploaded</title><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+);
+
+const EXHAUSTION_LABELS: Record<
+	NonNullable<InvocationRow["exhaustion"]>["dim"],
+	string
+> = {
+	cpu: "CPU",
+	memory: "MEM",
+	output: "OUT",
+	pending: "PEND",
+};
+
+const EXHAUSTION_UNITS: Record<
+	NonNullable<InvocationRow["exhaustion"]>["dim"],
+	string
+> = {
+	cpu: "ms",
+	memory: "bytes",
+	output: "bytes",
+	pending: "",
+};
+
+function renderExhaustionPill(exhaustion: InvocationRow["exhaustion"]) {
+	if (!exhaustion) {
 		return "";
 	}
-	const tooltip = dispatch.user?.login ?? "";
-	return html`<span class="entry-dispatch" title="${tooltip}">manual</span>`;
+	const label = EXHAUSTION_LABELS[exhaustion.dim];
+	const unit = EXHAUSTION_UNITS[exhaustion.dim];
+	const parts: string[] = [];
+	if (exhaustion.budget !== undefined) {
+		parts.push(`budget=${exhaustion.budget}${unit}`);
+	}
+	if (exhaustion.observed !== undefined) {
+		parts.push(`observed=${exhaustion.observed}${unit}`);
+	}
+	const title = parts.length > 0 ? parts.join(" ") : label;
+	return html`<span class="entry-exhaustion" title="${title}">${label}</span>`;
+}
+
+function renderDispatchChip(dispatch: InvocationRow["dispatch"]) {
+	if (!dispatch) {
+		return "";
+	}
+	if (dispatch.source === "manual") {
+		const tooltip = dispatch.user?.login ?? "";
+		return html`<span class="entry-dispatch" title="${tooltip}">manual</span>`;
+	}
+	if (dispatch.source === "upload") {
+		const login = dispatch.user?.login ?? "";
+		const mail = dispatch.user?.mail ?? "";
+		const tooltip = mail ? `${login} <${mail}>` : login;
+		return html`<span class="entry-dispatch" title="${tooltip}">upload</span>`;
+	}
+	return "";
+}
+
+function renderSyntheticGlyph(row: InvocationRow) {
+	if (!row.synthetic) {
+		return "";
+	}
+	if (row.syntheticKind === "trigger.rejection") {
+		const title = row.rejectionSummary
+			? `trigger rejected: ${row.rejectionSummary}`
+			: "trigger rejected";
+		return html`<span class="entry-rejected" aria-label="trigger rejected" title="${title}">${rejectedGlyphSvg}</span>`;
+	}
+	if (row.syntheticKind === "system.upload") {
+		const title = row.uploadShaShort
+			? `workflow uploaded sha=${row.uploadShaShort}`
+			: "workflow uploaded";
+		return html`<span class="entry-upload" aria-label="workflow uploaded" title="${title}">${uploadGlyphSvg}</span>`;
+	}
+	// Default: trigger.exception / legacy synthetic.
+	return html`<span class="entry-setup-failed" aria-label="trigger setup failed">${setupFailedGlyphSvg}</span>`;
 }
 
 function renderCardSummary(
@@ -106,12 +202,16 @@ function renderCardSummary(
 	const chevron = expandable
 		? html`<span class="entry-expand-chevron" aria-hidden="true">${chevronIconSvg}</span>`
 		: html`<span class="entry-expand-chevron entry-expand-chevron--placeholder" aria-hidden="true"></span>`;
-	const setupFailed = row.synthetic
-		? html`<span class="entry-setup-failed" aria-label="trigger setup failed">${setupFailedGlyphSvg}</span>`
-		: "";
-	// Synthetic invocations have no `trigger.request` and so no dispatch
-	// metadata. Skip the dispatch chip outright (the spec also forbids it).
-	const dispatchChip = row.synthetic ? "" : renderDispatchChip(row.dispatch);
+	const syntheticGlyph = renderSyntheticGlyph(row);
+	// Synthetic trigger.exception / trigger.rejection rows have no dispatch
+	// metadata. system.upload rows DO carry a dispatch chip (uploader
+	// identity) — render it through the chip helper, which discriminates
+	// on `source`.
+	const dispatchChip =
+		row.synthetic && row.syntheticKind !== "system.upload"
+			? ""
+			: renderDispatchChip(row.dispatch);
+	const exhaustionPill = renderExhaustionPill(row.exhaustion);
 	return html`<div class="entry-header">
       ${chevron}
       <div class="entry-identity">
@@ -123,8 +223,9 @@ function renderCardSummary(
         <span class="entry-trigger">${row.trigger}</span>
       </div>
       ${dispatchChip}
-      ${setupFailed}
+      ${syntheticGlyph}
       <span class="badge ${row.status}">${row.status}</span>
+      ${exhaustionPill}
     </div>
     <div class="entry-meta">
       ${renderTime(row.startedAt, "entry-started")}
@@ -139,7 +240,14 @@ function renderCard(row: InvocationRow) {
 			? "—"
 			: formatDurationUs(row.completedTs - row.startedTs);
 
-	if (row.status === "pending") {
+	// Pending and trigger.rejection / system.upload rows render as flat
+	// non-expandable cards. Only handler-driven invocations and the legacy
+	// synthetic trigger.exception path expose a flamegraph affordance.
+	const noFlamegraph =
+		row.status === "pending" ||
+		row.syntheticKind === "trigger.rejection" ||
+		row.syntheticKind === "system.upload";
+	if (noFlamegraph) {
 		return html`<div class="entry" id="inv-${row.id}" aria-expanded="false">
     ${renderCardSummary(row, duration, false)}
   </div>`;

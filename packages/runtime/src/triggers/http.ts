@@ -206,6 +206,21 @@ function createHttpTriggerSource(): HttpTriggerSource {
 			const result = await entry.fire(rawInput);
 			if (!result.ok) {
 				if (result.error.issues) {
+					// Body schema rejected the caller's payload. Emit a
+					// trigger.rejection leaf so the author sees the
+					// rejection in the dashboard. Pathname only — no
+					// query string, no request body (SECURITY: caller
+					// bodies are untrusted and may carry PII).
+					const url = new URL(c.req.url);
+					await entry.exception({
+						kind: "trigger.rejection",
+						name: "http.body-validation",
+						input: {
+							issues: result.error.issues,
+							method: c.req.method,
+							path: url.pathname,
+						},
+					});
 					return validationFailure(c, result.error.issues);
 				}
 				return internalErrorResponse(c);

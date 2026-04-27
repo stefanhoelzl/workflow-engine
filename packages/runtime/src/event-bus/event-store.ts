@@ -65,6 +65,18 @@ interface EventStore extends BusConsumer {
 	query(
 		scopes: readonly Scope[],
 	): SelectQueryBuilder<Database, "events", object>;
+	// Sha-based dedup gate for `system.upload` emission. Returns `true` iff a
+	// `system.upload` event already exists for the exact (owner, repo,
+	// workflow, workflowSha) tuple. The upload handler is the only caller —
+	// `(owner, repo)` is already authorized by `requireOwnerMember()` so this
+	// bypasses the scope-allow-list contract that `query()` enforces. Other
+	// callers MUST NOT rely on this method to fetch event data.
+	hasUploadEvent(
+		owner: string,
+		repo: string,
+		workflow: string,
+		workflowSha: string,
+	): Promise<boolean>;
 	ping(): Promise<void>;
 	with(name: string, fn: CteCallback): CteChain;
 	readonly initialized: Promise<void>;
@@ -194,6 +206,24 @@ async function createEventStore(
 						),
 					),
 				) as SelectQueryBuilder<Database, "events", object>;
+		},
+
+		async hasUploadEvent(
+			owner: string,
+			repo: string,
+			workflow: string,
+			workflowSha: string,
+		): Promise<boolean> {
+			const row = await db
+				.selectFrom("events")
+				.select(db.fn.countAll<number>().as("c"))
+				.where("kind", "=", "system.upload")
+				.where("owner", "=", owner)
+				.where("repo", "=", repo)
+				.where("workflow", "=", workflow)
+				.where("workflowSha", "=", workflowSha)
+				.executeTakeFirst();
+			return Number(row?.c ?? 0) > 0;
 		},
 
 		async ping(): Promise<void> {

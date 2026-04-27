@@ -53,6 +53,12 @@ type EventKind =
 	| "trigger.response"
 	| "trigger.error"
 	| "trigger.exception"
+	// Host-side leaf for HTTP webhook body-validation failures. Single-leaf,
+	// no paired trigger.request, no meta.dispatch. See
+	// `openspec/specs/invocations/spec.md` under "Requirement:
+	// trigger.rejection is a leaf event kind for HTTP body validation
+	// failures".
+	| "trigger.rejection"
 	| "action.request"
 	| "action.response"
 	| "action.error"
@@ -66,7 +72,12 @@ type EventKind =
 	// `system.*` prefix per SECURITY.md §2 R-7. Payload shape in
 	// `openspec/specs/invocations/spec.md` under "Requirement:
 	// system.exhaustion event kind".
-	| "system.exhaustion";
+	| "system.exhaustion"
+	// Host-side leaf emitted per-workflow on successful upload, sha-deduped.
+	// Single-leaf, carries `meta.dispatch = { source: "upload", user }`. See
+	// `openspec/specs/invocations/spec.md` under "Requirement:
+	// system.upload event kind for workflow uploads".
+	| "system.upload";
 
 interface InvocationEventError {
 	message: string;
@@ -86,12 +97,13 @@ interface InvocationEventError {
 }
 
 /**
- * Dispatch provenance stamped onto `trigger.request` events by the runtime.
- * `source` is always populated; `user` is populated only for manual fires
- * that carried an authenticated session.
+ * Dispatch provenance stamped onto `trigger.request` and `system.upload`
+ * events by the runtime. `source` is always populated; `user` is populated
+ * for manual fires that carried an authenticated session, and is always
+ * present on `system.upload` (uploads are always authenticated).
  */
 interface DispatchMeta {
-	readonly source: "trigger" | "manual";
+	readonly source: "trigger" | "manual" | "upload";
 	readonly user?: { readonly login: string; readonly mail: string };
 }
 
@@ -119,9 +131,11 @@ interface InvocationEvent extends SandboxEvent {
 	readonly repo: string;
 	readonly workflow: string;
 	readonly workflowSha: string;
-	// Runtime-only metadata stamped by the executor's onEvent widener.
-	// Populated on `trigger.request` with `{ dispatch }`; absent on every
-	// other event kind. Sandbox and plugin code MUST NOT emit or read `meta`.
+	// Runtime-only metadata stamped by the runtime. Populated on
+	// `trigger.request` (by the executor's `sb.onEvent` widener) and on
+	// `system.upload` (by the upload handler's host-side emission path) with
+	// `{ dispatch }`; absent on every other event kind. Sandbox and plugin
+	// code MUST NOT emit or read `meta`.
 	readonly meta?: { readonly dispatch?: DispatchMeta };
 }
 

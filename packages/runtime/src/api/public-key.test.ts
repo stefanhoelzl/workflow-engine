@@ -9,6 +9,8 @@ import {
 	type ProviderRegistry,
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
+import { createEventStore } from "../event-bus/event-store.js";
+import { createEventBus } from "../event-bus/index.js";
 import type { Executor } from "../executor/index.js";
 import { createKeyStore, readyCrypto } from "../secrets/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
@@ -52,17 +54,21 @@ describe("GET /api/workflows/:owner/public-key", () => {
 		await readyCrypto();
 	});
 
-	function mount(keyStore: ReturnType<typeof createKeyStore>) {
+	async function mount(keyStore: ReturnType<typeof createKeyStore>) {
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: stubExecutor,
 			keyStore,
 		});
+		const eventStore = await createEventStore();
+		const bus = createEventBus([eventStore], { logger });
 		const middleware = apiMiddleware({
 			authRegistry: openAuthRegistry(),
 			registry,
 			logger,
 			keyStore,
+			bus,
+			eventStore,
 		});
 		const app = new Hono();
 		app.all(middleware.match, middleware.handler);
@@ -72,7 +78,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 	it("returns the primary public key and keyId", async () => {
 		const sk = generateKeypair().secretKey;
 		const keyStore = createKeyStore(makeCsv(sk));
-		const app = mount(keyStore);
+		const app = await mount(keyStore);
 
 		const res = await app.request("/api/workflows/acme/public-key", {
 			method: "GET",
@@ -94,7 +100,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 	it("returns a keyId that matches the published public key", async () => {
 		const sk = generateKeypair().secretKey;
 		const keyStore = createKeyStore(makeCsv(sk));
-		const app = mount(keyStore);
+		const app = await mount(keyStore);
 
 		const res = await app.request("/api/workflows/acme/public-key", {
 			headers: AUTH_HEADERS,
@@ -113,7 +119,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 
 	it("returns 404 for an invalid owner identifier", async () => {
 		const sk = generateKeypair().secretKey;
-		const app = mount(createKeyStore(makeCsv(sk)));
+		const app = await mount(createKeyStore(makeCsv(sk)));
 		const res = await app.request("/api/workflows/$bad/public-key", {
 			headers: AUTH_HEADERS,
 		});

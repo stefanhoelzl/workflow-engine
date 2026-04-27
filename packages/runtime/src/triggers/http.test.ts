@@ -533,3 +533,119 @@ describe("createHttpTriggerSource: security", () => {
 		expect(payload.query).toBeUndefined();
 	});
 });
+
+describe("createHttpTriggerSource: trigger.rejection emission", () => {
+	it("emits trigger.rejection on body schema 422 with issues, method, pathname (no body, no query)", async () => {
+		const descriptor = makeDescriptor({
+			body: {
+				type: "object",
+				required: ["name"],
+				properties: { name: { type: "string" } },
+			} as Record<string, unknown>,
+			inputSchema: {
+				type: "object",
+				required: ["body"],
+				properties: {
+					body: {
+						type: "object",
+						required: ["name"],
+						properties: { name: { type: "string" } },
+					},
+				},
+			} as Record<string, unknown>,
+		});
+		const entry = makeEntry(
+			descriptor,
+			validatingFire(descriptor, async () => ({
+				ok: true as const,
+				output: { status: 200 },
+			})),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t?delivery=abc&x=1", {
+			method: "POST",
+			body: JSON.stringify({ secret: "should-not-be-archived" }),
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(422);
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+		const params = (entry.exception as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0];
+		expect(params).toMatchObject({
+			kind: "trigger.rejection",
+			name: "http.body-validation",
+		});
+		expect(params.input.method).toBe("POST");
+		// pathname only — no query string
+		expect(params.input.path).toBe("/webhooks/t0/r0/w/t");
+		expect(Array.isArray(params.input.issues)).toBe(true);
+		expect(params.input.issues.length).toBeGreaterThan(0);
+		// no request body persisted
+		expect(params.input.body).toBeUndefined();
+		expect(params.input.secret).toBeUndefined();
+	});
+
+	it("does not emit trigger.rejection on 404 (no matching trigger)", async () => {
+		const entry = makeEntry(makeDescriptor());
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/no-such-trigger", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(404);
+		expect(entry.exception).not.toHaveBeenCalled();
+	});
+
+	it("does not emit trigger.rejection on 422 caused by invalid JSON", async () => {
+		const entry = makeEntry(makeDescriptor());
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "not-json",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(422);
+		expect(entry.exception).not.toHaveBeenCalled();
+		// fire is also not called for invalid JSON
+		expect(entry.fire).not.toHaveBeenCalled();
+	});
+
+	it("does not emit trigger.rejection on 500 (handler throw without issues)", async () => {
+		const entry = makeEntry(makeDescriptor(), async () => ({
+			ok: false as const,
+			error: { message: "boom", stack: "..." },
+		}));
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(500);
+		expect(entry.exception).not.toHaveBeenCalled();
+	});
+
+	it("does not emit trigger.rejection on 404 from method mismatch", async () => {
+		const entry = makeEntry(makeDescriptor({ method: "POST" }));
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", { method: "GET" });
+		expect(res.status).toBe(404);
+		expect(entry.exception).not.toHaveBeenCalled();
+	});
+});
