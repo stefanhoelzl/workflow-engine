@@ -140,11 +140,14 @@ function createExecutor(options: ExecutorOptions): Executor {
 					? { meta: { dispatch: meta.dispatch } }
 					: {}),
 			};
-			state.emitTail = state.emitTail.then(() =>
-				bus.emit(widened).catch(() => {
-					/* swallow consumer errors — they shouldn't block the next emit */
-				}),
-			);
+			// The bus owns the strict-consumer fatal-exit contract: if a
+			// strict consumer (persistence) throws, bus.emit logs runtime.fatal
+			// and schedules process.exit(1) and never resolves. The chain
+			// therefore parks forever and runInvocationWith's await of
+			// state.emitTail also parks — no further work runs on the doomed
+			// process. Best-effort consumer failures are logged inside the bus
+			// and the chain advances normally.
+			state.emitTail = state.emitTail.then(() => bus.emit(widened));
 		});
 		state.wired = true;
 		sandboxState.set(sb, state);

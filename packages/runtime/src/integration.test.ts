@@ -126,7 +126,7 @@ describe("end-to-end event flow", () => {
 		});
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({ logger });
 		const stubKeyStore = {
@@ -243,7 +243,7 @@ describe("end-to-end event flow", () => {
 		store = await createEventStore({ persistence: { backend }, logger });
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({ logger });
 		// Pre-existing integration test predates the secrets feature; wire in
@@ -350,7 +350,7 @@ describe("end-to-end event flow", () => {
 		store = await createEventStore({ persistence: { backend }, logger });
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		await recover({ backend, eventStore: store, logger }, bus);
 
@@ -445,7 +445,7 @@ describe("end-to-end event flow", () => {
 		await store.initialized;
 
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		await recover({ backend, eventStore: store, logger }, bus);
 
@@ -502,7 +502,7 @@ describe("end-to-end event flow", () => {
 		store = await createEventStore({ persistence: { backend }, logger });
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({ logger });
 		const stubKeyStore = {
@@ -1056,7 +1056,7 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 		});
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({ logger });
 		const keyStore = createKeyStore(`primary:${skB64}`);
@@ -1192,7 +1192,7 @@ var __wfe_exports__ = (function(exports) {
 		});
 		await store.initialized;
 		const persistence = createPersistence(backend, { logger });
-		const bus = createEventBus([persistence, store]);
+		const bus = createEventBus([persistence, store], { logger });
 
 		const sandboxFactory = createSandboxFactory({ logger });
 		// No sealed-secret manifest → any non-empty CSV satisfies config;

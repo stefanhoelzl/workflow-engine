@@ -109,6 +109,9 @@ async function recover(deps: RecoveryDeps, bus: EventBus): Promise<void> {
 		// Crash mid-invocation. Replay pending events through the bus so
 		// consumers (event store, persistence) see the full history, then
 		// emit a synthetic terminal so persistence archives and cleans up.
+		// The bus owns the strict-consumer fatal-exit contract: if persistence
+		// throws, bus.emit terminates the runtime and never resolves, so this
+		// loop parks and recover() never returns.
 		for (const event of events) {
 			// biome-ignore lint/performance/noAwaitInLoops: sequential emission preserves seq ordering across consumers
 			await bus.emit(event);

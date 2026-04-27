@@ -139,7 +139,9 @@ async function init() {
 		consumers.push(persistence);
 	}
 	consumers.push(eventStore, logging);
-	const eventBus: EventBus = createEventBus(consumers);
+	const eventBus: EventBus = createEventBus(consumers, {
+		logger: runtimeLogger,
+	});
 
 	// Deprecation warning for removed filesystem-bootstrap env vars.
 	const legacyWorkflowsDir =
@@ -166,7 +168,10 @@ async function init() {
 	// 5. Create the executor (serializes per-(owner, sha) invocations;
 	//    resolves sandboxes via the store; emits trigger.* events through
 	//    the bus).
-	const executor = createExecutor({ bus: eventBus, sandboxStore });
+	const executor = createExecutor({
+		bus: eventBus,
+		sandboxStore,
+	});
 
 	// 6. Construct trigger backends and start them. Every backend's start()
 	//    MUST complete before registry.recover() runs, because recover()
