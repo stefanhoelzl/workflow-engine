@@ -136,6 +136,8 @@ function createPersistence(
 		...(options?.logger ? { logger: options.logger } : {}),
 	};
 	return {
+		name: "persistence",
+		strict: true,
 		async handle(event: InvocationEvent): Promise<void> {
 			await writePending(deps, event);
 			if (isTerminal(event.kind)) {

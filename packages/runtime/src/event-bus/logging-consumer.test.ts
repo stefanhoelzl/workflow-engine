@@ -28,6 +28,12 @@ function event(
 }
 
 describe("logging consumer", () => {
+	it("declares best-effort tier and logging name", () => {
+		const c = createLoggingConsumer(makeLogger());
+		expect(c.name).toBe("logging");
+		expect(c.strict).toBe(false);
+	});
+
 	it("logs trigger.request at info", async () => {
 		const logger = makeLogger();
 		const c = createLoggingConsumer(logger);

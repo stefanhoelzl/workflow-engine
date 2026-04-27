@@ -168,6 +168,8 @@ async function createEventStore(
 		: Promise.resolve();
 
 	return {
+		name: "event-store",
+		strict: false,
 		initialized,
 
 		query(

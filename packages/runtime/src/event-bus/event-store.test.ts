@@ -28,6 +28,11 @@ describe("event store", () => {
 		store = await createEventStore();
 	});
 
+	it("declares best-effort tier and event-store name", () => {
+		expect(store.name).toBe("event-store");
+		expect(store.strict).toBe(false);
+	});
+
 	it("inserts a row for each handled event", async () => {
 		await store.handle(event({ kind: "trigger.request", input: { x: 1 } }));
 		const rows = await store

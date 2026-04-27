@@ -1,10 +1,4 @@
-# Event Bus Specification
-
-## Purpose
-
-Provide the central event distribution mechanism that fans out invocation lifecycle events to registered consumers in a deterministic order.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: BusConsumer interface for invocation lifecycle
 
@@ -100,25 +94,3 @@ Consumer order is guidance, not a contract — the event bus itself does not enf
 - **GIVEN** an empty array and a logger
 - **WHEN** `createEventBus([], { logger })` is called
 - **THEN** the returned EventBus emits without error (no-op fan-out)
-
-### Requirement: Events are immutable
-
-Events SHALL be treated as immutable. The original event object SHALL never be mutated.
-
-#### Scenario: State transition creates new object
-
-- **GIVEN** an `InvocationEvent`
-- **WHEN** a consumer processes the event
-- **THEN** the original event object SHALL not be mutated
-
-### Requirement: Module exports
-
-The `event-bus/index.ts` module SHALL export:
-- `EventBus` interface
-- `BusConsumer` interface
-- `createEventBus` factory function
-
-#### Scenario: All types importable from event-bus module
-
-- **WHEN** a consumer imports from the event-bus module
-- **THEN** `EventBus`, `BusConsumer`, and `createEventBus` are available

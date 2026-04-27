@@ -9,11 +9,27 @@ import type {
 import type { Sandbox } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import { createEventBus, type EventBus } from "../event-bus/index.js";
+import type { Logger } from "../logger.js";
 import type { SandboxStore } from "../sandbox-store.js";
 import { createExecutor } from "./index.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
 const EVT_ID_RE = /^evt_/;
+
+function makeLogger(): Logger {
+	return {
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+		trace: vi.fn(),
+		child: vi.fn(),
+	} as unknown as Logger;
+}
+
+// Logger is only needed to construct event buses in tests; the executor itself
+// no longer takes a logger (the bus owns the fatal-exit log line).
+const testLogger: Logger = makeLogger();
 
 function makeManifest(name: string, sha = "0".repeat(64)): WorkflowManifest {
 	return {
@@ -199,7 +215,7 @@ describe("executor", () => {
 			onRun: async () => ({ status: 202, body: { ok: true } }),
 		});
 		const executor = createExecutor({
-			bus: createEventBus([]),
+			bus: createEventBus([], { logger: testLogger }),
 			sandboxStore: makeStore(sandbox),
 		});
 		const result = await executor.invoke(
@@ -228,7 +244,7 @@ describe("executor", () => {
 			isActive: false,
 		};
 		const executor = createExecutor({
-			bus: createEventBus([]),
+			bus: createEventBus([], { logger: testLogger }),
 			sandboxStore: makeStore(sandbox),
 		});
 		const result = await executor.invoke(
@@ -263,7 +279,7 @@ describe("executor", () => {
 			},
 		});
 		const executor = createExecutor({
-			bus: createEventBus([]),
+			bus: createEventBus([], { logger: testLogger }),
 			sandboxStore: makeStore(sandbox),
 		});
 		const wf = makeManifest("wf");
@@ -294,7 +310,10 @@ describe("executor", () => {
 				seen.push(e);
 			},
 		};
-		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
 
 		// Emit four sandbox events across kinds mid-run so the widener sees
 		// all of them under the same active invocation.
@@ -359,7 +378,10 @@ describe("executor", () => {
 				seen.push(e);
 			},
 		};
-		const executor = createExecutor({ bus, sandboxStore: makeStore(sandbox) });
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
 
 		runSpy.mockImplementation(async () => {
 			const cb = capture.eventCallbacks[0];
@@ -533,7 +555,10 @@ describe("executor: per-sandbox state consolidation", () => {
 			dispose: vi.fn<SandboxStore["dispose"]>().mockResolvedValue(undefined),
 		};
 		const bus: EventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-		const executor = createExecutor({ bus, sandboxStore: store });
+		const executor = createExecutor({
+			bus,
+			sandboxStore: store,
+		});
 		const workflow = makeManifest("w");
 		const descriptor = makeDescriptor("t", "w");
 		const r1 = await executor.invoke("o", "r", workflow, descriptor, null, {
@@ -618,5 +643,56 @@ describe("executor: per-sandbox state consolidation", () => {
 			source: "manual",
 			user: { login: "alice", mail: "a@x" },
 		});
+	});
+
+	it("invoke() never resolves when bus.emit never resolves (strict failure surface)", async () => {
+		// Smoke test for the executor side of the bus's strict-consumer
+		// fatal-exit contract. We don't re-test the systemShutdown side
+		// effects here (covered in event-bus/index.test.ts); we only assert
+		// the executor's observable behaviour: a non-resolving bus.emit
+		// causes invoke() to also never resolve.
+		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
+		const sandbox = makeSandbox({ capture });
+		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
+		// Stub bus.emit to never resolve, mirroring what the real bus does
+		// when a strict consumer throws (it awaits systemShutdown which never
+		// resolves).
+		const bus: EventBus = {
+			emit: vi.fn().mockReturnValue(new Promise(() => {})),
+		};
+		const executor = createExecutor({
+			bus,
+			sandboxStore: makeStore(sandbox),
+		});
+
+		runSpy.mockImplementation(async () => {
+			const cb = capture.eventCallbacks[0];
+			if (!cb) {
+				throw new Error("expected onEvent wired before run");
+			}
+			cb({
+				kind: "trigger.request",
+				seq: 0,
+				ref: null,
+				at: "2026-01-01T00:00:00.000Z",
+				ts: 1,
+				name: "t",
+			});
+			return { ok: true, result: { status: 200 } };
+		});
+
+		const settled = await Promise.race([
+			executor
+				.invoke("t0", "r0", makeManifest("wf"), makeDescriptor("t"), null, {
+					bundleSource: "source",
+				})
+				.then(
+					() => "resolved" as const,
+					() => "rejected" as const,
+				),
+			new Promise<"timer">((resolve) => setTimeout(() => resolve("timer"), 30)),
+		]);
+		expect(settled).toBe("timer");
+		expect(bus.emit).toHaveBeenCalled();
 	});
 });

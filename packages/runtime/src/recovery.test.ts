@@ -11,11 +11,27 @@ import {
 	type EventBus,
 } from "./event-bus/index.js";
 import { createPersistence } from "./event-bus/persistence.js";
+import type { Logger } from "./logger.js";
 import { recover } from "./recovery.js";
 import { createFsStorage } from "./storage/fs.js";
 import type { StorageBackend } from "./storage/index.js";
 
 const ISO_DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}T/;
+
+function makeLogger(): Logger {
+	return {
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+		trace: vi.fn(),
+		child: vi.fn(),
+	} as unknown as Logger;
+}
+
+function makeConsumer(handle: BusConsumer["handle"]): BusConsumer {
+	return { name: "test", strict: false, handle };
+}
 
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
@@ -46,10 +62,12 @@ describe("recovery", () => {
 	});
 
 	it("is a no-op when pending/ is empty", async () => {
-		const consumer: BusConsumer = { handle: vi.fn() };
-		const bus = createEventBus([consumer]);
-		await recover({ backend, eventStore }, bus);
-		expect(consumer.handle).not.toHaveBeenCalled();
+		const handle = vi.fn();
+		const consumer = makeConsumer(handle);
+		const logger = makeLogger();
+		const bus = createEventBus([consumer], { logger });
+		await recover({ backend, eventStore, logger }, bus);
+		expect(handle).not.toHaveBeenCalled();
 	});
 
 	it("replays pending events in seq order and synthesizes a trigger.error", async () => {
@@ -68,14 +86,13 @@ describe("recovery", () => {
 		);
 
 		const seen: InvocationEvent[] = [];
-		const consumer: BusConsumer = {
-			handle: async (e: InvocationEvent) => {
-				seen.push(e);
-			},
-		};
-		const bus = createEventBus([consumer]);
+		const consumer = makeConsumer(async (e: InvocationEvent) => {
+			seen.push(e);
+		});
+		const logger = makeLogger();
+		const bus = createEventBus([consumer], { logger });
 
-		await recover({ backend, eventStore }, bus);
+		await recover({ backend, eventStore, logger }, bus);
 
 		expect(seen.map((e) => e.kind)).toEqual([
 			"trigger.request",
@@ -107,14 +124,13 @@ describe("recovery", () => {
 		);
 
 		const seen: InvocationEvent[] = [];
-		const consumer: BusConsumer = {
-			handle: async (e: InvocationEvent) => {
-				seen.push(e);
-			},
-		};
-		const bus = createEventBus([consumer]);
+		const consumer = makeConsumer(async (e: InvocationEvent) => {
+			seen.push(e);
+		});
+		const logger = makeLogger();
+		const bus = createEventBus([consumer], { logger });
 
-		await recover({ backend, eventStore }, bus);
+		await recover({ backend, eventStore, logger }, bus);
 
 		const synthetic = seen.at(-1);
 		expect(synthetic?.kind).toBe("trigger.error");
@@ -140,15 +156,13 @@ describe("recovery", () => {
 
 		const seen: InvocationEvent[] = [];
 		const bus: EventBus = {
-			handle: async () => {
-				/* unused */
-			},
 			emit: async (e: InvocationEvent) => {
 				seen.push(e);
 			},
-		} as unknown as EventBus;
+		};
+		const logger = makeLogger();
 
-		await recover({ backend, eventStore }, bus);
+		await recover({ backend, eventStore, logger }, bus);
 
 		const aEvents = seen.filter((e) => e.id === "evt_a");
 		const bEvents = seen.filter((e) => e.id === "evt_b");
@@ -187,16 +201,13 @@ describe("recovery", () => {
 			JSON.stringify(archived[2]),
 		);
 
-		const logger = { info: vi.fn() };
+		const logger = makeLogger();
 		const busEmits: InvocationEvent[] = [];
 		const bus: EventBus = {
-			handle: async () => {
-				/* unused */
-			},
 			emit: async (e: InvocationEvent) => {
 				busEmits.push(e);
 			},
-		} as unknown as EventBus;
+		};
 
 		await recover({ backend, eventStore: store, logger }, bus);
 
@@ -229,9 +240,10 @@ describe("recovery", () => {
 		);
 
 		const persistence = createPersistence(backend);
-		const bus = createEventBus([persistence]);
+		const logger = makeLogger();
+		const bus = createEventBus([persistence], { logger });
 
-		await recover({ backend, eventStore }, bus);
+		await recover({ backend, eventStore, logger }, bus);
 
 		const pending: string[] = [];
 		for await (const p of backend.list("pending/")) {
@@ -250,5 +262,34 @@ describe("recovery", () => {
 			"trigger.request",
 			"trigger.error",
 		]);
+	});
+
+	it("recover() never resolves when bus.emit never resolves (strict failure surface)", async () => {
+		// Smoke test for the recovery side of the bus's strict-consumer
+		// fatal-exit contract. systemShutdown side effects are covered in
+		// event-bus/index.test.ts; here we only assert recovery's observable
+		// behaviour: a non-resolving bus.emit causes recover() to also never
+		// resolve.
+		await backend.write(
+			"pending/evt_a/000000.json",
+			JSON.stringify(event({ kind: "trigger.request", seq: 0 })),
+		);
+
+		const logger = makeLogger();
+		const bus: EventBus = {
+			// Stub bus.emit to never resolve, mirroring what the real bus does
+			// when a strict consumer throws.
+			emit: vi.fn().mockReturnValue(new Promise(() => {})),
+		};
+
+		const settled = await Promise.race([
+			recover({ backend, eventStore, logger }, bus).then(
+				() => "resolved" as const,
+				() => "rejected" as const,
+			),
+			new Promise<"timer">((resolve) => setTimeout(() => resolve("timer"), 50)),
+		]);
+		expect(settled).toBe("timer");
+		expect(bus.emit).toHaveBeenCalled();
 	});
 });

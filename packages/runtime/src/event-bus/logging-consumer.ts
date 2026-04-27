@@ -13,6 +13,8 @@ function baseFields(event: InvocationEvent): Record<string, unknown> {
 
 function createLoggingConsumer(logger: Logger): BusConsumer {
 	return {
+		name: "logging",
+		strict: false,
 		// biome-ignore lint/suspicious/useAwait: async required by BusConsumer interface; logging itself is synchronous
 		async handle(event: InvocationEvent): Promise<void> {
 			try {
