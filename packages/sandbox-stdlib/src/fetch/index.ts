@@ -4,6 +4,7 @@ import type {
 	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
+import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
 import { hardenedFetch } from "./hardened-fetch.js";
 
 // The private descriptor name exposed to plugin source only — owner code
@@ -29,21 +30,42 @@ interface DispatchFetchArgs {
 	readonly body: string | null;
 }
 
+// Run-scoped tracker for in-flight requests' AbortControllers. The closer
+// aborts the controller, which cascades through composeSignal's
+// `AbortSignal.any([timeoutSignal, callerSignal])` and rejects the in-flight
+// `await fetchImpl(...)` with an AbortError. Audit safety is independently
+// guaranteed by the worker-side `bridge.clearRunActive()` gate; the abort
+// exists for worker-time fairness — guests that fire-and-forget fetch don't
+// borrow up to 30s of the next run's worker time.
+const handles = createRunScopedHandles<AbortController>((controller) => {
+	controller.abort();
+});
+
 async function dispatchFetch(
 	args: DispatchFetchArgs,
 ): Promise<FetchResponseWire> {
 	const { fetchImpl, method, url, headers, body } = args;
-	const response = await fetchImpl(url, { method, headers, body });
-	const outHeaders: Record<string, string> = {};
-	response.headers.forEach((v, k) => {
-		outHeaders[k] = v;
-	});
-	return {
-		status: response.status,
-		statusText: response.statusText,
-		headers: outHeaders,
-		body: await response.text(),
-	};
+	const controller = handles.track(new AbortController());
+	try {
+		const response = await fetchImpl(url, {
+			method,
+			headers,
+			body,
+			signal: controller.signal,
+		});
+		const outHeaders: Record<string, string> = {};
+		response.headers.forEach((v, k) => {
+			outHeaders[k] = v;
+		});
+		return {
+			status: response.status,
+			statusText: response.statusText,
+			headers: outHeaders,
+			body: await response.text(),
+		};
+	} finally {
+		await handles.release(controller);
+	}
 }
 
 /**
@@ -98,7 +120,10 @@ function fetchDispatcherDescriptor(
 }
 
 function worker(_ctx: SandboxContext): PluginSetup {
-	return { guestFunctions: [fetchDispatcherDescriptor(hardenedFetch)] };
+	return {
+		guestFunctions: [fetchDispatcherDescriptor(hardenedFetch)],
+		onRunFinished: handles.drain,
+	};
 }
 
 export type { FetchImpl, FetchResponseWire };

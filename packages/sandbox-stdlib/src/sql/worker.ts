@@ -5,6 +5,7 @@ import type {
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import postgres from "postgres";
+import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
 import { assertHostIsPublic } from "../net-guard/index.js";
 import { SQL_DISPATCHER_NAME } from "./descriptor-name.js";
 import type {
@@ -423,7 +424,19 @@ function throwStructured(err: unknown): never {
 // ---------------------------------------------------------------------------
 
 type SqlHandle = ReturnType<typeof postgres>;
-const openHandles = new Set<SqlHandle>();
+
+// Shared closer for both per-call `release` and run-end `drain`. Unifies on
+// `timeout: 0` (immediate, drain-on-shutdown semantics) — the prior code
+// passed `timeout: 5` on the per-call path. porsager/postgres documents
+// `end()` as idempotent (`if (ending) return ending`, postgres@3.4.9
+// src/index.js:366), so the second close (whether release-then-drain race
+// or drain-only) merges into the first. The 5-second value was a defensive
+// grace window for in-flight queries on the happy path; in practice the
+// per-call `finally` runs only after the query has already resolved or
+// rejected, so the grace was never load-bearing.
+const handles = createRunScopedHandles<SqlHandle>((sql) =>
+	sql.end({ timeout: 0 }),
+);
 
 // ---------------------------------------------------------------------------
 // Core dispatch
@@ -508,10 +521,9 @@ async function dispatchSqlExecute(input: SqlInputWire): Promise<SqlResultWire> {
 
 	// postgres(url, options) accepts url as string or URL; empty string + object
 	// form is the "fully-discrete" shape porsager supports.
-	const sql = url
-		? postgres(url, options)
-		: postgres(options as unknown as string);
-	openHandles.add(sql);
+	const sql = handles.track(
+		url ? postgres(url, options) : postgres(options as unknown as string),
+	);
 
 	try {
 		// porsager/postgres: when params is empty the driver uses Postgres's
@@ -546,11 +558,12 @@ async function dispatchSqlExecute(input: SqlInputWire): Promise<SqlResultWire> {
 	} catch (err) {
 		throwStructured(err);
 	} finally {
-		openHandles.delete(sql);
-		// Safe to race with the onRunFinished backstop — porsager's end() merges
-		// concurrent calls via `if (ending) return ending`
-		// (postgres@3.4.9 src/index.js:366).
-		await sql.end({ timeout: 5 }).catch(() => undefined);
+		// Safe to race with the onRunFinished backstop — porsager's end()
+		// merges concurrent calls via `if (ending) return ending`
+		// (postgres@3.4.9 src/index.js:366). The helper deletes the handle
+		// from its tracking Set BEFORE awaiting close, so a concurrent drain
+		// will not re-process this handle.
+		await handles.release(sql);
 	}
 }
 
@@ -610,16 +623,7 @@ function sqlDispatcherDescriptor(): GuestFunctionDescription {
 function worker(_ctx: SandboxContext): PluginSetup {
 	return {
 		guestFunctions: [sqlDispatcherDescriptor()],
-		onRunFinished: async () => {
-			const handles = Array.from(openHandles);
-			openHandles.clear();
-			// porsager/postgres end() is idempotent: `if (ending) return ending`
-			// (postgres@3.4.9 src/index.js:366). Safe to race with the per-query
-			// `finally { sql.end() }` — both callers share one teardown.
-			await Promise.allSettled(
-				handles.map((h) => h.end({ timeout: 0 }).catch(() => undefined)),
-			);
-		},
+		onRunFinished: handles.drain,
 	};
 }
 

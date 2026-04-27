@@ -379,3 +379,96 @@ describe("mail plugin — structured throw on send failure", () => {
 		});
 	});
 });
+
+describe("mail plugin — run-scoped transport cleanup", () => {
+	const noopCtx: SandboxContext = {
+		emit() {
+			return 0 as never;
+		},
+		request(_p, _o, fn) {
+			return fn();
+		},
+	};
+
+	it("per-call success closes transport via the per-call finally", async () => {
+		mockPublicHost();
+		nmMock.sendMail.mockResolvedValueOnce({
+			messageId: "<m>",
+			accepted: [],
+			rejected: [],
+		});
+		await dispatchMailSend(validOpts() as never);
+		expect(nmMock.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("per-call error closes transport via the per-call finally", async () => {
+		mockPublicHost();
+		nmMock.sendMail.mockRejectedValueOnce(
+			Object.assign(new Error("oops"), { code: "ECONNECTION" }),
+		);
+		await expect(dispatchMailSend(validOpts() as never)).rejects.toBeDefined();
+		expect(nmMock.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("fire-and-forgot transport is closed by onRunFinished", async () => {
+		mockPublicHost();
+		// Simulate a sendMail that never resolves: the dispatcher's `await`
+		// parks indefinitely, so the per-call `finally` does not run during
+		// the run window.
+		nmMock.sendMail.mockReturnValueOnce(new Promise(() => {}));
+
+		// Kick off dispatch but do NOT await it. The catch silences the
+		// pending rejection so the test runner doesn't flag it as unhandled.
+		dispatchMailSend(validOpts() as never).catch(() => undefined);
+		// Yield once so dispatch's microtasks (assertHostIsPublic + transport
+		// construction + the `await sendMail(...)` suspension) settle.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// Run end: drain the still-tracked transport.
+		const setup = worker(noopCtx);
+		await setup.onRunFinished?.(
+			{ ok: true, output: undefined },
+			{ name: "fakeRun", input: undefined },
+		);
+		expect(nmMock.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("drain after a successful release does not double-close", async () => {
+		mockPublicHost();
+		nmMock.sendMail.mockResolvedValueOnce({
+			messageId: "<m>",
+			accepted: [],
+			rejected: [],
+		});
+		await dispatchMailSend(validOpts() as never);
+
+		const setup = worker(noopCtx);
+		await setup.onRunFinished?.(
+			{ ok: true, output: undefined },
+			{ name: "fakeRun", input: undefined },
+		);
+		// release closed once; drain found the set empty → close NOT called again.
+		expect(nmMock.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("drain swallows close() errors", async () => {
+		mockPublicHost();
+		nmMock.sendMail.mockReturnValueOnce(new Promise(() => {}));
+		nmMock.close.mockImplementationOnce(() => {
+			throw new Error("close exploded");
+		});
+		dispatchMailSend(validOpts() as never).catch(() => undefined);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const setup = worker(noopCtx);
+		await expect(
+			setup.onRunFinished?.(
+				{ ok: true, output: undefined },
+				{ name: "fakeRun", input: undefined },
+			),
+		).resolves.toBeUndefined();
+		expect(nmMock.close).toHaveBeenCalledTimes(1);
+	});
+});
