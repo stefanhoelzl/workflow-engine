@@ -12,6 +12,7 @@ import type {
 	HttpResponse,
 	InvocationEvent,
 	LogLine,
+	MailCapture,
 	MockClient,
 	Scenario,
 	ScenarioState,
@@ -36,6 +37,7 @@ interface ScenarioRunContext {
 	respawn(): Promise<void>;
 	buildEnv: Record<string, string>;
 	httpClient: MockClient<HttpCapture>;
+	smtpClient: MockClient<MailCapture>;
 	getLogMarker(): Marker;
 	resetLogMarker(): void;
 }
@@ -121,12 +123,18 @@ function throwingMockClient<T extends { ts: number; slug?: string }>(
 	};
 }
 
+interface FreshScenarioStateInputs {
+	events: readonly InvocationEvent[];
+	logs: readonly LogLine[];
+	httpClient: MockClient<HttpCapture>;
+	smtpClient: MockClient<MailCapture>;
+}
+
 function freshScenarioState(
 	state: MutableState,
-	events: readonly InvocationEvent[],
-	logs: readonly LogLine[],
-	httpClient: MockClient<HttpCapture>,
+	inputs: FreshScenarioStateInputs,
 ): ScenarioState {
+	const { events, logs, httpClient, smtpClient } = inputs;
 	const empty = createCapturedSeq([]);
 	return {
 		workflows: createCapturedSeq(state.workflows, state.workflowLabels),
@@ -137,7 +145,7 @@ function freshScenarioState(
 		archives: empty as ScenarioState["archives"],
 		logs,
 		http: httpClient,
-		smtp: throwingMockClient("smtp"),
+		smtp: smtpClient,
 		sql: throwingMockClient("sql"),
 	};
 }
@@ -386,7 +394,14 @@ async function runExpect(
 		const events = await scanEvents(ctx.getChild().persistencePath);
 		const logs = ctx.getChild().logStream.since(ctx.getLogMarker());
 		try {
-			await callback(freshScenarioState(state, events, logs, ctx.httpClient));
+			await callback(
+				freshScenarioState(state, {
+					events,
+					logs,
+					httpClient: ctx.httpClient,
+					smtpClient: ctx.smtpClient,
+				}),
+			);
 			return;
 		} catch (err) {
 			lastErr = err;

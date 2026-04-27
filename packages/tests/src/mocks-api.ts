@@ -12,8 +12,24 @@ interface EchoApi {
 	urlFor(slug: string, ...path: string[]): string;
 }
 
+interface SmtpApi {
+	// SMTP coordinates the spawned runtime hands to nodemailer. The mock
+	// uses plain (non-TLS) sockets; the matching mail-plugin option is
+	// `tls: "plaintext"`.
+	readonly host: string;
+	readonly port: number;
+	readonly user: string;
+	readonly pass: string;
+	readonly adminUrl: string;
+	// Recipient address that carries the slug in its plus-address. The
+	// catcher derives the slug back from `dest+<slug>@test`, so test-side
+	// `state.smtp.captures({slug})` filters cleanly.
+	recipient(slug: string): string;
+}
+
 interface MocksApi {
 	readonly echo: EchoApi;
+	readonly smtp: SmtpApi;
 }
 
 function getMocks(): MocksApi {
@@ -28,8 +44,18 @@ function getMocks(): MocksApi {
 				return `${url}/${slug}${tail}`;
 			},
 		},
+		smtp: {
+			host: provided.smtp.host,
+			port: provided.smtp.port,
+			user: provided.smtp.user,
+			pass: provided.smtp.pass,
+			adminUrl: provided.smtp.adminUrl,
+			recipient(slug) {
+				return `dest+${slug}@test`;
+			},
+		},
 	};
 }
 
-export type { EchoApi, MocksApi };
+export type { EchoApi, MocksApi, SmtpApi };
 export { getMocks };

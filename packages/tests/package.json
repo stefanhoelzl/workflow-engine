@@ -17,6 +17,8 @@
 		"@workflow-engine/sdk": "workspace:*"
 	},
 	"devDependencies": {
+		"@types/smtp-server": "^3.5.13",
+		"smtp-server": "^3.18.4",
 		"typescript": "^6.0.2",
 		"vitest": "^4.1.4"
 	}
