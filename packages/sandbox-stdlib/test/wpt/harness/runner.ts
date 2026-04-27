@@ -79,7 +79,13 @@ const TESTHARNESS_REL = "resources/testharness.js";
 const MEMORY_LIMIT = 128 * 1024 * 1024;
 const STACK_LIMIT = 1 * 1024 * 1024;
 const CPU_LIMIT_MS = 60_000;
-const OUTPUT_LIMIT = 64 * 1024 * 1024;
+// WPT compliance tests are not subject to the production hostile-tenant
+// output cap. A few WPT files (e.g. fetch/api/basic/request-forbidden-
+// headers, fetch/api/headers/header-values-normalize) emit hundreds of
+// MiB of cumulative events in a single run by design. Set effectively
+// unlimited to avoid spurious "<setup>" terminations. Production
+// runtime keeps the 4 MiB default from runtime config.
+const OUTPUT_LIMIT = Number.MAX_SAFE_INTEGER;
 const PENDING_CALLABLES_LIMIT = 1024;
 const DEFAULT_DEADLINE_MS = 10_000;
 const LONG_DEADLINE_MS = 45_000;
