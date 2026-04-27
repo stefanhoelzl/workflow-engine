@@ -1,0 +1,40 @@
+name: sync-rulesets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/rulesets/**"
+      - ".github/workflows/sync-rulesets.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-rulesets
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync rulesets
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api "repos/$REPO/rulesets" --paginate)
+          for f in .github/rulesets/*.json; do
+            name=$(jq -r .name "$f")
+            id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<<"$existing" | head -n1)
+            if [ -n "$id" ] && [ "$id" != "null" ]; then
+              echo "Updating ruleset '$name' (id=$id)"
+              gh api -X PUT "repos/$REPO/rulesets/$id" --input "$f" >/dev/null
+            else
+              echo "Creating ruleset '$name'"
+              gh api -X POST "repos/$REPO/rulesets" --input "$f" >/dev/null
+            fi
+          done
