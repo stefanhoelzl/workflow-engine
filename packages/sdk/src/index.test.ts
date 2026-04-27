@@ -309,6 +309,27 @@ describe("brands and type guards", () => {
 		expect(t.onError).toEqual({});
 	});
 
+	it("imapTrigger defaults mode to 'idle'", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(t.mode).toBe("idle");
+	});
+
+	it("imapTrigger preserves explicit mode 'poll'", () => {
+		const t = imapTrigger({
+			...imapBaseConfig,
+			mode: "poll",
+			handler: async () => ({}),
+		});
+		expect(t.mode).toBe("poll");
+	});
+
+	it("imapTrigger mode property is readonly", () => {
+		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
+		expect(() => {
+			(t as unknown as { mode: string }).mode = "poll";
+		}).toThrow();
+	});
+
 	it("imapTrigger exposes connection + dedup config as readonly properties", () => {
 		const t = imapTrigger({ ...imapBaseConfig, handler: async () => ({}) });
 		expect(t.host).toBe("imap.example.com");

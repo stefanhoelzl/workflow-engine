@@ -687,6 +687,7 @@ function isManualTrigger(value: unknown): value is ManualTrigger {
 // ---------------------------------------------------------------------------
 
 type ImapTls = "required" | "starttls" | "none";
+type ImapMode = "poll" | "idle";
 
 interface ImapTrigger {
 	(msg: ImapMessage): Promise<ImapTriggerResult>;
@@ -699,6 +700,7 @@ interface ImapTrigger {
 	readonly password: string;
 	readonly folder: string;
 	readonly search: string;
+	readonly mode: ImapMode;
 	readonly onError: ImapTriggerResult;
 	readonly inputSchema: z.ZodType;
 	readonly outputSchema: z.ZodType;
@@ -750,6 +752,7 @@ function imapTrigger(config: {
 	password: string;
 	folder: string;
 	search: string;
+	mode?: ImapMode;
 	onError?: ImapTriggerResult;
 	handler: (msg: ImapMessage) => Promise<ImapTriggerResult>;
 }): ImapTrigger {
@@ -758,6 +761,7 @@ function imapTrigger(config: {
 	}
 	const resolvedTls: ImapTls = config.tls ?? "required";
 	const resolvedInsecure = config.insecureSkipVerify ?? false;
+	const resolvedMode: ImapMode = config.mode ?? "idle";
 	const resolvedOnError: ImapTriggerResult = config.onError ?? {};
 	const handler = config.handler;
 	const callable = function callImapTrigger(
@@ -780,6 +784,7 @@ function imapTrigger(config: {
 		password: config.password,
 		folder: config.folder,
 		search: config.search,
+		mode: resolvedMode,
 		onError: resolvedOnError,
 		inputSchema: imapMessageSchema,
 		outputSchema: imapTriggerResultSchema,

@@ -288,6 +288,7 @@ function buildImapDescriptor(
 		password: entry.password,
 		folder: entry.folder,
 		search: entry.search,
+		mode: entry.mode,
 		onError,
 		inputSchema: entry.inputSchema as Record<string, unknown>,
 		outputSchema: entry.outputSchema as Record<string, unknown>,

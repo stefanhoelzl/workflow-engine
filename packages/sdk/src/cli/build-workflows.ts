@@ -312,6 +312,7 @@ interface ManifestImapTriggerEntry {
 	password: string;
 	folder: string;
 	search: string;
+	mode: "poll" | "idle";
 	onError: { command?: string[] };
 	inputSchema: Record<string, unknown>;
 	outputSchema: Record<string, unknown>;
@@ -746,6 +747,7 @@ function buildImapTriggerEntry(
 		password: trigger.password,
 		folder: trigger.folder,
 		search: trigger.search,
+		mode: trigger.mode,
 		onError,
 		inputSchema: imapInputJsonSchema(),
 		outputSchema: imapOutputJsonSchema(),

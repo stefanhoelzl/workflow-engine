@@ -336,6 +336,7 @@ const imapTriggerManifestSchema = z.object({
 	password: z.string(),
 	folder: z.string(),
 	search: z.string(),
+	mode: z.enum(["poll", "idle"]).default("idle"),
 	onError: imapTriggerResultSchema,
 	inputSchema: jsonSchemaValidator,
 	outputSchema: jsonSchemaValidator,
