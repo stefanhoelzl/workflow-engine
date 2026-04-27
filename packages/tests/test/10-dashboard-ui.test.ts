@@ -33,9 +33,9 @@ export const ping = httpTrigger({
 					.filter({ has: page.locator(`.entry-workflow:text-is("${wf}")`) })
 					.first();
 				await entry.waitFor({ state: "visible" });
-				expect((await entry.locator(".entry-workflow").innerText()).trim()).toBe(
-					wf,
-				);
+				expect(
+					(await entry.locator(".entry-workflow").innerText()).trim(),
+				).toBe(wf);
 				expect((await entry.locator(".entry-trigger").innerText()).trim()).toBe(
 					"ping",
 				);
