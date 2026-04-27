@@ -16,15 +16,21 @@ interface CheckResult {
 	output?: string;
 }
 
+interface HealthVersion {
+	gitSha: string;
+}
+
 interface HealthResponse {
 	status: "pass" | "fail";
 	checks?: Record<string, CheckResult[]>;
+	version?: HealthVersion;
 }
 
 interface HealthDeps {
 	eventStore: EventStore;
 	storageBackend: StorageBackend | undefined;
 	baseUrl: string | undefined;
+	gitSha: string;
 }
 
 async function timed<T>(
@@ -291,10 +297,13 @@ function healthMiddleware(deps: HealthDeps): Middleware {
 
 			if (path === "/readyz") {
 				const allCheckNames = Object.keys(CHECK_MAP);
-				return healthJson(
-					c,
-					await runChecks(deps, allCheckNames, DEFAULT_TIMEOUT_MS),
+				const response = await runChecks(
+					deps,
+					allCheckNames,
+					DEFAULT_TIMEOUT_MS,
 				);
+				response.version = { gitSha: deps.gitSha };
+				return healthJson(c, response);
 			}
 
 			await next();

@@ -241,7 +241,12 @@ async function init() {
 			localDeployment: config.localDeployment,
 		}),
 		httpLogger,
-		healthMiddleware({ eventStore, storageBackend, baseUrl: config.baseUrl }),
+		healthMiddleware({
+			eventStore,
+			storageBackend,
+			baseUrl: config.baseUrl,
+			gitSha: config.gitSha,
+		}),
 		staticMiddleware(),
 		httpSource.middleware,
 		...authRoutes,

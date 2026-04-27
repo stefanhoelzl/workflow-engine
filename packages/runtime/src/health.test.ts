@@ -50,6 +50,7 @@ function defaultDeps(overrides?: Partial<HealthDeps>): HealthDeps {
 		eventStore: stubEventStore(),
 		storageBackend: undefined,
 		baseUrl: undefined,
+		gitSha: "dev",
 		...overrides,
 	};
 }
@@ -272,6 +273,22 @@ describe("GET /readyz", () => {
 		expect(body.checks?.webhooks?.[0]?.output).toBe("BASE_URL not configured");
 		expect(body.checks?.domain?.[0]?.status).toBe("fail");
 		expect(body.checks?.domain?.[0]?.output).toBe("BASE_URL not configured");
+	});
+
+	it("includes the build's git sha in the response body", async () => {
+		const app = createApp(defaultDeps({ gitSha: "abc123" }));
+
+		const res = await app.request("/readyz", { method: "GET" });
+		const body = (await res.json()) as HealthResponse;
+		expect(body.version).toEqual({ gitSha: "abc123" });
+	});
+
+	it("falls back to a 'dev' sentinel when no sha is configured", async () => {
+		const app = createApp(defaultDeps());
+
+		const res = await app.request("/readyz", { method: "GET" });
+		const body = (await res.json()) as HealthResponse;
+		expect(body.version).toEqual({ gitSha: "dev" });
 	});
 });
 

@@ -23,6 +23,9 @@ WORKDIR /app
 
 COPY --from=build /app/deploy .
 
+ARG GIT_SHA=dev
+ENV APP_GIT_SHA=$GIT_SHA
+
 EXPOSE 8080
 
 USER 65532

@@ -33,6 +33,7 @@ jobs:
         with:
           push: "true"
           tags: ghcr.io/${{ github.repository }}:release
+          git_sha: ${{ github.sha }}
 
       - uses: opentofu/setup-opentofu@v2
 
@@ -113,3 +114,31 @@ jobs:
 
       - name: Wait for Certificate Ready
         run: kubectl wait --for=condition=Ready certificate/prod-workflow-engine -n prod --timeout=5m
+
+      - id: url
+        name: Capture prod URL
+        working-directory: infrastructure/envs/prod
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+        run: |
+          echo "url=$(tofu output -raw url)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for /readyz to report the just-built sha
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          for attempt in $(seq 1 60); do
+            got=$(curl -fsS "$URL/readyz" 2>/dev/null | jq -r '.version.gitSha // ""' || true)
+            if [[ "$got" == "$EXPECTED_SHA" ]]; then
+              echo "rollout converged: gitSha=$got"
+              exit 0
+            fi
+            echo "attempt $attempt: gitSha=$got expected=$EXPECTED_SHA"
+            sleep 5
+          done
+          echo "::error::/readyz never reported expected sha; last gitSha=$got"
+          exit 1

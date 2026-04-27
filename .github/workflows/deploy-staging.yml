@@ -31,6 +31,7 @@ jobs:
         with:
           push: "true"
           tags: ghcr.io/${{ github.repository }}:main
+          git_sha: ${{ github.sha }}
 
       - uses: opentofu/setup-opentofu@v2
 
@@ -60,8 +61,23 @@ jobs:
         run: |
           echo "url=$(tofu output -raw url)" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for /readyz
-        run: curl -fsS --retry 30 --retry-delay 5 "${{ steps.url.outputs.url }}/readyz"
+      - name: Wait for /readyz to report the just-built sha
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          for attempt in $(seq 1 60); do
+            got=$(curl -fsS "$URL/readyz" 2>/dev/null | jq -r '.version.gitSha // ""' || true)
+            if [[ "$got" == "$EXPECTED_SHA" ]]; then
+              echo "rollout converged: gitSha=$got"
+              exit 0
+            fi
+            echo "attempt $attempt: gitSha=$got expected=$EXPECTED_SHA"
+            sleep 5
+          done
+          echo "::error::/readyz never reported expected sha; last gitSha=$got"
+          exit 1
 
       - uses: ./.github/actions/setup-pnpm
 
