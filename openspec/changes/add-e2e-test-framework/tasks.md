@@ -158,5 +158,5 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 ## 19. CI promotion
 
 - [x] 19.1 After PR 1 lands and ~one week of green `test:e2e` runs, promote the job to a required check on `main` (done in PR 1: the job is part of `ci.yml` from the outset, no `continue-on-error`)
-- [ ] 19.2 Update `CLAUDE.md` "Definition of Done" section pointing at `pnpm test:e2e` (separate from `pnpm validate`)
-- [ ] 19.3 Add `packages/tests/README.md` documenting the test-author surface (the three exports, the chain DSL, the no-escape-hatch rule, the slug convention, mock interaction patterns)
+- [x] 19.2 Update `CLAUDE.md` "Definition of Done" section pointing at `pnpm test:e2e` (separate from `pnpm validate`)
+- [x] 19.3 Add `packages/tests/README.md` documenting the test-author surface (the three exports, the chain DSL, the no-escape-hatch rule, the slug convention, mock interaction patterns)

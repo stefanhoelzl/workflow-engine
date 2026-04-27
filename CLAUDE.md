@@ -47,6 +47,7 @@ Prod/staging runbook: `docs/infrastructure.md`.
 ## Definition of Done
 
 - `pnpm validate` must pass. Runs in parallel: `pnpm lint` (Biome), `pnpm check` (TypeScript), `pnpm test` (Vitest unit + integration; **excludes WPT** — run `pnpm test:wpt` separately when touching sandbox-stdlib), and `tofu fmt -check` + `tofu validate` for every infrastructure env.
+- `pnpm test:e2e` is gated separately in CI (its own GitHub Actions job, not part of `validate` and not part of `pnpm test`). It builds the workspace then runs `vitest run --project tests` against a real spawned runtime child per `describe` block. Run it locally before pushing when the change touches runtime spawn/shutdown, the SDK CLI build/upload pipeline, persistence layout, plugin host-call surface (fetch/SQL/SMTP), authenticated UI routes, or anything else under `packages/tests/test/`. See `packages/tests/README.md` for the test-author surface.
 
 ## Dev verification
 
