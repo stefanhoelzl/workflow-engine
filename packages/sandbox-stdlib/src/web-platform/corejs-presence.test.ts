@@ -21,8 +21,17 @@ function iife(body: string): string {
 
 const PLUGINS = [{ ...wasiPlugin }, { ...webPlatformPlugin }];
 
+const PROBE_LIMITS = {
+	memoryBytes: 67_108_864,
+	stackBytes: 524_288,
+	cpuMs: 30_000,
+	outputBytes: 33_554_432,
+	pendingCallables: 256,
+} as const;
+
 async function runProbe(body: string): Promise<unknown> {
 	const sb = await sandbox({
+		...PROBE_LIMITS,
 		source: iife(`exports.probe = async function() { ${body} };`),
 		plugins: PLUGINS,
 	});

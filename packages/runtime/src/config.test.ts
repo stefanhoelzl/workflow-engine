@@ -68,6 +68,38 @@ describe("createConfig", () => {
 		).toThrow();
 	});
 
+	it("SANDBOX_LIMIT_* fields default when env unset", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.sandboxLimitMemoryBytes).toBe(67_108_864);
+		expect(config.sandboxLimitStackBytes).toBe(524_288);
+		expect(config.sandboxLimitCpuMs).toBe(60_000);
+		expect(config.sandboxLimitOutputBytes).toBe(4_194_304);
+		expect(config.sandboxLimitPendingCallables).toBe(64);
+	});
+
+	it("SANDBOX_LIMIT_CPU_MS honours env override", () => {
+		const config = createConfig({ ...REQUIRED, SANDBOX_LIMIT_CPU_MS: "5000" });
+		expect(config.sandboxLimitCpuMs).toBe(5000);
+	});
+
+	it("SANDBOX_LIMIT_MEMORY_BYTES rejects zero", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_LIMIT_MEMORY_BYTES: "0" }),
+		).toThrow();
+	});
+
+	it("SANDBOX_LIMIT_MEMORY_BYTES rejects negative", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_LIMIT_MEMORY_BYTES: "-1" }),
+		).toThrow();
+	});
+
+	it("SANDBOX_LIMIT_CPU_MS rejects non-numeric", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, SANDBOX_LIMIT_CPU_MS: "abc" }),
+		).toThrow();
+	});
+
 	it("AUTH_ALLOW unset leaves authAllow undefined", () => {
 		const config = createConfig(REQUIRED);
 		expect(config.authAllow).toBeUndefined();

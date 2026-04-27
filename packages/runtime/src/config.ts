@@ -34,6 +34,46 @@ const schema = z
 		FILE_IO_CONCURRENCY: z.coerce.number().default(10),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		SANDBOX_MAX_COUNT: z.coerce.number().int().positive().default(10),
+		// Sandbox per-run resource limits. Defaults live in the schema so
+		// `pnpm dev`, tests, local cluster, and prod all use identical values
+		// when env vars are unset. See
+		// `openspec/specs/runtime-config/spec.md` "Sandbox resource-limit
+		// config fields".
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_LIMIT_MEMORY_BYTES: z.coerce
+			.number()
+			.int()
+			.positive()
+			// biome-ignore lint/style/noMagicNumbers: default 64 MiB
+			.default(67_108_864),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_LIMIT_STACK_BYTES: z.coerce
+			.number()
+			.int()
+			.positive()
+			// biome-ignore lint/style/noMagicNumbers: default 512 KiB
+			.default(524_288),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_LIMIT_CPU_MS: z.coerce
+			.number()
+			.int()
+			.positive()
+			// biome-ignore lint/style/noMagicNumbers: default 60 s
+			.default(60_000),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_LIMIT_OUTPUT_BYTES: z.coerce
+			.number()
+			.int()
+			.positive()
+			// biome-ignore lint/style/noMagicNumbers: default 4 MiB
+			.default(4_194_304),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		SANDBOX_LIMIT_PENDING_CALLABLES: z.coerce
+			.number()
+			.int()
+			.positive()
+			// biome-ignore lint/style/noMagicNumbers: default concurrent host-callable cap
+			.default(64),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		AUTH_ALLOW: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -86,6 +126,11 @@ const schema = z
 		port: env.PORT,
 		fileIoConcurrency: env.FILE_IO_CONCURRENCY,
 		sandboxMaxCount: env.SANDBOX_MAX_COUNT,
+		sandboxLimitMemoryBytes: env.SANDBOX_LIMIT_MEMORY_BYTES,
+		sandboxLimitStackBytes: env.SANDBOX_LIMIT_STACK_BYTES,
+		sandboxLimitCpuMs: env.SANDBOX_LIMIT_CPU_MS,
+		sandboxLimitOutputBytes: env.SANDBOX_LIMIT_OUTPUT_BYTES,
+		sandboxLimitPendingCallables: env.SANDBOX_LIMIT_PENDING_CALLABLES,
 		authAllow: env.AUTH_ALLOW,
 		githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID,
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,

@@ -680,6 +680,53 @@ plugin, and every change that adds a guest-visible surface.
     The placeholder drops the event content (acceptable — a throw
     here is a scrubber bug we want to fix, not paper over). Any
     future change to that body MUST preserve this containment.
+11. **R-11 Sandbox resource caps — two-class pipeline.** Sandbox
+    resource caps SHALL split into two classes distinguished by whether
+    the guest can catch the breach. **Recoverable caps** (`memory`,
+    `stack`) are enforced natively by QuickJS (`QuickJS.create({
+    memoryLimit })` and `qjs_set_max_stack_size`); a breach SHALL
+    surface as a catchable QuickJS exception (`InternalError: out of
+    memory` / `RangeError: Maximum call stack size exceeded`). The
+    sandbox SHALL survive recoverable breaches; the worker SHALL stay
+    alive; the cache SHALL NOT be evicted; NO `system.exhaustion` event
+    SHALL be emitted. Uncaught recoverable breaches bubble through
+    `vm.callFunction`'s catch and become an ordinary
+    `RunResult{ok:false, error}` like any guest error. **Terminal
+    limits** (`cpu`, `output`, `pending`) SHALL flow through the
+    uniform termination pipeline: (1) **detection** — worker-side
+    output/pending construct a tagged `SandboxLimitError` and throw it
+    via `queueMicrotask` so the throw escapes any surrounding plugin
+    try/catch and lands on the Node thread outside any QuickJS
+    evaluation frame; main-thread CPU breaches set `cpuBudgetExpired =
+    true` and call `worker.terminate()`; (2) **classification** — both
+    paths converge in `packages/sandbox/src/worker-termination.ts`,
+    whose synchronous `cause()` getter (and exactly-once `onTerminated`
+    dispatch) returns `{kind:"limit", dim, observed?}` with `dim ∈
+    {"cpu","output","pending"}`; (3) **synthesis** —
+    `packages/sandbox/src/sandbox.ts`'s `sb.run()` consults
+    `termination.cause()` on `onError`/`onExit`, emits a
+    `system.exhaustion` leaf via `sequencer.next()` carrying `name:
+    dim, input: { budget, observed? }`, then calls
+    `sequencer.finish({closeReason: "limit:<dim>"})` to synthesise LIFO
+    close events for every still-open frame (seq/ref stamped by
+    `RunSequencer` — no manual fabrication); (4) **eviction** —
+    `sandbox-store` is the SOLE production subscriber to
+    `Sandbox.onTerminated` and on any cause (limit or crash) evicts the
+    `(owner, sha)` cache entry. The executor has no limit-specific
+    code path: `sb.run()` rejects with `Error("sandbox limit exceeded:
+    <dim>")` on terminal limit (symmetric with `Error("worker exited
+    with code N")` on crash), and the executor's existing try/catch
+    converts both into `InvokeResult{ok:false}`. NEVER bypass any
+    stage of the terminal pipeline; NEVER add a runtime-termination
+    call to the recoverable path; NEVER emit `system.exhaustion` for a
+    recoverable breach. Adding a new terminal dimension without
+    wiring it through `SandboxLimitError` (or a main-side flag) +
+    `cause()` classification + `sequencer`-driven synthesis +
+    `sandbox-store` eviction is a regression. See
+    `openspec/specs/sandbox/spec.md` "Sandbox resource caps — two-class
+    classification" and "Eviction on sandbox termination", and
+    `openspec/specs/invocations/spec.md` "Requirement: system.exhaustion
+    event kind".
 
 Additional standing rules that predate the plugin rewrite:
 

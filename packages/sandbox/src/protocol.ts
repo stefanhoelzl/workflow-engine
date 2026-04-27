@@ -50,8 +50,17 @@ type MainToWorker =
 			source: string;
 			filename: string;
 			pluginDescriptors: readonly PluginDescriptor[];
-			// Optional memoryLimit in bytes, passed to QuickJS.create.
-			memoryLimit?: number;
+			// Per-sandbox resource limits. All required positive integers;
+			// the runtime sources them from `packages/runtime/src/config.ts`
+			// (`SANDBOX_LIMIT_*`). Worker-side enforcement for memory/stack
+			// is via QuickJS.create; output-bytes is counted at the
+			// worker→main event-post boundary; pending-callables is counted
+			// in plugin-runtime's Callable dispatch. CPU is main-owned
+			// (watchdog in `sandbox.ts`) and therefore NOT in this payload.
+			memoryBytes: number;
+			stackBytes: number;
+			outputBytes: number;
+			pendingCallables: number;
 	  }
 	| {
 			type: "run";

@@ -128,7 +128,14 @@ describe("end-to-end event flow", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store], { logger });
 
-		const sandboxFactory = createSandboxFactory({ logger });
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		const stubKeyStore = {
 			getPrimary: () => ({
 				keyId: "0000000000000000",
@@ -144,7 +151,10 @@ describe("end-to-end event flow", () => {
 			keyStore: stubKeyStore,
 			maxCount: 100,
 		});
-		const executor = createExecutor({ bus, sandboxStore });
+		const executor = createExecutor({
+			bus,
+			sandboxStore,
+		});
 		registry = createWorkflowRegistry({
 			logger,
 			executor,
@@ -245,7 +255,14 @@ describe("end-to-end event flow", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store], { logger });
 
-		const sandboxFactory = createSandboxFactory({ logger });
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		// Pre-existing integration test predates the secrets feature; wire in
 		// a dummy keyStore since sandbox-store now requires it (no manifest
 		// secrets are declared here, so the store is never consulted).
@@ -259,7 +276,10 @@ describe("end-to-end event flow", () => {
 			keyStore: integrationKeyStore,
 			maxCount: 100,
 		});
-		const executor = createExecutor({ bus, sandboxStore });
+		const executor = createExecutor({
+			bus,
+			sandboxStore,
+		});
 		registry = createWorkflowRegistry({
 			logger,
 			executor,
@@ -504,7 +524,14 @@ describe("end-to-end event flow", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store], { logger });
 
-		const sandboxFactory = createSandboxFactory({ logger });
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		const stubKeyStore = {
 			getPrimary: () => ({
 				keyId: "0000000000000000",
@@ -1058,7 +1085,14 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store], { logger });
 
-		const sandboxFactory = createSandboxFactory({ logger });
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		const keyStore = createKeyStore(`primary:${skB64}`);
 		sandboxStore = createSandboxStore({
 			sandboxFactory,
@@ -1066,7 +1100,10 @@ describe("workflow-secrets end-to-end scrubbing", () => {
 			keyStore,
 			maxCount: 100,
 		});
-		const executor = createExecutor({ bus, sandboxStore });
+		const executor = createExecutor({
+			bus,
+			sandboxStore,
+		});
 		registry = createWorkflowRegistry({
 			logger,
 			executor,
@@ -1194,7 +1231,14 @@ var __wfe_exports__ = (function(exports) {
 		const persistence = createPersistence(backend, { logger });
 		const bus = createEventBus([persistence, store], { logger });
 
-		const sandboxFactory = createSandboxFactory({ logger });
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		// No sealed-secret manifest → any non-empty CSV satisfies config;
 		// generate one fresh keypair for the keyStore.
 		const kp = generateKeypair();
@@ -1206,7 +1250,10 @@ var __wfe_exports__ = (function(exports) {
 			keyStore,
 			maxCount: 100,
 		});
-		const executor = createExecutor({ bus, sandboxStore });
+		const executor = createExecutor({
+			bus,
+			sandboxStore,
+		});
 		registry = createWorkflowRegistry({
 			logger,
 			executor,
@@ -1257,5 +1304,152 @@ var __wfe_exports__ = (function(exports) {
 		const allArchived = archiveBlobs.join("\n");
 		expect(allArchived).not.toContain(RUNTIME_SECRET_PLAINTEXT);
 		expect(allArchived).toContain("[secret]");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Sandbox terminal cpu limit — full pipeline integration
+// ---------------------------------------------------------------------------
+
+const CPU_BREACH_WORKFLOW = {
+	name: "cpu-breach",
+	module: "cpu-breach.js",
+	sha: "c".repeat(64),
+	env: {},
+	actions: [],
+	triggers: [
+		{
+			name: "spin",
+			type: "manual",
+			inputSchema: { type: "object", additionalProperties: true },
+			outputSchema: {},
+		},
+	],
+};
+const CPU_BREACH_MANIFEST = { workflows: [CPU_BREACH_WORKFLOW] };
+const CPU_BREACH_BUNDLE = `
+var __wfe_exports__ = (function(exports) {
+	exports.spin = Object.assign(
+		async () => { while (true) {} },
+		{ schema: { parse: (x) => x } },
+	);
+	return exports;
+})({});
+`;
+
+describe("sandbox cpu terminal limit — full runtime pipeline", () => {
+	let dir: string;
+	let registry: WorkflowRegistry;
+	let store: EventStore;
+	let sandboxStore: SandboxStore;
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "integration-cpu-limit-"));
+		await readyCrypto();
+	});
+
+	afterEach(async () => {
+		registry?.dispose();
+		await sandboxStore?.dispose();
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it("infinite loop trips cpu watchdog: invoke returns ok=false, system.exhaustion + trigger.error events archived, sandbox evicted", async () => {
+		const logger = makeLogger();
+		const backend = createFsStorage(dir);
+		await backend.init();
+
+		store = await createEventStore({ persistence: { backend }, logger });
+		await store.initialized;
+		const persistence = createPersistence(backend, { logger });
+		const bus = createEventBus([persistence, store]);
+
+		const sandboxFactory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 1,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
+		sandboxStore = createSandboxStore({
+			sandboxFactory,
+			logger,
+			keyStore: dummyKeyStore,
+			maxCount: 100,
+		});
+		const executor = createExecutor({ bus, sandboxStore });
+		registry = createWorkflowRegistry({
+			logger,
+			executor,
+			keyStore: dummyKeyStore,
+		});
+		await registry.registerOwner(
+			"acme",
+			"demo",
+			new Map([
+				["manifest.json", JSON.stringify(CPU_BREACH_MANIFEST)],
+				["cpu-breach.js", CPU_BREACH_BUNDLE],
+			]),
+		);
+		const entries = registry.list("acme");
+		const entry = entries[0];
+		const descriptor = entry?.triggers.find((t) => t.name === "spin");
+		if (!(entry && descriptor)) {
+			throw new Error("expected a spin trigger descriptor");
+		}
+
+		// First invoke: trips the cpu watchdog.
+		const beforeSandbox = await sandboxStore.get(
+			"acme",
+			entry.workflow,
+			entry.bundleSource,
+		);
+		const result = await executor.invoke(
+			"acme",
+			"demo",
+			entry.workflow,
+			descriptor,
+			{},
+			{ bundleSource: entry.bundleSource },
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.message).toMatch(/sandbox limit exceeded: cpu/);
+		}
+
+		// Allow event-bus forwarding to settle.
+		await new Promise((r) => setImmediate(r));
+
+		const rows = await store
+			.query([{ owner: "acme", repo: "demo" }])
+			.selectAll()
+			.orderBy("seq", "asc")
+			.execute();
+
+		const exhaustion = rows.find((r) => r.kind === "system.exhaustion");
+		expect(exhaustion).toBeDefined();
+		expect(exhaustion?.name).toBe("cpu");
+		const exhInput = exhaustion?.input as { budget?: number } | undefined;
+		expect(exhInput?.budget).toBe(1);
+		expect(typeof exhaustion?.seq).toBe("number");
+		expect((exhaustion?.seq ?? -1) >= 0).toBe(true);
+		expect(exhaustion?.ref).not.toBeNull();
+
+		const triggerReq = rows.find((r) => r.kind === "trigger.request");
+		const triggerErr = rows.find((r) => r.kind === "trigger.error");
+		expect(triggerReq).toBeDefined();
+		expect(triggerErr).toBeDefined();
+		const errBody = triggerErr?.error as { message?: string } | undefined;
+		expect(errBody?.message).toBe("limit:cpu");
+		expect(triggerErr?.ref).toBe(triggerReq?.seq);
+
+		// Sandbox-store eviction: the next get() returns a fresh build.
+		const afterSandbox = await sandboxStore.get(
+			"acme",
+			entry.workflow,
+			entry.bundleSource,
+		);
+		expect(afterSandbox).not.toBe(beforeSandbox);
 	});
 });

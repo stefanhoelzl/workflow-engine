@@ -12,6 +12,10 @@ import type {
 	WorkerToMain,
 } from "./protocol.js";
 import { createRunSequencer, type RunSequencer } from "./run-sequencer.js";
+import {
+	createWorkerTermination,
+	type TerminationCause,
+} from "./worker-termination.js";
 
 function resolveWorkerUrl(): URL {
 	const here = dirname(fileURLToPath(import.meta.url));
@@ -29,10 +33,14 @@ interface SandboxOptions {
 	readonly source: string;
 	readonly plugins: readonly PluginDescriptor[];
 	readonly filename?: string;
-	// Maximum memory (in bytes) the QuickJS runtime is allowed to allocate.
-	// Exceeding it triggers an OOM error inside the guest. Passed directly
-	// to QuickJS.create({ memoryLimit }).
-	readonly memoryLimit?: number;
+	// Resource limits. All required positive integers; see
+	// `openspec/specs/sandbox/spec.md` "Sandbox resource limits —
+	// termination contract" for the enforcement pipeline.
+	readonly memoryBytes: number;
+	readonly stackBytes: number;
+	readonly cpuMs: number;
+	readonly outputBytes: number;
+	readonly pendingCallables: number;
 	// Optional sink for WorkerToMain log messages (quickjs engine diagnostics
 	// from fd_write + plugin dangling-frame warnings) and main-side
 	// RunSequencer warnings (close-without-open, event-outside-run, etc).
@@ -56,7 +64,13 @@ interface Sandbox {
 	// `sb.onEvent` handler before forwarding to the bus (SECURITY.md §2 R-8).
 	onEvent(cb: (event: SandboxEvent) => void): void;
 	dispose(): void;
-	onDied(cb: (err: Error) => void): void;
+	// Fired exactly once per worker lifecycle with a structured cause:
+	// `{kind:"limit", dim, observed?}` for the five resource-limit
+	// dimensions (memory/stack/cpu/output/pending), or `{kind:"crash", err}`
+	// for anything else (including unknown worker exits). Suppressed when
+	// `dispose()` was called first. See
+	// `packages/sandbox/src/worker-termination.ts`.
+	onTerminated(cb: (cause: TerminationCause) => void): void;
 	// True iff a `run()` is currently in flight. Exposed so out-of-band
 	// callers (e.g. the runtime's sandbox cache deciding whether to evict
 	// an entry) can skip sandboxes that would race a live run. Host-side
@@ -85,13 +99,36 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		source,
 		plugins,
 		filename = "action.js",
-		memoryLimit,
+		memoryBytes,
+		stackBytes,
+		cpuMs,
+		outputBytes,
+		pendingCallables,
 		logger,
 	} = options;
 
 	const worker = new Worker(resolveWorkerUrl());
+	const termination = createWorkerTermination(worker);
+
+	// Per-dimension budget lookup table; used when synthesising the
+	// `system.exhaustion` leaf on a limit termination so the marker's
+	// hover title can carry the configured cap alongside the observed
+	// value (when measurable).
+	const budgets: Record<"cpu" | "output" | "pending", number> = {
+		cpu: cpuMs,
+		output: outputBytes,
+		pending: pendingCallables,
+	};
 
 	let onEventCb: ((event: SandboxEvent) => void) | null = null;
+	let terminatedCause: TerminationCause | null = null;
+	let terminatedCb: ((cause: TerminationCause) => void) | null = null;
+	termination.onTerminated((cause) => {
+		terminatedCause = cause;
+		if (terminatedCb) {
+			terminatedCb(cause);
+		}
+	});
 
 	// Main-side RunSequencer owns seq/ref stamping. One per Sandbox; reused
 	// across runs (start() opens the window; finish() zeroes state).
@@ -150,29 +187,6 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	worker.on("message", onPersistentMessage);
 
 	let disposed = false;
-	let deathRecorded: Error | null = null;
-	let onDiedCb: ((err: Error) => void) | null = null;
-
-	function fireOnDied(err: Error): void {
-		if (deathRecorded) {
-			return;
-		}
-		deathRecorded = err;
-		if (onDiedCb) {
-			onDiedCb(err);
-		}
-	}
-
-	worker.on("error", (err) => {
-		if (!disposed) {
-			fireOnDied(err instanceof Error ? err : new Error(String(err)));
-		}
-	});
-	worker.on("exit", (code) => {
-		if (!disposed && code !== 0) {
-			fireOnDied(new Error(`worker exited with code ${code}`));
-		}
-	});
 
 	// --- Init handshake ---
 	await new Promise<void>((resolve, reject) => {
@@ -218,7 +232,10 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			source,
 			filename,
 			pluginDescriptors: validatedPlugins,
-			...(memoryLimit === undefined ? {} : { memoryLimit }),
+			memoryBytes,
+			stackBytes,
+			outputBytes,
+			pendingCallables,
 		};
 		worker.postMessage(initMsg);
 	});
@@ -230,7 +247,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	// from the sequencer's internal `runActive` (which gates stamping).
 	let runInFlight = false;
 
-	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run() encapsulates the full run-dispatch lifecycle (precondition checks, sequencer start, worker postMessage, message/error/exit listeners, finalize with death-synthesis) as one cohesive promise — splitting it would require threading mutable state across multiple call frames
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: run() encapsulates the full run-dispatch lifecycle (precondition checks, cpu watchdog arm/disarm, sequencer start, worker postMessage, message/error/exit listeners, finalize with limit-aware death synthesis) as one cohesive promise — splitting would shuttle mutable state across helpers.
 	function run(
 		name: string,
 		ctx: unknown,
@@ -239,10 +256,12 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		if (disposed) {
 			return Promise.reject(new Error("Sandbox is disposed"));
 		}
-		if (deathRecorded) {
-			return Promise.reject(
-				new Error(`Sandbox worker has died: ${deathRecorded.message}`),
-			);
+		if (terminatedCause) {
+			const msg =
+				terminatedCause.kind === "crash"
+					? terminatedCause.err.message
+					: `limit ${terminatedCause.dim}`;
+			return Promise.reject(new Error(`Sandbox worker has died: ${msg}`));
 		}
 		if (runInFlight) {
 			return Promise.reject(
@@ -252,6 +271,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			);
 		}
 
+		// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Promise executor binds the per-run state machine (cpu watchdog arm/disarm, sequencer start, finalize, limit-aware death synthesis, one-shot message/error/exit listeners) into one closure — extracting helpers would shuttle the same mutable state across call frames.
 		return new Promise<RunResult>((resolve, reject) => {
 			pendingRunRejects.add(reject);
 			runInFlight = true;
@@ -259,6 +279,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			// any wire events that arrive while the run is starting will
 			// be stamped against a fresh seq=0/empty refStack/empty callMap.
 			sequencer.start();
+			termination.armCpuBudget(cpuMs);
 
 			let finished = false;
 
@@ -271,11 +292,53 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 				worker.off("message", onMessage);
 				worker.off("error", onError);
 				worker.off("exit", onExit);
+				termination.disarmCpuBudget();
 				for (const evt of synth) {
 					forwardSandboxEvent(evt);
 				}
 				runInFlight = false;
 				settle();
+			}
+
+			function buildLimitLeaf(
+				cause: Extract<TerminationCause, { kind: "limit" }>,
+			): SandboxEvent | null {
+				const now = Date.now();
+				const wireLeaf = {
+					kind: "system.exhaustion",
+					name: cause.dim,
+					ts: now,
+					at: new Date(now).toISOString(),
+					input: {
+						budget: budgets[cause.dim],
+						...(cause.observed === undefined
+							? {}
+							: { observed: cause.observed }),
+					},
+					type: "leaf" as const,
+				};
+				return sequencer.next(wireLeaf);
+			}
+
+			function handleDeath(fallbackErr: Error): void {
+				const cause = termination.cause();
+				if (cause?.kind === "limit") {
+					const leaf = buildLimitLeaf(cause);
+					if (leaf !== null) {
+						forwardSandboxEvent(leaf);
+					}
+					const synth = sequencer.finish({
+						closeReason: `limit:${cause.dim}`,
+					});
+					const limitErr = new Error(`sandbox limit exceeded: ${cause.dim}`);
+					finalize(synth, () => reject(limitErr));
+					return;
+				}
+				const closeReason =
+					cause?.kind === "crash"
+						? `crash:${cause.err.message}`
+						: fallbackErr.message;
+				finalize(sequencer.finish({ closeReason }), () => reject(fallbackErr));
 			}
 
 			const onMessage = (msg: WorkerToMain) => {
@@ -285,16 +348,11 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			};
 
 			const onError = (err: Error) => {
-				finalize(sequencer.finish({ closeReason: err.message }), () =>
-					reject(err),
-				);
+				handleDeath(err);
 			};
 
 			const onExit = (code: number) => {
-				const err = new Error(`worker exited with code ${code}`);
-				finalize(sequencer.finish({ closeReason: err.message }), () =>
-					reject(err),
-				);
+				handleDeath(new Error(`worker exited with code ${code}`));
 			};
 
 			worker.on("message", onMessage);
@@ -316,6 +374,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			return;
 		}
 		disposed = true;
+		termination.markDisposing();
 		for (const reject of pendingRunRejects) {
 			reject(new Error("Sandbox is disposed"));
 		}
@@ -325,10 +384,10 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		});
 	}
 
-	function onDied(cb: (err: Error) => void): void {
-		onDiedCb = cb;
-		if (deathRecorded) {
-			cb(deathRecorded);
+	function onTerminated(cb: (cause: TerminationCause) => void): void {
+		terminatedCb = cb;
+		if (terminatedCause) {
+			cb(terminatedCause);
 		}
 	}
 
@@ -340,7 +399,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		run,
 		onEvent,
 		dispose,
-		onDied,
+		onTerminated,
 		get isActive() {
 			return runInFlight;
 		},

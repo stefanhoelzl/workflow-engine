@@ -2,12 +2,27 @@ import { createHash } from "node:crypto";
 import type { Logger } from "./logger.js";
 import { type Sandbox, type SandboxOptions, sandbox } from "./sandbox.js";
 
-/** @deprecated Kept as an alias for `SandboxOptions`. Remove in the next breaking change. */
-type FactoryCreateOptions = Omit<SandboxOptions, "logger">;
+// Factory-level resource limits. Sourced from the runtime config
+// (`SANDBOX_LIMIT_*` fields in `packages/runtime/src/config.ts`) once at
+// startup and forwarded into every `create()` call — individual call sites
+// don't pass limits per-invocation.
+type SandboxResourceLimits = Pick<
+	SandboxOptions,
+	"memoryBytes" | "stackBytes" | "cpuMs" | "outputBytes" | "pendingCallables"
+>;
 
+type FactoryCreateOptions = Omit<
+	SandboxOptions,
+	keyof SandboxResourceLimits | "logger"
+>;
+
+// Pure builder: no lifetime tracking, no `dispose()`, no termination
+// subscription. Sandbox lifetime is owned by the consumer (in production
+// `SandboxStore`; in tests, the test fixture). See
+// `openspec/specs/sandbox/spec.md` "Factory-wide dispose" — the SandboxFactory
+// SHALL NOT track lifetimes and SHALL NOT expose a `dispose()` method.
 interface SandboxFactory {
 	create(options: FactoryCreateOptions): Promise<Sandbox>;
-	dispose(): Promise<void>;
 }
 
 const HASH_PREFIX_LEN = 12;
@@ -19,38 +34,39 @@ function sourceHash(source: string): string {
 		.slice(0, HASH_PREFIX_LEN);
 }
 
-function createSandboxFactory(opts: { logger: Logger }): SandboxFactory {
-	const { logger } = opts;
-	const created = new Set<Sandbox>();
+interface FactoryDeps extends SandboxResourceLimits {
+	readonly logger: Logger;
+}
+
+function createSandboxFactory(opts: FactoryDeps): SandboxFactory {
+	const {
+		logger,
+		memoryBytes,
+		stackBytes,
+		cpuMs,
+		outputBytes,
+		pendingCallables,
+	} = opts;
 
 	async function create(options: FactoryCreateOptions): Promise<Sandbox> {
 		const hash = sourceHash(options.source);
 		const start = performance.now();
-		const sb = await sandbox({ ...options, logger });
-		const durationMs = Math.round(performance.now() - start);
-
-		created.add(sb);
-		sb.onDied(() => {
-			created.delete(sb);
+		const sb = await sandbox({
+			...options,
+			memoryBytes,
+			stackBytes,
+			cpuMs,
+			outputBytes,
+			pendingCallables,
+			logger,
 		});
-
+		const durationMs = Math.round(performance.now() - start);
 		logger.info("sandbox created", { sourceHash: hash, durationMs });
 		return sb;
 	}
 
-	function dispose(): Promise<void> {
-		for (const sb of created) {
-			sb.dispose();
-			logger.info("sandbox disposed", {
-				reason: "factory.dispose",
-			});
-		}
-		created.clear();
-		return Promise.resolve();
-	}
-
-	return { create, dispose };
+	return { create };
 }
 
-export type { FactoryCreateOptions, SandboxFactory };
+export type { FactoryCreateOptions, SandboxFactory, SandboxResourceLimits };
 export { createSandboxFactory };

@@ -1,4 +1,5 @@
 import type { Bridge } from "./bridge-factory.js";
+import { enterPendingCallable, exitPendingCallable } from "./limit-counters.js";
 import type {
 	CallId,
 	EmitOptions,
@@ -113,12 +114,20 @@ function pluginRequest<T>(
 		emitResponse(maybeResult as unknown);
 		return maybeResult;
 	}
+	// Async path: this is a pending host-callable for the duration of the
+	// await. Bound the in-flight count via the worker-side pending-callables
+	// counter (see `limit-counters.ts`). Entering AFTER emitRequest matches
+	// the intuitive "request visible on the wire before we claim a slot"
+	// ordering; exiting on either resolve or reject.
+	enterPendingCallable();
 	return (maybeResult as Promise<T>).then(
 		(value) => {
+			exitPendingCallable();
 			emitResponse(value);
 			return value;
 		},
 		(err: unknown) => {
+			exitPendingCallable();
 			emitError(err);
 			throw err;
 		},

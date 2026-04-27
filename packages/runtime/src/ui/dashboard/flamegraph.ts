@@ -106,6 +106,11 @@ interface LaidOutMarker {
 	readonly location: Location;
 	readonly timerId: string | null;
 	readonly auto: boolean;
+	// Populated for `system.exhaustion` events only; surfaced in the SVG
+	// `<title>` so hovering identifies the configured cap and observed
+	// value at breach. `name` already carries the dimension.
+	readonly budget?: number;
+	readonly observed?: number;
 }
 
 interface LaidOutConnector {
@@ -453,6 +458,19 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 			}
 		}
 		const timerId = isAnyTimerEvent(e) ? timerIdFromEvent(e) : null;
+		let budget: number | undefined;
+		let observed: number | undefined;
+		if (e.kind === "system.exhaustion") {
+			const input = e.input as
+				| { budget?: unknown; observed?: unknown }
+				| undefined;
+			if (input && typeof input.budget === "number") {
+				budget = input.budget;
+			}
+			if (input && typeof input.observed === "number") {
+				observed = input.observed;
+			}
+		}
 		markers.push({
 			kind: e.kind,
 			name: e.name,
@@ -462,6 +480,8 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 			location: loc,
 			timerId,
 			auto,
+			...(budget === undefined ? {} : { budget }),
+			...(observed === undefined ? {} : { observed }),
 		});
 	}
 
@@ -646,13 +666,23 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 				`<line class="marker-x${autoClass}" x1="${(xRight - MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y1="${yTop}" x2="${(xLeft + MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y2="${yBot}"${dataTimerId}${dataEventSeq}/>`,
 			);
 		} else {
-			// Generic leaf marker (wasi.*, legacy system.call, console.log,
-			// uncaught-error, future plugin leaves): a small filled circle
-			// centered on the row.
+			// Generic leaf marker (wasi.*, system.call, system.exception,
+			// system.exhaustion, future plugin leaves): a small filled circle
+			// centered on the row. No per-kind CSS class; severity for
+			// system.exhaustion is conveyed at the bar level via the synth
+			// `trigger.error` close that drives the existing `errored: true`
+			// styling.
 			const cxPct = x + markerWidthPct / HALF;
 			const cy = y + BAR_HEIGHT_PX / HALF;
+			let titleText = `${m.kind}: ${m.name}`;
+			if (m.kind === "system.exhaustion" && m.budget !== undefined) {
+				const observedPart =
+					m.observed === undefined ? "" : `, observed=${m.observed}`;
+				titleText = `${m.kind}: ${m.name} (budget=${m.budget}${observedPart})`;
+			}
+			const title = `<title>${escapeHtml(titleText)}</title>`;
 			shapes.push(
-				`<circle class="marker-call" cx="${fmtPct(cxPct)}" cy="${cy}" r="${MARKER_CALL_RADIUS}"${dataEventSeq}>${markerTitle}</circle>`,
+				`<circle class="marker-call" cx="${fmtPct(cxPct)}" cy="${cy}" r="${MARKER_CALL_RADIUS}"${dataEventSeq}>${title}</circle>`,
 			);
 		}
 	}

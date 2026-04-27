@@ -4,10 +4,11 @@ import timersPlugin from "../../sandbox-stdlib/src/timers/index.ts?sandbox-plugi
 import webPlatformPlugin from "../../sandbox-stdlib/src/web-platform/index.ts?sandbox-plugin";
 import { sandbox } from "./index.js";
 import wasiPlugin from "./plugins/wasi-plugin.ts?sandbox-plugin";
+import { TEST_SANDBOX_LIMITS } from "./test-harness.js";
 
 // Tests for the `deterministic-sandbox` change: guest-visible state does
 // not persist across runs (snapshot-restore per run), and a restore
-// failure fires `onDied` via the existing worker-death path.
+// failure fires `onTerminated` via the existing worker-death path.
 
 function iife(body: string): string {
 	return `var __wfe_exports__ = (function(exports) {\n${body}\nreturn exports;\n})({});`;
@@ -18,7 +19,7 @@ describe("deterministic sandbox — guest state does not persist across runs", (
 		const source = iife(
 			"let count = 0; exports.tick = async function() { return ++count; };",
 		);
-		const sb = await sandbox({ source, plugins: [] });
+		const sb = await sandbox({ ...TEST_SANDBOX_LIMITS, source, plugins: [] });
 		try {
 			const results: unknown[] = [];
 			for (let i = 0; i < 3; i++) {
@@ -39,7 +40,7 @@ describe("deterministic sandbox — guest state does not persist across runs", (
 		const source = iife(
 			"exports.probe = async function() { const prev = globalThis.__leak || 0; globalThis.__leak = prev + 1; return prev; };",
 		);
-		const sb = await sandbox({ source, plugins: [] });
+		const sb = await sandbox({ ...TEST_SANDBOX_LIMITS, source, plugins: [] });
 		try {
 			const results: unknown[] = [];
 			for (let i = 0; i < 3; i++) {
@@ -67,15 +68,19 @@ describe("deterministic sandbox — restore failure marks sandbox dead", () => {
 		process.env.WFE_TEST_SANDBOX_RESTORE_FAIL = undefined;
 	});
 
-	it("fires onDied after the first run and rejects subsequent runs", async () => {
+	it("fires onTerminated after the first run and rejects subsequent runs", async () => {
 		const source = iife("exports.ping = async function() { return 'pong'; };");
-		const sb = await sandbox({ source, plugins: [] });
-		const died = new Promise<Error>((resolve) => sb.onDied(resolve));
+		const sb = await sandbox({ ...TEST_SANDBOX_LIMITS, source, plugins: [] });
+		const died = new Promise<import("./index.js").TerminationCause>((resolve) =>
+			sb.onTerminated(resolve),
+		);
 		const firstRun = await sb.run("ping", {});
 		expect(firstRun.ok).toBe(true);
-		const deathError = await died;
-		expect(deathError).toBeInstanceOf(Error);
-		expect(String(deathError.message)).toContain("injected restore failure");
+		const cause = await died;
+		expect(cause.kind).toBe("crash");
+		if (cause.kind === "crash") {
+			expect(String(cause.err.message)).toContain("injected restore failure");
+		}
 		await expect(sb.run("ping", {})).rejects.toThrow();
 	});
 });
@@ -98,6 +103,7 @@ describe("deterministic sandbox — plugin stack survives multiple restores", ()
 			{ ...consolePlugin },
 		];
 		const sb = await sandbox({
+			...TEST_SANDBOX_LIMITS,
 			source,
 			plugins,
 		});
