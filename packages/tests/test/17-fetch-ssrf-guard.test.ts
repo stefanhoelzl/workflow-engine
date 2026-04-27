@@ -9,11 +9,11 @@ import { getMocks } from "@workflow-engine/tests/mocks";
 // `LOOPBACK_URL` is threaded through `describe.buildEnv` (the same
 // path used by test #14 for `GREETING`); `getMocks().echo.urlFor` owns
 // the slug-in-path convention so the test never hand-concats it.
-const mocks = getMocks();
+const { echo } = getMocks();
 const SLUG = "ssrf-loopback";
 
 describe("fetch SSRF guard", {
-	buildEnv: { LOOPBACK_URL: mocks.echo.urlFor(SLUG, "probe") },
+	buildEnv: { LOOPBACK_URL: echo.urlFor(SLUG, "probe") },
 }, () => {
 	test("hardenedFetch rejects mock loopback URL", (s) =>
 		s

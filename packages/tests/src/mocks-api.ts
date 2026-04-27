@@ -27,9 +27,21 @@ interface SmtpApi {
 	recipient(slug: string): string;
 }
 
+interface PgApi {
+	// Postgres DSN handed to the spawned runtime as workflow env. Loopback
+	// by design — tests must set `WFE_TEST_DISABLE_SSRF_PROTECTION=true`
+	// (via `describe({env: …})`) to let the SQL plugin reach it.
+	readonly url: string;
+	// Self-signed CA PEM the workflow author passes to `executeSql` so
+	// the TLS handshake verifies against the bundled cert.
+	readonly ca: string;
+	readonly adminUrl: string;
+}
+
 interface MocksApi {
 	readonly echo: EchoApi;
 	readonly smtp: SmtpApi;
+	readonly pg: PgApi;
 }
 
 function getMocks(): MocksApi {
@@ -54,8 +66,13 @@ function getMocks(): MocksApi {
 				return `dest+${slug}@test`;
 			},
 		},
+		pg: {
+			url: provided.pg.url,
+			ca: provided.pg.ca,
+			adminUrl: provided.pg.adminUrl,
+		},
 	};
 }
 
-export type { EchoApi, MocksApi, SmtpApi };
+export type { EchoApi, MocksApi, PgApi, SmtpApi };
 export { getMocks };

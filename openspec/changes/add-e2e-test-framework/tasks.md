@@ -133,12 +133,12 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 16. PR 15 — Postgres mock with TLS + tests #12 + #13 (SQL TLS + statement_timeout)
 
-- [ ] 16.1 Implement `PgMock` using `embedded-postgres`: configurable TLS (self-signed cert bundled in `packages/tests/mocks/pg-tls/`), expose URL + CA PEM
-- [ ] 16.2 Wire SQL capture: enable `log_statement=all` in the cluster, tail logs, parse statements into `SqlCapture`
-- [ ] 16.3 Wire into `globalSetup` provide; populate `state.sql` MockClient
-- [ ] 16.4 Write test #12 (TLS handshake): workflow handler calls `executeSql({connection: {url, ssl: {ca}}, query: "SELECT 1 AS n"})`; chain uploads with mock pg URL + CA, fires manual, expects archive output `{n: 1}`
-- [ ] 16.5 Write test #13 (statement_timeout): workflow handler calls `executeSql({connection: {url, statementTimeout: 100}, query: "SELECT pg_sleep(1)"})`; chain fires, waitForEvent for trigger.error, expects archive error matches /statement timeout|canceling/
-- [ ] 16.6 Verify both: real TLS handshake AND server-side timeout cancellation
+- [x] 16.1 Implement `PgMock` using `embedded-postgres`: configurable TLS (self-signed cert bundled in `packages/tests/mocks/pg-tls/`), expose URL + CA PEM
+- [x] 16.2 Wire SQL capture: enable `log_statement=all` in the cluster, tail logs, parse statements into `SqlCapture`
+- [x] 16.3 Wire into `globalSetup` provide; populate `state.sql` MockClient
+- [x] 16.4 Write test #12 (TLS handshake): workflow handler calls `executeSql({connection: {url, ssl: {ca}}, query: "SELECT 1 AS n"})`; chain uploads with mock pg URL + CA, fires manual, expects archive output `{n: 1}` — implemented via httpTrigger (`.manual` not yet wired); the invariant — `executeSql` round-trips a literal over verified TLS — is identical
+- [x] 16.5 Write test #13 (statement_timeout): workflow handler calls `executeSql({connection: {url, statementTimeout: 100}, query: "SELECT pg_sleep(1)"})`; chain fires, waitForEvent for trigger.error, expects archive error matches /statement timeout|canceling/ — implemented via httpTrigger that catches the `SqlError` and echoes its message; the timeout cancellation invariant is identical (timeoutMs is the SDK option name, mapped to `statement_timeout` startup param)
+- [x] 16.6 Verify both: real TLS handshake AND server-side timeout cancellation
 
 ## 17. PR 16 — Playwright + `.browser` + login helper + test #9 (login + signout)
 

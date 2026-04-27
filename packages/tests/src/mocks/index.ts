@@ -1,6 +1,7 @@
-import type { HttpCapture, MailCapture } from "../types.js";
+import type { HttpCapture, MailCapture, SqlCapture } from "../types.js";
 import { createHttpEchoMock, type HttpEchoConn } from "./http-echo.js";
 import { createMockServer } from "./mock-server.js";
+import { createPgMock, type PgConn } from "./pg.js";
 import { createSmtpMock, type SmtpConn } from "./smtp.js";
 import type { MockHandle } from "./types.js";
 
@@ -22,6 +23,15 @@ interface ProvidedMocks {
 		// Admin URL the worker-side MockClient<MailCapture> talks to.
 		adminUrl: string;
 	};
+	pg: {
+		// Postgres DSN handed to the spawned runtime; loopback by design.
+		url: string;
+		// Self-signed CA PEM the workflow author hands to `executeSql` so
+		// the TLS handshake against the embedded cluster verifies cleanly.
+		ca: string;
+		// Admin URL the worker-side MockClient<SqlCapture> talks to.
+		adminUrl: string;
+	};
 }
 
 interface MockSuite {
@@ -35,6 +45,9 @@ async function startMockSuite(): Promise<MockSuite> {
 	const smtpHandle: MockHandle<MailCapture, SmtpConn> = await createMockServer(
 		createSmtpMock(),
 	);
+	const pgHandle: MockHandle<SqlCapture, PgConn> = await createMockServer(
+		createPgMock(),
+	);
 	return {
 		provided: {
 			echo: { url: echoHandle.conn.url, adminUrl: echoHandle.adminUrl },
@@ -45,10 +58,16 @@ async function startMockSuite(): Promise<MockSuite> {
 				pass: smtpHandle.conn.pass,
 				adminUrl: smtpHandle.adminUrl,
 			},
+			pg: {
+				url: pgHandle.conn.url,
+				ca: pgHandle.conn.ca,
+				adminUrl: pgHandle.adminUrl,
+			},
 		},
 		async stop() {
 			await echoHandle.stop();
 			await smtpHandle.stop();
+			await pgHandle.stop();
 		},
 	};
 }
