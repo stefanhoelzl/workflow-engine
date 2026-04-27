@@ -73,7 +73,7 @@ interface Sandbox {
 	// to `InvocationEvent` by stamping invocation metadata in its own
 	// `sb.onEvent` handler before forwarding to the bus (SECURITY.md §2 R-8).
 	onEvent(cb: (event: SandboxEvent) => void): void;
-	dispose(): void;
+	dispose(): Promise<void>;
 	// Fired exactly once per worker lifecycle with a structured cause:
 	// `{kind:"limit", dim, observed?}` for the five resource-limit
 	// dimensions (memory/stack/cpu/output/pending), or `{kind:"crash", err}`
@@ -379,9 +379,10 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		});
 	}
 
-	function dispose(): void {
-		if (disposed) {
-			return;
+	let terminatePromise: Promise<void> | null = null;
+	function dispose(): Promise<void> {
+		if (terminatePromise) {
+			return terminatePromise;
 		}
 		disposed = true;
 		termination.markDisposing();
@@ -389,9 +390,8 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			reject(new Error("Sandbox is disposed"));
 		}
 		pendingRunRejects.clear();
-		worker.terminate().catch(() => {
-			/* ignore */
-		});
+		terminatePromise = worker.terminate().then(() => undefined);
+		return terminatePromise;
 	}
 
 	function onTerminated(cb: (cause: TerminationCause) => void): void {

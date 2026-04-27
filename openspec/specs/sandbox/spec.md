@@ -226,11 +226,13 @@ The sandbox SHALL hold a single QuickJS VM instance inside its worker for its li
 
 Worker-side plugin state (e.g., the timers plugin's pending-timer Map, compiled action validators held on `PluginSetup`) is NOT captured in the snapshot and SHALL persist for the sandbox's lifetime. Plugins with long-lived worker-side state SHALL continue to clean up per-run residues via `onRunFinished` per the existing plugin-runtime contract.
 
-If `QuickJS.restore()` or host-callback rebinding fails during the async restore, the worker SHALL terminate as it would for any uncaught worker error; the main-thread `onDied` callback SHALL fire with the restore error; subsequent `run()` calls SHALL reject.
+If `QuickJS.restore()` or host-callback rebinding fails during the async restore, the worker SHALL terminate as it would for any uncaught worker error; the main-thread `onTerminated` callback SHALL fire with the restore error; subsequent `run()` calls SHALL reject.
 
-The sandbox SHALL expose `dispose()` which terminates the worker. Termination SHALL reject any pending `run()` promise with a disposal error. After `dispose()`, subsequent `run()` calls SHALL throw. Pending in-flight bridge RPC calls from the worker at termination time SHALL be abandoned on the worker side; any side effect they triggered on the main side (e.g., an `emit` that already derived a child event) remains committed.
+The sandbox SHALL expose `dispose(): Promise<void>` which terminates the worker. The synchronous side-effects (marking the sandbox as disposing and rejecting any pending `run()` promise with a disposal error) SHALL execute eagerly before the returned promise is observed; the returned promise SHALL resolve when the underlying `worker.terminate()` settles. If `worker.terminate()` rejects, `dispose()` SHALL reject with that error. After `dispose()` is initiated, subsequent `run()` calls SHALL throw. Pending in-flight bridge RPC calls from the worker at termination time SHALL be abandoned on the worker side; any side effect they triggered on the main side (e.g., an `emit` that already derived a child event) remains committed.
 
-The sandbox SHALL expose `onDied(cb)` which registers a single callback to be invoked when the underlying worker terminates unexpectedly (WASM-level trap, uncaught worker-JS error, abnormal exit, restore failure). `onDied` SHALL NOT fire as a result of a normal `dispose()` call. At most one callback SHALL be invoked per sandbox instance — subsequent registrations after death SHALL fire the callback synchronously with the recorded death error.
+`dispose()` SHALL be idempotent: a second invocation SHALL return the same in-flight `Promise<void>` returned by the first invocation and SHALL NOT initiate a second `worker.terminate()`. After the first invocation has settled, further invocations SHALL return a settled promise that mirrors the original outcome.
+
+The sandbox SHALL expose `onTerminated(cb)` which registers a single callback to be invoked when the underlying worker terminates unexpectedly (WASM-level trap, uncaught worker-JS error, abnormal exit, restore failure). `onTerminated` SHALL NOT fire as a result of a normal `dispose()` call. At most one callback SHALL be invoked per sandbox instance — subsequent registrations after termination SHALL fire the callback synchronously with the recorded cause.
 
 Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be constructed per workflow module load, and the sandbox SHALL be disposed on workflow reload/unload. `SandboxFactory` is the supported orchestrator for this; see the `sandbox-factory` capability.
 
@@ -243,10 +245,23 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 #### Scenario: Dispose releases QuickJS resources
 
 - **GIVEN** a sandbox instance
-- **WHEN** `sb.dispose()` is called
-- **THEN** the underlying worker SHALL be terminated
+- **WHEN** `await sb.dispose()` resolves
+- **THEN** the underlying worker SHALL have terminated
 - **AND** subsequent `sb.run(...)` calls SHALL throw
-- **AND** `onDied` SHALL NOT fire as a result of this dispose
+- **AND** `onTerminated` SHALL NOT fire as a result of this dispose
+
+#### Scenario: Dispose rejects when worker.terminate() rejects
+
+- **GIVEN** a sandbox whose underlying `worker.terminate()` is configured (in tests) to reject with a known error
+- **WHEN** `sb.dispose()` is called and awaited
+- **THEN** the returned promise SHALL reject with the same underlying error
+
+#### Scenario: Dispose is idempotent
+
+- **GIVEN** a sandbox instance
+- **WHEN** `sb.dispose()` is called twice in quick succession before either call settles
+- **THEN** both invocations SHALL return the same `Promise<void>` reference
+- **AND** the underlying `worker.terminate()` SHALL be invoked exactly once
 
 #### Scenario: Cross-sandbox isolation preserved
 
@@ -255,24 +270,24 @@ Consumers of the sandbox are responsible for lifecycle: a new sandbox SHALL be c
 - **THEN** guest-visible mutations in one sandbox SHALL NOT be observable from the other
 - **AND** the two workers SHALL be distinct `worker_threads` Workers
 
-#### Scenario: Unexpected worker death fires onDied
+#### Scenario: Unexpected worker death fires onTerminated
 
-- **GIVEN** a sandbox with an `onDied` callback registered
+- **GIVEN** a sandbox with an `onTerminated` callback registered
 - **WHEN** the worker terminates due to a WASM-level trap or uncaught worker-JS error
-- **THEN** the registered callback SHALL be invoked with an `Error` describing the failure
+- **THEN** the registered callback SHALL be invoked with a `TerminationCause` describing the failure
 - **AND** any pending `run()` promise SHALL reject with that error
 
 #### Scenario: Pending run rejects on dispose
 
 - **GIVEN** a sandbox with an in-flight `run()` promise
 - **WHEN** `sb.dispose()` is called before the worker posts `done`
-- **THEN** the pending `run()` promise SHALL reject with a disposal error
+- **THEN** the pending `run()` promise SHALL reject with a disposal error synchronously, before the dispose promise settles
 
 #### Scenario: Restore failure marks sandbox dead
 
-- **GIVEN** a sandbox with an `onDied` callback registered, in which the async post-run restore step throws (e.g., `QuickJS.restore` or a host-callback rebind fails)
+- **GIVEN** a sandbox with an `onTerminated` callback registered, in which the async post-run restore step throws (e.g., `QuickJS.restore` or a host-callback rebind fails)
 - **WHEN** the failure is observed on the worker side
-- **THEN** the registered `onDied` callback SHALL be invoked with an `Error` describing the restore failure
+- **THEN** the registered `onTerminated` callback SHALL be invoked with a `TerminationCause` describing the restore failure
 - **AND** subsequent `sb.run(...)` calls SHALL reject
 
 ### Requirement: Safe globals — performance.now
@@ -383,7 +398,7 @@ All lifecycle and security guarantees about the sandbox — VM construction, dis
 
 ### Requirement: Worker-thread isolation
 
-The sandbox SHALL execute guest code inside a dedicated Node `worker_threads` Worker. The QuickJS runtime and context SHALL live in that worker. The main thread retains only the thin Sandbox proxy that routes `run()`, `dispose()`, and `onDied()` to the worker and services per-run RPC requests (`request` / `response`) from it.
+The sandbox SHALL execute guest code inside a dedicated Node `worker_threads` Worker. The QuickJS runtime and context SHALL live in that worker. The main thread retains only the thin Sandbox proxy that routes `run()`, `dispose()`, and `onTerminated()` to the worker and services per-run RPC requests (`request` / `response`) from it.
 
 Each `sandbox()` call SHALL spawn exactly one worker. Workers SHALL NOT be shared across sandbox instances. The worker entrypoint SHALL be a package-shipped file at `dist/worker.js` resolved by the main side via `new URL('./worker.js', import.meta.url)`.
 
@@ -492,7 +507,6 @@ The sandbox package SHALL export a `createSandboxFactory({ logger })` factory th
 ```ts
 interface SandboxFactory {
   create(source: string, options?: SandboxOptions): Promise<Sandbox>
-  dispose(): Promise<void>
 }
 
 function createSandboxFactory(opts: { logger: Logger }): SandboxFactory
@@ -518,6 +532,12 @@ The `SandboxFactory` SHALL be a construction primitive: it SHALL create new `San
 - **WHEN** `factory.create(source)` is called twice with the same source
 - **THEN** the factory SHALL invoke `sandbox(source, {}, options)` twice
 - **AND** SHALL resolve to two distinct `Sandbox` instances
+
+#### Scenario: Factory exposes no dispose method
+
+- **GIVEN** a `SandboxFactory` instance
+- **WHEN** the factory is inspected
+- **THEN** the factory SHALL NOT expose a `dispose` method (consistent with the `Factory-wide dispose` requirement)
 
 ### Requirement: Factory-wide dispose
 
@@ -1106,6 +1126,43 @@ Re-upload of a workflow with a new `sha` SHALL NOT dispose the old-sha sandbox. 
 - **WHEN** the eviction handler runs
 - **THEN** the cached entry for that `(owner, sha)` SHALL be removed from the store
 - **AND** no public API call was made to trigger the eviction
+
+### Requirement: SandboxStore dispose error reporting
+
+`SandboxStore.dispose()` SHALL await the underlying `Sandbox.dispose()` promise of every cached entry (which itself resolves only when the worker has actually exited) before its own returned promise resolves. The store SHALL NOT abort shutdown on the first per-entry failure: every cached sandbox SHALL be granted a dispose attempt regardless of whether sibling disposals reject.
+
+When any per-entry `Sandbox.dispose()` rejects — whether during LRU eviction or process-shutdown drain — the store SHALL emit exactly one structured log line at `error` severity carrying the fields `{owner, sha, reason, err}`, where `reason` is the literal string `"lru"` for LRU-eviction-driven disposals and `"store-dispose"` for shutdown-drain disposals. A successful per-entry disposal SHALL NOT emit a log line at the store layer.
+
+The store SHALL NOT swallow rejections silently. The store SHALL NOT downgrade the severity to `warn` or `info`. The store SHALL NOT collapse multiple per-entry failures into a single aggregate log line.
+
+#### Scenario: Per-entry dispose failure is logged at error severity
+
+- **GIVEN** a store holding a cached sandbox whose `dispose()` is configured (in tests) to reject with a known error `E`
+- **WHEN** `store.dispose()` is called and awaited
+- **THEN** the injected logger SHALL receive exactly one `error("sandbox dispose failed", {...})` call for that entry
+- **AND** the structured fields SHALL include `owner`, `sha`, `reason: "store-dispose"`, and `err: E`
+
+#### Scenario: One failing dispose does not strand siblings
+
+- **GIVEN** a store holding three cached sandboxes A, B, C where `B.dispose()` rejects but `A.dispose()` and `C.dispose()` resolve
+- **WHEN** `store.dispose()` is called and awaited
+- **THEN** `A.dispose()`, `B.dispose()`, and `C.dispose()` SHALL each have been invoked exactly once
+- **AND** `store.dispose()` SHALL resolve (not reject)
+- **AND** the logger SHALL have received exactly one error log for B
+
+#### Scenario: store.dispose() awaits actual worker exits
+
+- **GIVEN** a store holding a cached sandbox whose `worker.terminate()` is configured (in tests) to resolve only when an external deferred is settled
+- **WHEN** `store.dispose()` is called and the deferred is not yet settled
+- **THEN** the promise returned by `store.dispose()` SHALL NOT have resolved
+- **AND** when the deferred is settled, `store.dispose()` SHALL subsequently resolve
+
+#### Scenario: LRU eviction failure is logged with reason "lru"
+
+- **GIVEN** a store at the `SANDBOX_MAX_COUNT` cap and a freshly-built entry triggering LRU eviction of an idle entry whose `dispose()` rejects
+- **WHEN** the LRU sweep runs
+- **THEN** the logger SHALL receive exactly one `error("sandbox dispose failed", {...})` call
+- **AND** the structured fields SHALL include `reason: "lru"`
 
 ### Requirement: SandboxStore factory shape
 

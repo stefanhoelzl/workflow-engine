@@ -40,8 +40,8 @@ describe("sandbox factory", () => {
 			const res = await a.run("default", null);
 			expect(res.ok).toBe(true);
 		} finally {
-			a.dispose();
-			b.dispose();
+			await a.dispose();
+			await b.dispose();
 		}
 	});
 
@@ -54,6 +54,26 @@ describe("sandbox factory", () => {
 		expect((factory as { dispose?: unknown }).dispose).toBeUndefined();
 	});
 
+	it("dispose returns the same Promise on repeated calls (idempotent)", async () => {
+		const logger = makeLogger();
+		const factory = createSandboxFactory({
+			logger,
+			...TEST_FACTORY_LIMITS,
+		});
+		const sb = await factory.create({
+			source: iife("exports.default = async () => 1;"),
+			plugins: NOOP_PLUGINS,
+		});
+		const p1 = sb.dispose();
+		const p2 = sb.dispose();
+		expect(p1).toBe(p2);
+		await p1;
+		// After settle, further calls still return the same settled promise.
+		const p3 = sb.dispose();
+		expect(p3).toBe(p1);
+		await p3;
+	});
+
 	it("caller-owned disposal invalidates the sandbox", async () => {
 		const logger = makeLogger();
 		const factory = createSandboxFactory({
@@ -64,7 +84,7 @@ describe("sandbox factory", () => {
 			source: iife("exports.default = async () => 1;"),
 			plugins: NOOP_PLUGINS,
 		});
-		sb.dispose();
+		await sb.dispose();
 		await expect(sb.run("default", null)).rejects.toThrow();
 	});
 });

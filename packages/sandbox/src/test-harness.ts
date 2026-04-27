@@ -92,7 +92,7 @@ async function withPluginSandbox<T>(
 	try {
 		return await fn(sb);
 	} finally {
-		sb.dispose();
+		await sb.dispose();
 	}
 }
 

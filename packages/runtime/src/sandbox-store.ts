@@ -135,10 +135,10 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		if (!sb) {
 			return;
 		}
-		const p = Promise.resolve()
-			.then(() => sb.dispose())
+		const p = sb
+			.dispose()
 			.catch((err: unknown) => {
-				logger.warn("sandbox dispose failed", {
+				logger.error("sandbox dispose failed", {
 					owner: entry.owner,
 					sha: entry.sha,
 					reason,
@@ -263,24 +263,29 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 				// biome-ignore lint/performance/noAwaitInLoops: drain poll is intentionally sequential — each iteration must observe the result of the previous wait
 				await new Promise((r) => setTimeout(r, DRAIN_POLL_MS));
 			}
-			const remaining: Promise<void>[] = [];
-			for (const entry of cache.values()) {
-				const p = entry.promise
-					.then(() => {
-						disposeEntry(entry, "store-dispose");
-					})
-					.catch((err: unknown) => {
-						logger.warn("sandbox dispose failed", {
-							owner: entry.owner,
-							sha: entry.sha,
-							reason: "store-dispose",
-							err,
-						});
-					});
-				remaining.push(p);
-			}
+			const entries = [...cache.values()];
 			cache.clear();
-			await Promise.all([...pendingDisposals, ...remaining]);
+			// Wait for in-flight builds to settle so `entry.sandbox` is
+			// populated (or known-failed) before we attempt disposal. Build
+			// rejections are already self-removed from the cache, but the
+			// snapshot captured them; swallow here so we still proceed to
+			// dispose the rest.
+			const drains = entries.map((entry) =>
+				entry.promise.then(
+					() => {
+						disposeEntry(entry, "store-dispose");
+					},
+					() => {
+						/* build failed; nothing to dispose for this entry */
+					},
+				),
+			);
+			await Promise.all(drains);
+			// `disposeEntry` populates `pendingDisposals` synchronously when
+			// invoked above (entry.sandbox is non-null), and each of those
+			// promises is `.catch`-protected internally, so allSettled is not
+			// strictly required — Promise.all here cannot reject.
+			await Promise.all([...pendingDisposals]);
 		},
 	};
 }

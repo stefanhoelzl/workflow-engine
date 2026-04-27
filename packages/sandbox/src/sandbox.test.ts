@@ -44,7 +44,7 @@ async function runSource(
 		);
 		return { result, events };
 	} finally {
-		sb.dispose();
+		await sb.dispose();
 	}
 }
 
@@ -106,7 +106,7 @@ describe("sandbox isActive", () => {
 		try {
 			expect(sb.isActive).toBe(false);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -124,7 +124,7 @@ describe("sandbox isActive", () => {
 			expect(result.ok).toBe(true);
 			expect(sb.isActive).toBe(false);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -139,7 +139,7 @@ describe("sandbox isActive", () => {
 			expect(result.ok).toBe(false);
 			expect(sb.isActive).toBe(false);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -165,7 +165,7 @@ describe("sandbox dispose", () => {
 			source: defaultHandler("return 1;"),
 			plugins: NOOP_PLUGINS,
 		});
-		sb.dispose();
+		await sb.dispose();
 		await expect(sb.run("default", null)).rejects.toThrow();
 	});
 });
@@ -225,7 +225,7 @@ describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
 			await sb.run("default", {});
 			await sb.run("default", {});
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 		const pings = events.filter((e) => (e.kind as string) === "test.ping");
 		expect(pings.length).toBe(3);
@@ -344,7 +344,7 @@ describe("sandbox sequencer integration — stamping and synthesis", () => {
 			expect(events.length).toBeGreaterThan(0);
 			expect(events[0]?.seq).toBeDefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -382,7 +382,7 @@ describe("sandbox sequencer integration — stamping and synthesis", () => {
 				events.find((e) => (e.kind as string) === "test.early"),
 			).toBeUndefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -412,7 +412,7 @@ describe("sandbox memory limit — recoverable", () => {
 				events.find((e) => e.kind === "system.exhaustion"),
 			).toBeUndefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -437,7 +437,7 @@ describe("sandbox memory limit — recoverable", () => {
 				events.find((e) => e.kind === "system.exhaustion"),
 			).toBeUndefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -474,7 +474,7 @@ describe("sandbox stack limit — recoverable", () => {
 				events.find((e) => e.kind === "system.exhaustion"),
 			).toBeUndefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -510,7 +510,7 @@ describe("sandbox stack limit — recoverable", () => {
 			const second = await sb.run("default", null);
 			expect(typeof second.ok).toBe("boolean");
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -581,7 +581,7 @@ describe("sandbox output limit — terminal", () => {
 				512,
 			);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -608,7 +608,7 @@ describe("sandbox pending limit — terminal", () => {
 			expect(leaf).toBeDefined();
 			expect((leaf?.input as { budget?: number } | undefined)?.budget).toBe(4);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -642,7 +642,7 @@ describe("sandbox pending limit — terminal", () => {
 			);
 			expect(leaf).toBeDefined();
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -673,7 +673,7 @@ describe("sandbox cpu limit — watchdog terminates worker on expiry", () => {
 			expect(leaf?.name).toBe("cpu");
 			expect((leaf?.input as { budget?: number } | undefined)?.budget).toBe(1);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
