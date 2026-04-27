@@ -106,6 +106,10 @@ const schema = z
 		// See packages/runtime/src/secrets/parse-keys.ts for the grammar.
 		// biome-ignore lint/style/useNamingConvention: env var name
 		SECRETS_PRIVATE_KEYS: z.string().transform(createSecret),
+		// Baked into the image at build time via Dockerfile ARG; surfaced on
+		// /readyz so deploy CI can wait for the new pod to actually serve.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		APP_GIT_SHA: z.string().default("dev"),
 	})
 	.refine((env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET), {
 		message:
@@ -143,6 +147,7 @@ const schema = z
 		baseUrl: env.BASE_URL,
 		localDeployment: env.LOCAL_DEPLOYMENT,
 		secretsPrivateKeys: env.SECRETS_PRIVATE_KEYS,
+		gitSha: env.APP_GIT_SHA,
 	}));
 
 export type { Secret };

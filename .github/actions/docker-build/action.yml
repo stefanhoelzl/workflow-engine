@@ -9,6 +9,10 @@ inputs:
     description: Newline- or comma-separated tags. Required when push=true.
     required: false
     default: ""
+  git_sha:
+    description: Git SHA baked into the image (exposed at runtime via APP_GIT_SHA, surfaced on /readyz for deploy convergence checks).
+    required: false
+    default: ""
 outputs:
   digest:
     description: sha256 digest of the pushed image (empty if push=false).
@@ -24,5 +28,7 @@ runs:
         file: infrastructure/Dockerfile
         push: ${{ inputs.push }}
         tags: ${{ inputs.tags }}
+        build-args: |
+          GIT_SHA=${{ inputs.git_sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
