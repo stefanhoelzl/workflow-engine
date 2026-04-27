@@ -697,3 +697,42 @@ describe("renderFlamegraph — fragment structure", () => {
 		expect(out).toContain("TIMER CALLBACKS");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// system.exhaustion marker
+// ---------------------------------------------------------------------------
+
+describe("renderFlamegraph — system.exhaustion marker", () => {
+	it("renders system.exhaustion using generic marker styling with dim/budget/observed in title", async () => {
+		const events: InvocationEvent[] = [
+			req({ kind: "trigger.request", seq: 0, ts: 0, name: "webhook" }),
+			req({
+				kind: "system.exhaustion",
+				seq: 1,
+				ref: 0,
+				ts: 50,
+				name: "cpu",
+				input: { budget: 100, observed: 105 },
+			}),
+			req({
+				kind: "trigger.error",
+				seq: 2,
+				ref: 0,
+				ts: 50,
+				error: {
+					message: "limit:cpu",
+				},
+			}),
+		];
+		const out = await html(renderFlamegraph(events));
+		// Generic marker styling — no `kind-limit` class.
+		expect(out).not.toContain("kind-limit");
+		expect(out).toMatch(/class="marker-call"/);
+		// Title carries kind, dim, budget, observed.
+		expect(out).toContain("system.exhaustion: cpu");
+		expect(out).toContain("budget=100");
+		expect(out).toContain("observed=105");
+		// Trigger bar is rendered with the existing errored-bar styling.
+		expect(out).toContain("bar-error");
+	});
+});

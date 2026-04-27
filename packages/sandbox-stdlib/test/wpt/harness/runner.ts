@@ -77,6 +77,10 @@ const VENDOR_ROOT = resolve(
 );
 const TESTHARNESS_REL = "resources/testharness.js";
 const MEMORY_LIMIT = 128 * 1024 * 1024;
+const STACK_LIMIT = 1 * 1024 * 1024;
+const CPU_LIMIT_MS = 60_000;
+const OUTPUT_LIMIT = 64 * 1024 * 1024;
+const PENDING_CALLABLES_LIMIT = 1024;
 const DEFAULT_DEADLINE_MS = 10_000;
 const LONG_DEADLINE_MS = 45_000;
 
@@ -213,7 +217,11 @@ async function runWpt(
 				{ ...consolePlugin },
 				WPT_HARNESS_PLUGIN,
 			],
-			memoryLimit: MEMORY_LIMIT,
+			memoryBytes: MEMORY_LIMIT,
+			stackBytes: STACK_LIMIT,
+			cpuMs: CPU_LIMIT_MS,
+			outputBytes: OUTPUT_LIMIT,
+			pendingCallables: PENDING_CALLABLES_LIMIT,
 		});
 		sb.onEvent((event) => {
 			// Plugin-era event kind is open-ended; EventKind's closed union

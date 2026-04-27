@@ -43,7 +43,14 @@ const WORKFLOW: WorkflowManifest = {
 
 function makeStore(): SandboxStore {
 	const logger = makeLogger();
-	const factory = createSandboxFactory({ logger });
+	const factory = createSandboxFactory({
+		logger,
+		memoryBytes: 67_108_864,
+		stackBytes: 524_288,
+		cpuMs: 30_000,
+		outputBytes: 33_554_432,
+		pendingCallables: 256,
+	});
 	const stubKeyStore = {
 		getPrimary: () => ({
 			keyId: "0000000000000000",

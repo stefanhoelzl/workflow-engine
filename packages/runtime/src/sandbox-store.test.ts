@@ -3,6 +3,7 @@ import {
 	createSandboxFactory,
 	type Sandbox,
 	type SandboxFactory,
+	type TerminationCause,
 } from "@workflow-engine/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "./logger.js";
@@ -81,7 +82,14 @@ var __wfe_exports__ = (function(exports) {
 
 function makeStore(maxCount = 100): SandboxStore {
 	const logger = makeLogger();
-	const factory = createSandboxFactory({ logger });
+	const factory = createSandboxFactory({
+		logger,
+		memoryBytes: 67_108_864,
+		stackBytes: 524_288,
+		cpuMs: 30_000,
+		outputBytes: 33_554_432,
+		pendingCallables: 256,
+	});
 	return createSandboxStore({
 		sandboxFactory: factory,
 		logger,
@@ -447,7 +455,14 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 		const ct = sealCiphertext(plaintext, pk);
 
 		const logger = makeLogger();
-		const factory = createSandboxFactory({ logger });
+		const factory = createSandboxFactory({
+			logger,
+			memoryBytes: 67_108_864,
+			stackBytes: 524_288,
+			cpuMs: 30_000,
+			outputBytes: 33_554_432,
+			pendingCallables: 256,
+		});
 		store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -537,6 +552,7 @@ var __wfe_exports__ = (function(exports) {
 interface FakeSandbox extends Sandbox {
 	disposeSpy: ReturnType<typeof vi.fn>;
 	setActive(active: boolean): void;
+	fireTerminated(cause: TerminationCause): void;
 }
 
 interface FakeFactory extends SandboxFactory {
@@ -549,17 +565,23 @@ interface FakeFactory extends SandboxFactory {
 function makeFakeSandbox(): FakeSandbox {
 	let active = false;
 	const dispose = vi.fn();
+	let terminatedCb: ((cause: TerminationCause) => void) | null = null;
 	return {
 		run: () => Promise.reject(new Error("fake")),
 		onEvent: () => {},
 		dispose,
-		onDied: () => {},
+		onTerminated: (cb) => {
+			terminatedCb = cb;
+		},
 		get isActive() {
 			return active;
 		},
 		disposeSpy: dispose,
 		setActive(v: boolean) {
 			active = v;
+		},
+		fireTerminated(cause: TerminationCause) {
+			terminatedCb?.(cause);
 		},
 	};
 }
@@ -573,7 +595,6 @@ function makeFakeFactory(): FakeFactory {
 	});
 	return {
 		create: createSpy as unknown as SandboxFactory["create"],
-		dispose: () => Promise.resolve(),
 		createSpy,
 		pending: new Map(),
 		buildQueue,
@@ -787,6 +808,53 @@ describe("sandbox-store: LRU eviction", () => {
 		const pluginsA = (callArgs[0]?.[0] as { plugins: unknown[] }).plugins;
 		const pluginsB = (callArgs[1]?.[0] as { plugins: unknown[] }).plugins;
 		expect(pluginsA).not.toBe(pluginsB);
+		await store.dispose();
+	});
+});
+
+describe("sandbox-store: termination eviction", () => {
+	it("evicts the cached entry when the sandbox terminates with a limit cause", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 10,
+		});
+		const sb1 = factory.buildNext();
+		const sb2 = factory.buildNext();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await flushMicrotasks();
+		// Trigger a cpu limit termination on the cached sandbox.
+		sb1.fireTerminated({ kind: "limit", dim: "cpu", observed: 100 });
+		await flushMicrotasks();
+		// Next get for the same (owner, sha) MUST rebuild a fresh sandbox.
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await flushMicrotasks();
+		expect(factory.createSpy).toHaveBeenCalledTimes(2);
+		expect(sb1).not.toBe(sb2);
+		await store.dispose();
+	});
+
+	it("evicts the cached entry on a crash termination", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 10,
+		});
+		const sb1 = factory.buildNext();
+		factory.buildNext();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await flushMicrotasks();
+		sb1.fireTerminated({ kind: "crash", err: new Error("boom") });
+		await flushMicrotasks();
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await flushMicrotasks();
+		expect(factory.createSpy).toHaveBeenCalledTimes(2);
 		await store.dispose();
 	});
 });

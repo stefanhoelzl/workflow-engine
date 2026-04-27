@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 // package subpath export — use a relative workspace path to pull it in for
 // this harness unit test. (The harness package is a sibling workspace, so
 // the relative path is stable as long as both remain under packages/.)
+import { TEST_SANDBOX_LIMITS } from "../../../../sandbox/src/test-harness.js";
 import { NOOP_PLUGINS } from "../../../../sandbox/src/test-plugins.js";
 
 describe("watchdog force-kill pattern", () => {
@@ -19,7 +20,11 @@ describe("watchdog force-kill pattern", () => {
 				return exports;
 			})({});
 		`;
-		const sb = await sandbox({ source, plugins: NOOP_PLUGINS });
+		const sb = await sandbox({
+			...TEST_SANDBOX_LIMITS,
+			source,
+			plugins: NOOP_PLUGINS,
+		});
 		const deadlineMs = 300;
 		const started = Date.now();
 		const watchdog = setTimeout(() => {

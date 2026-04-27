@@ -1,7 +1,11 @@
 // Public package entry. Pure re-export barrel — keeps factory.ts from cycling
 // on the module that hosts `sandbox()` (which it consumes as a value).
 
-export type { FactoryCreateOptions, SandboxFactory } from "./factory.js";
+export type {
+	FactoryCreateOptions,
+	SandboxFactory,
+	SandboxResourceLimits,
+} from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
 export type { Logger } from "./logger.js";
@@ -54,3 +58,9 @@ export { sandbox } from "./sandbox.js";
 export type { LifecycleError } from "./sandbox-context.js";
 export { serializeLifecycleError } from "./sandbox-context.js";
 export { withPluginSandbox, withStagedGlobals } from "./test-harness.js";
+export type {
+	LimitDim,
+	TerminationCause,
+	WorkerTermination,
+} from "./worker-termination.js";
+export { SANDBOX_LIMIT_ERROR_NAME } from "./worker-termination.js";

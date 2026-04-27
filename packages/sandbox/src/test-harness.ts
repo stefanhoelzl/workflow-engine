@@ -20,6 +20,18 @@
 import type { Sandbox, SandboxOptions } from "./sandbox.js";
 import { sandbox } from "./sandbox.js";
 
+// Generous defaults for unit tests — the real values come from runtime
+// config in production (`packages/runtime/src/config.ts`'s
+// `SANDBOX_LIMIT_*` fields). Tests that want to exercise a breach override
+// the relevant field explicitly.
+const TEST_SANDBOX_LIMITS = {
+	memoryBytes: 134_217_728,
+	stackBytes: 1_048_576,
+	cpuMs: 30_000,
+	outputBytes: 33_554_432,
+	pendingCallables: 1024,
+} as const;
+
 type AnyGlobal = Record<string, unknown>;
 
 /**
@@ -51,7 +63,21 @@ function withStagedGlobals<T>(stage: Record<string, unknown>, fn: () => T): T {
 	}
 }
 
-type WithPluginSandboxOptions = Omit<SandboxOptions, "source">;
+type WithPluginSandboxOptions = Partial<
+	Pick<
+		SandboxOptions,
+		"memoryBytes" | "stackBytes" | "cpuMs" | "outputBytes" | "pendingCallables"
+	>
+> &
+	Omit<
+		SandboxOptions,
+		| "source"
+		| "memoryBytes"
+		| "stackBytes"
+		| "cpuMs"
+		| "outputBytes"
+		| "pendingCallables"
+	>;
 
 /**
  * Constructs a real sandbox with the given plugin composition and user
@@ -62,7 +88,7 @@ async function withPluginSandbox<T>(
 	options: WithPluginSandboxOptions,
 	fn: (sb: Sandbox) => Promise<T>,
 ): Promise<T> {
-	const sb = await sandbox({ source, ...options });
+	const sb = await sandbox({ ...TEST_SANDBOX_LIMITS, source, ...options });
 	try {
 		return await fn(sb);
 	} finally {
@@ -70,4 +96,4 @@ async function withPluginSandbox<T>(
 	}
 }
 
-export { withPluginSandbox, withStagedGlobals };
+export { TEST_SANDBOX_LIMITS, withPluginSandbox, withStagedGlobals };

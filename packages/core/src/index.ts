@@ -60,7 +60,13 @@ type EventKind =
 	| "system.response"
 	| "system.error"
 	| "system.call"
-	| "system.exception";
+	| "system.exception"
+	// Sandbox-synthesised marker emitted once per invocation that terminated
+	// via a sandbox resource-limit breach. Rides the existing reserved
+	// `system.*` prefix per SECURITY.md §2 R-7. Payload shape in
+	// `openspec/specs/invocations/spec.md` under "Requirement:
+	// system.exhaustion event kind".
+	| "system.exhaustion";
 
 interface InvocationEventError {
 	message: string;

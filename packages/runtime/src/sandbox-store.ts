@@ -211,6 +211,21 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 			promise
 				.then((sb) => {
 					entry.sandbox = sb;
+					// Any worker termination (limit breach or crash) evicts the
+					// cached entry so the next `get()` rebuilds cold. See
+					// `openspec/specs/sandbox/spec.md` "Eviction on sandbox
+					// termination".
+					sb.onTerminated((cause) => {
+						if (cache.get(key) === entry) {
+							cache.delete(key);
+						}
+						logger.info("sandbox evicted", {
+							owner,
+							sha: workflow.sha,
+							reason: cause.kind === "limit" ? "limit" : "crash",
+							...(cause.kind === "limit" ? { dimension: cause.dim } : {}),
+						});
+					});
 				})
 				.catch(() => {
 					// Build failed — remove the entry so the next get() retries.

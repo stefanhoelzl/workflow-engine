@@ -84,7 +84,7 @@ function makeSandbox(options: FakeSandboxOptions = {}): Sandbox {
 			options.capture?.eventCallbacks.push(cb);
 		}),
 		dispose: vi.fn(),
-		onDied: vi.fn(),
+		onTerminated: vi.fn(),
 		get isActive() {
 			return active;
 		},
@@ -241,7 +241,7 @@ describe("executor", () => {
 			}),
 			onEvent: vi.fn(),
 			dispose: vi.fn(),
-			onDied: vi.fn(),
+			onTerminated: vi.fn(),
 			isActive: false,
 		};
 		const executor = createExecutor({

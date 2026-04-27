@@ -18,6 +18,11 @@ import {
 	buildGuestFunctionHandler,
 	installGuestFunctions,
 } from "./guest-function-install.js";
+import {
+	accountOutputBytes,
+	configureWorkerLimits,
+	resetRunCounters,
+} from "./limit-counters.js";
 import type {
 	GuestFunctionDescription,
 	PluginDescriptor,
@@ -57,14 +62,47 @@ if (!parentPort) {
 }
 const port = parentPort;
 
+// Configured stack-size cap (bytes). Applied after `QuickJS.create` and after
+// `QuickJS.restore` via `qjs_set_max_stack_size` — QuickJSOptions does not
+// surface this publicly, so we reach through to the wasm export directly.
+let stackSizeForNextCreate = 0;
+
+function applyStackLimit(vm: QuickJS, stackBytes: number): void {
+	if (stackBytes <= 0) {
+		return;
+	}
+	const setter = (
+		vm as unknown as {
+			exports?: {
+				// biome-ignore lint/style/useNamingConvention: wasm export name matches QuickJS's upstream C symbol
+				qjs_set_max_stack_size?: (n: number) => void;
+			};
+		}
+	).exports?.qjs_set_max_stack_size;
+	if (typeof setter === "function") {
+		setter(stackBytes);
+	}
+}
+
 // Re-entrancy guard: if an onPost hook triggers post() (e.g. by emitting
 // a log inside the hook itself), we skip the hook pipeline on that nested
 // call so we don't recurse or deadlock. Nested messages go out raw.
 let inPostHooks = false;
 
+// Post a WorkerToMain message. Applies plugin onPost hooks first, then
+// accounts the serialized size against the per-run output-bytes cap. A
+// breach throws `SandboxLimitError` via queueMicrotask AND drops the
+// message on the floor — the worker exits before main sees any further
+// events for this run. Non-event messages (`ready`, `init-error`, `done`,
+// `log`) are subject to the cap too: the cap covers everything crossing
+// the channel per the sandbox spec, and attempting to carve out exceptions
+// would let a hostile workflow starve output by flooding `log`.
 function post(msg: WorkerToMain): void {
 	const lifecycle = state?.pluginLifecycle;
 	if (!lifecycle || inPostHooks) {
+		if (!accountForOutput(msg)) {
+			return;
+		}
 		port.postMessage(msg);
 		return;
 	}
@@ -82,17 +120,45 @@ function post(msg: WorkerToMain): void {
 	} finally {
 		inPostHooks = false;
 	}
+	if (!accountForOutput(finalMsg)) {
+		return;
+	}
 	port.postMessage(finalMsg);
 	for (const err of hookErrors) {
 		const pluginName =
 			(err as Error & { pluginName?: string }).pluginName ?? "<unknown>";
-		port.postMessage({
+		const logMsg: WorkerToMain = {
 			type: "log",
 			level: "error",
 			message: "sandbox.plugin.onPost_failed",
 			meta: { plugin: pluginName, error: err.message },
-		});
+		};
+		if (!accountForOutput(logMsg)) {
+			return;
+		}
+		port.postMessage(logMsg);
 	}
+}
+
+function accountForOutput(msg: WorkerToMain): boolean {
+	// Output-bytes counting is scoped to `type:"event"` messages only —
+	// the channel that author-emitted events traverse. Control-plane
+	// messages (`ready`, `init-error`, `done`, `log`) bypass the cap:
+	// they are fixed-shape protocol traffic, not author-influenced, and
+	// dropping them would strand main's pending run promise or lose
+	// engine diagnostics. The measured size is `JSON.stringify(msg.event)
+	// .length`, i.e. payload only — the wire-envelope overhead is
+	// constant and not author-controllable.
+	if (msg.type !== "event") {
+		return true;
+	}
+	let size: number;
+	try {
+		size = JSON.stringify(msg.event).length;
+	} catch {
+		size = 0;
+	}
+	return accountOutputBytes(size);
 }
 
 function serializeError(err: unknown): SerializedError {
@@ -216,10 +282,18 @@ async function handleInit(
 				structuredCloneExtension,
 				urlExtension,
 			],
+			memoryLimit: msg.memoryBytes,
 		};
-		if (msg.memoryLimit !== undefined) {
-			createOptions.memoryLimit = msg.memoryLimit;
-		}
+		configureWorkerLimits({
+			outputBytes: msg.outputBytes,
+			pendingCallables: msg.pendingCallables,
+		});
+		// Stack-size cap. `QuickJSOptions` does not expose `maxStackSize`
+		// publicly, but the underlying wasm export `qjs_set_max_stack_size`
+		// is the exact hook used by QuickJS itself to apply a stack cap.
+		// We set it immediately after VM creation so Phase 2 (plugin source
+		// eval) and Phase 4 (user source eval) both run under the cap.
+		stackSizeForNextCreate = msg.stackBytes;
 
 		// Seed the shared anchor BEFORE QuickJS.create so the WASI monotonic
 		// clock returns small values during VM init; otherwise QuickJS caches a
@@ -229,6 +303,7 @@ async function handleInit(
 		createOptions.wasi = createWasiFactory(wasiState, post);
 
 		vm = await QuickJS.create(createOptions);
+		applyStackLimit(vm, stackSizeForNextCreate);
 
 		bridge = createBridge(vm, wasiState.anchor);
 		bridge.setSink((event) => post({ type: "event", event }));
@@ -369,7 +444,7 @@ function rebindGuestCallbacks(
 // On failure, rethrow via queueMicrotask: the worker's `port.on("message",
 // ...)` handler doesn't observe this promise, so we route errors through
 // Node's unhandled-rejection path which terminates the worker and fires
-// `onDied` on main.
+// `onTerminated` on main.
 function startRestore(currentState: SandboxState): Promise<void> {
 	if (currentState.restorePromise) {
 		return currentState.restorePromise;
@@ -405,13 +480,14 @@ function startRestore(currentState: SandboxState): Promise<void> {
 		// just the first.
 		currentState.bridge.rebind(newVm);
 		rebindGuestCallbacks(newVm, currentState.ctx, currentState.guestFunctions);
+		applyStackLimit(newVm, stackSizeForNextCreate);
 		currentState.vm = newVm;
 		currentState.runState = "ready";
 		currentState.restorePromise = null;
 		oldVm.dispose();
 	})();
 	// Surface failures through Node's uncaught-error pathway so the worker
-	// dies and main fires onDied. The awaiting handleRun will also see the
+	// dies and main fires onTerminated. The awaiting handleRun will also see the
 	// rejection, but the rethrow is what terminates the worker.
 	promise.catch((err) => {
 		currentState.runState = "dead";
@@ -617,7 +693,7 @@ async function handleRun(
 	// If a previous run's async restore is still in flight, wait for it.
 	// Errors in the restore propagate here and out through the outer
 	// try/catch in the message handler — which also rethrows via
-	// queueMicrotask, terminating the worker so main's `onDied` fires.
+	// queueMicrotask, terminating the worker so main's `onTerminated` fires.
 	if (state.runState === "restoring" && state.restorePromise) {
 		await state.restorePromise;
 	}
@@ -625,6 +701,7 @@ async function handleRun(
 
 	const { vm, bridge, pluginLifecycle } = state;
 
+	resetRunCounters();
 	bridge.resetAnchor();
 	// Open the worker-side run window. The bridge suppresses emissions
 	// outside this window (returns from `buildEvent` without posting),

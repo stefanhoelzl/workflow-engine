@@ -157,7 +157,14 @@ async function init() {
 	// 3 + 4. Construct the sandbox factory and sandbox store. The store is
 	//        keyed by (owner, workflow.sha); sandboxes live for process
 	//        lifetime.
-	const sandboxFactory = createSandboxFactory({ logger: runtimeLogger });
+	const sandboxFactory = createSandboxFactory({
+		logger: runtimeLogger,
+		memoryBytes: config.sandboxLimitMemoryBytes,
+		stackBytes: config.sandboxLimitStackBytes,
+		cpuMs: config.sandboxLimitCpuMs,
+		outputBytes: config.sandboxLimitOutputBytes,
+		pendingCallables: config.sandboxLimitPendingCallables,
+	});
 	const sandboxStore = createSandboxStore({
 		sandboxFactory,
 		logger: runtimeLogger,
@@ -253,7 +260,6 @@ async function init() {
 		async stop() {
 			await Promise.allSettled(triggerBackends.map((s) => s.stop()));
 			await sandboxStore.dispose();
-			await sandboxFactory.dispose();
 		},
 	};
 

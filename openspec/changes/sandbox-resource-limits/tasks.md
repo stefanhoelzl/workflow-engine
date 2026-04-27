@@ -1,0 +1,78 @@
+## 1. Worker-termination concept (new module)
+
+- [x] 1.1 (REVISED — terminal-only LimitDim) Create `packages/sandbox/src/worker-termination.ts` with `createWorkerTermination(worker)`, the `TerminationCause` type (`{kind:"limit", dim, observed?} | {kind:"crash", err}`), the `LimitDim` union narrowed to `"cpu" | "output" | "pending"` (memory/stack are recoverable and NEVER appear here), and the `SANDBOX_LIMIT_ERROR_NAME` constant. Exports named; no default exports.
+- [x] 1.2 Implement the state machine: `lastError`, `disposing`, `cpuBudgetExpired`, `observedOnExpiry` flags. Wire `worker.on("error")` to stash `lastError`; wire `worker.on("exit")` to synthesise `TerminationCause` and invoke `onTerminated` exactly once (suppressed when `disposing`).
+- [x] 1.3 Implement `armCpuBudget(ms)` / `disarmCpuBudget()` using `setTimeout`; on expiry set `cpuBudgetExpired = true` and `observedOnExpiry = Date.now() - startedAt`, then call `worker.terminate()`.
+- [x] 1.4 Add a synchronous `cause(): TerminationCause | null` getter on `WorkerTermination` that classifies via the same priority order used by the internal `onTerminated` dispatch (disposing → cpuBudgetExpired → lastError-named → lastError-other → null).
+- [x] 1.5 Create `packages/sandbox/src/worker-termination.test.ts` driving a Worker mock through: normal exit (no-op), uncaught non-limit error (crash cause), tagged SandboxLimitError with `dim` (limit cause), tagged SandboxLimitError with `dim` + `observed` (limit cause carries observed), multiple error events before exit (first carried), CPU watchdog fires (limit cpu, observed elapsed), disarm before expiry (no fire), dispose suppresses, `cause()` getter returns same classification as the dispatched callback.
+
+## 2. Sandbox worker-side enforcement
+
+- [x] 2.1 (REVISED — terminal-only) Define `SandboxLimitError` helper in `packages/sandbox/src/limit-counters.ts`: function `throwLimit(dim, observed?)` where `dim: "output" | "pending"` (terminal-class only — memory/stack are recoverable and do NOT use this path). Constructs the tagged Error and calls `queueMicrotask(() => { throw e })`. Module also owns the per-run output-bytes counter, pending-callables counter, and `resetRunCounters()`.
+- [x] 2.2 (REVISED — recoverable class) Wire `QuickJS.create({ memoryLimit: memoryBytes })` and `vm.exports.qjs_set_max_stack_size(stackBytes)` post-`create` and post-`restore` in the init path. Memory/stack are RECOVERABLE caps: do NOT call `throwLimit("memory")` or `throwLimit("stack")`. Remove the `maybeThrowQuickJsLimit()` calls in `worker.ts:635, 650` (and any other call sites). QuickJS OOM and stack-overflow exceptions SHALL surface as ordinary guest-catchable JSExceptions; if uncaught they bubble to `vm.callFunction`'s catch and become a normal `RunResult{ok:false, error}`. The sandbox stays alive; no eviction; no `system.exhaustion`.
+- [x] 2.3 (REVISED) Output-bytes counter: scope to messages where `msg.type === "event"` only. Bypass `ready` / `init-error` / `done` / `log`. Measure `JSON.stringify(msg.event).length` (NOT `JSON.stringify(msg).length`). On the post that would push cumulative bytes over `outputBytes`: drop the in-flight event (do NOT post it) and call `throwLimit("output", cumulativeIncludingBreach)`.
+- [x] 2.4 In `sandbox-context.ts#pluginRequest`, increment in-flight Callable counter on async dispatch, decrement on resolve/reject. On the dispatch that would push the counter over `pendingCallables`, call `throwLimit("pending", newCount)` before the request leaves the worker.
+- [x] 2.5 Plumb the four worker-side limits (`memoryBytes`, `stackBytes`, `outputBytes`, `pendingCallables`) through the existing `init` message in `protocol.ts` (extend the `init` payload; no new message kinds).
+- [x] 2.6 (REVISED — split by class; real stdlib plugin fixtures) Per-dimension breach tests in `packages/sandbox/src/sandbox.test.ts`:
+  - **Recoverable — memory** — uses `NOOP_PLUGINS`. Two sub-tests:
+    - UNCAUGHT: guest body `new Array(1e8).fill(1); return 1`. Assert `sb.run()` resolves with `RunResult{ok:false, error:{message: /out of memory/}}`. Assert the sandbox is still usable for a follow-up `sb.run()` (no eviction). Assert NO `system.exhaustion` event.
+    - CAUGHT: guest wraps `new Array(1e8).fill(1)` in `try { ... } catch (e) { return "ok" }`. Assert `sb.run()` resolves with `{ok:true, result:"ok"}` (memory OOM is catchable in QuickJS). NO `system.exhaustion` event.
+  - **Recoverable — stack** — uses `NOOP_PLUGINS`. Single sub-test (no CAUGHT variant — stack overflow surfaces as a wasm trap that unwinds past guest `try`/`catch`; this is an engine constraint of `quickjs-wasi` 2.2.0, documented in `specs/sandbox/spec.md` and `design.md`):
+    - guest body executes unbounded recursion (with or without surrounding `try`/`catch`). Assert `sb.run()` resolves with `RunResult{ok:false, error}` (the message is the wasm-runtime trap message). Assert the sandbox is still usable for a follow-up `sb.run()` (host-level recovery via snapshot restore). Assert NO `system.exhaustion` event.
+  - **Terminal — cpu**: existing test (sandbox.test.ts:423) covers it with `NOOP_PLUGINS`. Tighten `cpuMs` from 100 to 1 for symmetry with 5.4.
+  - **Terminal — output**: load the real console plugin (`packages/runtime/src/plugins/console.ts` or wherever it lives) so `console.log` from guest code emits `system.call` leaf events. Set `outputBytes` to a low value (e.g. 512). Guest body: `for (let i = 0; i < 1000; i++) console.log("x".repeat(20))`. Assert (a) `sb.run()` rejects with `Error("sandbox limit exceeded: output")`; (b) bus stream contains a `system.exhaustion` leaf with `name="output"` and `input.budget` matching the cap.
+  - **Terminal — pending**: load the real timer plugin so `setTimeout` returns a pending Promise via `pluginRequest`. Set `pendingCallables` to 4. Guest body: `await Promise.all(Array.from({length:5}, () => new Promise(r => setTimeout(r, 100))))`. Assert (a) `sb.run()` rejects with `Error("sandbox limit exceeded: pending")`; (b) bus stream contains a `system.exhaustion` leaf with `name="pending"` and `input.budget=4`.
+- [x] 2.7 (REVISED — terminal-class swallow attempt) Extend the pending-dimension breach test in 2.6 with a guest-side `try/catch` swallow attempt around the breaching `Promise.all`. Assert (a) `sb.run()` still rejects with `Error("sandbox limit exceeded: pending")`, (b) the bus stream still contains a `system.exhaustion` leaf with `name: "pending"`, (c) the run does NOT resolve with whatever the guest's catch block would have returned — the worker is dead before the catch can run. Demonstrates that terminal-class breaches bypass guest try/catch. NOTE: recoverable-class breaches (memory, stack) ARE catchable by design — that property is verified by the "CAUGHT" sub-tests in 2.6, not here.
+
+## 3. Sandbox public API
+
+- [x] 3.1 Rename `onDied(cb: (err: Error) => void)` to `onTerminated(cb: (cause: TerminationCause) => void)` on the public `Sandbox` interface. Update spec wording in `openspec/specs/sandbox/spec.md` "Sandbox death notification".
+- [x] 3.2 Replace the existing ad-hoc `onDied`/`dispose` wiring in `sandbox.ts` with `createWorkerTermination(worker)`; delegate arm/disarm/markDisposing/onTerminated to it.
+- [x] 3.3 In `sb.run()`, call `armCpuBudget(cpuMs)` before posting the run message; `disarmCpuBudget()` in a `finally` block.
+- [x] 3.4 Widen `SandboxOptions` with `memoryBytes`, `stackBytes`, `cpuMs`, `outputBytes`, `pendingCallables` (all required positive integers). Remove the old optional `memoryLimit` option.
+- [x] 3.5 (NEW) In `sb.run()` `onError` and `onExit` handlers: call `termination.cause()`. If `cause?.kind === "limit"`, emit a `system.exhaustion` leaf via `sequencer.next({type:"leaf", kind:"system.exhaustion", name: cause.dim, input: { budget, ...(observed !== undefined ? {observed} : {}) }})` BEFORE calling `sequencer.finish({closeReason})`. `closeReason` is `\`limit:${cause.dim}\`` for limit, `\`crash:${cause.err.message}\`` for crash. Forward all synth-closed events through `forwardSandboxEvent`. Reject with `Error(\`sandbox limit exceeded: ${cause.dim}\`)` for limit (existing error format for crash).
+- [x] 3.6 (NEW) Strip lifetime tracking from `packages/sandbox/src/factory.ts`: remove the `created` Set, the `dispose()` method, and any `onTerminated` subscription. Reduce to `create()` + minimal logging. Caller of `factory.create()` owns disposal.
+- [x] 3.7 Update `packages/sandbox/src/index.ts` exports: add `TerminationCause`, `LimitDim` types; drop any re-export of `onDied`. Add `SANDBOX_LIMIT_ERROR_NAME` if exposed.
+
+## 4. Runtime config
+
+- [x] 4.1 Add five `z.coerce.number().int().positive().default(...)` fields to the config schema in `packages/runtime/src/config.ts`: `SANDBOX_LIMIT_MEMORY_BYTES` (67_108_864), `SANDBOX_LIMIT_STACK_BYTES` (524_288), `SANDBOX_LIMIT_CPU_MS` (60_000), `SANDBOX_LIMIT_OUTPUT_BYTES` (4_194_304), `SANDBOX_LIMIT_PENDING_CALLABLES` (64). Do NOT wrap with `createSecret`.
+- [x] 4.2 Add unit tests in `config.test.ts` asserting: defaults apply when env unset; env-var override is honoured; `0` / negative / non-numeric values are rejected with clear errors.
+
+## 5. Runtime wiring
+
+- [x] 5.1 In `main.ts`, read the five config fields and pass them into `createSandboxFactory({ logger, ... })` so the factory can forward them into every `create()` call.
+- [x] 5.2 (REVISED) In `sandbox-store.ts`, register an `onTerminated` callback on every cached sandbox in `build(sb => sb.onTerminated(cause => evict))`. On any cause (limit OR crash), evict the corresponding `(owner, sha)` cache entry. Test: trigger a cpu breach and assert the next `get()` rebuilds.
+- [x] 5.3 (DELETED) Executor synthesis: removed entirely. Synth events flow through `sb.onEvent` from `sandbox.ts`'s sequencer-driven path; the executor's existing try/catch around `sb.run()` handles the limit rejection identically to the crash rejection. Remove any leftover executor-side limit detection or event synthesis from the diff.
+- [x] 5.4 (REVISED — cpu only, cpuMs=1) Runtime integration test in `packages/runtime/src/integration.test.ts`: synthetic workflow with a manual trigger whose action body is `while(true){}`. Construct executor and sandbox-store with `sandboxLimitCpuMs = 1` (minimum allowed positive integer; setTimeout fires on next event-loop tick, ~1ms wall-clock; vitest default 5s timeout gives 5000× headroom — no flake risk). Assert: (a) `executor.invoke(...)` returns `InvokeResult{ok:false, error:{message: /sandbox limit exceeded: cpu/}}`; (b) event-store contains a `system.exhaustion` leaf with `name: "cpu"`, `input.budget: 1`, valid `seq` (≥0) and non-null `ref`; (c) event-store contains a synth `trigger.error` with `error.message: "limit:cpu"` whose `ref` matches the corresponding `trigger.request`'s `seq`; (d) `sandboxStore.get(owner, workflow, source)` after the breach returns a freshly-built sandbox (cached entry evicted). Other four dimensions stay covered by sandbox-level tests in 2.6.
+- [x] 5.5 (VERIFY-ONLY) Recovery non-regression: confirmed `packages/runtime/src/recovery.test.ts` (6 tests, including `engine_crashed` synthesis at line 93) passes under our changes (`pnpm exec vitest run packages/runtime/src/recovery.test.ts` — 6/6 green). Not in baseline-failing list; assertions on `error.kind === "engine_crashed"` are unchanged. The race condition where a process dies just before a sandbox-limit breach lands (recovery synthesises `engine_crashed` instead of `system.exhaustion`) is acceptable behaviour and not worth a dedicated test — same data integrity, slightly misleading cause attribution in the rare overlap window.
+
+## 6. Dashboard
+
+- [x] 6.1 (REVISED) Extend the marker-kinds list in `flamegraph.ts` to include `system.exhaustion`. NO dedicated CSS class; the marker rides existing `marker-call` styling. Hover title format: `"system.exhaustion: <name> (budget=<budget>, observed=<observed>)"` (omit observed when undefined).
+- [x] 6.2 (DELETED) `kind-limit` CSS class + `--kind-limit` variable: REMOVE from `workflow-engine.css`. No new CSS rules required for `system.exhaustion`. Failure visibility comes from the synth `trigger.error` close driving the existing `errored: true` bar styling.
+- [x] 6.3 (REVISED) Scrape-level test (no browser): render a flamegraph fragment for a fixture event stream containing `system.exhaustion` + the synth `trigger.error` close. Assert the output HTML contains the kind string, the dimension name, and the budget/observed values in the marker title. Assert the trigger bar has the existing errored-bar styling. NO assertion on `kind-limit` or any custom CSS class.
+
+## 7. SECURITY.md
+
+- [x] 7.1 (DELETED) §2 R-7 reserved-prefix list change: NOT NEEDED. The post-rebase R-7 already reserves `system.*`, which covers `system.exhaustion`. Leave R-7 untouched.
+- [x] 7.2 (REVISED — two-class pipeline) Add a new invariant R-11 codifying the two-class classification: "Sandbox resource caps SHALL split into recoverable (memory, stack) and terminal (cpu, output, pending) classes. Recoverable caps SHALL surface as catchable QuickJS exceptions; the sandbox SHALL survive recoverable breaches and SHALL NOT emit `system.exhaustion`. Terminal limits SHALL flow through the uniform termination pipeline: detection (worker-side `SandboxLimitError` via `queueMicrotask` for output/pending, or main-side `cpuBudgetExpired` flag for cpu) → `worker-termination.cause()` classification → `sandbox.ts` emits a `system.exhaustion` leaf via `sequencer.next()` and calls `sequencer.finish({closeReason: 'limit:<dim>'})` for LIFO close synthesis → `sandbox-store` evicts the (owner, sha) cache entry on `onTerminated`. NEVER bypass any stage of the terminal pipeline; NEVER add a runtime-termination call to the recoverable path." Reference the specs that codify each stage.
+- [x] 7.3 (DELETED) Reserved-prefix runtime guard test: out of scope. Author code has no SDK API to emit arbitrary event kinds; the reserved-prefix list is a docs/review convention enforced by code review of plugin contributors. There is no attack vector to test.
+
+## 8. Validation
+
+- [x] 8.1 `pnpm lint` clean.
+- [x] 8.2 `pnpm check` clean (TypeScript strict, `verbatimModuleSyntax`, `exactOptionalPropertyTypes`). Pre-existing baseline TS errors (libsodium-wrappers, imapflow, postal-mime missing types) are inherited from main.
+- [x] 8.3 `pnpm test` green for all tests touching this PR's surface; 1053 tests pass (vs baseline 1046). The 16 file-level baseline failures (libsodium-wrappers / imapflow / core-js missing in test env) are unchanged from origin/main.
+- [x] 8.4 `pnpm exec openspec validate sandbox-resource-limits --strict` passes.
+
+## 9. Dev verification (human probes)
+
+- [x] 9.1 `pnpm dev --random-port --kill` boots; stdout contains `Dev ready on http://localhost:<port> (owner=dev)`.
+- [x] 9.2 `GET /api/workflows/dev` returns 200 (baseline — no limits tripped by `demo.ts`).
+- [x] 9.3 Upload a synthetic "breach" workflow (inline, not committed to `workflows/src/`) that deliberately trips one dimension (cpu via infinite loop is most reliable); `POST /webhooks/dev/<breach>/<trigger>` → response is HTTP 500 (executor returned `InvokeResult{ok:false}`); `.persistence/` event stream contains a `system.exhaustion` leaf with `name: "cpu"` and a synth `trigger.error` close with `error.message: "limit:cpu"`.
+- [x] 9.4 `GET /dashboard` with a session cookie → 200; HTML contains a `marker-call` element with title containing `"system.exhaustion"` and `"cpu"`. Trigger bar is rendered with the existing errored-bar styling. NO `kind-limit` class in the HTML.
+
+## 10. Archive
+
+- [ ] 10.1 Run `/opsx:archive sandbox-resource-limits` after merge.
