@@ -4,7 +4,7 @@ import type { Marker } from "./log-stream.js";
 import { createMockClient } from "./mocks/client.js";
 import "./mocks/provided.js";
 import { createScenario } from "./scenario.js";
-import type { HttpCapture, Scenario } from "./types.js";
+import type { HttpCapture, MailCapture, Scenario } from "./types.js";
 
 function test(name: string, body: (s: Scenario) => Scenario): void {
 	vitestTest(name, async () => {
@@ -12,6 +12,9 @@ function test(name: string, body: (s: Scenario) => Scenario): void {
 		const mocks = inject("mocks");
 		const httpClient = createMockClient<HttpCapture>({
 			adminUrl: mocks.echo.adminUrl,
+		});
+		const smtpClient = createMockClient<MailCapture>({
+			adminUrl: mocks.smtp.adminUrl,
 		});
 		// Auto-mark per test so `state.logs` only includes lines emitted
 		// during this test's execution. After a respawn the LogStream is a
@@ -24,6 +27,7 @@ function test(name: string, body: (s: Scenario) => Scenario): void {
 			respawn: () => ctx.respawnChild(),
 			buildEnv: ctx.getBuildEnv(),
 			httpClient,
+			smtpClient,
 			getLogMarker: () => marker,
 			resetLogMarker: () => {
 				marker = ctx.getChild().logStream.mark();

@@ -126,10 +126,10 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 15. PR 14 — SMTP catcher mock + test #18 (sendMail + redaction)
 
-- [ ] 15.1 Implement `SmtpMock` using `smtp-server` from nodemailer (or hand-roll ~50 lines): random user/password per suite, capture mails with slug derived from recipient plus-address (`dest+<slug>@test`)
-- [ ] 15.2 Wire into `globalSetup` provide; populate `state.smtp` MockClient
-- [ ] 15.3 Write test #18: workflow handler calls `sendMail({...auth: {user, pass: secret('SMTP_PASS')}, to: \`dest+\${slug}@test\`, ...})`; chain uploads with mock SMTP creds + slug-tagged recipient, fires webhook, expects response 202 AND `mocks.smtp.captures({slug})` length 1 AND password not in any log line
-- [ ] 15.4 Verify mail delivered to the correct slug; verify password redacted in logs
+- [x] 15.1 Implement `SmtpMock` using `smtp-server` from nodemailer (or hand-roll ~50 lines): random user/password per suite, capture mails with slug derived from recipient plus-address (`dest+<slug>@test`)
+- [x] 15.2 Wire into `globalSetup` provide; populate `state.smtp` MockClient
+- [x] 15.3 Write test #18: workflow handler calls `sendMail({...auth: {user, pass: secret('SMTP_PASS')}, to: \`dest+\${slug}@test\`, ...})`; chain uploads with mock SMTP creds + slug-tagged recipient, fires webhook, expects response 202 AND `mocks.smtp.captures({slug})` length 1 AND password not in any log line
+- [x] 15.4 Verify mail delivered to the correct slug; verify password redacted in logs
 
 ## 16. PR 15 — Postgres mock with TLS + tests #12 + #13 (SQL TLS + statement_timeout)
 

@@ -111,6 +111,14 @@ function hasZoneIdentifier(hostname: string): boolean {
 	return hostname.includes("%");
 }
 
+// Test seam: when `WFE_TEST_DISABLE_SSRF_PROTECTION=true` the resolved-IP
+// blocklist check is skipped. DNS lookup, zone-id rejection, and "no
+// addresses" failure are preserved so the function still returns a usable
+// IP. Used by the e2e test framework (packages/tests) so a spawned runtime
+// can deliver to the in-process SMTP / Postgres / HTTP mocks bound on
+// loopback. The flag is read at every call (not module load) so a single
+// spawned runtime can selectively enable/disable it via its child env.
+// Precedent: WFE_TEST_SANDBOX_RESTORE_FAIL in packages/sandbox/src/worker.ts.
 async function assertHostIsPublic(hostname: string): Promise<string> {
 	if (hasZoneIdentifier(hostname)) {
 		throw new HostBlockedError(
@@ -127,12 +135,16 @@ async function assertHostIsPublic(hostname: string): Promise<string> {
 	if (addresses.length === 0) {
 		throw new Error(`dns.lookup returned no addresses for ${hostname}`);
 	}
-	for (const entry of addresses) {
-		if (isBlockedAddress(entry.address)) {
-			throw new HostBlockedError(
-				"private-ip",
-				`${hostname} resolves to a blocked address`,
-			);
+	// biome-ignore lint/style/noProcessEnv: scoped test-only seam
+	const disabled = process.env.WFE_TEST_DISABLE_SSRF_PROTECTION === "true";
+	if (!disabled) {
+		for (const entry of addresses) {
+			if (isBlockedAddress(entry.address)) {
+				throw new HostBlockedError(
+					"private-ip",
+					`${hostname} resolves to a blocked address`,
+				);
+			}
 		}
 	}
 	const first = addresses[0];
