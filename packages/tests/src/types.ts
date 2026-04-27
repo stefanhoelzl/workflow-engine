@@ -133,9 +133,10 @@ interface SqlCapture extends MockCapture {
 	statement: string;
 }
 
-// Browser context (PR 16+); PR 1 stubs `.browser` as not implemented.
-// Type-only import — keeps the build cost off PR 1.
-type Page = unknown;
+// Browser context (PR 16+). Type-only import keeps `@playwright/test` out
+// of the runtime cost path — only chain steps that touch `.browser` actually
+// load it.
+type Page = import("@playwright/test").Page;
 
 interface BrowserContext {
 	page: Page;

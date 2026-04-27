@@ -17,6 +17,7 @@
 		"@workflow-engine/sdk": "workspace:*"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.59.1",
 		"@types/smtp-server": "^3.5.13",
 		"embedded-postgres": "17.9.0-beta.17",
 		"smtp-server": "^3.18.4",

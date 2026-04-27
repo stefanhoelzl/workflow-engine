@@ -142,12 +142,12 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 17. PR 16 — Playwright + `.browser` + login helper + test #9 (login + signout)
 
-- [ ] 17.1 Add `@playwright/test` (or `playwright`) dev dep; document `pnpm exec playwright install chromium` in README
-- [ ] 17.2 Implement chromium browser launched once per worker (suite-wide via vitest fixtures); fresh `BrowserContext` per `.browser` step with `baseURL: child.baseUrl`
-- [ ] 17.3 Implement `.browser(callback)` chain step; callback receives `{page, state, login}`
-- [ ] 17.4 Implement `login(user)` helper: drive `/login` form, select user, submit, await `/dashboard` URL
-- [ ] 17.5 Write test #9: chain has just one `.browser` step; navigates to `/login`, selects `dev`, submits, asserts `/dashboard`, reloads, asserts session persists, clicks signout, asserts `/login`, navigates back to `/dashboard`, asserts redirect to `/login`
-- [ ] 17.6 Verify full login + signout flow under chromium
+- [x] 17.1 Add `@playwright/test` (or `playwright`) dev dep; document `pnpm exec playwright install chromium` in README
+- [x] 17.2 Implement chromium browser launched once per worker (suite-wide via vitest fixtures); fresh `BrowserContext` per `.browser` step with `baseURL: child.baseUrl`
+- [x] 17.3 Implement `.browser(callback)` chain step; callback receives `{page, state, login}`
+- [x] 17.4 Implement `login(user)` helper: drive `/login` form, select user, submit, await `/dashboard` URL
+- [x] 17.5 Write test #9: chain has just one `.browser` step; navigates to `/login`, selects `dev`, submits, asserts `/dashboard`, reloads, asserts session persists, clicks signout, asserts `/login`, navigates back to `/dashboard`, asserts redirect to `/login`
+- [x] 17.6 Verify full login + signout flow under chromium
 
 ## 18. PR 17 — Tests #10 + #11 (dashboard + trigger UI)
 

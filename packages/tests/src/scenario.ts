@@ -1,3 +1,4 @@
+import { loginViaForm, runBrowserStep } from "./browser.js";
 import { createCapturedSeq } from "./captured-seq.js";
 import { type InternalFilter, scanEvents, waitForEvent } from "./events.js";
 import { buildFixture } from "./fixtures.js";
@@ -96,8 +97,6 @@ function methodPr(method: string): string {
 	switch (method) {
 		case "manual":
 			return "(later)";
-		case "browser":
-			return "16";
 		default:
 			return "?";
 	}
@@ -632,8 +631,32 @@ function createScenario(): Scenario & ScenarioInternals {
 			steps.push((state, ctx) => runSigkill(state, ctx, fixed));
 			return scenario;
 		},
-		browser(_cb: (c: BrowserContext) => Promise<void>): Scenario {
-			return notImplemented("browser");
+		browser(cb: (c: BrowserContext) => Promise<void>) {
+			steps.push(async (state, ctx) => {
+				await flushUploads(queue, state, ctx);
+				await awaitInFlight(state);
+				const baseUrl = ctx.getChild().baseUrl;
+				await runBrowserStep({
+					baseUrl,
+					run: async (page) => {
+						const events = await scanEvents(ctx.getChild().persistencePath);
+						const logs = ctx.getChild().logStream.since(ctx.getLogMarker());
+						const liveState = freshScenarioState(state, {
+							events,
+							logs,
+							httpClient: ctx.httpClient,
+							smtpClient: ctx.smtpClient,
+							sqlClient: ctx.sqlClient,
+						});
+						await cb({
+							page,
+							state: liveState,
+							login: (user: string) => loginViaForm(page, user),
+						});
+					},
+				});
+			});
+			return scenario;
 		},
 		async run(ctx: ScenarioRunContext) {
 			const state: MutableState = {

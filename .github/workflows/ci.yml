@@ -44,6 +44,7 @@ jobs:
             ~/.cache/embedded-postgres
             ~/.cache/ms-playwright
           key: e2e-binaries-${{ runner.os }}-v1
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
 
   docker-build:
