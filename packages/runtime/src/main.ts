@@ -252,6 +252,8 @@ async function init() {
 			registry,
 			logger: runtimeLogger,
 			keyStore,
+			bus: eventBus,
+			eventStore,
 		}),
 	);
 

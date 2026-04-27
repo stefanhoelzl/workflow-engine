@@ -6,6 +6,8 @@ import {
 	type ProviderRegistry,
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
+import { createEventStore } from "../event-bus/event-store.js";
+import { createEventBus } from "../event-bus/index.js";
 import type { Executor } from "../executor/index.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
@@ -40,7 +42,7 @@ interface MountOpts {
 	fetchFn?: typeof globalThis.fetch;
 }
 
-function mountApi(opts: MountOpts) {
+async function mountApi(opts: MountOpts) {
 	const factories = [githubProviderFactory, localProviderFactory];
 	const authRegistry: ProviderRegistry = buildRegistry(
 		opts.authAllow,
@@ -59,11 +61,15 @@ function mountApi(opts: MountOpts) {
 		executor: stubExecutor,
 		keyStore: stubKeyStore,
 	});
+	const eventStore = await createEventStore();
+	const bus = createEventBus([eventStore], { logger });
 	const middleware = apiMiddleware({
 		authRegistry,
 		registry,
 		logger,
 		keyStore: stubKeyStore,
+		bus,
+		eventStore,
 	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
@@ -96,7 +102,7 @@ function githubFetch(
 describe("apiMiddleware", () => {
 	describe("empty registry", () => {
 		it("returns 401 for every /api/* request", async () => {
-			const app = mountApi({ authAllow: "" });
+			const app = await mountApi({ authAllow: "" });
 
 			const res = await app.request("/api/anything", {
 				method: "POST",
@@ -111,7 +117,7 @@ describe("apiMiddleware", () => {
 		});
 
 		it("returns 401 for GET paths too", async () => {
-			const app = mountApi({ authAllow: "" });
+			const app = await mountApi({ authAllow: "" });
 			const res = await app.request("/api/does-not-exist", { method: "GET" });
 			expect(res.status).toBe(401);
 		});
@@ -119,14 +125,14 @@ describe("apiMiddleware", () => {
 
 	describe("github provider", () => {
 		it("rejects requests without X-Auth-Provider with 401", async () => {
-			const app = mountApi({ authAllow: "github:user:stefan" });
+			const app = await mountApi({ authAllow: "github:user:stefan" });
 			const res = await app.request("/api/anything", { method: "POST" });
 			expect(res.status).toBe(401);
 			expect(await res.json()).toEqual({ error: "Unauthorized" });
 		});
 
 		it("rejects unauthenticated upload with 401 — body never reaches the registry", async () => {
-			const app = mountApi({ authAllow: "github:user:stefan" });
+			const app = await mountApi({ authAllow: "github:user:stefan" });
 			const res = await app.request("/api/workflows/stefan", {
 				method: "POST",
 				body: "not-a-tarball",
@@ -138,7 +144,7 @@ describe("apiMiddleware", () => {
 			const fetchFn = githubFetch({ login: "bob", email: null }, [
 				{ login: "acme" },
 			]);
-			const app = mountApi({ authAllow: "github:org:acme", fetchFn });
+			const app = await mountApi({ authAllow: "github:org:acme", fetchFn });
 
 			const res = await app.request("/api/workflows/acme", {
 				method: "POST",
@@ -154,7 +160,7 @@ describe("apiMiddleware", () => {
 
 		it("forged X-Auth-Request-Groups cannot grant cross-owner upload", async () => {
 			const fetchFn = githubFetch({ login: "stefan", email: null }, []);
-			const app = mountApi({ authAllow: "github:user:stefan", fetchFn });
+			const app = await mountApi({ authAllow: "github:user:stefan", fetchFn });
 
 			const res = await app.request("/api/workflows/victim-owner", {
 				method: "POST",
@@ -174,7 +180,7 @@ describe("apiMiddleware", () => {
 
 	describe("local provider", () => {
 		it("authorizes via Authorization: User <name>", async () => {
-			const app = mountApi({ authAllow: "local:dev" });
+			const app = await mountApi({ authAllow: "local:dev" });
 			const res = await app.request("/api/workflows/dev", {
 				method: "POST",
 				headers: {
@@ -187,7 +193,7 @@ describe("apiMiddleware", () => {
 		});
 
 		it("rejects unknown local user with 401", async () => {
-			const app = mountApi({ authAllow: "local:dev" });
+			const app = await mountApi({ authAllow: "local:dev" });
 			const res = await app.request("/api/workflows/dev", {
 				method: "POST",
 				headers: {
@@ -200,7 +206,7 @@ describe("apiMiddleware", () => {
 		});
 
 		it("local user denied access to another owner with 404", async () => {
-			const app = mountApi({ authAllow: "local:dev" });
+			const app = await mountApi({ authAllow: "local:dev" });
 			const res = await app.request("/api/workflows/other", {
 				method: "POST",
 				headers: {

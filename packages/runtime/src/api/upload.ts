@@ -2,6 +2,9 @@ import { constants } from "node:http2";
 import { ManifestSchema } from "@workflow-engine/core";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { EventStore } from "../event-bus/event-store.js";
+import type { EventBus } from "../event-bus/index.js";
+import { emitSystemUpload } from "../executor/upload-event.js";
 import type { Logger } from "../logger.js";
 import {
 	type SecretsKeyStore,
@@ -57,6 +60,8 @@ interface UploadDeps {
 	readonly registry: WorkflowRegistry;
 	readonly logger: Logger;
 	readonly keyStore: SecretsKeyStore;
+	readonly bus: EventBus;
+	readonly eventStore: EventStore;
 }
 
 function failureResponse(
@@ -137,6 +142,52 @@ function verifySecretsIfPresent(
 	};
 }
 
+// biome-ignore lint/complexity/useMaxParams: identity bag mirrors createUploadHandler's deps shape
+async function emitUploadEvents(
+	deps: UploadDeps,
+	owner: string,
+	repo: string,
+	files: Map<string, string>,
+	user: { readonly login: string; readonly mail: string },
+): Promise<void> {
+	const entries = deps.registry.list(owner, repo);
+	const manifestByName = parseManifestWorkflows(files);
+	for (const entry of entries) {
+		const wf = entry.workflow;
+		// biome-ignore lint/performance/noAwaitInLoops: sha-dedup gate must read existing rows before emitting; bundle size is small (workflows per repo) so sequential await is fine
+		const exists = await deps.eventStore.hasUploadEvent(
+			owner,
+			repo,
+			wf.name,
+			wf.sha,
+		);
+		if (exists) {
+			continue;
+		}
+		try {
+			await emitSystemUpload(deps.bus, {
+				owner,
+				repo,
+				workflow: wf,
+				snapshot: manifestByName.get(wf.name) ?? {},
+				user: { login: user.login, mail: user.mail },
+			});
+		} catch (err) {
+			// Best-effort: an emission failure on a strict consumer already
+			// crashed the process via the bus's runtime.fatal path; this catch
+			// only fires for rare non-strict-consumer errors. Log and continue
+			// with the rest of the bundle.
+			deps.logger.error("upload.system-upload-emit-failed", {
+				owner,
+				repo,
+				workflow: wf.name,
+				workflowSha: wf.sha,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+}
+
 function createUploadHandler(deps: UploadDeps) {
 	return async (c: Context) => {
 		const owner = c.req.param("owner") ?? "";
@@ -166,8 +217,45 @@ function createUploadHandler(deps: UploadDeps) {
 			return failureResponse(c, result);
 		}
 
+		// Emit system.upload per workflow, sha-deduped against the event
+		// store. The (owner, repo) is already authorized by the
+		// requireOwnerMember middleware mounted on /workflows/:owner/:repo.
+		await emitUploadEvents(deps, owner, repo, files, c.get("user"));
+
 		return c.body(null, HTTP_NO_CONTENT);
 	};
+}
+
+function parseManifestWorkflows(
+	files: Map<string, string>,
+): Map<string, Record<string, unknown>> {
+	const out = new Map<string, Record<string, unknown>>();
+	const raw = files.get("manifest.json");
+	if (raw === undefined) {
+		return out;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return out;
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		!Array.isArray((parsed as { workflows?: unknown }).workflows)
+	) {
+		return out;
+	}
+	for (const wf of (parsed as { workflows: unknown[] }).workflows) {
+		if (typeof wf === "object" && wf !== null) {
+			const name = (wf as { name?: unknown }).name;
+			if (typeof name === "string") {
+				out.set(name, wf as Record<string, unknown>);
+			}
+		}
+	}
+	return out;
 }
 
 export type { UploadDeps };

@@ -603,14 +603,22 @@ plugin, and every change that adds a guest-visible surface.
    operation identity carried in the event's `name` field.
 
    The `trigger.*` family is currently `trigger.request`, `trigger.response`,
-   `trigger.error`, and `trigger.exception`. The first three are the
-   handler-frame triplet emitted by the in-sandbox trigger plugin
-   (paired open/close around `entry.fire`). `trigger.exception` is a
-   *leaf* event for author-fixable pre-dispatch failures (IMAP
-   misconfig, broken cron expression, etc.) — host-emitted by the
-   runtime helper `emitTriggerException`, no paired `trigger.request`,
-   no frame, no sequencer involvement. See R-8 for the carve-out and
-   `openspec/specs/invocations/spec.md` for the full contract.
+   `trigger.error`, `trigger.exception`, and `trigger.rejection`. The
+   first three are the handler-frame triplet emitted by the in-sandbox
+   trigger plugin (paired open/close around `entry.fire`).
+   `trigger.exception` is a *leaf* event for author-fixable pre-dispatch
+   failures (IMAP misconfig, broken cron expression, etc.).
+   `trigger.rejection` is a *leaf* event for HTTP webhook body schema
+   rejections (zod 422 against the trigger's `body` schema). Both are
+   host-emitted by the runtime helper `emitTriggerException` — no paired
+   `trigger.request`, no frame, no sequencer involvement. See R-8 for
+   the carve-out and `openspec/specs/invocations/spec.md` for the full
+   contract.
+
+   The `system.*` family additionally carries `system.upload` — a leaf
+   event emitted host-side per workflow on successful `POST /api/workflows/
+   <owner>/<repo>`, sha-deduped against the EventStore. See R-8 for the
+   carve-out and R-9 for the `meta.dispatch` carve-out for uploads.
 8. **R-8 Stamping-boundary discipline.** Event-field stamping is split
    across four layers:
    - **Bridge-stamped (worker-side):** `kind`, `name`, `ts`, `at`,
@@ -628,20 +636,43 @@ plugin, and every change that adds a guest-visible surface.
      `workflowSha`/`invocationId`. This carve-out exists because
      pre-dispatch failures have no run, no sandbox, and no
      `RunSequencer` to stamp the worker-owned scalars. **The carve-out
-     covers `trigger.exception` ONLY.** The helper hard-codes
-     `kind: "trigger.exception"` and asserts on it; no other kind may
-     bypass the sandbox/sequencer. A future contributor extending the
-     helper to additional kinds is breaking R-8.
+     covers `trigger.exception` AND `trigger.rejection` ONLY.** The
+     helper's `assertHostFailKind` asserts on the kind set; no other
+     kind may bypass the sandbox/sequencer through this path. A future
+     contributor extending the helper to additional kinds is breaking
+     R-8.
+   - **Runtime-stamped (host-side `emitSystemUpload` helper, no sandbox
+     involved):** all of `id`, `kind="system.upload"`, `name`, `seq=0`,
+     `ref=0`, `ts=0`, `at`, plus `owner`/`repo`/`workflow`/
+     `workflowSha`/`invocationId`/`meta.dispatch`. This is a sibling
+     carve-out for workflow uploads — uploads have no run, no sandbox,
+     and no caller-supplied identity stream beyond the authenticated
+     session. The helper's `assertSystemUploadKind` asserts
+     `kind === "system.upload"`; the path is the only emitter for that
+     kind and it is invoked from the upload handler only. R-9 carves
+     out `meta.dispatch` for `system.upload` in the same way.
    No layer may stamp fields owned by another layer. A plugin
    that needs to attach an owner, repo, or workflow label is doing
    something wrong — that labelling belongs on the runtime side.
 9. **R-9 Runtime-only dispatch provenance.** `InvocationEvent.meta` and
    every field nested under it (including `meta.dispatch`, which carries
-   `{ source: "trigger" | "manual", user? }` on `trigger.request`) are
-   stamped exclusively by the runtime in its `sb.onEvent` widener. The
-   sandbox and plugin code MUST NOT emit, read, or construct `meta` — it
-   has no guest-side entry point by design. Parallels R-8; the dispatch
-   source and dispatching user are runtime concerns, never guest-visible.
+   `{ source: "trigger" | "manual" | "upload", user? }`) are stamped
+   exclusively by the runtime. The sandbox and plugin code MUST NOT
+   emit, read, or construct `meta` — it has no guest-side entry point
+   by design. Parallels R-8; the dispatch source and dispatching user
+   are runtime concerns, never guest-visible.
+
+   `meta.dispatch` appears on two event kinds and ONLY those two:
+   `trigger.request` (stamped by the executor's `sb.onEvent` widener
+   when forwarding the sandbox's open event onto the bus, with
+   `source: "trigger" | "manual"`) and `system.upload` (stamped by the
+   host-side `emitSystemUpload` helper when the upload handler emits a
+   per-workflow upload event, with `source: "upload"`). Each stamping
+   site asserts on the kind it is responsible for. Other kinds
+   (`trigger.response`, `trigger.error`, `trigger.exception`,
+   `trigger.rejection`, `action.*`, `system.request`, `system.response`,
+   `system.error`, `system.call`, `system.exception`,
+   `system.exhaustion`) MUST NOT carry `meta.dispatch`.
 10. **R-10 `onPost` requires cross-cutting rationale.** The
     `PluginSetup.onPost` hook sees every outbound `WorkerToMain` message
     from every plugin; implementing it widens the plugin's observation
