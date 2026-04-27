@@ -75,4 +75,4 @@
 
 ## 10. Archive
 
-- [ ] 10.1 Run `/opsx:archive sandbox-resource-limits` after merge.
+- [x] 10.1 Run `/opsx:archive sandbox-resource-limits` after merge.
