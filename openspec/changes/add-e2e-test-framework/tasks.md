@@ -151,9 +151,9 @@ adds the fixture cache the design called out as "(Optional) Perf PR".
 
 ## 18. PR 17 — Tests #10 + #11 (dashboard + trigger UI)
 
-- [ ] 18.1 Write test #10: chain workflows + webhooks (with completion expectation); browser step uses `login("dev")`, navigates to `/dashboard/dev/e2e`, locates `[data-workflow="${state.workflows[0].name}"]` row, asserts visible and contains `kind-trigger` for `ping`
-- [ ] 18.2 Write test #11: workflow with manualTrigger `greet({name})` returning `{hello: "hi <name>"}`; browser step logs in, navigates to `/trigger/dev/e2e/<workflow>/greet`, fills `input[name="name"]` with `world`, submits, asserts `[data-role="response"]` contains `"hello": "hi world"`
-- [ ] 18.3 Verify both UI tests pass under chromium
+- [x] 18.1 Write test #10: chain workflows + webhooks (with completion expectation); browser step uses `login("dev")`, navigates to `/dashboard/dev/e2e`, locates the invocation row matching `state.workflows[0].name` (via `.entry-workflow` text match — the dashboard uses `entry-workflow` / `entry-trigger` spans rather than `data-workflow`), expands it, and asserts the htmx-loaded flamegraph fragment contains `kind-trigger`
+- [x] 18.2 Write test #11: workflow with manualTrigger `greet({name})` returning `{hello: "hi <name>"}`; browser step logs in, navigates to `/trigger/dev/e2e/<workflow>/greet`, fills the Jedison-rendered input via `[data-path="#/name"] input` with `world`, clicks `.submit-btn[data-trigger-url]`, asserts the result-dialog `.trigger-result-body` contains `"hello": "hi world"`
+- [x] 18.3 Verify both UI tests pass under chromium
 
 ## 19. CI promotion
 
