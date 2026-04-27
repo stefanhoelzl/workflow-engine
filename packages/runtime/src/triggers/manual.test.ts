@@ -5,9 +5,10 @@ import type {
 } from "../executor/types.js";
 import { createManualTriggerSource } from "./manual.js";
 import type { TriggerEntry } from "./source.js";
+import { withZodSchemas } from "./test-descriptors.js";
 
 function makeEntry(name: string): TriggerEntry<ManualTriggerDescriptor> {
-	const descriptor: ManualTriggerDescriptor = {
+	const descriptor: ManualTriggerDescriptor = withZodSchemas({
 		kind: "manual",
 		type: "manual",
 		name,
@@ -18,7 +19,7 @@ function makeEntry(name: string): TriggerEntry<ManualTriggerDescriptor> {
 			additionalProperties: false,
 		},
 		outputSchema: {},
-	};
+	});
 	const fire = vi.fn<(input: unknown) => Promise<InvokeResult<unknown>>>(
 		async () => ({
 			ok: true,

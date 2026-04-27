@@ -9,6 +9,7 @@ import {
 	ManifestSchema,
 	type ManualTriggerManifest,
 	type WorkflowManifest,
+	z,
 } from "@workflow-engine/core";
 import { extract as tarExtract } from "tar-stream";
 import { validateOwner, validateRepo } from "./auth/owner.js";
@@ -102,10 +103,40 @@ async function extractOwnerTarGz(
 // Descriptor construction (manifest entry -> TriggerDescriptor)
 // ---------------------------------------------------------------------------
 
+// Rehydrate a manifest JSON Schema into a Zod schema. Throws with a
+// trigger-scoped message when `z.fromJSONSchema` rejects the structure;
+// `buildDescriptors` translates the throw into a registration failure.
+function rehydrateSchema(
+	workflowName: string,
+	triggerName: string,
+	field: "inputSchema" | "outputSchema" | "body",
+	schema: Record<string, unknown>,
+): z.ZodType<unknown> {
+	try {
+		return z.fromJSONSchema(schema) as z.ZodType<unknown>;
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`workflow "${workflowName}" trigger "${triggerName}" ${field}: ` +
+				`failed to rehydrate JSON Schema (${reason})`,
+		);
+	}
+}
+
+// Pre-resolution descriptor (before sentinel resolution + Zod attachment).
+// Identical shape to `TriggerDescriptor` minus the rehydrated Zod schemas;
+// Zod schema objects are non-plain objects whose internals would be mangled
+// by `resolveSecretSentinels`'s deep walk, so attach them after sentinels
+// have been resolved on the JSON-Schema-only fields.
+type PreResolveDescriptor = Omit<
+	TriggerDescriptor,
+	"zodInputSchema" | "zodOutputSchema"
+>;
+
 function buildHttpDescriptor(
 	workflowName: string,
 	entry: HttpTriggerManifest,
-): HttpTriggerDescriptor {
+): Omit<HttpTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
 	return {
 		kind: "http",
 		type: "http",
@@ -121,7 +152,7 @@ function buildHttpDescriptor(
 function buildCronDescriptor(
 	workflowName: string,
 	entry: CronTriggerManifest,
-): CronTriggerDescriptor {
+): Omit<CronTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
 	return {
 		kind: "cron",
 		type: "cron",
@@ -137,7 +168,7 @@ function buildCronDescriptor(
 function buildManualDescriptor(
 	workflowName: string,
 	entry: ManualTriggerManifest,
-): ManualTriggerDescriptor {
+): Omit<ManualTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
 	return {
 		kind: "manual",
 		type: "manual",
@@ -151,7 +182,7 @@ function buildManualDescriptor(
 function buildImapDescriptor(
 	workflowName: string,
 	entry: ImapTriggerManifest,
-): ImapTriggerDescriptor {
+): Omit<ImapTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
 	// `onError.command` is zod-optional (so typed `string[] | undefined`), but
 	// `ImapTriggerDescriptor.onError.command` is exactOptional; build the
 	// envelope conditionally rather than widening the descriptor type.
@@ -175,6 +206,56 @@ function buildImapDescriptor(
 		onError,
 		inputSchema: entry.inputSchema as Record<string, unknown>,
 		outputSchema: entry.outputSchema as Record<string, unknown>,
+	};
+}
+
+// Attach pre-rehydrated Zod schemas to a sentinel-resolved descriptor.
+// Throws on rehydration failure; the caller catches and surfaces as a
+// registration failure. Sentinels never reach JSON-Schema fields (they
+// only live in string-typed config fields like cron `schedule`/`tz` or
+// imap credentials), so rehydrating from `inputSchema` / `outputSchema`
+// after sentinel resolution is safe.
+function attachZodSchemas(descriptor: PreResolveDescriptor): TriggerDescriptor {
+	const zodInputSchema = rehydrateSchema(
+		descriptor.workflowName,
+		descriptor.name,
+		"inputSchema",
+		descriptor.inputSchema,
+	);
+	const zodOutputSchema = rehydrateSchema(
+		descriptor.workflowName,
+		descriptor.name,
+		"outputSchema",
+		descriptor.outputSchema,
+	);
+	return {
+		...descriptor,
+		zodInputSchema,
+		zodOutputSchema,
+	} as TriggerDescriptor;
+}
+
+function buildPreResolvedDescriptor(
+	workflowName: string,
+	entry: WorkflowManifest["triggers"][number],
+): PreResolveDescriptor | { error: string } {
+	if (entry.type === "http") {
+		return buildHttpDescriptor(workflowName, entry);
+	}
+	if (entry.type === "cron") {
+		return buildCronDescriptor(workflowName, entry);
+	}
+	if (entry.type === "manual") {
+		return buildManualDescriptor(workflowName, entry);
+	}
+	if (entry.type === "imap") {
+		return buildImapDescriptor(workflowName, entry);
+	}
+	return {
+		error:
+			'invalid manifest: unsupported trigger kind "' +
+			(entry as { type: string }).type +
+			'"',
 	};
 }
 
@@ -206,33 +287,30 @@ function buildDescriptors(
 					'")',
 			};
 		}
-		let descriptor: TriggerDescriptor;
-		if (entry.type === "http") {
-			descriptor = buildHttpDescriptor(workflow.name, entry);
-		} else if (entry.type === "cron") {
-			descriptor = buildCronDescriptor(workflow.name, entry);
-		} else if (entry.type === "manual") {
-			descriptor = buildManualDescriptor(workflow.name, entry);
-		} else if (entry.type === "imap") {
-			descriptor = buildImapDescriptor(workflow.name, entry);
-		} else {
-			// Shouldn't happen — allowedKinds is derived from registered backends
-			// and the parser's union covers every registered kind. Guard anyway.
-			return {
-				ok: false,
-				error:
-					'invalid manifest: unsupported trigger kind "' +
-					(entry as { type: string }).type +
-					'"',
-			};
+		const built = buildPreResolvedDescriptor(workflow.name, entry);
+		if ("error" in built) {
+			return { ok: false, error: built.error };
 		}
 		// Substitute `\x00secret:NAME\x00` sentinel substrings with decrypted
-		// plaintext BEFORE adding to the descriptor list. Every `TriggerSource`
+		// plaintext BEFORE attaching Zod schemas. Every `TriggerSource`
 		// implementation receives resolved plaintext via `reconfigure`; sources
 		// MUST NOT parse sentinels themselves (see SECURITY.md §5).
-		descriptors.push(
-			resolveSecretSentinels(descriptor, plaintextStore, missing),
-		);
+		const resolved = resolveSecretSentinels(built, plaintextStore, missing);
+		// Attach pre-rehydrated Zod schemas AFTER the deep sentinel walk —
+		// Zod schemas are non-plain objects whose internals would be mangled
+		// by the walker. Rehydration runs once per workflow load, never per
+		// fire() invocation (per payload-validation/spec.md).
+		try {
+			descriptors.push(attachZodSchemas(resolved));
+		} catch (err) {
+			// Schema rehydration failed for this trigger. Surface as a
+			// registration failure so the tenant sees a precise pointer at the
+			// offending trigger; `rehydrateSchema` builds the message.
+			return {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
 	}
 	if (missing.size > 0) {
 		return {

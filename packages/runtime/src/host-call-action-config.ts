@@ -1,48 +1,34 @@
-// Main-thread helper that compiles a WorkflowManifest's per-action input AND
-// output schemas into Ajv `standaloneCode` sources, producing the
-// host-call-action plugin's `Config` payload. Runs wherever sandbox-store
-// constructs a sandbox — Ajv is imported here so the plugin file itself stays
-// Ajv-free and its worker bundle tree-shakes to a handful of KB.
+// Main-thread helper that extracts a WorkflowManifest's per-action input/
+// output JSON Schemas into the `host-call-action` plugin's Config payload.
+// The payload is a pair of `Record<actionName, JSONSchema>` maps; the plugin
+// rehydrates each schema into a Zod validator at worker() boot via
+// `z.fromJSONSchema()`. No compilation, no source-string emission — JSON
+// Schema crosses the main→worker boundary unchanged.
 
 import type { WorkflowManifest } from "@workflow-engine/core";
-import Ajv2020 from "ajv/dist/2020.js";
-import standaloneCodeMod from "ajv/dist/standalone/index.js";
 import type { Config as HostCallActionConfig } from "./plugins/host-call-action.js";
 
-// Ajv's standalone module is CJS-shaped; resolve the default export
-// with the same idiom used elsewhere in the codebase for Ajv interop.
-const standaloneCode = ((standaloneCodeMod as { default?: unknown }).default ??
-	standaloneCodeMod) as (ajv: Ajv2020.default, refsOrFunc: unknown) => string;
-
 /**
- * Compile the action-input and action-output validators for a workflow's
- * manifest into `standaloneCode` source strings, one per action per direction.
- * The resulting record is safe to JSON-serialise across the postMessage
- * boundary (it's just strings) and is consumed by the host-call-action
- * plugin's `worker()` via `new Function(src)` at sandbox boot.
+ * Build the `host-call-action` plugin's `Config` from a workflow manifest:
+ * one input/output JSON Schema per declared action. The resulting record is
+ * JSON-serialisable across the postMessage boundary — Zod schema objects are
+ * NOT, which is why rehydration happens in the worker after structured-clone
+ * delivery.
  *
  * Runs once per sandbox construction (keyed by `(owner, sha)` in
- * `SandboxStore`); no recompilation between runs.
+ * `SandboxStore`); the plugin's `worker()` rehydrates once at boot and
+ * reuses the resulting Zod schemas for the sandbox's lifetime.
  */
 function compileActionValidators(
 	manifest: WorkflowManifest,
 ): HostCallActionConfig {
-	const ajv = new Ajv2020.default({
-		allErrors: true,
-		strict: false,
-		code: { source: true, esm: false },
-	});
-	const inputValidatorSources: Record<string, string> = {};
-	const outputValidatorSources: Record<string, string> = {};
+	const inputSchemas: Record<string, Record<string, unknown>> = {};
+	const outputSchemas: Record<string, Record<string, unknown>> = {};
 	for (const action of manifest.actions) {
-		// biome-ignore lint/suspicious/noExplicitAny: Ajv's compile signature takes a broad JSON-Schema shape
-		const inputValidator = ajv.compile(action.input as any);
-		inputValidatorSources[action.name] = standaloneCode(ajv, inputValidator);
-		// biome-ignore lint/suspicious/noExplicitAny: Ajv's compile signature takes a broad JSON-Schema shape
-		const outputValidator = ajv.compile(action.output as any);
-		outputValidatorSources[action.name] = standaloneCode(ajv, outputValidator);
+		inputSchemas[action.name] = action.input as Record<string, unknown>;
+		outputSchemas[action.name] = action.output as Record<string, unknown>;
 	}
-	return { inputValidatorSources, outputValidatorSources };
+	return { inputSchemas, outputSchemas };
 }
 
 export { compileActionValidators };

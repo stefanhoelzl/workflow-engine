@@ -7,6 +7,7 @@ import type {
 } from "../executor/types.js";
 import type { Logger } from "../logger.js";
 import { buildFire } from "./build-fire.js";
+import { withZodSchemas } from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // buildFire unit tests
@@ -26,7 +27,7 @@ function makeWorkflow(): WorkflowManifest {
 function makeDescriptor(
 	outputSchema: Record<string, unknown> = { type: "object" },
 ): HttpTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "http",
 		type: "http",
 		name: "handler",
@@ -45,11 +46,11 @@ function makeDescriptor(
 			required: ["body"],
 		},
 		outputSchema,
-	};
+	});
 }
 
 function makeCronDescriptor(): CronTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "cron",
 		type: "cron",
 		name: "tick",
@@ -58,7 +59,7 @@ function makeCronDescriptor(): CronTriggerDescriptor {
 		tz: "UTC",
 		inputSchema: { type: "object" },
 		outputSchema: {}, // z.unknown() emits as empty schema — matches anything
-	};
+	});
 }
 
 function makeSilentLogger(): Logger & {

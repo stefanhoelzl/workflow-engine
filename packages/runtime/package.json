@@ -17,7 +17,6 @@
 		"@workflow-engine/core": "workspace:*",
 		"@workflow-engine/sandbox": "workspace:*",
 		"@workflow-engine/sandbox-stdlib": "workspace:*",
-		"ajv": "^8.18.0",
 		"alpinejs": "^3.14.9",
 		"cron-parser": "^5.5.0",
 		"hono": "^4.12.10",

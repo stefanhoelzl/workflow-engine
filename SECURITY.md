@@ -66,7 +66,7 @@ sections must append (§7 and onward), not renumber.
   │   │ Webhook      │    │ UI (dashboard│   │ API handlers │   │
   │   │ handlers     │    │  + trigger)  │   │              │   │
   │   └──────┬───────┘    └──────────────┘   └──────────────┘   │
-  │          │ parse + validate payload (Ajv)                   │
+  │          │ parse + validate payload (Zod)                   │
   │          ▼                                                  │
   │   ┌──────────────┐   EventBus    ┌─────────────────────┐    │
   │   │   Executor   │──lifecycle──►│ Persistence +        │    │
@@ -195,7 +195,7 @@ URLPattern, CompressionStream, reportError, microtask, fetch WHATWG shape),
 (setTimeout/setInterval/clearTimeout/clearInterval + per-run cleanup),
 `console` (`console.log`/`info`/`warn`/`error`/`debug` leaf events),
 `wasi` (inert by default; runtime supplies telemetry setup), `host-call-
-action` (Ajv input validation, exports `validateAction` to dependents),
+action` (Zod input validation, exports `validateAction` to dependents),
 `sdk-support` (installs locked `__sdk.dispatchAction`; depends on
 `host-call-action`), `trigger` (emits `trigger.request`/`response`/`error`
 around every run). Test-only: `wpt-harness` (`__wptReport` private
@@ -384,7 +384,7 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   next `run()` awaits any in-flight restore. Guest-visible state
   (`globalThis` writes, module-level `let`/`const` mutations, closures
   over mutable module state) therefore SHALL NOT persist across runs.
-  Worker-side plugin state on `PluginSetup` (timers Map, compiled ajv
+  Worker-side plugin state on `PluginSetup` (timers Map, rehydrated Zod
   validators, etc.) is NOT in the snapshot and persists for the
   sandbox's lifetime; plugins remain responsible for per-run cleanup
   via R-4. Cross-workflow leakage remains physically impossible:
@@ -476,30 +476,39 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   declared in that workflow's `defineWorkflow({env})`. Other workflows'
   env vars are unreachable — each workflow has its own sandbox + own
   env record (mitigates S6 structurally).
-- **Action input validation via `host-call-action`.** Ajv validators are
-  compiled per action from the manifest at plugin boot. The plugin
-  exports `validateAction(name, input)`; `sdk-support` calls it inside
+- **Action input validation via `host-call-action`.** Zod validators are
+  rehydrated per action from the manifest's JSON Schema (via
+  `z.fromJSONSchema`) at plugin boot. The plugin exports
+  `validateAction(name, input)`; `sdk-support` calls it inside
   `__sdk.dispatchAction` before invoking the handler. Validation
-  failures throw back into the guest with the Ajv `issues` array
+  failures throw back into the guest with a structured `issues` array
   preserved. Input validation is host-authoritative.
 - **Action output validation host-side via `host-call-action`.** The
-  plugin also exports `validateActionOutput(name, raw)`, compiled from
-  the manifest's output schema. `sdk-support`'s dispatcher handler
-  invokes it after `await handler(input)` resolves, on the host side,
-  before returning to the guest caller. The `__sdk.dispatchAction`
-  bridge takes three positional args (`name, input, handler`) — there is
-  no guest-supplied `completer`, so a tampered SDK cannot substitute a
-  lenient output validator. Output validation is host-authoritative,
-  parallel to input validation.
+  plugin also exports `validateActionOutput(name, raw)`, rehydrated from
+  the manifest's output schema at plugin boot. `sdk-support`'s
+  dispatcher handler invokes it after `await handler(input)` resolves,
+  on the host side, before returning to the guest caller. The
+  `__sdk.dispatchAction` bridge takes three positional args (`name,
+  input, handler`) — there is no guest-supplied `completer`, so a
+  tampered SDK cannot substitute a lenient output validator. Output
+  validation is host-authoritative, parallel to input validation.
 - **Trigger handler output validation host-side in `buildFire`.** After
   `executor.invoke` resolves with `{ok:true, output}`, `buildFire` runs
-  Ajv against `descriptor.outputSchema`. Mismatches surface as
-  `{ok:false, error:{message:"output validation: …"}}` with no `issues`
-  field — the HTTP source maps `no-issues → 500` (handler bug, not
-  client fault). Structured per-field issues are logged via
+  the rehydrated Zod schema against `descriptor.outputSchema`. Mismatches
+  surface as `{ok:false, error:{message:"output validation: …"}}` with
+  no `issues` field — the HTTP source maps `no-issues → 500` (handler
+  bug, not client fault). Structured per-field issues are logged via
   `trigger.output-validation-failed` for dashboards/archives.
+- **Validator-source eval removed.** Prior versions used Ajv's
+  `standaloneCode` to emit per-action validator source strings, which
+  the worker plugin instantiated via `new Function(source)`. After the
+  Zod migration, validators are constructed via `z.fromJSONSchema()`
+  directly — no string-form validator code is generated, transferred,
+  or `new Function()`-evaluated in the worker. Defence in depth, not a
+  load-bearing boundary (the worker is trusted), but one fewer
+  `new Function` site to reason about.
 - **Worker-thread isolation of plugin runtime.** QuickJS, plugin code,
-  `hardenedFetch`, and Ajv validators all run inside a dedicated
+  `hardenedFetch`, and Zod validators all run inside a dedicated
   `worker_threads` Worker. Long synchronous guest CPU work (S3) does not
   freeze the main event loop — trigger ingestion and the operator UI
   stay responsive. Unexpected worker termination is surfaced as
@@ -680,9 +689,9 @@ Additional standing rules that predate the plugin rewrite:
   semantics, and `hardenedFetch` defaults each have dedicated probes.
 - **Every new host-callable descriptor MUST validate its input** before
   acting on it (the guest's Zod copy is untrusted). `host-call-action`'s
-  Ajv pipeline is the canonical pattern; new descriptors either reuse it
-  or follow the same shape, and SHALL be covered by a prototype-
-  pollution test.
+  Zod-rehydration pipeline is the canonical pattern; new descriptors
+  either reuse it or follow the same shape, and SHALL be covered by a
+  prototype-pollution test.
 - **When adding an outbound capability (fetch, action call, etc.),
   explicitly consider SSRF and exfiltration.** If no URL allowlist
   applies, say so in the change proposal; do not claim the sandbox
@@ -784,7 +793,8 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   into structured data). Handlers that need a query-string value SHALL
   parse it explicitly via `new URL(payload.url).searchParams` and
   treat the result as untrusted. `body` is a JSON-parsed object
-  validated against the trigger's JSON Schema (Ajv) before the sandbox
+  validated against the trigger's JSON Schema (Zod, rehydrated at
+  workflow load) before the sandbox
   is entered. `headers`, `url`, and `method` are attacker-controlled
   metadata — the sandbox sees them as data, not as authentication.
   Removing `params`/`query` eliminated an entire class of
@@ -805,8 +815,9 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 
 ### Mitigations (current)
 
-- **Ajv JSON Schema validation** of the request body against the
-  trigger's manifest schema. Invalid payloads return **422** with
+- **Zod validation** of the request body against the trigger's manifest
+  JSON Schema (rehydrated via `z.fromJSONSchema` at workflow load).
+  Invalid payloads return **422** with
   structured issues and never reach the sandbox or the executor.
   No matching trigger → **404**. Handler throws → **500** + a `failed`
   archive record.
@@ -821,7 +832,7 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   `input` object and call `entry.fire(input)` on the matched
   `TriggerEntry`. The `fire` closure is built by the `WorkflowRegistry`
   (see `packages/runtime/src/triggers/build-fire.ts`) and
-  encapsulates Ajv input-schema validation + `executor.invoke`; the
+  encapsulates Zod input-schema validation + `executor.invoke`; the
   HTTP source does NOT import or call the executor directly. The
   executor still owns runQueue serialization + lifecycle emission.
 - **Payload scope reaches the sandbox only as the handler's `payload`
@@ -869,7 +880,7 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 When adding signature verification for a specific integration (e.g.
 GitHub webhooks, Stripe webhooks), implement the verifier as a
 **pre-validation step in the HTTP trigger middleware** — before the
-registry-built `fire` closure runs Ajv input-schema validation and
+registry-built `fire` closure runs Zod input-schema validation and
 dispatches to the executor — and reject unsigned or incorrectly
 signed requests with 401 before any sandbox entry. Store the signing
 secret as a K8s Secret per §5, never in the trigger definition. The
@@ -880,7 +891,7 @@ schema-violating payload still returns 422.
 
 1. **NEVER add authentication to `/webhooks/*` without an explicit
    OpenSpec proposal.** Public ingress is deliberate.
-2. **NEVER strip the Ajv input-schema validation step** between the
+2. **NEVER strip the Zod input-schema validation step** between the
    incoming request and `executor.invoke`. In the current design the
    check lives inside the registry-built `fire` closure (see
    `packages/runtime/src/triggers/build-fire.ts`); removing it would

@@ -129,7 +129,7 @@ At build time inside the Vite plugin's Node-VM discovery context, the plugin SHA
 
 ### Requirement: action factory returns typed callable
 
-The `action(config)` export from the SDK SHALL produce a callable that, when invoked with input, calls `globalThis.__sdk.dispatchAction(config.name, input, config.handler)`. The callable SHALL return the result of that call. The SDK SHALL NOT construct a `completer` closure; output validation SHALL be performed host-side by the sdk-support plugin via the host-call-action plugin's `validateActionOutput` export (per `sandbox-output-validation`). The SDK SHALL NOT contain any direct bridge logic, event emission, schema parsing, or lifecycle emission — all of that lives in the sdk-support plugin's host-side handler and in the host-call-action plugin's Ajv validators.
+The `action(config)` export from the SDK SHALL produce a callable that, when invoked with input, calls `globalThis.__sdk.dispatchAction(config.name, input, config.handler)`. The callable SHALL return the result of that call. The SDK SHALL NOT construct a `completer` closure; output validation SHALL be performed host-side by the sdk-support plugin via the host-call-action plugin's `validateActionOutput` export (per `sandbox-output-validation`). The SDK SHALL NOT contain any direct bridge logic, event emission, schema parsing, or lifecycle emission — all of that lives in the sdk-support plugin's host-side handler and in the host-call-action plugin's schema validators.
 
 ```ts
 // SDK implementation:
@@ -141,7 +141,7 @@ export const action = (config) => async (input) =>
   );
 ```
 
-The `handler` callback SHALL be captured by the sdk-support plugin as a `Callable` value (via `Guest.callable()`), invoked worker-side, and disposed in the plugin handler's `finally` block after each dispatch. The `config.outputSchema` object SHALL NOT cross the sandbox boundary at dispatch time — Ajv validators were compiled host-side at sandbox-construction time from the manifest's `outputSchema` entries (see `actions` "createHostCallActionPlugin factory").
+The `handler` callback SHALL be captured by the sdk-support plugin as a `Callable` value (via `Guest.callable()`), invoked worker-side, and disposed in the plugin handler's `finally` block after each dispatch. The `config.outputSchema` object SHALL NOT cross the sandbox boundary at dispatch time — schema validators were rehydrated host-side at sandbox-construction time from the manifest's `outputSchema` entries (see `actions` "host-call-action plugin module").
 
 Any extra positional argument that a stale tenant bundle passes as a fourth argument (legacy `(raw) => outputSchema.parse(raw)` completer) SHALL be silently ignored by the sdk-support plugin handler; host-side validation runs regardless (per `sandbox-output-validation` stale-guest tolerance).
 
@@ -441,7 +441,7 @@ The plugin's `guest()` export (bundled as `descriptor.guestSource` by the vite p
 
 #### Scenario: Input validation failure emits action.error
 
-- **GIVEN** an action whose input fails Ajv validation
+- **GIVEN** an action whose input fails schema validation
 - **WHEN** `__sdk.dispatchAction(...)` is called
 - **THEN** `action.request` SHALL fire with `createsFrame: true`
 - **AND** `validateAction` SHALL throw

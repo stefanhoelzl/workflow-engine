@@ -6,6 +6,7 @@ import type { ImapTriggerDescriptor, InvokeResult } from "../executor/types.js";
 import type { Logger } from "../logger.js";
 import { createImapTriggerSource } from "./imap.js";
 import type { TriggerEntry } from "./source.js";
+import { withZodSchemas } from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // Integration tests for createImapTriggerSource against a live hoodiecrow IMAP
@@ -117,24 +118,25 @@ function makeDescriptor(
 	overrides: Partial<ImapTriggerDescriptor> & { port: number },
 ): ImapTriggerDescriptor {
 	const { port, ...rest } = overrides;
-	return {
-		kind: "imap",
-		type: "imap",
+	const base = {
+		kind: "imap" as const,
+		type: "imap" as const,
 		name: "inbound",
 		workflowName: "w",
 		host: "127.0.0.1",
-		tls: "none",
+		tls: "none" as const,
 		insecureSkipVerify: false,
 		user: "dev",
 		password: "devpass",
 		folder: "INBOX",
 		search: "ALL",
 		onError: {},
-		inputSchema: {},
-		outputSchema: {},
+		inputSchema: {} as Record<string, unknown>,
+		outputSchema: {} as Record<string, unknown>,
 		...rest,
 		port,
 	};
+	return withZodSchemas(base);
 }
 
 interface RecordedEntry {

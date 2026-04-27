@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
 import type { EventBus } from "../event-bus/index.js";
+import { withZodSchemas } from "../triggers/test-descriptors.js";
 import { emitTriggerException } from "./exception.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
@@ -19,7 +20,7 @@ function makeManifest(): WorkflowManifest {
 }
 
 function makeDescriptor(): HttpTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "http",
 		type: "http",
 		name: "inbound",
@@ -28,7 +29,7 @@ function makeDescriptor(): HttpTriggerDescriptor {
 		body: { type: "object" },
 		inputSchema: { type: "object" },
 		outputSchema: { type: "object" },
-	};
+	});
 }
 
 describe("emitTriggerException", () => {

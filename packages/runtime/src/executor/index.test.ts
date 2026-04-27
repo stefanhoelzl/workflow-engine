@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createEventBus, type EventBus } from "../event-bus/index.js";
 import type { Logger } from "../logger.js";
 import type { SandboxStore } from "../sandbox-store.js";
+import { withZodSchemas } from "../triggers/test-descriptors.js";
 import { createExecutor } from "./index.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
@@ -46,7 +47,7 @@ function makeDescriptor(
 	name: string,
 	workflowName = "w",
 ): HttpTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "http",
 		type: "http",
 		name,
@@ -55,7 +56,7 @@ function makeDescriptor(
 		body: { type: "object" },
 		inputSchema: { type: "object" },
 		outputSchema: { type: "object" },
-	};
+	});
 }
 
 interface FakeSandboxOptions {

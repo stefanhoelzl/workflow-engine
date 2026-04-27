@@ -16,11 +16,11 @@ const SDK_DISPATCH_DESCRIPTOR = "__sdkDispatchAction";
 /**
  * Signatures exported by the `host-call-action` plugin.
  *
- * - `validateAction(name, input)` throws (with Ajv `issues`) when the input
- *   fails the manifest's JSON Schema for the given action name, and throws
- *   an unknown-action error when the name is not in the manifest.
+ * - `validateAction(name, input)` throws (with structured `issues`) when the
+ *   input fails the manifest's JSON Schema for the given action name, and
+ *   throws an unknown-action error when the name is not in the manifest.
  * - `validateActionOutput(name, output)` returns the validated output on
- *   success, or throws (with Ajv `issues`) when the output fails the
+ *   success, or throws (with structured `issues`) when the output fails the
  *   manifest's output JSON Schema; also throws an unknown-action error when
  *   the name is not in the manifest.
  *

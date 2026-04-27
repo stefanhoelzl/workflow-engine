@@ -3,6 +3,7 @@ import type { CronTriggerDescriptor, InvokeResult } from "../executor/types.js";
 import { createLogger } from "../logger.js";
 import { createCronTriggerSource } from "./cron.js";
 import type { TriggerEntry } from "./source.js";
+import { withZodSchemas } from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // Cron TriggerSource behavior tests
@@ -14,7 +15,7 @@ function makeDescriptor(
 	tz: string,
 	workflowName = "w",
 ): CronTriggerDescriptor {
-	return {
+	return withZodSchemas({
 		kind: "cron",
 		type: "cron",
 		name,
@@ -27,7 +28,7 @@ function makeDescriptor(
 			additionalProperties: false,
 		},
 		outputSchema: {},
-	};
+	});
 }
 
 interface RecordedEntry {
