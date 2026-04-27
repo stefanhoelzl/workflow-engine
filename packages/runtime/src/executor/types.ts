@@ -68,6 +68,7 @@ interface ImapTriggerDescriptor extends BaseTriggerDescriptor<"imap"> {
 	readonly password: string;
 	readonly folder: string;
 	readonly search: string;
+	readonly mode: "poll" | "idle";
 	readonly onError: { readonly command?: readonly string[] };
 }
 

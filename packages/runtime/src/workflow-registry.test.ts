@@ -943,6 +943,7 @@ describe("registry — trigger-config secrets", () => {
 					password,
 					folder: "INBOX",
 					search: "UNSEEN",
+					mode: "idle",
 					onError: {},
 					inputSchema: { type: "object" },
 					outputSchema: { type: "object" },

@@ -14,33 +14,37 @@ import type {
 // ---------------------------------------------------------------------------
 //
 // `createImapTriggerSource` is the imap-kind protocol adapter. The source:
-//   - Holds one `setTimeout` handle per (owner, repo, workflowName,
+//   - Holds one persistent IMAP connection per (owner, repo, workflowName,
 //     triggerName), grouped per-(owner, repo) so
-//     `reconfigure(owner, repo, entries)` only touches that pair's timers.
-//   - Polls every `POLL_INTERVAL_MS` (default 60s). Each poll opens a fresh
-//     IMAP connection, SELECTs the configured folder, runs the author's raw
-//     UID SEARCH, FETCHes each match in turn, dispatches via the executor
-//     (`entry.fire(parsedMsg)`), and applies `output.command` (or, on
-//     handler error, `descriptor.onError.command`) verbatim.
-//   - Re-arms only after the batch fully drains, so cross-poll re-entry is
-//     impossible without explicit concurrency.
-//   - Backs off exponentially up to `MAX_BACKOFF_MS` on transport-level
-//     failures (connect / TLS / auth / search / fetch). One successful
-//     batch resets cadence to `POLL_INTERVAL_MS`.
+//     `reconfigure(owner, repo, entries)` only touches that pair's connections.
+//   - Drives each entry via a unified main loop:
+//       while (!disposed) { await wakeup.next(); await drain(); }
+//     Mode-specific behaviour is encapsulated in a `Wakeup` interface:
+//     `pollWakeup` (60s setTimeout) for `mode: "poll"`, `idleWakeup`
+//     (RFC 2177 IDLE + dirty flag) for `mode: "idle"`. The mid-drain
+//     EXISTS race is handled inside `idleWakeup`; the main loop is
+//     mode-agnostic.
+//   - On every successful (re)connect, runs a post-connect drain to
+//     close the gap window during which IDLE pushes were not observable.
+//   - On any error (transport, auth, capability, search, disposition),
+//     disconnects and schedules reconnect via exponential backoff
+//     (60s → 60min). One successful drain resets the failure counter.
 //
-// Author-fixable poll-cycle failures (connect refused, mailbox missing,
-// search rejected, fetch failed, disposition rejected) are aggregated
-// per `runPoll()` call and surfaced through `entry.exception(...)` at
-// most once per cycle as a `trigger.exception` leaf event. The IMAP
-// source never imports `EventBus`, the executor, or any stamping
-// helper — `entry.exception` is its only outbound channel for failures.
+// Author-fixable failures (connect refused, mailbox missing, search
+// rejected, fetch failed, disposition rejected) are aggregated per
+// `drain()` call and surfaced through `entry.exception(...)` at most
+// once per drain as a `trigger.exception` leaf event. Each failed
+// reconnect attempt also emits its own exception (no extra throttling
+// beyond the natural exp-backoff cadence). The IMAP source never
+// imports `EventBus`, the executor, or any stamping helper —
+// `entry.exception` is its only outbound channel for failures.
 // Engine-bug paths (the registry-built `entry.fire` closure itself
 // throws) stay log-only via `deps.logger.error("imap.fire-threw", …)`.
 // Handler-failed events are emitted by the in-sandbox `trigger` plugin
 // via `entry.fire`'s normal path.
 
 const POLL_INTERVAL_MS = 60_000;
-const BACKOFF_CAP_MINUTES = 15;
+const BACKOFF_CAP_MINUTES = 60;
 const MS_PER_MINUTE = 60_000;
 const MAX_BACKOFF_MS = BACKOFF_CAP_MINUTES * MS_PER_MINUTE;
 const BACKOFF_BASE = 2;
@@ -62,11 +66,112 @@ interface ImapTriggerSourceDeps {
 	readonly logger: Logger;
 }
 
+// ---------------------------------------------------------------------------
+// Wakeup driver — the per-entry "block until it's time to drain again"
+// abstraction. Two implementations: `pollWakeup` (setTimeout-backed, used
+// for `mode: "poll"`) and `idleWakeup` (RFC 2177 IDLE + dirty flag,
+// constructed in PR 2). The main loop is mode-agnostic; mode-specific
+// behavior lives entirely behind this interface.
+
+interface Wakeup {
+	// Block until the loop should drain again. Implementations are
+	// responsible for capturing wake-up signals that arrive during a
+	// caller's drain so that mid-drain events produce an immediate
+	// next-iteration return on the following call.
+	next(): Promise<void>;
+	// Resolve any pending next() Promise; release timers/listeners.
+	dispose(): void;
+}
+
+function pollWakeup(intervalMs: number): Wakeup {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let pendingResolve: (() => void) | undefined;
+	return {
+		next(): Promise<void> {
+			return new Promise<void>((resolve) => {
+				pendingResolve = resolve;
+				timer = setTimeout(() => {
+					timer = undefined;
+					const r = pendingResolve;
+					pendingResolve = undefined;
+					r?.();
+				}, intervalMs);
+			});
+		},
+		dispose(): void {
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			const r = pendingResolve;
+			pendingResolve = undefined;
+			r?.();
+		},
+	};
+}
+
+// idleWakeup — RFC 2177 driver. Registers a single client.on("exists")
+// listener at construction (lives across drains). The listener flips an
+// internal dirty flag and resolves any pending next() Promise. The
+// dirty re-check is performed INSIDE the Promise executor (after the
+// resolver is installed), closing the race between dirty-check and
+// listener-fire. EXPUNGE and FLAGS events are intentionally NOT listened
+// for — they signal mutations to existing mail, not new arrivals.
+function idleWakeup(client: ImapFlow): Wakeup {
+	let dirty = false;
+	let pendingResolve: (() => void) | undefined;
+	const listener = (): void => {
+		dirty = true;
+		const r = pendingResolve;
+		pendingResolve = undefined;
+		r?.();
+	};
+	client.on("exists", listener);
+	return {
+		next(): Promise<void> {
+			return new Promise<void>((resolve) => {
+				pendingResolve = resolve;
+				if (dirty) {
+					// Captured during the prior drain (or in the microsecond
+					// gap before this Promise's executor ran). Short-circuit.
+					dirty = false;
+					pendingResolve = undefined;
+					resolve();
+					return;
+				}
+				// Arm IDLE inside the executor. The returned Promise resolves
+				// when IDLE is broken (by the next drain command via
+				// client.preCheck, or by logout); we discard it because the
+				// listener is what wakes next(). client.idle() is a no-op if
+				// IDLE is already active.
+				client.idle().catch(() => {
+					// IDLE breaks are normal; the connection close path
+					// emits its own error event.
+				});
+			});
+		},
+		dispose(): void {
+			client.removeListener("exists", listener);
+			const r = pendingResolve;
+			pendingResolve = undefined;
+			r?.();
+		},
+	};
+}
+
 interface SourceEntry {
 	readonly owner: string;
 	readonly repo: string;
 	readonly entry: TriggerEntry<ImapTriggerDescriptor>;
-	timer: ReturnType<typeof setTimeout> | undefined;
+	// The persistent IMAP client for this entry (created by setupConnection).
+	// Cleared on disconnect; recreated on reconnect.
+	client: ImapFlow | undefined;
+	// The Wakeup driver chosen at setupConnection (PollWakeup or, in PR 2,
+	// IdleWakeup). Disposed on disconnect/reconfigure.
+	wakeup: Wakeup | undefined;
+	// Reconnect timer (between connection attempts). Distinct from any
+	// timer the Wakeup itself owns.
+	reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	failures: number;
 	disposed: boolean;
 }
@@ -149,6 +254,13 @@ interface ExecCapableClient {
 // imapflow's `exec()` resolves with `{ response, next }`. The parser is paused
 // until the caller invokes `next()` — without it, every subsequent command
 // hangs waiting for a response slot. Wrap exec to always release the parser.
+//
+// Additionally: imapflow's high-level methods (search, fetchOne, etc.) go
+// through `run()` which awaits `client.preCheck` to break any active IDLE
+// before issuing the next command. Raw `exec()` bypasses this. To make
+// raw-exec commands (UID SEARCH, UID EXPUNGE, raw fallback) IDLE-aware, we
+// invoke `preCheck` ourselves before calling `exec`. When IDLE is not
+// active, `preCheck` is `false` and the call is a no-op.
 async function execAndRelease(
 	client: ImapFlow,
 	command: string,
@@ -160,11 +272,15 @@ async function execAndRelease(
 		>;
 	},
 ): Promise<void> {
-	const result = (await (client as unknown as ExecCapableClient).exec(
-		command,
-		args,
-		options,
-	)) as ExecResult | undefined;
+	const c = client as unknown as ExecCapableClient & {
+		preCheck?: false | (() => Promise<void>);
+	};
+	if (typeof c.preCheck === "function") {
+		await c.preCheck();
+	}
+	const result = (await c.exec(command, args, options)) as
+		| ExecResult
+		| undefined;
 	if (result && typeof result.next === "function") {
 		result.next();
 	}
@@ -509,8 +625,36 @@ async function parseRfc822(source: Buffer, uid: number): Promise<ImapMessage> {
 
 // ---------------------------------------------------------------------------
 // Source factory
+//
+// Architecture:
+//   - One persistent IMAP connection per (owner, repo, workflow, trigger).
+//   - Connection lifecycle:
+//       disconnected → setupConnection() → ready → main loop → drain()
+//                                              ↑                  │
+//                                              └── on close/error ┘
+//                                                  (schedule reconnect
+//                                                   via exp backoff)
+//   - Main loop is mode-agnostic:
+//       while (!entry.disposed) {
+//         await entry.wakeup.next()
+//         await drain(entry, client)
+//       }
+//   - Mode-specific behavior lives in the Wakeup implementation
+//     (pollWakeup / idleWakeup); drain, reconnect, exception
+//     aggregation, and post-connect drain are shared.
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, poll/arm helpers, and TriggerSource lifecycle methods
+interface DrainOutcome {
+	readonly failed: boolean;
+	readonly fatal:
+		| {
+				readonly stage: "connect" | "mailboxOpen" | "search" | "disposition";
+				readonly failedUid?: number;
+				readonly error: { readonly message: string };
+		  }
+		| undefined;
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups source state, lifecycle helpers, drain body, and TriggerSource methods — splitting them across files would push significant state through parameters
 function createImapTriggerSource(
 	deps: ImapTriggerSourceDeps,
 ): ImapTriggerSource {
@@ -528,17 +672,31 @@ function createImapTriggerSource(
 		return pairMap.get(key) === srcEntry;
 	}
 
-	function arm(srcEntry: SourceEntry, delayMs: number): void {
-		if (srcEntry.disposed) {
-			return;
-		}
-		srcEntry.timer = setTimeout(() => {
-			runPoll(srcEntry).catch(() => {
-				// runPoll routes its own errors through deps.logger and re-arms;
-				// this catch only guards against an unhandled rejection bringing
-				// the process down on a transient failure.
+	function teardownConnection(srcEntry: SourceEntry): void {
+		const w = srcEntry.wakeup;
+		srcEntry.wakeup = undefined;
+		w?.dispose();
+		const c = srcEntry.client;
+		srcEntry.client = undefined;
+		if (c !== undefined) {
+			// Fire-and-forget logout. Disconnection paths must not race with
+			// the main loop's next iteration; awaiting here would re-enter
+			// the loop's await-tree and potentially deadlock against the
+			// reconnect path. We use `.catch()` (not `void`) so unhandled
+			// rejections are swallowed without the no-void lint trip.
+			c.logout().catch(() => {
+				// best-effort
 			});
-		}, delayMs);
+		}
+	}
+
+	function disposeEntry(srcEntry: SourceEntry): void {
+		srcEntry.disposed = true;
+		if (srcEntry.reconnectTimer !== undefined) {
+			clearTimeout(srcEntry.reconnectTimer);
+			srcEntry.reconnectTimer = undefined;
+		}
+		teardownConnection(srcEntry);
 	}
 
 	function cancelPair(owner: string, repo: string): void {
@@ -547,33 +705,41 @@ function createImapTriggerSource(
 			return;
 		}
 		for (const e of map.values()) {
-			e.disposed = true;
-			if (e.timer !== undefined) {
-				clearTimeout(e.timer);
-				e.timer = undefined;
-			}
+			disposeEntry(e);
 		}
 	}
 
 	function cancelAll(): void {
 		for (const map of pairs.values()) {
 			for (const e of map.values()) {
-				e.disposed = true;
-				if (e.timer !== undefined) {
-					clearTimeout(e.timer);
-					e.timer = undefined;
-				}
+				disposeEntry(e);
 			}
 		}
 	}
 
-	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: poll loop is naturally large; factoring it into smaller closures would obscure the linear "open → search → fetch each → fire → dispose → reschedule" flow that's the primary thing a reader wants to follow
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear protocol-state-machine — every branch is one IMAP step (connect/select/search/fetch/dispatch/dispose) with its own structured-logging error handler; splitting these into helpers would push state and error-routing through extra parameters
-	async function runPoll(srcEntry: SourceEntry): Promise<void> {
-		srcEntry.timer = undefined;
-		if (!isCurrent(srcEntry) || srcEntry.disposed) {
+	function scheduleReconnect(srcEntry: SourceEntry): void {
+		if (srcEntry.disposed || !isCurrent(srcEntry)) {
 			return;
 		}
+		teardownConnection(srcEntry);
+		const delay = nextDelay(srcEntry.failures);
+		srcEntry.reconnectTimer = setTimeout(() => {
+			srcEntry.reconnectTimer = undefined;
+			runEntry(srcEntry).catch(() => {
+				// runEntry routes its own errors through entry.exception
+				// and re-schedules reconnect via scheduleReconnect; this
+				// catch only guards against an unhandled rejection bringing
+				// the process down on a truly unexpected throw.
+			});
+		}, delay);
+	}
+
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: drain is naturally large; factoring it would obscure the linear "search → fetch each → fire → disposition" protocol flow
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear protocol-state-machine — every branch is one IMAP step with its own error path
+	async function drain(
+		srcEntry: SourceEntry,
+		client: ImapFlow,
+	): Promise<DrainOutcome> {
 		const d = srcEntry.entry.descriptor;
 		const logCtx = {
 			owner: srcEntry.owner,
@@ -583,17 +749,15 @@ function createImapTriggerSource(
 			host: d.host,
 			port: d.port,
 		};
-		let client: ImapFlow | undefined;
-		let pollFailed = false;
-		// Per-cycle aggregator. `firstFatal` captures the first stage that
-		// aborts the cycle (connect / mailboxOpen / search / disposition).
+		// Per-drain aggregator. `firstFatal` captures the first stage that
+		// aborts the drain (search / disposition); pre-loop stages
+		// (connect / mailboxOpen) are owned by setupConnection, not drain.
 		// `failedFetchUids` accumulates per-UID fetch failures, which do
-		// NOT abort the batch; `lastFetchErr` retains the most recent
-		// fetch error message so the β.2 "fetch-only" emission has a
-		// concrete `error.message` to carry.
+		// NOT abort the drain; `lastFetchErr` retains the most recent
+		// fetch error message for the β.2 "fetch-only" emission.
 		let firstFatal:
 			| {
-					readonly stage: "connect" | "mailboxOpen" | "search" | "disposition";
+					readonly stage: "search" | "disposition";
 					readonly failedUid?: number;
 					readonly error: { readonly message: string };
 			  }
@@ -601,35 +765,6 @@ function createImapTriggerSource(
 		const failedFetchUids: number[] = [];
 		let lastFetchErr: { readonly message: string } | undefined;
 		try {
-			client = new ImapFlow({
-				host: d.host,
-				port: d.port,
-				secure: d.tls === "required",
-				auth: { user: d.user, pass: d.password },
-				tls: { rejectUnauthorized: !d.insecureSkipVerify },
-				logger: false,
-				emitLogs: false,
-			});
-			try {
-				await client.connect();
-			} catch (err) {
-				firstFatal = {
-					stage: "connect",
-					error: { message: connectErrText(err) },
-				};
-				pollFailed = true;
-				return;
-			}
-			try {
-				await client.mailboxOpen(d.folder);
-			} catch (err) {
-				firstFatal = {
-					stage: "mailboxOpen",
-					error: { message: errMessage(err) },
-				};
-				pollFailed = true;
-				return;
-			}
 			let uids: number[];
 			try {
 				uids = await execUidSearch(client, d.search);
@@ -638,8 +773,7 @@ function createImapTriggerSource(
 					stage: "search",
 					error: { message: errMessage(err) },
 				};
-				pollFailed = true;
-				return;
+				return { failed: true, fatal: firstFatal };
 			}
 			for (const uid of uids) {
 				if (srcEntry.disposed) {
@@ -692,20 +826,13 @@ function createImapTriggerSource(
 						failedUid: uid,
 						error: { message: errMessage(err) },
 					};
-					pollFailed = true;
-					return;
+					return { failed: true, fatal: firstFatal };
 				}
 			}
+			return { failed: false, fatal: undefined };
 		} finally {
-			if (client !== undefined) {
-				try {
-					await client.logout();
-				} catch {
-					// best-effort
-				}
-			}
-			// Aggregator → at most one entry.exception per cycle. Fatal stage
-			// wins over per-UID fetch failures; a clean cycle emits nothing.
+			// Aggregator → at most one entry.exception per drain. Fatal stage
+			// wins over per-UID fetch failures; a clean drain emits nothing.
 			if (firstFatal !== undefined) {
 				const failedUids =
 					firstFatal.stage === "disposition" &&
@@ -719,7 +846,7 @@ function createImapTriggerSource(
 						details: { stage: firstFatal.stage, failedUids },
 					});
 				} catch {
-					// best-effort: never let an emission failure crash the timer
+					// best-effort: never let an emission failure crash the loop
 				}
 			} else if (failedFetchUids.length > 0) {
 				try {
@@ -732,14 +859,172 @@ function createImapTriggerSource(
 					// best-effort
 				}
 			}
-			if (!srcEntry.disposed && isCurrent(srcEntry)) {
-				if (pollFailed) {
-					srcEntry.failures += 1;
-				} else {
-					srcEntry.failures = 0;
-				}
-				arm(srcEntry, nextDelay(srcEntry.failures));
+		}
+	}
+
+	async function emitConnectFailure(
+		srcEntry: SourceEntry,
+		stage: "connect" | "mailboxOpen",
+		err: unknown,
+	): Promise<void> {
+		const message = stage === "connect" ? connectErrText(err) : errMessage(err);
+		try {
+			await srcEntry.entry.exception({
+				name: "imap.poll-failed",
+				error: { message },
+				details: { stage, failedUids: [] },
+			});
+		} catch {
+			// best-effort
+		}
+	}
+
+	// setupConnection: one attempt to bring an entry from disconnected to
+	// ready. Order is load-bearing for the listener-before-SELECT invariant
+	// (when IdleWakeup is used, the on("exists") listener it installs MUST
+	// be registered before mailboxOpen so an EXISTS arriving during SELECT
+	// is captured). Returns true on success; false on a connect-stage
+	// failure (caller should call scheduleReconnect).
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: linear setup pipeline (connect → wakeup → mailboxOpen → close-handlers → post-connect drain) with stage-specific error branches; splitting it would obscure the listener-before-SELECT invariant
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each branch defends one connect-stage failure mode (capability missing, mailboxOpen failure, drain failure); merging or splitting them would compromise the recovery semantics
+	async function setupConnection(srcEntry: SourceEntry): Promise<boolean> {
+		const d = srcEntry.entry.descriptor;
+		const client = new ImapFlow({
+			host: d.host,
+			port: d.port,
+			secure: d.tls === "required",
+			auth: { user: d.user, pass: d.password },
+			tls: { rejectUnauthorized: !d.insecureSkipVerify },
+			logger: false,
+			emitLogs: false,
+		});
+		try {
+			await client.connect();
+		} catch (err) {
+			await emitConnectFailure(srcEntry, "connect", err);
+			// Best-effort close of any half-open socket the failed connect
+			// may have left behind.
+			try {
+				await client.logout();
+			} catch {
+				// best-effort
 			}
+			srcEntry.failures += 1;
+			scheduleReconnect(srcEntry);
+			return false;
+		}
+		// Capability check for mode: "idle". A server that doesn't advertise
+		// IDLE is treated as a recoverable connect-stage failure; the entry
+		// reconnects via exp backoff and re-checks on each attempt.
+		if (d.mode === "idle" && !client.capabilities.has("IDLE")) {
+			await emitConnectFailure(
+				srcEntry,
+				"connect",
+				new Error(
+					"IDLE capability missing: server does not advertise RFC 2177 IDLE",
+				),
+			);
+			try {
+				await client.logout();
+			} catch {
+				// best-effort
+			}
+			srcEntry.failures += 1;
+			scheduleReconnect(srcEntry);
+			return false;
+		}
+		// Construct Wakeup AFTER connect and BEFORE mailboxOpen — this is
+		// the listener-before-SELECT invariant. idleWakeup installs the
+		// EXISTS listener inside the constructor; pollWakeup is timer-only.
+		srcEntry.wakeup =
+			d.mode === "idle" ? idleWakeup(client) : pollWakeup(POLL_INTERVAL_MS);
+		try {
+			await client.mailboxOpen(d.folder);
+		} catch (err) {
+			await emitConnectFailure(srcEntry, "mailboxOpen", err);
+			srcEntry.wakeup.dispose();
+			srcEntry.wakeup = undefined;
+			try {
+				await client.logout();
+			} catch {
+				// best-effort
+			}
+			srcEntry.failures += 1;
+			scheduleReconnect(srcEntry);
+			return false;
+		}
+		// Wire close/error handlers BEFORE the post-connect drain runs, so
+		// a disconnect mid-drain is captured.
+		client.on("close", () => onConnectionLost(srcEntry));
+		client.on("error", () => onConnectionLost(srcEntry));
+		srcEntry.client = client;
+		// Post-connect drain: gap recovery for messages that arrived while
+		// disconnected. Treats failures the same as in-loop drains.
+		const outcome = await drain(srcEntry, client);
+		if (outcome.failed) {
+			// search/disposition failure on cold start — close and reconnect.
+			scheduleReconnect(srcEntry);
+			srcEntry.failures += 1;
+			return false;
+		}
+		// success — reset failure counter
+		srcEntry.failures = 0;
+		return true;
+	}
+
+	function onConnectionLost(srcEntry: SourceEntry): void {
+		if (srcEntry.disposed || !isCurrent(srcEntry)) {
+			return;
+		}
+		if (srcEntry.client === undefined && srcEntry.wakeup === undefined) {
+			// already torn down (e.g. by scheduleReconnect itself)
+			return;
+		}
+		srcEntry.failures += 1;
+		scheduleReconnect(srcEntry);
+	}
+
+	// runEntry: one full lifecycle attempt from disconnected → ready →
+	// main loop. Returns when the connection is lost (close/error fires
+	// scheduleReconnect, which will re-enter via the reconnect timer)
+	// or when the entry is disposed.
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear lifecycle (setup → main loop with disposal/reconnect checks) — every branch defends one disposal/disconnect race, splitting them would push state through extra parameters
+	async function runEntry(srcEntry: SourceEntry): Promise<void> {
+		if (srcEntry.disposed || !isCurrent(srcEntry)) {
+			return;
+		}
+		const ok = await setupConnection(srcEntry);
+		if (!ok) {
+			return;
+		}
+		// Main loop: shared between modes.
+		while (!srcEntry.disposed && isCurrent(srcEntry)) {
+			const wakeup = srcEntry.wakeup;
+			const client = srcEntry.client;
+			if (wakeup === undefined || client === undefined) {
+				// Connection lost mid-loop; reconnect was scheduled.
+				return;
+			}
+			// biome-ignore lint/performance/noAwaitInLoops: main loop is sequential by design — wakeup → drain → wakeup
+			await wakeup.next();
+			if (srcEntry.disposed || !isCurrent(srcEntry)) {
+				return;
+			}
+			if (srcEntry.client !== client) {
+				// Connection was torn down while we were blocked in next();
+				// the new connection (if any) will be driven by a fresh
+				// runEntry invocation.
+				return;
+			}
+			const outcome = await drain(srcEntry, client);
+			if (outcome.failed) {
+				// search/disposition failure → disconnect + reconnect
+				srcEntry.failures += 1;
+				scheduleReconnect(srcEntry);
+				return;
+			}
+			// successful drain resets the failure counter
+			srcEntry.failures = 0;
 		}
 	}
 
@@ -771,7 +1056,9 @@ function createImapTriggerSource(
 					owner,
 					repo,
 					entry,
-					timer: undefined,
+					client: undefined,
+					wakeup: undefined,
+					reconnectTimer: undefined,
 					failures: 0,
 					disposed: false,
 				};
@@ -779,8 +1066,12 @@ function createImapTriggerSource(
 					entryKey(entry.descriptor.workflowName, entry.descriptor.name),
 					srcEntry,
 				);
-				// First poll fires immediately; subsequent ones at POLL_INTERVAL_MS.
-				arm(srcEntry, 0);
+				// First connect fires immediately; subsequent reconnects via
+				// scheduleReconnect with exp backoff.
+				runEntry(srcEntry).catch(() => {
+					// runEntry handles its own errors; this catch guards
+					// against truly unexpected throws.
+				});
 			}
 			return Promise.resolve({ ok: true });
 		},

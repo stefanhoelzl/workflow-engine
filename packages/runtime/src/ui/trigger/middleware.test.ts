@@ -288,6 +288,7 @@ function makeImapStub(
 		password: "hunter2",
 		folder: spec.folder ?? "INBOX",
 		search: "UNSEEN",
+		mode: "idle",
 		onError: {},
 		inputSchema: {
 			type: "object",
