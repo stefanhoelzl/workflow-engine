@@ -59,10 +59,15 @@ const VALID_MANIFEST = {
 				{
 					name: "onPing",
 					type: "http",
-					path: "ping",
 					method: "POST",
-					body: { type: "object" },
-					params: [],
+					request: {
+						body: { type: "object" },
+						headers: {
+							type: "object",
+							properties: {},
+							additionalProperties: false,
+						},
+					},
 					inputSchema: { type: "object" },
 					outputSchema: { type: "object" },
 				},
@@ -328,10 +333,15 @@ describe("POST /api/workflows/:owner/:repo — system.upload emission", () => {
 					{
 						name: "onPing",
 						type: "http",
-						path: "ping",
 						method: "POST",
-						body: { type: "object" },
-						params: [],
+						request: {
+							body: { type: "object" },
+							headers: {
+								type: "object",
+								properties: {},
+								additionalProperties: false,
+							},
+						},
 						inputSchema: { type: "object" },
 						outputSchema: { type: "object" },
 					},

@@ -383,24 +383,46 @@ export const ping = httpTrigger({
 	},
 });
 
+// httpTrigger with typed request.headers — `x-trace-id` is optional, so a
+// caller may include it for tracing or omit it; the handler reads the value
+// from the validated payload.headers and echoes it back into the response
+// body. Demonstrates the request-side typed-headers contract.
 export const echo = httpTrigger({
-	body: z.object({ name: z.string().meta({ example: "world" }) }),
-	handler: async ({ body }) => {
+	request: {
+		body: z.object({ name: z.string().meta({ example: "world" }) }),
+		headers: z.object({
+			"x-trace-id": z.string().optional(),
+		}),
+	},
+	handler: async ({ body, headers }) => {
 		const result = await runDemo({ name: body.name });
-		return { status: 200, body: result };
+		return {
+			status: 200,
+			body: { ...result, traceId: headers["x-trace-id"] ?? null },
+		};
 	},
 });
 
-// httpTrigger with `responseBody` — the SDK makes the response `body` field
-// required and validates it against the schema at handler return. Contrast
-// with `ping` / `echo` above, where all response fields are optional.
+// httpTrigger with `response.body` AND `response.headers` — the SDK makes
+// the response `body` field required and validates it against the schema
+// at handler return; declared `response.headers` are likewise validated.
+// Contrast with `ping` / `echo` above, where the response shape is loose.
 export const greetJson = httpTrigger({
 	method: "POST",
-	body: z.object({ name: z.string().meta({ example: "world" }) }),
-	responseBody: z.object({ greeting: z.string() }),
+	request: {
+		body: z.object({ name: z.string().meta({ example: "world" }) }),
+	},
+	response: {
+		body: z.object({ greeting: z.string() }),
+		headers: z.object({ "x-app-version": z.string() }),
+	},
 	handler: async ({ body }) => {
 		const greeting = await greet({ name: body.name });
-		return { status: 200, body: { greeting } };
+		return {
+			status: 200,
+			body: { greeting },
+			headers: { "x-app-version": "1.0.0" },
+		};
 	},
 });
 

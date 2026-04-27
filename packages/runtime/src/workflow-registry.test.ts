@@ -82,10 +82,15 @@ const VALID_WORKFLOW = {
 		{
 			name: "onPing",
 			type: "http",
-			path: "ping",
 			method: "POST",
-			body: { type: "object" },
-			params: [],
+			request: {
+				body: { type: "object" },
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				},
+			},
 			inputSchema: { type: "object" },
 			outputSchema: { type: "object" },
 		},

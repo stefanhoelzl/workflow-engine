@@ -92,6 +92,7 @@ function makeHttpStub(
 		name: string;
 		method: string;
 		body?: Record<string, unknown>;
+		headers?: Record<string, unknown>;
 		inputSchema?: Record<string, unknown>;
 	},
 	fire?: Fire,
@@ -102,7 +103,14 @@ function makeHttpStub(
 		name: spec.name,
 		workflowName,
 		method: spec.method,
-		body: spec.body ?? { type: "object" },
+		request: {
+			body: spec.body ?? { type: "object" },
+			headers: spec.headers ?? {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+		},
 		inputSchema: spec.inputSchema ?? { type: "object" },
 		outputSchema: { type: "object" },
 	});
@@ -546,6 +554,135 @@ describe("triggerMiddleware: POST dispatch", () => {
 			},
 		});
 		expect(res.status).toBe(404);
+	});
+
+	it("accepts a {body, headers} envelope and forwards both to fire", async () => {
+		// HTTP triggers with declared headers post the form value as
+		// `{ body, headers }`; the UI middleware must extract both and assemble
+		// the full HttpTriggerPayload server-side. See trigger-ui spec
+		// "Successful submission for HTTP trigger with declared headers
+		// (envelope)" scenario.
+		const fire = vi.fn<Fire>(async () => ({
+			ok: true,
+			output: { status: 200, body: { ok: true } },
+		}));
+		const registry = makeStubRegistry([
+			makeHttpStub(
+				"t0",
+				"demo",
+				{
+					name: "onPing",
+					method: "POST",
+					headers: {
+						type: "object",
+						properties: { "x-trace-id": { type: "string" } },
+						required: ["x-trace-id"],
+						additionalProperties: false,
+						strip: true,
+					},
+					inputSchema: {
+						type: "object",
+						properties: {
+							body: { type: "object" },
+							headers: {
+								type: "object",
+								properties: { "x-trace-id": { type: "string" } },
+								required: ["x-trace-id"],
+								additionalProperties: false,
+								strip: true,
+							},
+							url: { type: "string" },
+							method: { type: "string" },
+						},
+						required: ["body", "headers", "url", "method"],
+						additionalProperties: false,
+					},
+				},
+				fire,
+			),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
+			method: "POST",
+			body: JSON.stringify({
+				body: { x: 1 },
+				headers: { "x-trace-id": "abc" },
+			}),
+			headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+		});
+		expect(res.status).toBe(200);
+		expect(fire).toHaveBeenCalledTimes(1);
+		expect(fire.mock.calls[0]?.[0]).toEqual({
+			body: { x: 1 },
+			headers: { "x-trace-id": "abc" },
+			url: "/webhooks/t0/r0/demo/onPing",
+			method: "POST",
+		});
+	});
+
+	it("missing required header in envelope returns 422 (validatingFire surfaces zod issues)", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "demo", {
+				name: "onPing",
+				method: "POST",
+				headers: {
+					type: "object",
+					properties: { "x-trace-id": { type: "string" } },
+					required: ["x-trace-id"],
+					additionalProperties: false,
+					strip: true,
+				},
+				inputSchema: {
+					type: "object",
+					properties: {
+						body: { type: "object" },
+						headers: {
+							type: "object",
+							properties: { "x-trace-id": { type: "string" } },
+							required: ["x-trace-id"],
+							additionalProperties: false,
+							strip: true,
+						},
+						url: { type: "string" },
+						method: { type: "string" },
+					},
+					required: ["body", "headers", "url", "method"],
+					additionalProperties: false,
+				},
+			}),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
+			method: "POST",
+			body: JSON.stringify({ body: { x: 1 } }), // no `headers` key in envelope
+			headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+		});
+		expect(res.status).toBe(422);
+	});
+
+	it("bare body (no envelope) defaults headers to {} for HTTP trigger with no declared headers", async () => {
+		// No declared headers schema (default empty record + extras=strip);
+		// posting a bare body (today's flow) keeps working.
+		const fire = vi.fn<Fire>(async () => ({
+			ok: true,
+			output: { status: 200 },
+		}));
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "demo", { name: "onPing", method: "POST" }, fire),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/demo/onPing", {
+			method: "POST",
+			body: JSON.stringify({ x: 1 }),
+			headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+		});
+		expect(res.status).toBe(200);
+		expect(fire.mock.calls[0]?.[0]).toEqual({
+			body: { x: 1 },
+			headers: {},
+			url: "/webhooks/t0/r0/demo/onPing",
+			method: "POST",
+		});
 	});
 
 	it("returns 500 when fire reports a non-validation failure", async () => {

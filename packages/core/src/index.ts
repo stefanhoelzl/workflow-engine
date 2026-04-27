@@ -5,15 +5,20 @@ import { z } from "zod";
 // HTTP trigger result
 // ---------------------------------------------------------------------------
 
-interface HttpTriggerResult {
+interface HttpTriggerResult<
+	Headers extends Record<string, string> = Record<string, string>,
+> {
 	status?: number;
 	body?: unknown;
-	headers?: Record<string, string>;
+	headers?: Headers;
 }
 
-interface HttpTriggerPayload<Body = unknown> {
+interface HttpTriggerPayload<
+	Body = unknown,
+	Headers extends Record<string, unknown> = Record<string, never>,
+> {
 	body: Body;
-	headers: Record<string, string>;
+	headers: Headers;
 	url: string;
 	method: string;
 }
@@ -200,7 +205,16 @@ const httpTriggerManifestSchema = z.object({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("http"),
 	method: z.string(),
-	body: jsonSchemaValidator,
+	request: z.object({
+		body: jsonSchemaValidator,
+		headers: jsonSchemaValidator,
+	}),
+	response: z
+		.object({
+			body: jsonSchemaValidator.optional(),
+			headers: jsonSchemaValidator.optional(),
+		})
+		.optional(),
 	inputSchema: jsonSchemaValidator,
 	outputSchema: jsonSchemaValidator,
 });

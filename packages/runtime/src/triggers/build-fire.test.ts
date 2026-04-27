@@ -33,7 +33,10 @@ function makeDescriptor(
 		name: "handler",
 		workflowName: "w",
 		method: "POST",
-		body: { type: "object" },
+		request: {
+			body: { type: "object" },
+			headers: { type: "object", properties: {}, additionalProperties: false },
+		},
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -392,5 +395,102 @@ describe("buildFire", () => {
 
 		expect(result.ok).toBe(false);
 		expect(invoke).not.toHaveBeenCalled();
+	});
+
+	// -----------------------------------------------------------------------
+	// response.headers contract (D6 / D13 — typed response headers via zod)
+	// -----------------------------------------------------------------------
+
+	it("response.headers declared, handler returns matching shape → ok", async () => {
+		const outputSchema = {
+			type: "object",
+			properties: {
+				status: { type: "number" },
+				body: {},
+				headers: {
+					type: "object",
+					properties: { "x-app-version": { type: "string" } },
+					required: ["x-app-version"],
+					additionalProperties: false,
+				},
+			},
+			required: ["body"],
+			additionalProperties: false,
+		};
+		const invoke = vi.fn<Executor["invoke"]>().mockResolvedValue({
+			ok: true,
+			output: {
+				status: 200,
+				body: { ok: true },
+				headers: { "x-app-version": "1.0" },
+			},
+		});
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
+		const logger = makeSilentLogger();
+		const fire = buildFire(
+			executor,
+			"acme",
+			"repo1",
+			makeWorkflow(),
+			makeDescriptor(outputSchema),
+			"bundle-src",
+			logger,
+		);
+
+		const result = await fire({ body: { name: "alice" } });
+
+		expect(result.ok).toBe(true);
+		expect(logger.warnings).toEqual([]);
+	});
+
+	it("response.headers declared, handler returns wrong shape → no-issues failure (routes to 500) and logs structured issues", async () => {
+		const outputSchema = {
+			type: "object",
+			properties: {
+				status: { type: "number" },
+				body: {},
+				headers: {
+					type: "object",
+					properties: { "x-app-version": { type: "string" } },
+					required: ["x-app-version"],
+					additionalProperties: false,
+				},
+			},
+			required: ["body"],
+			additionalProperties: false,
+		};
+		const invoke = vi.fn<Executor["invoke"]>().mockResolvedValue({
+			ok: true,
+			output: {
+				status: 200,
+				body: { ok: true },
+				headers: {}, // missing required x-app-version
+			},
+		});
+		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
+		const logger = makeSilentLogger();
+		const fire = buildFire(
+			executor,
+			"acme",
+			"repo1",
+			makeWorkflow(),
+			makeDescriptor(outputSchema),
+			"bundle-src",
+			logger,
+		);
+
+		const result = await fire({ body: { name: "alice" } });
+
+		expect(result.ok).toBe(false);
+		if (result.ok) {
+			throw new Error("expected failure");
+		}
+		expect(result.error.message).toMatch(/^output validation:/);
+		// IMPORTANT: no `issues` field on the error envelope → HTTP source
+		// maps this to 500 + trigger.error event, not 422.
+		expect(result.error.issues).toBeUndefined();
+		expect(logger.warnings.length).toBe(1);
+		const warn = logger.warnings[0];
+		expect(warn?.msg).toBe("trigger.output-validation-failed");
 	});
 });

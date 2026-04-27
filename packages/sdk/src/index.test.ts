@@ -70,7 +70,7 @@ describe("brands and type guards", () => {
 
 	it("httpTrigger() returns a callable branded with HTTP_TRIGGER_BRAND", () => {
 		const t = httpTrigger({
-			body: z.object({}),
+			request: { body: z.object({}) },
 			handler: async () => ({}),
 		});
 		expect(typeof t).toBe("function");
@@ -667,24 +667,84 @@ describe("httpTrigger defaults", () => {
 		expect(t.method).toBe("GET");
 	});
 
-	it("leaves body undefined when the author doesn't declare it", () => {
-		// The SDK stores body verbatim; envelope composition happens at
-		// build time in the plugin (tested in workflow-build.test.ts), so
-		// an omitted body here means the plugin will emit `{}` in the
-		// manifest for that field.
+	it("defaults request.body to z.any when the author doesn't declare it", () => {
+		// The SDK fills request.body with z.any() when omitted, and request.headers
+		// with an empty Zod object schema. Envelope composition happens at build
+		// time in the plugin (tested in workflow-build.test.ts).
 		const t = httpTrigger({
 			handler: async () => ({}),
 		});
-		expect(t.body).toBeUndefined();
+		expect(t.request.body).toBeDefined();
+		expect(() => t.request.body.parse({ anything: 1 })).not.toThrow();
+		expect(() => t.request.body.parse(null)).not.toThrow();
 	});
 
-	it("stores the provided body schema verbatim", () => {
-		const body = z.object({ orderId: z.string() });
+	it("defaults request.headers to an empty Zod object", () => {
 		const t = httpTrigger({
-			body,
 			handler: async () => ({}),
 		});
-		expect(t.body).toBe(body);
+		expect(t.request.headers).toBeDefined();
+		// Empty Zod object — undeclared keys are stripped by Zod's default
+		// `.object()` behaviour.
+		const parsed = t.request.headers.parse({ "x-extra": "v" }) as Record<
+			string,
+			unknown
+		>;
+		expect(parsed).toEqual({});
+	});
+
+	it("stores the provided request.body schema verbatim", () => {
+		const body = z.object({ orderId: z.string() });
+		const t = httpTrigger({
+			request: { body },
+			handler: async () => ({}),
+		});
+		expect(t.request.body).toBe(body);
+	});
+
+	it("auto-wraps request.headers with .meta({ strip: true }) by default", () => {
+		// The SDK's httpTrigger factory wraps the author's request.headers
+		// schema with .meta({ strip: true }) when the author hasn't expressed
+		// an explicit mode preference, so the manifest carries the strip-
+		// silently marker, which the runtime rehydrator restores into .strip()
+		// mode. The auto-wrap is overridable — see the .meta({ strip: false })
+		// and .loose() override tests below.
+		const headers = z.object({ "x-trace-id": z.string() });
+		const t = httpTrigger({
+			request: { headers },
+			handler: async () => ({}),
+		});
+		const json = z.toJSONSchema(t.request.headers) as Record<string, unknown>;
+		expect(json.strip).toBe(true);
+		expect(json.additionalProperties).toBe(false);
+		expect(
+			(json.properties as Record<string, unknown>)["x-trace-id"],
+		).toBeDefined();
+	});
+
+	it("respects author's explicit .meta({ strip: false }) on request.headers", () => {
+		const headers = z
+			.object({ "x-trace-id": z.string() })
+			.meta({ strip: false });
+		const t = httpTrigger({
+			request: { headers },
+			handler: async () => ({}),
+		});
+		const json = z.toJSONSchema(t.request.headers) as Record<string, unknown>;
+		expect(json.strip).toBe(false); // author's value, not auto-wrapped
+	});
+
+	it("respects author's .loose() on request.headers (no auto-wrap)", () => {
+		const headers = z.object({ "x-trace-id": z.string() }).loose();
+		const t = httpTrigger({
+			request: { headers },
+			handler: async () => ({}),
+		});
+		const json = z.toJSONSchema(t.request.headers) as Record<string, unknown>;
+		// .loose() emits additionalProperties: {} (any). No `strip` marker
+		// added — author chose passthrough explicitly.
+		expect(json.additionalProperties).toEqual({});
+		expect("strip" in json).toBe(false);
 	});
 
 	it("invokes the handler when called with the composite payload", async () => {
@@ -711,27 +771,37 @@ describe("httpTrigger defaults", () => {
 		expect((t as unknown as Record<string, unknown>).query).toBeUndefined();
 	});
 
-	it("stores responseBody verbatim for plugin-side envelope composition", () => {
-		const responseBody = z.object({ orderId: z.string() });
+	it("stores response.body verbatim for plugin-side envelope composition", () => {
+		const body = z.object({ orderId: z.string() });
 		const t = httpTrigger({
-			responseBody,
+			response: { body },
 			handler: async () => ({ body: { orderId: "x" } }),
 		});
-		expect(t.responseBody).toBe(responseBody);
+		expect(t.response.body).toBe(body);
 	});
 
-	it("leaves responseBody undefined when omitted", () => {
+	it("stores response.headers verbatim", () => {
+		const headers = z.object({ "x-app-version": z.string() });
+		const t = httpTrigger({
+			response: { headers },
+			handler: async () => ({ headers: { "x-app-version": "1.0" } }),
+		});
+		expect(t.response.headers).toBe(headers);
+	});
+
+	it("leaves response.body and response.headers undefined when omitted", () => {
 		const t = httpTrigger({ handler: async () => ({}) });
-		expect(t.responseBody).toBeUndefined();
+		expect(t.response.body).toBeUndefined();
+		expect(t.response.headers).toBeUndefined();
 	});
 
-	it("TypeScript narrows the handler return type when responseBody is declared", () => {
-		// Compile-time assertion only: when `responseBody` is declared, the
+	it("TypeScript narrows the handler return type when response.body is declared", () => {
+		// Compile-time assertion only: when `response.body` is declared, the
 		// handler return type requires `body`. A handler returning `{status: 202}`
 		// without `body` fails TS at compile time. We assert the positive case
 		// compiles; the negative case is enforced by TypeScript.
 		const t = httpTrigger({
-			responseBody: z.object({ orderId: z.string() }),
+			response: { body: z.object({ orderId: z.string() }) },
 			handler: async () => ({ status: 202, body: { orderId: "x" } }),
 		});
 		expect(t.method).toBe("POST");
@@ -760,7 +830,14 @@ describe("ManifestSchema", () => {
 				name: "onCronitorEvent",
 				type: "http",
 				method: "POST",
-				body: { type: "object" },
+				request: {
+					body: { type: "object" },
+					headers: {
+						type: "object",
+						properties: {},
+						additionalProperties: false,
+					},
+				},
 				inputSchema: { type: "object" },
 				outputSchema: { type: "object" },
 			},
@@ -790,7 +867,14 @@ describe("ManifestSchema", () => {
 							type: "http",
 							path: "legacy",
 							method: "POST",
-							body: { type: "object" },
+							request: {
+								body: { type: "object" },
+								headers: {
+									type: "object",
+									properties: {},
+									additionalProperties: false,
+								},
+							},
 							inputSchema: { type: "object" },
 							outputSchema: { type: "object" },
 						},
@@ -815,7 +899,14 @@ describe("ManifestSchema", () => {
 								name: "$weird",
 								type: "http",
 								method: "POST",
-								body: { type: "object" },
+								request: {
+									body: { type: "object" },
+									headers: {
+										type: "object",
+										properties: {},
+										additionalProperties: false,
+									},
+								},
 								inputSchema: { type: "object" },
 								outputSchema: { type: "object" },
 							},

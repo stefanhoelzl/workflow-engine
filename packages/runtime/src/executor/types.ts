@@ -35,10 +35,17 @@ interface BaseTriggerDescriptor<K extends string> {
 interface HttpTriggerDescriptor extends BaseTriggerDescriptor<"http"> {
 	readonly type: "http";
 	readonly method: string;
-	// JSON Schema for the body only — the UI uses this to render a body-form
-	// on the HTTP trigger card (the HTTP request itself fills in the other
-	// composite fields: headers/url/method).
-	readonly body: Record<string, unknown>;
+	// JSON Schemas for the request body and headers — the UI uses these to
+	// render body and header form inputs on the HTTP trigger card (the HTTP
+	// request itself fills in url and method).
+	readonly request: {
+		readonly body: Record<string, unknown>;
+		readonly headers: Record<string, unknown>;
+	};
+	readonly response?: {
+		readonly body?: Record<string, unknown>;
+		readonly headers?: Record<string, unknown>;
+	};
 }
 
 interface CronTriggerDescriptor extends BaseTriggerDescriptor<"cron"> {

@@ -19,7 +19,14 @@ function makeDescriptor(
 		name: "t",
 		workflowName: "w",
 		method: "POST",
-		body: { type: "object" } as Record<string, unknown>,
+		request: {
+			body: { type: "object" } as Record<string, unknown>,
+			headers: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			} as Record<string, unknown>,
+		},
 		inputSchema: { type: "object" } as Record<string, unknown>,
 		outputSchema: { type: "object" } as Record<string, unknown>,
 		...overrides,
@@ -537,11 +544,18 @@ describe("createHttpTriggerSource: security", () => {
 describe("createHttpTriggerSource: trigger.rejection emission", () => {
 	it("emits trigger.rejection on body schema 422 with issues, method, pathname (no body, no query)", async () => {
 		const descriptor = makeDescriptor({
-			body: {
-				type: "object",
-				required: ["name"],
-				properties: { name: { type: "string" } },
-			} as Record<string, unknown>,
+			request: {
+				body: {
+					type: "object",
+					required: ["name"],
+					properties: { name: { type: "string" } },
+				} as Record<string, unknown>,
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				} as Record<string, unknown>,
+			},
 			inputSchema: {
 				type: "object",
 				required: ["body"],
@@ -647,5 +661,288 @@ describe("createHttpTriggerSource: trigger.rejection emission", () => {
 		const res = await app.request("/webhooks/t0/r0/w/t", { method: "GET" });
 		expect(res.status).toBe(404);
 		expect(entry.exception).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Typed request headers: schema-declared filtering, default empty record,
+// case-insensitive incoming matching, 422 on missing required header
+// ---------------------------------------------------------------------------
+
+describe("createHttpTriggerSource: request headers contract", () => {
+	// Mirrors the manifest emission: headers slot carries the SDK-attached
+	// `strip: true` marker so the rehydrator reconstructs the headers
+	// ZodObject in `.strip()` mode (undeclared keys silently dropped before
+	// the handler / event store).
+	const declaredHeadersSchema = {
+		type: "object",
+		properties: { "x-trace-id": { type: "string" } },
+		required: ["x-trace-id"],
+		additionalProperties: false,
+		strip: true,
+	} as const;
+
+	function descriptorWithHeaders(): HttpTriggerDescriptor {
+		return makeDescriptor({
+			request: {
+				body: { type: "object" },
+				headers: declaredHeadersSchema,
+			},
+			inputSchema: {
+				type: "object",
+				properties: {
+					body: { type: "object" },
+					headers: declaredHeadersSchema,
+					url: { type: "string" },
+					method: { type: "string" },
+				},
+				required: ["body", "headers", "url", "method"],
+				additionalProperties: false,
+			},
+		});
+	}
+
+	it("when request.headers schema is declared, handler sees only declared keys", async () => {
+		const received: unknown[] = [];
+		const descriptor = descriptorWithHeaders();
+		const { app } = await mount({
+			descriptor,
+			fire: validatingFire(descriptor, async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				"x-trace-id": "abc",
+				"user-agent": "curl/8",
+			},
+		});
+		expect(res.status).toBe(200);
+		const payload = received[0] as { headers: Record<string, string> };
+		expect(payload.headers).toEqual({ "x-trace-id": "abc" });
+		expect(payload.headers["user-agent"]).toBeUndefined();
+	});
+
+	it("missing required declared header returns 422 and fire is not invoked downstream of validation", async () => {
+		const descriptor = descriptorWithHeaders();
+		let onValidCalled = false;
+		const { app } = await mount({
+			descriptor,
+			fire: validatingFire(descriptor, async () => {
+				onValidCalled = true;
+				return { ok: true, output: { status: 200 } };
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(422);
+		expect(onValidCalled).toBe(false);
+		const json = (await res.json()) as { error: string; issues: unknown[] };
+		expect(json.error).toBe("payload_validation_failed");
+		expect(json.issues.length).toBeGreaterThan(0);
+	});
+
+	it("incoming uppercase header names are lowercased before reaching the handler", async () => {
+		const received: unknown[] = [];
+		const descriptor = descriptorWithHeaders();
+		const { app } = await mount({
+			descriptor,
+			fire: validatingFire(descriptor, async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Trace-Id": "abc",
+			},
+		});
+		expect(res.status).toBe(200);
+		const payload = received[0] as { headers: Record<string, string> };
+		expect(payload.headers["x-trace-id"]).toBe("abc");
+		expect(payload.headers["X-Trace-Id"]).toBeUndefined();
+	});
+
+	it("default (no schema declared) — payload.headers is the empty record", async () => {
+		// Spec contract: when no `request.headers` schema is declared, the
+		// SDK emits the headers slot as `{ properties: {}, additionalProperties:
+		// false, strip: true }`. The runtime rehydrator applies the
+		// extras="strip" marker so the headers ZodObject is in .strip() mode —
+		// undeclared incoming keys are silently dropped from the validated
+		// payload. Author opts INTO header exposure by declaring properties.
+		const received: unknown[] = [];
+		const emptyHeadersSchema = {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+			strip: true,
+		} as const;
+		const descriptor = makeDescriptor({
+			request: { body: { type: "object" }, headers: emptyHeadersSchema },
+			inputSchema: {
+				type: "object",
+				properties: {
+					body: { type: "object" },
+					headers: emptyHeadersSchema,
+					url: { type: "string" },
+					method: { type: "string" },
+				},
+				required: ["body", "headers", "url", "method"],
+				additionalProperties: false,
+			},
+		});
+		const { app } = await mount({
+			descriptor,
+			fire: validatingFire(descriptor, async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Custom": "v",
+			},
+		});
+		expect(res.status).toBe(200);
+		const payload = received[0] as { headers: Record<string, string> };
+		expect(payload.headers).toEqual({});
+	});
+
+	it("empty-record headers schema declared — undeclared incoming keys stripped before reaching handler, request succeeds", async () => {
+		const received: unknown[] = [];
+		const emptyHeadersSchema = {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+			strip: true,
+		} as const;
+		const descriptor = makeDescriptor({
+			request: { body: { type: "object" }, headers: emptyHeadersSchema },
+			inputSchema: {
+				type: "object",
+				properties: {
+					body: { type: "object" },
+					headers: emptyHeadersSchema,
+					url: { type: "string" },
+					method: { type: "string" },
+				},
+				required: ["body", "headers", "url", "method"],
+				additionalProperties: false,
+			},
+		});
+		const { app } = await mount({
+			descriptor,
+			fire: validatingFire(descriptor, async (input) => {
+				received.push(input);
+				return { ok: true, output: { status: 200 } };
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Some-Custom": "v",
+			},
+		});
+		// extras="strip" → ZodObject in .strip() mode → undeclared keys
+		// silently dropped from the validated payload. validatingFire's
+		// onValid callback sees the post-strip shape.
+		expect(res.status).toBe(200);
+		const payload = received[0] as { headers: Record<string, string> };
+		expect(payload.headers).toEqual({});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// serializeHttpResult content-type matrix
+// ---------------------------------------------------------------------------
+
+describe("createHttpTriggerSource: response content-type filling", () => {
+	it("object body without author content-type fills application/json", async () => {
+		const { app } = await mount({
+			fire: async () => ({
+				ok: true,
+				output: { status: 200, body: { ok: true } },
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toBe(
+			"application/json; charset=UTF-8",
+		);
+		expect(await res.json()).toEqual({ ok: true });
+	});
+
+	it("string body without author content-type fills text/plain", async () => {
+		const { app } = await mount({
+			fire: async () => ({
+				ok: true,
+				output: { status: 200, body: "hello" },
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toBe("text/plain; charset=UTF-8");
+		expect(await res.text()).toBe("hello");
+	});
+
+	it("empty/null body produces no content-type fill", async () => {
+		const { app } = await mount({
+			fire: async () => ({
+				ok: true,
+				output: { status: 204 },
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(204);
+		expect(res.headers.get("content-type")).toBeNull();
+	});
+
+	it("author Content-Type wins case-insensitively over the runtime default", async () => {
+		const { app } = await mount({
+			fire: async () => ({
+				ok: true,
+				output: {
+					status: 200,
+					body: { ok: true },
+					headers: { "Content-Type": "application/vnd.acme+json" },
+				},
+			}),
+		});
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		// Case-insensitive author-wins: the runtime did NOT add a duplicate
+		// `content-type: application/json...`, the author's vnd.acme+json wins.
+		expect(res.headers.get("content-type")).toBe("application/vnd.acme+json");
 	});
 });

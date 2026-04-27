@@ -321,47 +321,141 @@ function isAction(value: unknown): value is Action {
 // ---------------------------------------------------------------------------
 
 // HttpTrigger is a callable: invoking it runs the user's handler. Brand,
-// method, body, and responseBody are attached as readonly properties on the
+// method, request, and response are attached as readonly properties on the
 // callable. There is no public `.handler` slot; the callable IS the handler
 // invocation path. The webhook URL is mechanical — derived from the
 // trigger's exported identifier as `/webhooks/<owner>/<workflow>/<export-name>`
 // — so no URL-shape config exists on this type.
 //
-// The composed input/output JSON Schemas (envelope with body + headers + url
-// + method) live in the manifest only — the vite-plugin synthesises them on
-// the host at build time. No zod composition happens at bundle load.
-interface HttpTrigger<Body extends z.ZodType = z.ZodType> {
-	(payload: HttpTriggerPayload<z.infer<Body>>): Promise<HttpTriggerResult>;
+// Config is grouped (`request: { body, headers }`, `response: { body, headers }`)
+// for symmetry; the runtime payload remains flat (`{ body, headers, url, method }`).
+//
+// Strip-silently semantics on `request.headers` are encoded via the `extras`
+// meta marker (see http-trigger spec "Object schema mode marker (extras)"
+// requirement). The factory auto-wraps the author's schema (or the empty-
+// record default) with `.meta({ strip: true })`. The runtime workflow-
+// registry rehydrator reads `.meta()` directly off the rehydrated zod schema
+// and, where `strip === true`, reconstructs the corresponding `ZodObject` in
+// default `.strip()` mode — recovering author intent across the lossy zod-to-
+// JSON-Schema round-trip. Reject and passthrough modes round-trip natively
+// via zod's standard JSON Schema serialization (`additionalProperties: false`
+// → `.strict()`; `additionalProperties: {}` → `.loose()`), so they don't
+// need a marker.
+const EMPTY_HEADERS_SCHEMA = z.object({}) as unknown as z.ZodType<
+	Record<string, never>
+>;
+
+// Peek-and-maybe-attach. Auto-wrap with `.meta({ strip: true })` when the
+// author hasn't expressed an explicit mode preference; respect any explicit
+// `.meta({ strip: ... })` (any value) or `.loose()` / `.passthrough()`. No
+// throws — the author decides; the SDK only catches the implicit-strip
+// footgun (default `z.object({...})` whose strip intent would otherwise be
+// lost across the manifest round-trip).
+//
+// Runs at factory call time — i.e. during the build-time workflow IIFE
+// evaluation in Node's vm context (see SDK CLI `runIifeInVmContext`); not
+// paid at sandbox runtime, where the build's pass-2 strips factory configs
+// of zod schemas.
+function ensureRequestHeadersStripMode(headers: z.ZodType): z.ZodType {
+	// biome-ignore lint/suspicious/noExplicitAny: zod v4's .meta()/_def access
+	const headersAny = headers as any;
+	const meta: Record<string, unknown> =
+		(typeof headersAny.meta === "function" && headersAny.meta()) || {};
+	if ("strip" in meta) {
+		return headers; // author already chose; no-op
+	}
+	// Detect catchall mode. `.loose()` / `.passthrough()` produces
+	// `_def.catchall.def.type === "unknown"` (or `"any"` in older zod
+	// builds); we leave those alone (author opted into passthrough).
+	// `.strictObject` and default `.object()` both have catchall `"never"`
+	// or null/undefined — auto-wrap is safe.
+	const catchallType: string | undefined = headersAny._def?.catchall?.def?.type;
+	if (catchallType === "any" || catchallType === "unknown") {
+		return headers; // author chose passthrough; no-op
+	}
+	return headers.meta({ strip: true });
+}
+
+interface HttpTriggerRequest<
+	B extends z.ZodType = z.ZodType,
+	H extends z.ZodType = z.ZodType,
+> {
+	readonly body: B;
+	readonly headers: H;
+}
+
+interface HttpTriggerResponse<
+	B extends z.ZodType | undefined = z.ZodType | undefined,
+	H extends z.ZodType | undefined = z.ZodType | undefined,
+> {
+	readonly body: B;
+	readonly headers: H;
+}
+
+interface HttpTrigger<
+	ReqB extends z.ZodType = z.ZodType,
+	ReqH extends z.ZodType = z.ZodType,
+> {
+	(
+		payload: HttpTriggerPayload<
+			z.infer<ReqB>,
+			z.infer<ReqH> & Record<string, unknown>
+		>,
+	): Promise<HttpTriggerResult>;
 	readonly [HTTP_TRIGGER_BRAND]: true;
 	readonly method: string;
-	readonly body: Body | undefined;
-	readonly responseBody: z.ZodType | undefined;
+	readonly request: HttpTriggerRequest<ReqB, ReqH>;
+	readonly response: HttpTriggerResponse;
 }
 
 function httpTrigger<
-	B extends z.ZodType = z.ZodAny,
-	R extends z.ZodType | undefined = undefined,
+	ReqB extends z.ZodType = z.ZodAny,
+	ReqH extends z.ZodType = z.ZodType<Record<string, never>>,
+	ResB extends z.ZodType | undefined = undefined,
+	ResH extends z.ZodType | undefined = undefined,
 >(config: {
 	method?: string;
-	body?: B;
-	responseBody?: R;
+	request?: { body?: ReqB; headers?: ReqH };
+	response?: { body?: ResB; headers?: ResH };
 	handler: (
-		payload: HttpTriggerPayload<B extends z.ZodType ? z.infer<B> : unknown>,
+		payload: HttpTriggerPayload<
+			ReqB extends z.ZodType ? z.infer<ReqB> : unknown,
+			ReqH extends z.ZodType
+				? z.infer<ReqH> & Record<string, unknown>
+				: Record<string, never>
+		>,
 	) => Promise<
-		R extends z.ZodType
+		ResB extends z.ZodType
 			? {
 					status?: number;
-					body: z.infer<R>;
-					headers?: Record<string, string>;
+					body: z.infer<ResB>;
+					headers?: ResH extends z.ZodType
+						? z.infer<ResH> & Record<string, string>
+						: Record<string, string>;
 				}
-			: HttpTriggerResult
+			: ResH extends z.ZodType
+				? {
+						status?: number;
+						body?: unknown;
+						headers?: z.infer<ResH> & Record<string, string>;
+					}
+				: HttpTriggerResult
 	>;
-}): HttpTrigger<B extends z.ZodType ? B : z.ZodAny> {
+}): HttpTrigger<
+	ReqB extends z.ZodType ? ReqB : z.ZodAny,
+	ReqH extends z.ZodType ? ReqH : z.ZodType<Record<string, never>>
+> {
 	if (typeof config.handler !== "function") {
 		throw new Error("httpTrigger(...) is missing a handler function");
 	}
 	const method = config.method ?? "POST";
 	const handler = config.handler;
+	const requestBody = (config.request?.body ?? z.any()) as z.ZodType;
+	const requestHeadersRaw = (config.request?.headers ??
+		EMPTY_HEADERS_SCHEMA) as z.ZodType;
+	const requestHeaders = ensureRequestHeadersStripMode(requestHeadersRaw);
+	const responseBody = config.response?.body;
+	const responseHeaders = config.response?.headers;
 	const callable = function callTrigger(
 		payload: Parameters<typeof handler>[0],
 	): Promise<HttpTriggerResult> {
@@ -369,16 +463,25 @@ function httpTrigger<
 	};
 	attachTriggerMetadata(callable, {
 		method,
-		body: config.body,
-		responseBody: config.responseBody,
+		request: { body: requestBody, headers: requestHeaders },
+		response: { body: responseBody, headers: responseHeaders },
 	});
-	return callable as unknown as HttpTrigger<B extends z.ZodType ? B : z.ZodAny>;
+	return callable as unknown as HttpTrigger<
+		ReqB extends z.ZodType ? ReqB : z.ZodAny,
+		ReqH extends z.ZodType ? ReqH : z.ZodType<Record<string, never>>
+	>;
 }
 
 interface TriggerMetadata {
 	method: string;
-	body: z.ZodType | undefined;
-	responseBody: z.ZodType | undefined;
+	request: {
+		body: z.ZodType;
+		headers: z.ZodType;
+	};
+	response: {
+		body: z.ZodType | undefined;
+		headers: z.ZodType | undefined;
+	};
 }
 
 function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {
@@ -388,14 +491,30 @@ function attachTriggerMetadata(callable: object, meta: TriggerMetadata): void {
 		writable: false,
 		configurable: false,
 	});
-	for (const [key, value] of Object.entries(meta)) {
-		Object.defineProperty(callable, key, {
-			value,
-			enumerable: true,
-			writable: false,
-			configurable: false,
-		});
-	}
+	Object.defineProperty(callable, "method", {
+		value: meta.method,
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "request", {
+		value: Object.freeze({
+			body: meta.request.body,
+			headers: meta.request.headers,
+		}),
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(callable, "response", {
+		value: Object.freeze({
+			body: meta.response.body,
+			headers: meta.response.headers,
+		}),
+		enumerable: true,
+		writable: false,
+		configurable: false,
+	});
 }
 
 function isHttpTrigger(value: unknown): value is HttpTrigger {

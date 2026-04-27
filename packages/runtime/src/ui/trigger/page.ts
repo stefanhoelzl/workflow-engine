@@ -82,6 +82,7 @@ interface TriggerCardData {
 	readonly trigger: string;
 	readonly kind: string;
 	readonly schema: object;
+	readonly headersSchema?: object | null;
 	readonly submitUrl: string;
 	readonly submitMethod: string;
 	readonly meta: string;
@@ -132,6 +133,41 @@ function entryToCardDataList(entry: WorkflowEntry): TriggerCardData[] {
 	);
 }
 
+function httpHeadersHasDeclaredProperties(
+	headersSchema: Record<string, unknown> | undefined,
+): boolean {
+	if (!headersSchema || typeof headersSchema !== "object") {
+		return false;
+	}
+	const properties = headersSchema.properties;
+	if (!properties || typeof properties !== "object") {
+		return false;
+	}
+	return Object.keys(properties as Record<string, unknown>).length > 0;
+}
+
+function composeHttpFormSchema(http: HttpTriggerDescriptor): object {
+	const bodySchema = http.request.body ?? { type: "object" };
+	if (!httpHeadersHasDeclaredProperties(http.request.headers)) {
+		// No declared headers — render just the body form (today's flow).
+		// The middleware accepts the bare body shape.
+		return bodySchema as object;
+	}
+	// Declared headers — render an envelope form with two slots so Jedison
+	// produces `{body, headers}` naturally and the form value posts as the
+	// envelope shape the middleware accepts. The wrapper is `additional-
+	// Properties: false` so the dispatch UI form can't grow extra fields.
+	return {
+		type: "object",
+		properties: {
+			body: bodySchema,
+			headers: http.request.headers,
+		},
+		required: ["body", "headers"],
+		additionalProperties: false,
+	};
+}
+
 function descriptorToCardData(
 	owner: string,
 	repo: string,
@@ -151,7 +187,8 @@ function descriptorToCardData(
 			workflow,
 			trigger: http.name,
 			kind: "http",
-			schema: (http.body ?? { type: "object" }) as object,
+			schema: composeHttpFormSchema(http),
+			headersSchema: (http.request.headers ?? null) as object | null,
 			submitUrl: `/trigger/${owner}/${repo}/${workflow}/${http.name}`,
 			submitMethod: "POST",
 			meta,
