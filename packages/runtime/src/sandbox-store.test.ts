@@ -564,7 +564,7 @@ interface FakeFactory extends SandboxFactory {
 
 function makeFakeSandbox(): FakeSandbox {
 	let active = false;
-	const dispose = vi.fn();
+	const dispose = vi.fn(() => Promise.resolve());
 	let terminatedCb: ((cause: TerminationCause) => void) | null = null;
 	return {
 		run: () => Promise.reject(new Error("fake")),
@@ -857,6 +857,105 @@ describe("sandbox-store: termination eviction", () => {
 		await store.get("o", workflowWithSha("a".repeat(64)), "src");
 		await flushMicrotasks();
 		expect(factory.createSpy).toHaveBeenCalledTimes(2);
+		await store.dispose();
+	});
+});
+
+describe("sandbox-store: dispose error reporting", () => {
+	it("per-entry dispose failure logs at error severity with locked-in fields", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 10,
+		});
+		const err = new Error("terminate failed");
+		const sb = makeFakeSandbox();
+		sb.disposeSpy.mockRejectedValueOnce(err);
+		factory.buildQueue.push(sb);
+		const ownerSha = "f".repeat(64);
+		await store.get("acme", workflowWithSha(ownerSha), "src");
+		await flushMicrotasks();
+
+		await store.dispose();
+
+		const errCalls = (
+			logger.error as unknown as { mock: { calls: unknown[][] } }
+		).mock.calls;
+		const failed = errCalls.filter((c) => c[0] === "sandbox dispose failed");
+		expect(failed.length).toBe(1);
+		expect(failed[0]?.[1]).toEqual({
+			owner: "acme",
+			sha: ownerSha,
+			reason: "store-dispose",
+			err,
+		});
+	});
+
+	it("one failing dispose does not strand siblings", async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 10,
+		});
+		const a = makeFakeSandbox();
+		const b = makeFakeSandbox();
+		const c = makeFakeSandbox();
+		const bErr = new Error("only b fails");
+		b.disposeSpy.mockRejectedValueOnce(bErr);
+		factory.buildQueue.push(a, b, c);
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		await store.get("o", workflowWithSha("c".repeat(64)), "src");
+		await flushMicrotasks();
+
+		await expect(store.dispose()).resolves.toBeUndefined();
+
+		expect(a.disposeSpy).toHaveBeenCalledTimes(1);
+		expect(b.disposeSpy).toHaveBeenCalledTimes(1);
+		expect(c.disposeSpy).toHaveBeenCalledTimes(1);
+		const errCalls = (
+			logger.error as unknown as { mock: { calls: unknown[][] } }
+		).mock.calls;
+		const failed = errCalls.filter((c1) => c1[0] === "sandbox dispose failed");
+		expect(failed.length).toBe(1);
+		expect((failed[0]?.[1] as { sha: string }).sha).toBe("b".repeat(64));
+	});
+
+	it('LRU eviction failure logs reason "lru"', async () => {
+		const factory = makeFakeFactory();
+		const logger = makeLogger();
+		const store = createSandboxStore({
+			sandboxFactory: factory,
+			logger,
+			keyStore: stubKeyStore,
+			maxCount: 1,
+		});
+		const failing = makeFakeSandbox();
+		const evictErr = new Error("evict-time terminate failed");
+		failing.disposeSpy.mockRejectedValueOnce(evictErr);
+		factory.buildQueue.push(failing);
+		factory.buildQueue.push(makeFakeSandbox());
+		await store.get("o", workflowWithSha("a".repeat(64)), "src");
+		await store.get("o", workflowWithSha("b".repeat(64)), "src");
+		await flushMicrotasks();
+
+		const errCalls = (
+			logger.error as unknown as { mock: { calls: unknown[][] } }
+		).mock.calls;
+		const failed = errCalls.filter((c) => c[0] === "sandbox dispose failed");
+		expect(failed.length).toBe(1);
+		expect(failed[0]?.[1]).toEqual({
+			owner: "o",
+			sha: "a".repeat(64),
+			reason: "lru",
+			err: evictErr,
+		});
 		await store.dispose();
 	});
 });

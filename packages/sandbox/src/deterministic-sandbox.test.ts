@@ -32,7 +32,7 @@ describe("deterministic sandbox — guest state does not persist across runs", (
 			}
 			expect(results).toEqual([1, 1, 1]);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 
@@ -53,7 +53,7 @@ describe("deterministic sandbox — guest state does not persist across runs", (
 			}
 			expect(results).toEqual([0, 0, 0]);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
@@ -124,7 +124,7 @@ describe("deterministic sandbox — plugin stack survives multiple restores", ()
 			// the run would be `ok: false`.
 			expect(new Set(uuids).size).toBe(3);
 		} finally {
-			sb.dispose();
+			await sb.dispose();
 		}
 	});
 });
