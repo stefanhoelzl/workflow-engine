@@ -946,3 +946,149 @@ describe("createHttpTriggerSource: response content-type filling", () => {
 		expect(res.headers.get("content-type")).toBe("application/vnd.acme+json");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Reserved response headers: workflow-supplied platform-reserved names are
+// stripped from the wire and produce a single trigger.exception per response.
+// ---------------------------------------------------------------------------
+
+describe("createHttpTriggerSource: reserved response header strip", () => {
+	function reservedFire(
+		headers: Record<string, string>,
+		body: unknown = { ok: true },
+	): Fire {
+		return async () => ({
+			ok: true as const,
+			output: { status: 200, body, headers },
+		});
+	}
+
+	it("strips a single reserved header and emits one trigger.exception", async () => {
+		const entry = makeEntry(
+			makeDescriptor(),
+			reservedFire({ "set-cookie": "session=x", "x-app": "v1" }),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("set-cookie")).toBeNull();
+		expect(res.headers.get("x-app")).toBe("v1");
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+		const params = (entry.exception as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0];
+		expect(params).toMatchObject({
+			kind: "trigger.exception",
+			name: "http.response-header-stripped",
+			input: { stripped: ["set-cookie"] },
+		});
+	});
+
+	it("strips multiple reserved headers in a single trigger.exception (sorted, lowercased)", async () => {
+		const entry = makeEntry(
+			makeDescriptor(),
+			reservedFire({
+				"set-cookie": "x",
+				location: "https://evil/",
+				"x-frame-options": "ALLOWALL",
+				"x-trace": "abc",
+			}),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("set-cookie")).toBeNull();
+		expect(res.headers.get("location")).toBeNull();
+		expect(res.headers.get("x-frame-options")).toBeNull();
+		expect(res.headers.get("x-trace")).toBe("abc");
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+		const params = (entry.exception as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0];
+		expect(params.input.stripped).toEqual([
+			"location",
+			"set-cookie",
+			"x-frame-options",
+		]);
+	});
+
+	it("strips reserved headers regardless of casing the workflow uses", async () => {
+		const entry = makeEntry(
+			makeDescriptor(),
+			reservedFire({ "Set-Cookie": "x", LOCATION: "https://evil/" }),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("set-cookie")).toBeNull();
+		expect(res.headers.get("location")).toBeNull();
+		const params = (entry.exception as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0];
+		// stripped names are lowercased canonical form, sorted
+		expect(params.input.stripped).toEqual(["location", "set-cookie"]);
+	});
+
+	it("does NOT emit trigger.exception when no reserved headers are returned", async () => {
+		const entry = makeEntry(
+			makeDescriptor(),
+			reservedFire({ "x-app-version": "1.0", "x-trace": "abc" }),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-app-version")).toBe("1.0");
+		expect(res.headers.get("x-trace")).toBe("abc");
+		expect(entry.exception).not.toHaveBeenCalled();
+	});
+
+	it("preserves status, body, and content-type default-injection when stripping", async () => {
+		const entry = makeEntry(makeDescriptor(), async () => ({
+			ok: true as const,
+			output: {
+				status: 201,
+				body: "ok",
+				headers: { "set-cookie": "x" },
+			},
+		}));
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: "{}",
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(201);
+		expect(await res.text()).toBe("ok");
+		expect(res.headers.get("content-type")).toBe("text/plain; charset=UTF-8");
+		expect(res.headers.get("set-cookie")).toBeNull();
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+	});
+});

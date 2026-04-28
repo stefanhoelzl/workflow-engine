@@ -23,6 +23,51 @@ interface HttpTriggerPayload<
 	method: string;
 }
 
+// Reserved response header names. The platform owns these on /webhooks/*
+// responses — workflow-supplied values are stripped at the runtime boundary
+// (packages/runtime/src/triggers/http.ts) and rejected at build time when
+// declared in a `response.headers` zod schema (packages/sdk/src/cli/
+// build-workflows.ts). Both enforcement points import from this module so
+// there is a single source of truth.
+//
+// Two threat classes, one list:
+//   - Cross-tenant / external-attacker: a workflow setting these on its
+//     /webhooks/* response can plant cookies on the engine origin
+//     (Set-Cookie session fixation), redirect off-domain (Location, Refresh),
+//     wipe dashboard state (Clear-Site-Data), or trigger browser auth UI
+//     (WWW-Authenticate, Proxy-Authenticate).
+//   - Platform security/transport invariants: these are set globally by
+//     `secureHeadersMiddleware`; allowing the workflow to override them
+//     would weaken every response on the engine origin.
+const RESERVED_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
+	// Cross-tenant / external-attacker class
+	"set-cookie",
+	"set-cookie2",
+	"location",
+	"refresh",
+	"clear-site-data",
+	"authorization",
+	"proxy-authenticate",
+	"www-authenticate",
+	// Platform security/transport invariants
+	"content-security-policy",
+	"content-security-policy-report-only",
+	"strict-transport-security",
+	"x-content-type-options",
+	"x-frame-options",
+	"referrer-policy",
+	"cross-origin-opener-policy",
+	"cross-origin-resource-policy",
+	"cross-origin-embedder-policy",
+	"permissions-policy",
+	"server",
+	"x-powered-by",
+]);
+
+function isReservedResponseHeader(name: string): boolean {
+	return RESERVED_RESPONSE_HEADERS.has(name.toLowerCase());
+}
+
 // ---------------------------------------------------------------------------
 // Invocation events
 // ---------------------------------------------------------------------------
@@ -582,9 +627,11 @@ export {
 	encodeSentinel,
 	IIFE_NAMESPACE,
 	installGuestGlobals,
+	isReservedResponseHeader,
 	ManifestSchema,
 	OWNER_NAME_RE,
 	REPO_NAME_RE,
+	RESERVED_RESPONSE_HEADERS,
 	SECRETS_KEY_ID_BYTES,
 	SENTINEL_SUBSTRING_RE,
 	TRIGGER_NAME_RE,

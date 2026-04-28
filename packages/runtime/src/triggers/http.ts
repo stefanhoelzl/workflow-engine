@@ -1,6 +1,7 @@
 import { constants } from "node:http2";
 import {
 	type HttpTriggerResult,
+	isReservedResponseHeader,
 	OWNER_NAME_RE,
 	REPO_NAME_RE,
 	TRIGGER_NAME_RE,
@@ -90,23 +91,55 @@ function hasContentTypeHeader(headers: Record<string, string>): boolean {
 	return false;
 }
 
-function serializeHttpResult(c: Context, output: unknown): Response {
+interface SerializedHttpResult {
+	readonly response: Response;
+	// Sorted, lowercased names of any platform-reserved headers the workflow
+	// tried to set on the response. Empty when the workflow returned only
+	// safe headers. The middleware emits one `trigger.exception` per response
+	// when this is non-empty.
+	readonly stripped: readonly string[];
+}
+
+function partitionHeaders(source: Record<string, string>): {
+	kept: Record<string, string>;
+	stripped: string[];
+} {
+	const kept: Record<string, string> = {};
+	const stripped: string[] = [];
+	for (const [k, v] of Object.entries(source)) {
+		if (isReservedResponseHeader(k)) {
+			stripped.push(k.toLowerCase());
+		} else {
+			kept[k] = v;
+		}
+	}
+	stripped.sort();
+	return { kept, stripped };
+}
+
+function serializeHttpResult(
+	c: Context,
+	output: unknown,
+): SerializedHttpResult {
 	const result = (output ?? {}) as HttpTriggerResult;
 	const status = (result.status ?? DEFAULT_HTTP_STATUS) as ContentfulStatusCode;
-	const headers: Record<string, string> = { ...(result.headers ?? {}) };
+	const { kept: headers, stripped } = partitionHeaders(result.headers ?? {});
 	if (result.body === null || result.body === undefined) {
-		return c.body(null, status, headers);
+		return { response: c.body(null, status, headers), stripped };
 	}
 	if (typeof result.body === "string") {
 		if (!hasContentTypeHeader(headers)) {
 			headers["content-type"] = "text/plain; charset=UTF-8";
 		}
-		return c.body(result.body, status, headers);
+		return { response: c.body(result.body, status, headers), stripped };
 	}
 	if (!hasContentTypeHeader(headers)) {
 		headers["content-type"] = "application/json; charset=UTF-8";
 	}
-	return c.body(JSON.stringify(result.body), status, headers);
+	return {
+		response: c.body(JSON.stringify(result.body), status, headers),
+		stripped,
+	};
 }
 
 function internalErrorResponse(c: Context): Response {
@@ -243,7 +276,21 @@ function createHttpTriggerSource(): HttpTriggerSource {
 				}
 				return internalErrorResponse(c);
 			}
-			return serializeHttpResult(c, result.output);
+			const serialized = serializeHttpResult(c, result.output);
+			if (serialized.stripped.length > 0) {
+				// Workflow returned platform-reserved response headers; we
+				// stripped them from the wire and surface the strip to the
+				// author via a single `trigger.exception` per response. The
+				// HTTP response goes back to the caller regardless of the
+				// exception's persistence outcome — the strip is the
+				// security action and has already happened.
+				await entry.exception({
+					kind: "trigger.exception",
+					name: "http.response-header-stripped",
+					input: { stripped: serialized.stripped },
+				});
+			}
+			return serialized.response;
 		},
 	};
 
