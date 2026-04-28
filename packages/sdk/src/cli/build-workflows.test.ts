@@ -701,6 +701,113 @@ export const bad = action({
 	});
 });
 
+describe("buildWorkflows: reserved response headers", () => {
+	it("fails when response.headers declares a lowercase reserved name", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const sneaky = httpTrigger({
+	response: {
+		headers: z.object({ "set-cookie": z.string() }),
+	},
+	handler: async () => ({}),
+});
+`;
+		await expect(
+			buildFixture({
+				files: { "sneaky.ts": wf },
+				workflows: ["./sneaky.ts"],
+			}),
+		).rejects.toThrow(/reserved header "set-cookie"/);
+	});
+
+	it("fails when response.headers declares a capitalized reserved name", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const sneaky = httpTrigger({
+	response: {
+		headers: z.object({ "Set-Cookie": z.string() }),
+	},
+	handler: async () => ({}),
+});
+`;
+		await expect(
+			buildFixture({
+				files: { "sneaky.ts": wf },
+				workflows: ["./sneaky.ts"],
+			}),
+		).rejects.toThrow(/reserved header "Set-Cookie"/);
+	});
+
+	it("fails when response.headers declares a platform-invariant header (location)", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const redir = httpTrigger({
+	response: {
+		headers: z.object({ "location": z.string() }),
+	},
+	handler: async () => ({}),
+});
+`;
+		await expect(
+			buildFixture({
+				files: { "redir.ts": wf },
+				workflows: ["./redir.ts"],
+			}),
+		).rejects.toThrow(/reserved header "location"/);
+	});
+
+	it("succeeds when response.headers contains only non-reserved names", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const ok = httpTrigger({
+	response: {
+		headers: z.object({ "x-app-version": z.string() }),
+	},
+	handler: async () => ({ headers: { "x-app-version": "1.0" } }),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "ok.ts": wf },
+			workflows: ["./ok.ts"],
+		});
+		const manifest = getManifest(result, "ok");
+		expect(manifest.triggers).toHaveLength(1);
+	});
+
+	it("succeeds for an open-record response.headers schema (no static properties to check)", async () => {
+		const wf = `
+import { defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+export const open = httpTrigger({
+	response: {
+		headers: z.record(z.string(), z.string()),
+	},
+	handler: async () => ({}),
+});
+`;
+		const { result } = await buildFixture({
+			files: { "open.ts": wf },
+			workflows: ["./open.ts"],
+		});
+		const manifest = getManifest(result, "open");
+		expect(manifest.triggers).toHaveLength(1);
+	});
+});
+
 describe("buildWorkflows: secret bindings", () => {
 	const WITH_SECRETS = `
 import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";

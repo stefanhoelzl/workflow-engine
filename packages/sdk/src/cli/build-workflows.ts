@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
-import { IIFE_NAMESPACE, TRIGGER_NAME_RE } from "@workflow-engine/core";
+import {
+	IIFE_NAMESPACE,
+	isReservedResponseHeader,
+	TRIGGER_NAME_RE,
+} from "@workflow-engine/core";
 import MagicString from "magic-string";
 import ts from "typescript";
 import { build, type Plugin } from "vite";
@@ -640,8 +644,39 @@ function extractHttpTriggerJsonSchemas(
 			label,
 			workflowName,
 		);
+		assertNoReservedResponseHeaders(
+			responseHeadersJson,
+			exportName,
+			workflowName,
+		);
 	}
 	return { bodyJson, headersJson, responseBodyJson, responseHeadersJson };
+}
+
+// Reject any `response.headers` zod schema that statically declares a
+// reserved name. Walks `properties.*` of the JSON Schema produced from the
+// zod schema; schemas without `properties` (open records, e.g. z.record)
+// are accepted — the runtime strip is load-bearing for those cases.
+function assertNoReservedResponseHeaders(
+	responseHeadersJson: Record<string, unknown>,
+	exportName: string,
+	workflowName: string,
+): void {
+	const properties = responseHeadersJson.properties;
+	if (
+		typeof properties !== "object" ||
+		properties === null ||
+		Array.isArray(properties)
+	) {
+		return;
+	}
+	for (const declared of Object.keys(properties)) {
+		if (isReservedResponseHeader(declared)) {
+			buildContext.error(
+				`Workflow "${workflowName}": trigger "${exportName}".response.headers declares reserved header "${declared}". The platform owns this header on /webhooks/* responses; remove it from the schema.`,
+			);
+		}
+	}
 }
 
 function buildTriggerEntry(

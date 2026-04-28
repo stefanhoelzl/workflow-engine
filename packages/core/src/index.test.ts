@@ -3,7 +3,9 @@ import type { EventKind, InvocationEvent } from "./index.js";
 import {
 	computeKeyId,
 	IIFE_NAMESPACE,
+	isReservedResponseHeader,
 	ManifestSchema,
+	RESERVED_RESPONSE_HEADERS,
 	SECRETS_KEY_ID_BYTES,
 } from "./index.js";
 import { makeEvent } from "./test-utils.js";
@@ -484,5 +486,63 @@ describe("computeKeyId", () => {
 		// 66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925
 		//   → first 8 bytes: 66 68 7a ad f8 62 bd 77
 		expect(id).toBe("66687aadf862bd77");
+	});
+});
+
+describe("RESERVED_RESPONSE_HEADERS", () => {
+	it("contains the cross-tenant attack class names (lowercased)", () => {
+		for (const name of [
+			"set-cookie",
+			"set-cookie2",
+			"location",
+			"refresh",
+			"clear-site-data",
+			"authorization",
+			"proxy-authenticate",
+			"www-authenticate",
+		]) {
+			expect(RESERVED_RESPONSE_HEADERS.has(name)).toBe(true);
+		}
+	});
+
+	it("contains the platform security/transport invariants (lowercased)", () => {
+		for (const name of [
+			"content-security-policy",
+			"content-security-policy-report-only",
+			"strict-transport-security",
+			"x-content-type-options",
+			"x-frame-options",
+			"referrer-policy",
+			"cross-origin-opener-policy",
+			"cross-origin-resource-policy",
+			"cross-origin-embedder-policy",
+			"permissions-policy",
+			"server",
+			"x-powered-by",
+		]) {
+			expect(RESERVED_RESPONSE_HEADERS.has(name)).toBe(true);
+		}
+	});
+
+	it("does NOT contain content-type or cache-control (workflow-controlled)", () => {
+		expect(RESERVED_RESPONSE_HEADERS.has("content-type")).toBe(false);
+		expect(RESERVED_RESPONSE_HEADERS.has("cache-control")).toBe(false);
+	});
+});
+
+describe("isReservedResponseHeader", () => {
+	it("matches reserved names case-insensitively", () => {
+		expect(isReservedResponseHeader("Set-Cookie")).toBe(true);
+		expect(isReservedResponseHeader("SET-COOKIE")).toBe(true);
+		expect(isReservedResponseHeader("set-cookie")).toBe(true);
+		expect(isReservedResponseHeader("X-Frame-Options")).toBe(true);
+		expect(isReservedResponseHeader("Content-Security-Policy")).toBe(true);
+	});
+
+	it("returns false for non-reserved names", () => {
+		expect(isReservedResponseHeader("x-app-version")).toBe(false);
+		expect(isReservedResponseHeader("X-Trace-Id")).toBe(false);
+		expect(isReservedResponseHeader("content-type")).toBe(false);
+		expect(isReservedResponseHeader("cache-control")).toBe(false);
 	});
 });

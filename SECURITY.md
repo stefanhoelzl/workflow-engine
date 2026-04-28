@@ -1037,6 +1037,26 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
   route handler runs. Applies to webhooks and the `/api/workflows`
   upload path alike.
   (`packages/runtime/src/services/server.ts`)
+- **Reserved response header strip.** The HTTP `TriggerSource` filters
+  the workflow-supplied `headers` against `RESERVED_RESPONSE_HEADERS`
+  (exported from `@workflow-engine/core`) before writing the wire
+  response. Reserved names cover (a) the cross-tenant /
+  external-attacker class — `set-cookie`, `set-cookie2`, `location`,
+  `refresh`, `clear-site-data`, `authorization`, `proxy-authenticate`,
+  `www-authenticate` — and (b) the platform security/transport
+  invariants set globally by `secureHeadersMiddleware` —
+  `content-security-policy*`, `strict-transport-security`,
+  `x-content-type-options`, `x-frame-options`, `referrer-policy`,
+  `cross-origin-{opener,resource,embedder}-policy`,
+  `permissions-policy`, `server`, `x-powered-by`. Reserved values are
+  stripped silently from the wire and surfaced to the workflow author
+  via a single `trigger.exception` per response with
+  `name: "http.response-header-stripped"` and
+  `input: { stripped: [<sorted lowercased names>] }`. The same set is
+  enforced at SDK build time: `wfe upload` rejects any `httpTrigger`
+  whose `response.headers` zod schema declares a reserved name. Build-
+  time enforcement is developer-experience only; the runtime strip is
+  the security boundary. See `http-trigger` and `http-security` specs.
 
 ### Residual risks
 
@@ -1089,6 +1109,25 @@ schema-violating payload still returns 422.
    (scheduled, internal) → document separately. Each concrete trigger
    type also gets its own SDK factory (`httpTrigger({...})`-style),
    its own brand symbol, and its own spec file.
+8. **NEVER rely solely on SDK build-time validation for security
+   boundaries on the workflow→runtime contract.** The SDK runs in
+   tenant-controlled environments (developer machines, CI runners) and
+   can be forked, replaced, or bypassed; every build-time guard MUST
+   have a corresponding runtime check at the host boundary. Canonical
+   example: `RESERVED_RESPONSE_HEADERS` (exported from
+   `@workflow-engine/core`) is enforced both in `wfe upload` (rejects
+   declared reserved keys in `response.headers` schemas) and in the
+   runtime HTTP `TriggerSource` (strips reserved keys from the wire
+   response and emits a `trigger.exception`).
+9. **NEVER allow the workflow to set a header in
+   `RESERVED_RESPONSE_HEADERS` on a `/webhooks/*` response.** The
+   strip happens in the response-shaping path
+   (`packages/runtime/src/triggers/http.ts`) and is paired with a
+   single `trigger.exception` per response. Removing the strip
+   reintroduces the cross-tenant cookie-injection / open-redirect /
+   platform-invariant-override threat class; weakening the reserved
+   list to admit a previously-reserved name requires an explicit
+   OpenSpec proposal.
 
 ### File references
 
