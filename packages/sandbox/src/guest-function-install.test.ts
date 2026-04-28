@@ -160,6 +160,132 @@ describe("installGuestFunction", () => {
 		).rejects.toThrow(/Callable has been disposed/);
 	});
 
+	it("dispose() during a mid-invocation Callable defers the underlying handle release until the guest frame unwinds", async () => {
+		// Reproduces the F-1 hazard: the timers plugin's `cancel()` calls
+		// `entry.callable.dispose()` while QuickJS is still executing inside
+		// the same handle (`setInterval(() => clearInterval(id), 0)`). A
+		// synchronous release of the JSValueHandle while it sits on the WASM
+		// stack triggered `RuntimeError: memory access out of bounds` on
+		// unwind. With re-entry-safe dispose, the release is deferred until
+		// invocation depth returns to 0 — the call returns normally, then
+		// subsequent invokes throw CallableDisposedError.
+		const ctx = recordingContext({ callIds: "always" });
+		let captured: import("./plugin.js").Callable | null = null;
+		const registerDesc: GuestFunctionDescription = {
+			name: "registerCb",
+			args: [Guest.callable()],
+			result: Guest.void(),
+			handler: ((cb: import("./plugin.js").Callable) => {
+				captured = cb;
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		const disposeMeDesc: GuestFunctionDescription = {
+			name: "disposeMe",
+			args: [],
+			result: Guest.void(),
+			handler: (() => {
+				(captured as unknown as import("./plugin.js").Callable)?.dispose();
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		installGuestFunction(vm, ctx, registerDesc);
+		installGuestFunction(vm, ctx, disposeMeDesc);
+		const out = vm.evalCode(
+			`registerCb(() => { disposeMe(); return 'done'; }); 'ok';`,
+			"<test>",
+		);
+		out.dispose();
+		const callable = captured as unknown as import("./plugin.js").Callable;
+		// Mid-invocation dispose must not crash; the call returns normally.
+		const result = await callable();
+		expect(result).toBe("done");
+		// After the outer frame unwound, the deferred dispose ran; a follow-
+		// up invoke now throws CallableDisposedError.
+		await expect(callable()).rejects.toThrow(/Callable has been disposed/);
+	});
+
+	it("nested re-entry while a dispose is pending stays depth-correct: release runs only when the outermost frame unwinds", async () => {
+		const ctx = recordingContext({ callIds: "always" });
+		let captured: import("./plugin.js").Callable | null = null;
+		let nestedCallReturned = false;
+		const registerDesc: GuestFunctionDescription = {
+			name: "registerCb",
+			args: [Guest.callable()],
+			result: Guest.void(),
+			handler: ((cb: import("./plugin.js").Callable) => {
+				captured = cb;
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		// `reenter` calls dispose() (deferring), then re-enters the same
+		// callable from the host. The inner invoke must succeed (depth=2),
+		// returning normally; only when depth returns to 0 does dispose run.
+		const reenterDesc: GuestFunctionDescription = {
+			name: "reenter",
+			args: [Guest.number()],
+			result: Guest.void(),
+			handler: (async (depth: number) => {
+				const cb = captured as unknown as import("./plugin.js").Callable;
+				if (depth === 1) {
+					cb.dispose();
+					const inner = await cb(0);
+					if (inner === "depth-0") {
+						nestedCallReturned = true;
+					}
+				}
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		installGuestFunction(vm, ctx, registerDesc);
+		installGuestFunction(vm, ctx, reenterDesc);
+		const out = vm.evalCode(
+			`registerCb(async (n) => { if (n === 1) await reenter(1); return 'depth-' + n; }); 'ok';`,
+			"<test>",
+		);
+		out.dispose();
+		const callable = captured as unknown as import("./plugin.js").Callable;
+		const result = await callable(1);
+		expect(result).toBe("depth-1");
+		expect(nestedCallReturned).toBe(true);
+		// Outermost frame has unwound; dispose has run.
+		await expect(callable(0)).rejects.toThrow(/Callable has been disposed/);
+	});
+
+	it("dispose() called twice while pending stays idempotent (no double release)", async () => {
+		// If dispose() during invocation only marks pendingDispose, calling
+		// it again before the frame unwinds must not re-arm or double-release
+		// the underlying handle. Verified indirectly: the test exercising
+		// double dispose during normal use already covers idempotence; here
+		// we cover the deferred-window variant.
+		const ctx = recordingContext({ callIds: "always" });
+		let captured: import("./plugin.js").Callable | null = null;
+		const registerDesc: GuestFunctionDescription = {
+			name: "registerCb",
+			args: [Guest.callable()],
+			result: Guest.void(),
+			handler: ((cb: import("./plugin.js").Callable) => {
+				captured = cb;
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		const disposeTwiceDesc: GuestFunctionDescription = {
+			name: "disposeTwice",
+			args: [],
+			result: Guest.void(),
+			handler: (() => {
+				const cb = captured as unknown as import("./plugin.js").Callable;
+				cb.dispose();
+				cb.dispose();
+			}) as unknown as GuestFunctionDescription["handler"],
+		};
+		installGuestFunction(vm, ctx, registerDesc);
+		installGuestFunction(vm, ctx, disposeTwiceDesc);
+		const out = vm.evalCode(
+			`registerCb(() => { disposeTwice(); return 'ok'; }); 'ok';`,
+			"<test>",
+		);
+		out.dispose();
+		const callable = captured as unknown as import("./plugin.js").Callable;
+		await expect(callable()).resolves.toBe("ok");
+		await expect(callable()).rejects.toThrow(/Callable has been disposed/);
+	});
+
 	it("propagates guest-side rejections out of a Callable as host Error", async () => {
 		const ctx = recordingContext({ callIds: "always" });
 		let captured: import("./plugin.js").Callable | null = null;
