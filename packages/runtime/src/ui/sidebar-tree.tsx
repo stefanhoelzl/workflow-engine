@@ -1,7 +1,6 @@
-import { html, raw } from "hono/html";
-import type { HtmlEscapedString } from "hono/utils/html";
+import type { Child } from "hono/jsx";
 import type { WorkflowRegistry } from "../workflow-registry.js";
-import { triggerKindIcon } from "./triggers.js";
+import { ChevronIcon, TriggerKindIcon } from "./icons.js";
 
 // ---------------------------------------------------------------------------
 // Sidebar tree — persistent navigation for /dashboard/* and /trigger/*
@@ -34,11 +33,6 @@ interface ActiveState {
 	readonly trigger?: string;
 }
 
-const chevronIconSvg = raw(
-	// biome-ignore lint/security/noSecrets: inline SVG markup, not a secret
-	'<svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
-);
-
 function pairKey(owner: string, repo: string): string {
 	return `${owner}/${repo}`;
 }
@@ -59,43 +53,63 @@ interface SectionCtx {
 	readonly active: ActiveState;
 }
 
+interface SidebarData {
+	readonly owners: readonly string[];
+	readonly reposByOwner: Record<string, readonly string[]>;
+	readonly triggersByPair: Record<string, readonly TriggerRef[]>;
+}
+
 // ---------------------------------------------------------------------------
 // Trigger leaf (shared: leads to filter-by-trigger on dashboard, single card
 // view on trigger)
 // ---------------------------------------------------------------------------
 
-function renderTriggerLeaf(
-	ctx: SectionCtx,
-	owner: string,
-	repo: string,
-	t: TriggerRef,
-) {
+function TriggerLeaf({
+	ctx,
+	owner,
+	repo,
+	t,
+}: {
+	ctx: SectionCtx;
+	owner: string;
+	repo: string;
+	t: TriggerRef;
+}) {
 	const isActive =
 		ctx.active.surface === ctx.surface &&
 		ctx.active.owner === owner &&
 		ctx.active.repo === repo &&
 		ctx.active.workflow === t.workflow &&
 		ctx.active.trigger === t.trigger;
-	return html`<li>
-    <a class="${itemClass("sidebar-trigger", isActive, false)}"
-       href="${ctx.surface}/${owner}/${repo}/${t.workflow}/${t.trigger}"
-       title="${t.workflow} / ${t.trigger} (${t.kind})">
-      ${triggerKindIcon(t.kind)}
-      <span class="sidebar-trigger-name">${t.trigger}</span>
-    </a>
-  </li>`;
+	return (
+		<li>
+			<a
+				class={itemClass("sidebar-trigger", isActive, false)}
+				href={`${ctx.surface}/${owner}/${repo}/${t.workflow}/${t.trigger}`}
+				title={`${t.workflow} / ${t.trigger} (${t.kind})`}
+			>
+				<TriggerKindIcon kind={t.kind} />
+				<span class="sidebar-trigger-name">{t.trigger}</span>
+			</a>
+		</li>
+	);
 }
 
 // ---------------------------------------------------------------------------
 // Repo row
 // ---------------------------------------------------------------------------
 
-function renderRepoNode(
-	ctx: SectionCtx,
-	owner: string,
-	repo: string,
-	triggers: readonly TriggerRef[],
-) {
+function RepoNode({
+	ctx,
+	owner,
+	repo,
+	triggers,
+}: {
+	ctx: SectionCtx;
+	owner: string;
+	repo: string;
+	triggers: readonly TriggerRef[];
+}) {
 	const isActiveSurface = ctx.active.surface === ctx.surface;
 	const isActive =
 		isActiveSurface &&
@@ -105,118 +119,162 @@ function renderRepoNode(
 	const isOpen =
 		isActiveSurface && ctx.active.owner === owner && ctx.active.repo === repo;
 	if (triggers.length === 0) {
-		return html`<li>
-      <a class="${itemClass("sidebar-repo sidebar-repo--empty", isActive, false)}"
-         href="${ctx.surface}/${owner}/${repo}">
-        <span>${repo}</span>
-        <span class="sidebar-note">no triggers</span>
-      </a>
-    </li>`;
+		return (
+			<li>
+				<a
+					class={itemClass("sidebar-repo sidebar-repo--empty", isActive, false)}
+					href={`${ctx.surface}/${owner}/${repo}`}
+				>
+					<span>{repo}</span>
+					<span class="sidebar-note">no triggers</span>
+				</a>
+			</li>
+		);
 	}
-	return html`<li>
-    <a class="${itemClass("sidebar-repo-link", isActive, isOpen)}"
-       href="${ctx.surface}/${owner}/${repo}">
-      <span class="sidebar-chevron" aria-hidden="true">${chevronIconSvg}</span>
-      <span class="sidebar-repo-label">${repo}</span>
-    </a>
-    ${
-			isOpen
-				? html`<ul class="sidebar-triggers">
-          ${triggers.map((t) => renderTriggerLeaf(ctx, owner, repo, t))}
-        </ul>`
-				: ""
-		}
-  </li>`;
+	return (
+		<li>
+			<a
+				class={itemClass("sidebar-repo-link", isActive, isOpen)}
+				href={`${ctx.surface}/${owner}/${repo}`}
+			>
+				<span class="sidebar-chevron" aria-hidden="true">
+					<ChevronIcon />
+				</span>
+				<span class="sidebar-repo-label">{repo}</span>
+			</a>
+			{isOpen && (
+				<ul class="sidebar-triggers">
+					{triggers.map((t) => (
+						<TriggerLeaf ctx={ctx} owner={owner} repo={repo} t={t} />
+					))}
+				</ul>
+			)}
+		</li>
+	);
 }
 
 // ---------------------------------------------------------------------------
 // Owner row
 // ---------------------------------------------------------------------------
 
-function renderOwnerNode(
-	ctx: SectionCtx,
-	owner: string,
-	repos: readonly string[],
-	triggersByPair: Record<string, readonly TriggerRef[]>,
-) {
+function OwnerNode({
+	ctx,
+	owner,
+	repos,
+	triggersByPair,
+}: {
+	ctx: SectionCtx;
+	owner: string;
+	repos: readonly string[];
+	triggersByPair: Record<string, readonly TriggerRef[]>;
+}) {
 	const isActiveSurface = ctx.active.surface === ctx.surface;
 	const isActive =
 		isActiveSurface && ctx.active.owner === owner && !ctx.active.repo;
 	const isOpen = isActiveSurface && ctx.active.owner === owner;
 	if (repos.length === 0) {
-		return html`<li class="sidebar-owner sidebar-owner--empty">
-      <a class="${itemClass("sidebar-owner-link", isActive, false)}"
-         href="${ctx.surface}/${owner}">
-        <span class="sidebar-chevron-placeholder"></span>
-        <span class="sidebar-owner-label">${owner}</span>
-      </a>
-      <span class="sidebar-note">no repos</span>
-    </li>`;
+		return (
+			<li class="sidebar-owner sidebar-owner--empty">
+				<a
+					class={itemClass("sidebar-owner-link", isActive, false)}
+					href={`${ctx.surface}/${owner}`}
+				>
+					<span class="sidebar-chevron-placeholder" />
+					<span class="sidebar-owner-label">{owner}</span>
+				</a>
+				<span class="sidebar-note">no repos</span>
+			</li>
+		);
 	}
-	return html`<li class="${itemClass("sidebar-owner", false, isOpen)}">
-    <a class="${itemClass("sidebar-owner-link", isActive, isOpen)}"
-       href="${ctx.surface}/${owner}">
-      <span class="sidebar-chevron" aria-hidden="true">${chevronIconSvg}</span>
-      <span class="sidebar-owner-label">${owner}</span>
-    </a>
-    ${
-			isOpen
-				? html`<ul class="sidebar-repos">
-          ${repos.map((r) =>
-						renderRepoNode(
-							ctx,
-							owner,
-							r,
-							triggersByPair[pairKey(owner, r)] ?? [],
-						),
-					)}
-        </ul>`
-				: ""
-		}
-  </li>`;
+	return (
+		<li class={itemClass("sidebar-owner", false, isOpen)}>
+			<a
+				class={itemClass("sidebar-owner-link", isActive, isOpen)}
+				href={`${ctx.surface}/${owner}`}
+			>
+				<span class="sidebar-chevron" aria-hidden="true">
+					<ChevronIcon />
+				</span>
+				<span class="sidebar-owner-label">{owner}</span>
+			</a>
+			{isOpen && (
+				<ul class="sidebar-repos">
+					{repos.map((r) => (
+						<RepoNode
+							ctx={ctx}
+							owner={owner}
+							repo={r}
+							triggers={triggersByPair[pairKey(owner, r)] ?? []}
+						/>
+					))}
+				</ul>
+			)}
+		</li>
+	);
 }
 
 // ---------------------------------------------------------------------------
 // Section — full tree for a single surface
 // ---------------------------------------------------------------------------
 
-function renderSection(ctx: SectionCtx, data: SidebarData) {
+function Section({ ctx, data }: { ctx: SectionCtx; data: SidebarData }) {
 	const { owners, reposByOwner, triggersByPair } = data;
-	return owners.length === 0
-		? html`<div class="sidebar-tree-empty">No owners available</div>`
-		: html`<ul class="sidebar-tree">
-        ${owners.map((o) =>
-					renderOwnerNode(ctx, o, reposByOwner[o] ?? [], triggersByPair),
-				)}
-      </ul>`;
+	if (owners.length === 0) {
+		return <div class="sidebar-tree-empty">No owners available</div>;
+	}
+	return (
+		<ul class="sidebar-tree">
+			{owners.map((o) => (
+				<OwnerNode
+					ctx={ctx}
+					owner={o}
+					repos={reposByOwner[o] ?? []}
+					triggersByPair={triggersByPair}
+				/>
+			))}
+		</ul>
+	);
 }
 
 // ---------------------------------------------------------------------------
 // Top-level: render both sections
 // ---------------------------------------------------------------------------
 
-interface SidebarData {
-	readonly owners: readonly string[];
-	readonly reposByOwner: Record<string, readonly string[]>;
-	readonly triggersByPair: Record<string, readonly TriggerRef[]>;
-}
-
-function renderSidebarBoth(
-	data: SidebarData,
-	active: ActiveState,
-): HtmlEscapedString {
-	const dashboardTree = renderSection({ surface: "/dashboard", active }, data);
-	const triggerTree = renderSection({ surface: "/trigger", active }, data);
+function SidebarBoth({
+	data,
+	active,
+}: {
+	data: SidebarData;
+	active: ActiveState;
+}) {
 	const dashboardActive = active.surface === "/dashboard";
 	const triggerActive = active.surface === "/trigger";
-	return html`<div class="sidebar-section${dashboardActive ? " active" : ""}">
-    <a class="sidebar-section-title" href="/dashboard">Dashboard</a>
-    ${dashboardTree}
-  </div>
-  <div class="sidebar-section${triggerActive ? " active" : ""}">
-    <a class="sidebar-section-title" href="/trigger">Trigger</a>
-    ${triggerTree}
-  </div>` as HtmlEscapedString;
+	return (
+		<>
+			<div class={`sidebar-section${dashboardActive ? " active" : ""}`}>
+				<a class="sidebar-section-title" href="/dashboard">
+					Dashboard
+				</a>
+				<Section ctx={{ surface: "/dashboard", active }} data={data} />
+			</div>
+			<div class={`sidebar-section${triggerActive ? " active" : ""}`}>
+				<a class="sidebar-section-title" href="/trigger">
+					Trigger
+				</a>
+				<Section ctx={{ surface: "/trigger", active }} data={data} />
+			</div>
+		</>
+	);
+}
+
+// Compat shim — un-migrated middleware (dashboard/middleware.ts,
+// trigger/middleware.ts) calls renderSidebarBoth(data, active) and threads
+// the result into renderLayout's sidebarTree slot. The returned value is a
+// JSX node passed as a prop, so it's not stringified yet — the parent
+// Layout's render walks it. To delete once those middleware files switch
+// to <SidebarBoth ...> directly.
+function renderSidebarBoth(data: SidebarData, active: ActiveState): Child {
+	return <SidebarBoth data={data} active={active} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,4 +308,4 @@ function buildSidebarData(
 }
 
 export type { ActiveState, SidebarData, TriggerRef };
-export { buildSidebarData, renderSidebarBoth };
+export { buildSidebarData, renderSidebarBoth, SidebarBoth };

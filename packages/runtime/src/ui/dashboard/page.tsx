@@ -1,0 +1,510 @@
+import type { Child } from "hono/jsx";
+import { ChevronIcon, TriggerKindIcon } from "../icons.js";
+import { Layout } from "../layout.js";
+
+const US_PER_MS = 1000;
+const US_PER_SECOND = 1_000_000;
+const US_PER_MINUTE = 60_000_000;
+const DURATION_FRACTION_DIGITS = 1;
+
+interface InvocationRow {
+	readonly id: string;
+	readonly owner: string;
+	readonly repo: string;
+	readonly workflow: string;
+	readonly trigger: string;
+	readonly status: string;
+	readonly startedAt: string | Date;
+	readonly completedAt: string | Date | null;
+	readonly startedTs: number;
+	readonly completedTs: number | null;
+	readonly triggerKind?: string;
+	readonly dispatch?: {
+		readonly source: "manual" | "trigger" | "upload";
+		readonly user?: { readonly login: string; readonly mail?: string };
+	};
+	// Marks rows reconstructed from a single leaf event with no paired
+	// trigger.request. The discriminator drives the per-row glyph + chip:
+	//   "trigger.exception" → wrench (author-fixable trigger setup failure)
+	//   "trigger.rejection" → shield-cross (HTTP body schema rejection)
+	//   "system.upload"     → upload-arrow + status="uploaded"
+	// See `dashboard-list-view` spec "Single-leaf trigger.exception
+	// invocations render inline" (extended by `track-non-invocation-events`).
+	readonly synthetic?: boolean;
+	readonly syntheticKind?:
+		| "trigger.exception"
+		| "trigger.rejection"
+		| "system.upload";
+	// trigger.rejection: short summary of the first zod issue, surfaced in
+	// the row's `<title>` tooltip.
+	readonly rejectionSummary?: string;
+	// system.upload: short workflowSha (first 8 hex chars) for the tooltip.
+	readonly uploadShaShort?: string;
+	// Set when a `system.exhaustion` event was associated with a failed
+	// invocation. Drives the dimension pill next to the status badge.
+	readonly exhaustion?: {
+		readonly dim: "cpu" | "memory" | "output" | "pending";
+		readonly budget?: number;
+		readonly observed?: number;
+	};
+}
+
+// Flat-list sort order:
+//   1. pending rows first (newest-started on top)
+//   2. terminal rows after (newest-completed on top)
+function sortInvocationRows(rows: readonly InvocationRow[]): InvocationRow[] {
+	return rows.slice().sort((a, b) => {
+		const aPending = a.status === "pending";
+		const bPending = b.status === "pending";
+		if (aPending !== bPending) {
+			return aPending ? -1 : 1;
+		}
+		if (aPending) {
+			return b.startedTs - a.startedTs;
+		}
+		return (b.completedTs ?? 0) - (a.completedTs ?? 0);
+	});
+}
+
+function toIsoString(ts: string | Date): string {
+	const d = ts instanceof Date ? ts : new Date(ts);
+	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
+}
+
+function Time({ ts, class: cls }: { ts: string | Date; class: string }) {
+	const iso = toIsoString(ts);
+	return (
+		<time class={cls} datetime={iso}>
+			{iso}
+		</time>
+	);
+}
+
+function formatDurationUs(us: number): string {
+	const d = Math.max(0, us);
+	if (d < US_PER_MS) {
+		return `${d} µs`;
+	}
+	if (d < US_PER_SECOND) {
+		return `${(d / US_PER_MS).toFixed(DURATION_FRACTION_DIGITS)} ms`;
+	}
+	if (d < US_PER_MINUTE) {
+		return `${(d / US_PER_SECOND).toFixed(DURATION_FRACTION_DIGITS)} s`;
+	}
+	return `${(d / US_PER_MINUTE).toFixed(DURATION_FRACTION_DIGITS)} min`;
+}
+
+// Wrench glyph for synthetic `trigger.exception` invocations — author-
+// fixable trigger setup failure.
+function SetupFailedIcon() {
+	return (
+		<svg
+			class="icon icon-setup-failed"
+			viewBox="0 0 24 24"
+			width="14"
+			height="14"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			role="img"
+		>
+			<title>trigger setup failed</title>
+			<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+		</svg>
+	);
+}
+
+// Shield-cross for `trigger.rejection` (HTTP body schema rejection).
+function RejectedIcon() {
+	return (
+		<svg
+			class="icon icon-rejected"
+			viewBox="0 0 24 24"
+			width="14"
+			height="14"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			role="img"
+		>
+			<title>trigger rejected</title>
+			<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+			<path d="m9 9 6 6" />
+			<path d="m15 9-6 6" />
+		</svg>
+	);
+}
+
+// Upload-arrow for `system.upload` rows.
+function UploadIcon() {
+	return (
+		<svg
+			class="icon icon-upload"
+			viewBox="0 0 24 24"
+			width="14"
+			height="14"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			role="img"
+		>
+			<title>workflow uploaded</title>
+			<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+			<polyline points="17 8 12 3 7 8" />
+			<line x1="12" y1="3" x2="12" y2="15" />
+		</svg>
+	);
+}
+
+const EXHAUSTION_LABELS: Record<
+	NonNullable<InvocationRow["exhaustion"]>["dim"],
+	string
+> = {
+	cpu: "CPU",
+	memory: "MEM",
+	output: "OUT",
+	pending: "PEND",
+};
+
+const EXHAUSTION_UNITS: Record<
+	NonNullable<InvocationRow["exhaustion"]>["dim"],
+	string
+> = {
+	cpu: "ms",
+	memory: "bytes",
+	output: "bytes",
+	pending: "",
+};
+
+function ExhaustionPill({
+	exhaustion,
+}: {
+	exhaustion: InvocationRow["exhaustion"];
+}) {
+	if (!exhaustion) {
+		return null;
+	}
+	const label = EXHAUSTION_LABELS[exhaustion.dim];
+	const unit = EXHAUSTION_UNITS[exhaustion.dim];
+	const parts: string[] = [];
+	if (exhaustion.budget !== undefined) {
+		parts.push(`budget=${exhaustion.budget}${unit}`);
+	}
+	if (exhaustion.observed !== undefined) {
+		parts.push(`observed=${exhaustion.observed}${unit}`);
+	}
+	const title = parts.length > 0 ? parts.join(" ") : label;
+	return (
+		<span class="entry-exhaustion" title={title}>
+			{label}
+		</span>
+	);
+}
+
+function DispatchChip({ dispatch }: { dispatch: InvocationRow["dispatch"] }) {
+	if (!dispatch) {
+		return null;
+	}
+	if (dispatch.source === "manual") {
+		const tooltip = dispatch.user?.login ?? "";
+		return (
+			<span class="entry-dispatch" title={tooltip}>
+				manual
+			</span>
+		);
+	}
+	if (dispatch.source === "upload") {
+		const login = dispatch.user?.login ?? "";
+		const mail = dispatch.user?.mail ?? "";
+		const tooltip = mail ? `${login} <${mail}>` : login;
+		return (
+			<span class="entry-dispatch" title={tooltip}>
+				upload
+			</span>
+		);
+	}
+	return null;
+}
+
+function SyntheticGlyph({ row }: { row: InvocationRow }) {
+	if (!row.synthetic) {
+		return null;
+	}
+	if (row.syntheticKind === "trigger.rejection") {
+		const title = row.rejectionSummary
+			? `trigger rejected: ${row.rejectionSummary}`
+			: "trigger rejected";
+		return (
+			<span
+				class="entry-rejected"
+				role="img"
+				aria-label="trigger rejected"
+				title={title}
+			>
+				<RejectedIcon />
+			</span>
+		);
+	}
+	if (row.syntheticKind === "system.upload") {
+		const title = row.uploadShaShort
+			? `workflow uploaded sha=${row.uploadShaShort}`
+			: "workflow uploaded";
+		return (
+			<span
+				class="entry-upload"
+				role="img"
+				aria-label="workflow uploaded"
+				title={title}
+			>
+				<UploadIcon />
+			</span>
+		);
+	}
+	// Default: trigger.exception / legacy synthetic.
+	return (
+		<span
+			class="entry-setup-failed"
+			role="img"
+			aria-label="trigger setup failed"
+		>
+			<SetupFailedIcon />
+		</span>
+	);
+}
+
+function CardSummary({
+	row,
+	duration,
+	expandable,
+}: {
+	row: InvocationRow;
+	duration: string;
+	expandable: boolean;
+}) {
+	// Synthetic trigger.exception / trigger.rejection rows have no dispatch
+	// metadata. system.upload rows DO carry a dispatch chip.
+	const showDispatch = !row.synthetic || row.syntheticKind === "system.upload";
+	return (
+		<>
+			<div class="entry-header">
+				{expandable ? (
+					<span class="entry-expand-chevron" aria-hidden="true">
+						<ChevronIcon />
+					</span>
+				) : (
+					<span
+						class="entry-expand-chevron entry-expand-chevron--placeholder"
+						aria-hidden="true"
+					/>
+				)}
+				<div class="entry-identity">
+					{row.triggerKind ? <TriggerKindIcon kind={row.triggerKind} /> : null}
+					<span class="entry-scope">{`${row.owner}/${row.repo}`}</span>
+					<span class="entry-identity-sep">›</span>
+					<span class="entry-workflow">{row.workflow}</span>
+					<span class="entry-identity-sep">›</span>
+					<span class="entry-trigger">{row.trigger}</span>
+				</div>
+				{showDispatch ? <DispatchChip dispatch={row.dispatch} /> : null}
+				<SyntheticGlyph row={row} />
+				<span class={`badge ${row.status}`}>{row.status}</span>
+				<ExhaustionPill exhaustion={row.exhaustion} />
+			</div>
+			<div class="entry-meta">
+				<Time ts={row.startedAt} class="entry-started" />
+				<span class="entry-sep">·</span>
+				<span class="entry-duration">{duration}</span>
+			</div>
+		</>
+	);
+}
+
+function Card({ row }: { row: InvocationRow }) {
+	const duration =
+		row.completedTs === null
+			? "—"
+			: formatDurationUs(row.completedTs - row.startedTs);
+
+	// Pending and trigger.rejection / system.upload rows render as flat
+	// non-expandable cards. Only handler-driven invocations and the legacy
+	// synthetic trigger.exception path expose a flamegraph affordance.
+	const noFlamegraph =
+		row.status === "pending" ||
+		row.syntheticKind === "trigger.rejection" ||
+		row.syntheticKind === "system.upload";
+	if (noFlamegraph) {
+		return (
+			<div class="entry" id={`inv-${row.id}`}>
+				<CardSummary row={row} duration={duration} expandable={false} />
+			</div>
+		);
+	}
+
+	const flamegraphUrl = `/dashboard/${row.owner}/${row.repo}/invocations/${row.id}/flamegraph`;
+	return (
+		<details
+			class="entry entry-expandable"
+			id={`inv-${row.id}`}
+			hx-get={flamegraphUrl}
+			hx-trigger="toggle once"
+			hx-target="find .flame-slot"
+			hx-swap="innerHTML"
+		>
+			<summary class="entry-summary" aria-label="Expand invocation details">
+				<CardSummary row={row} duration={duration} expandable={true} />
+			</summary>
+			<div class="flame-slot" />
+		</details>
+	);
+}
+
+function InvocationList({
+	invocations,
+}: {
+	invocations: readonly InvocationRow[];
+}) {
+	if (invocations.length === 0) {
+		return (
+			<div class="empty-state" data-count="0">
+				No invocations yet
+			</div>
+		);
+	}
+	const nowIso = new Date().toISOString();
+	const sorted = sortInvocationRows(invocations);
+	const count = sorted.length;
+	return (
+		<div data-count={String(count)}>
+			<section class="list-header" aria-label="Invocation list summary">
+				<span class="list-header-count">{`${count} invocation${count === 1 ? "" : "s"}`}</span>
+				<span class="entry-sep">·</span>
+				<span>pending first, then newest-completed</span>
+				<span class="entry-sep">·</span>
+				<span>
+					updated <Time ts={nowIso} class="list-header-updated" />
+				</span>
+			</section>
+			{sorted.map((row) => (
+				<Card row={row} />
+			))}
+		</div>
+	);
+}
+
+// Compat shim — exported for tests / current call sites. Calls .toString()
+// internally so the returned value is a string Hono's c.html() accepts and
+// tests can await+stringify harmlessly.
+function renderInvocationList(invocations: readonly InvocationRow[]) {
+	return (<InvocationList invocations={invocations} />).toString();
+}
+
+// ---------------------------------------------------------------------------
+// Top-level page — always a flat list, titled by the active filter
+// ---------------------------------------------------------------------------
+
+interface DashboardFilter {
+	readonly owner: string;
+	readonly repo?: string;
+	readonly workflow?: string;
+	readonly trigger?: string;
+}
+
+interface DashboardPageOptions {
+	readonly user: string;
+	readonly email: string;
+	readonly owners: readonly string[];
+	readonly rows: readonly InvocationRow[];
+	// The active filter, derived from the URL. `undefined` = show all scopes
+	// the user has access to.
+	readonly filter?: DashboardFilter;
+	readonly sidebarTree?: Child;
+}
+
+function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
+	if (!filter) {
+		return <span class="scope-all">All invocations</span>;
+	}
+	if (!filter.repo) {
+		return (
+			<>
+				<a href="/dashboard">All</a>
+				<span class="breadcrumb-sep">/</span>
+				<span class="breadcrumb-current">{filter.owner}</span>
+			</>
+		);
+	}
+	if (!(filter.workflow && filter.trigger)) {
+		return (
+			<>
+				<a href="/dashboard">All</a>
+				<span class="breadcrumb-sep">/</span>
+				<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
+				<span class="breadcrumb-sep">/</span>
+				<span class="breadcrumb-current">{filter.repo}</span>
+			</>
+		);
+	}
+	return (
+		<>
+			<a href="/dashboard">All</a>
+			<span class="breadcrumb-sep">/</span>
+			<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
+			<span class="breadcrumb-sep">/</span>
+			<a href={`/dashboard/${filter.owner}/${filter.repo}`}>{filter.repo}</a>
+			<span class="breadcrumb-sep">/</span>
+			<span class="breadcrumb-current">
+				{`${filter.workflow} / ${filter.trigger}`}
+			</span>
+		</>
+	);
+}
+
+function DashboardPage({
+	user,
+	email,
+	rows,
+	filter,
+	sidebarTree,
+}: DashboardPageOptions) {
+	return (
+		<Layout
+			title="Dashboard"
+			activePath="/dashboard"
+			user={user}
+			email={email}
+			{...(sidebarTree === undefined ? {} : { sidebarTree })}
+		>
+			<div class="page-header">
+				<nav class="breadcrumb" aria-label="Breadcrumb">
+					<ScopeLabel filter={filter} />
+				</nav>
+				<h1>Dashboard</h1>
+			</div>
+			<div class="list">
+				<InvocationList invocations={rows} />
+			</div>
+		</Layout>
+	);
+}
+
+// Compat-shaped function export for un-migrated middleware. Calls
+// .toString() so the returned value is a string c.html() accepts directly.
+function renderDashboardPage(options: DashboardPageOptions) {
+	return (<DashboardPage {...options} />).toString();
+}
+
+export type { DashboardPageOptions, InvocationRow };
+export {
+	DashboardPage,
+	formatDurationUs,
+	InvocationList,
+	renderDashboardPage,
+	renderInvocationList,
+	sortInvocationRows,
+};

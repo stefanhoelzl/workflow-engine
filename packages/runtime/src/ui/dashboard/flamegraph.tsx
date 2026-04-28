@@ -1,6 +1,15 @@
 import type { InvocationEvent } from "@workflow-engine/core";
-import { html, raw } from "hono/html";
+import { raw } from "hono/html";
 import { formatDurationUs } from "./page.js";
+
+// Chrome (legend, metrics, header, error fragment, top-level wrapper) is
+// JSX. SVG body is machine-generated content built via string concatenation
+// in `buildSvgPieces` / `renderRuler` and bridged into the JSX tree via
+// `{raw(svg)}` / `{raw(ruler)}`. Two-natures rationale: SVG body is
+// hundreds of computed-coordinate elements per render — readability win
+// from JSX is zero, output bytes change cost is real (existing
+// flamegraph.test.ts assertions depend on byte shape). See migration
+// design.md Decision 5.
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -775,8 +784,10 @@ function hasAnyTimerMarker(layout: Layout): boolean {
 // Top-level render
 // ---------------------------------------------------------------------------
 
-function renderEmpty() {
-	return html`<div class="flame-empty">No flamegraph available for this invocation.</div>`;
+function FlameEmpty() {
+	return (
+		<div class="flame-empty">No flamegraph available for this invocation.</div>
+	);
 }
 
 function renderRuler(totalDurationTs: number): string {
@@ -849,79 +860,107 @@ function detectLegendPresence(layout: Layout): LegendPresence {
 	};
 }
 
-function renderLegend(presence: LegendPresence) {
-	const items: ReturnType<typeof html>[] = [];
-	if (presence.hasTrigger) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--trigger"></span>trigger</span>`,
-		);
-	}
-	if (presence.hasAction) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--action"></span>action</span>`,
-		);
-	}
-	if (presence.hasRest) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--rest"></span>fetch / timer / other</span>`,
-		);
-	}
-	if (presence.hasOrphan) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-swatch flame-legend-swatch--orphan"></span>orphan (no terminal)</span>`,
-		);
-	}
-	if (presence.hasClearMarker) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-glyph">×</span>timer cleared</span>`,
-		);
-	}
-	if (presence.hasCallMarker) {
-		items.push(
-			html`<span class="flame-legend-item"><span class="flame-legend-glyph">●</span>host call</span>`,
-		);
-	}
+function Legend({ presence }: { presence: LegendPresence }) {
+	const items = [
+		presence.hasTrigger && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-swatch flame-legend-swatch--trigger" />
+				trigger
+			</span>
+		),
+		presence.hasAction && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-swatch flame-legend-swatch--action" />
+				action
+			</span>
+		),
+		presence.hasRest && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-swatch flame-legend-swatch--rest" />
+				fetch / timer / other
+			</span>
+		),
+		presence.hasOrphan && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-swatch flame-legend-swatch--orphan" />
+				orphan (no terminal)
+			</span>
+		),
+		presence.hasClearMarker && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-glyph">×</span>
+				timer cleared
+			</span>
+		),
+		presence.hasCallMarker && (
+			<span class="flame-legend-item">
+				<span class="flame-legend-glyph">●</span>
+				host call
+			</span>
+		),
+	].filter(Boolean);
 	if (items.length === 0) {
-		return "";
+		return null;
 	}
-	return html`<div class="flame-legend" aria-label="Legend">${items}</div>`;
+	return (
+		<section class="flame-legend" aria-label="Legend">
+			{items}
+		</section>
+	);
 }
 
-function buildMetrics(layout: Layout): ReturnType<typeof html>[] {
-	const metrics: ReturnType<typeof html>[] = [];
-	if (layout.actionCount > 0) {
-		metrics.push(
-			html`<span><strong>${String(layout.actionCount)}</strong> action${layout.actionCount === 1 ? "" : "s"}</span>`,
-		);
-	}
-	if (layout.systemCount > 0) {
-		metrics.push(
-			html`<span><strong>${String(layout.systemCount)}</strong> host call${layout.systemCount === 1 ? "" : "s"}</span>`,
-		);
-	}
-	if (layout.timerCount > 0) {
-		metrics.push(
-			html`<span><strong>${String(layout.timerCount)}</strong> timer${layout.timerCount === 1 ? "" : "s"}</span>`,
-		);
-	}
-	return metrics;
+function Metrics({ layout }: { layout: Layout }) {
+	return (
+		<>
+			{layout.actionCount > 0 && (
+				<span>
+					<strong>{String(layout.actionCount)}</strong>{" "}
+					{layout.actionCount === 1 ? "action" : "actions"}
+				</span>
+			)}
+			{layout.systemCount > 0 && (
+				<span>
+					<strong>{String(layout.systemCount)}</strong>{" "}
+					{layout.systemCount === 1 ? "host call" : "host calls"}
+				</span>
+			)}
+			{layout.timerCount > 0 && (
+				<span>
+					<strong>{String(layout.timerCount)}</strong>{" "}
+					{layout.timerCount === 1 ? "timer" : "timers"}
+				</span>
+			)}
+		</>
+	);
+}
+
+function hasAnyMetrics(layout: Layout): boolean {
+	return (
+		layout.actionCount > 0 || layout.systemCount > 0 || layout.timerCount > 0
+	);
 }
 
 // Pulls the dispatching user's name out of the invocation's `trigger.request`
 // event (`meta.dispatch.user.name`, stamped by the executor's widener).
 // Returns an empty fragment when no name is present so the flamegraph header
 // stays unadorned for trigger-source-backed invocations.
-function buildTriggeredBy(events: readonly InvocationEvent[]) {
+function dispatchUserName(
+	events: readonly InvocationEvent[],
+): string | undefined {
 	const triggerReq = events.find((e) => e.kind === "trigger.request");
 	const dispatchMeta = (triggerReq?.meta as { dispatch?: unknown } | undefined)
 		?.dispatch as { user?: { name?: unknown } } | undefined;
-	const name =
-		typeof dispatchMeta?.user?.name === "string"
-			? dispatchMeta.user.name
-			: undefined;
-	return name
-		? html`<span class="flame-header-triggered-by">triggered by <strong>${name}</strong></span>`
-		: "";
+	return typeof dispatchMeta?.user?.name === "string"
+		? dispatchMeta.user.name
+		: undefined;
+}
+
+function TriggeredBy({ name }: { name: string }) {
+	return (
+		<span class="flame-header-triggered-by">
+			triggered by <strong>{name}</strong>
+		</span>
+	);
 }
 
 // Synthetic single-leaf `trigger.exception` invocation — no
@@ -930,7 +969,7 @@ function buildTriggeredBy(events: readonly InvocationEvent[]) {
 // ECONNREFUSED" (or similar) without expanding further. Per
 // `dashboard-list-view` spec "Single-leaf invocation flamegraph renders
 // the leaf event".
-function renderTriggerExceptionFragment(event: InvocationEvent) {
+function TriggerExceptionFragment({ event }: { event: InvocationEvent }) {
 	// `event.name` carries the failure-category discriminator
 	// (e.g. "imap.poll-failed"). Stage-specific payload (e.g. IMAP's
 	// `stage`) lives under `event.input.{stage,…}` per the
@@ -942,25 +981,27 @@ function renderTriggerExceptionFragment(event: InvocationEvent) {
 	const title = message
 		? `${cause}${stageSuffix}: ${message}`
 		: `${cause}${stageSuffix}`;
-	return html`<div class="flame-fragment flame-fragment--exception">
-  <div class="flame-exception" role="img" aria-label="${title}">
-    <span class="flame-exception-name">${cause}${stageSuffix}</span>
-    <span class="flame-exception-sep">·</span>
-    <span class="flame-exception-message">${message}</span>
-  </div>
-</div>`;
+	return (
+		<div class="flame-fragment flame-fragment--exception">
+			<div class="flame-exception" role="img" aria-label={title}>
+				<span class="flame-exception-name">{`${cause}${stageSuffix}`}</span>
+				<span class="flame-exception-sep">·</span>
+				<span class="flame-exception-message">{message}</span>
+			</div>
+		</div>
+	);
 }
 
-function renderFlamegraph(events: readonly InvocationEvent[]) {
+function Flamegraph({ events }: { events: readonly InvocationEvent[] }) {
 	if (events.length === 0) {
-		return renderEmpty();
+		return <FlameEmpty />;
 	}
 	if (events.length === 1 && events[0]?.kind === "trigger.exception") {
-		return renderTriggerExceptionFragment(events[0]);
+		return <TriggerExceptionFragment event={events[0]} />;
 	}
 	const layout = computeLayout(events);
 	if (!layout) {
-		return renderEmpty();
+		return <FlameEmpty />;
 	}
 
 	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(layout);
@@ -971,14 +1012,8 @@ function renderFlamegraph(events: readonly InvocationEvent[]) {
 	// badge. The flamegraph header only adds what the card does not:
 	// per-kind counts (actions/host calls/timers, suppressed when zero) and
 	// the dispatching user's name when the fire was manual.
-	const metrics = buildMetrics(layout);
-	const triggeredBy = buildTriggeredBy(events);
-	const header =
-		metrics.length > 0 || triggeredBy !== ""
-			? html`<div class="flame-header-metrics">${metrics}${triggeredBy}</div>`
-			: "";
-
-	const legend = renderLegend(detectLegendPresence(layout));
+	const dispatcher = dispatchUserName(events);
+	const showHeader = hasAnyMetrics(layout) || dispatcher !== undefined;
 
 	const svg =
 		`<svg class="flame-graph" width="100%" height="${svgHeight}" viewBox="0 0 ${VIEWBOX_WIDTH} ${svgHeight}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">` +
@@ -991,16 +1026,29 @@ function renderFlamegraph(events: readonly InvocationEvent[]) {
 		"\\u003c",
 	);
 
-	return html`<div class="flame-fragment">
-  ${header}
-  ${legend}
-  ${raw(ruler)}
-  <div class="flame-container">
-    ${raw(svg)}
-  </div>
-  <script type="application/json" class="flame-events">${raw(eventsJson)}</script>
-</div>`;
+	return (
+		<div class="flame-fragment">
+			{showHeader && (
+				<div class="flame-header-metrics">
+					<Metrics layout={layout} />
+					{dispatcher && <TriggeredBy name={dispatcher} />}
+				</div>
+			)}
+			<Legend presence={detectLegendPresence(layout)} />
+			{raw(ruler)}
+			<div class="flame-container">{raw(svg)}</div>
+			<script type="application/json" class="flame-events">
+				{raw(eventsJson)}
+			</script>
+		</div>
+	);
+}
+
+// Compat shim — calls .toString() so c.html() accepts the result directly
+// and html-invariants tests can `(await renderFlamegraph(...)).toString()`.
+function renderFlamegraph(events: readonly InvocationEvent[]) {
+	return (<Flamegraph events={events} />).toString();
 }
 
 export type { LaidOutBar, LaidOutConnector, LaidOutMarker, Layout };
-export { renderFlamegraph };
+export { Flamegraph, renderFlamegraph };

@@ -56,6 +56,37 @@
 	},
 	"overrides": [
 		{
+			// .tsx files use server JSX (hono/jsx) for HTML rendering. Several
+			// recommended Biome rules target React/Next.js conventions that
+			// don't fit:
+			//
+			// - noJsxLiterals: aspirational i18n rule. This codebase renders
+			//   UI strings inline ("Workflow Engine", "Sign out", etc.) and
+			//   has no i18n requirement.
+			// - useComponentExportOnlyModules: JSX modules naturally cohabit
+			//   with helper functions (data formatters, sort utilities, type
+			//   guards). Splitting them adds files for no benefit.
+			// - noHeadElement: targets Next.js Head; we render real <head> in
+			//   our document shells (Layout, error pages, login page).
+			"includes": ["**/*.tsx"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noJsxLiterals": "off",
+						"useComponentExportOnlyModules": "off",
+						"noHeadElement": "off",
+						// Component references stored as object properties
+						// (NAV_ITEMS[i].Icon, Pages.NotFoundPage) MUST be
+						// PascalCase because JSX render sites require uppercase
+						// component names (<Icon/> not <icon/>). The rule's
+						// camelCase requirement collides with that JSX
+						// requirement; PascalCase wins.
+						"useNamingConvention": "off"
+					}
+				}
+			}
+		},
+		{
 			// Vite/Vitest config files require default exports by convention and
 			// read environment variables during config load.
 			"includes": ["**/vite.config.ts", "**/vitest.config.ts"],
