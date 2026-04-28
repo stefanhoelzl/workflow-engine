@@ -48,7 +48,7 @@ describe("web-platform plugin", () => {
 		const setup = worker(ctx);
 		const gf = setup.guestFunctions?.[0];
 		// The descriptor's `log` config drives the auto-wrap in
-		// guest-function-install. Per the bridge-main-sequencing change,
+		// `bridge.installDescriptor`. Per the bridge-main-sequencing change,
 		// uncaught errors emit as `system.exception` leaf events.
 		expect(gf?.log).toEqual({ event: "system.exception" });
 		// logName uses the reported error's class name for visual

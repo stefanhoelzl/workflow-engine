@@ -878,8 +878,9 @@ item is incomplete. A new plugin author may copy `sql/worker.ts` or
   `packages/sandbox/src/plugin-compose.ts`
 - Worker boot phases + WASI dispatch: `packages/sandbox/src/worker.ts`,
   `packages/sandbox/src/wasi.ts`
-- Guest function install (arg/result marshaling, `Callable`):
-  `packages/sandbox/src/guest-function-install.ts`
+- Host↔VM bridge (arg/result marshaling, `Callable` lifecycle, descriptor
+  install + leak audit): `packages/sandbox/src/bridge-factory.ts`
+- Guest descriptor error classes: `packages/sandbox/src/guest-errors.ts`
 - Vite plugin + worker-side loader: `packages/sandbox/src/vite/sandbox-plugins.ts`,
   `packages/sandbox/src/worker-plugin-loader.ts`
 - Sandbox stdlib plugins: `packages/sandbox-stdlib/src/{web-platform,fetch,timers,console}/`

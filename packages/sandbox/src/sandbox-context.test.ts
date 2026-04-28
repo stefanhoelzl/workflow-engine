@@ -79,10 +79,21 @@ function createFakeBridge(): FakeBridge {
 		rebind: () => {
 			/* unused */
 		},
-		// marshal/arg fields are not invoked by createSandboxContext;
-		// satisfy the type with an empty shim so the compiler is happy.
+		// marshal/arg/install/makeCallable fields are not invoked by
+		// createSandboxContext; satisfy the type with empty shims so the
+		// compiler is happy.
 		marshal: {} as unknown as FakeBridge["marshal"],
 		arg: {} as unknown as FakeBridge["arg"],
+		makeCallable: (() => {
+			throw new Error("not used in sandbox-context tests");
+		}) as unknown as FakeBridge["makeCallable"],
+		installDescriptor: () => {
+			throw new Error("not used in sandbox-context tests");
+		},
+		rebindDescriptor: () => {
+			throw new Error("not used in sandbox-context tests");
+		},
+		drainCallableLeaks: () => [],
 	} satisfies FakeBridge;
 	return bridge;
 }
