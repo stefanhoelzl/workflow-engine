@@ -42,7 +42,7 @@ The runtime SHALL expose an `AuthProvider` interface that captures every per-req
 ```ts
 interface AuthProvider {
   readonly id: string;
-  renderLoginSection(returnTo: string): HtmlEscapedString;
+  renderLoginSection(returnTo: string): JSX.Element;
   mountAuthRoutes(subApp: Hono): void;
   resolveApiIdentity(req: Request): Promise<UserContext | undefined>;
   refreshSession(payload: SessionPayload): Promise<UserContext | undefined>;
@@ -53,7 +53,7 @@ Each provider instance SHALL be constructed once at runtime startup, after the r
 
 The `id` field SHALL match the provider id segment in `AUTH_ALLOW` entries (the part before the first `:`) and SHALL be used as the path segment for `mountAuthRoutes` (mounted at `/auth/<id>/`) and as the value matched against the `X-Auth-Provider` request header on `/api/*`.
 
-`renderLoginSection` SHALL return a non-null `HtmlEscapedString`. A registered provider always has at least one entry by construction (the registry only instantiates providers for ids that appeared in `AUTH_ALLOW`); the "no entries to render" case is impossible.
+`renderLoginSection` SHALL return a non-null `JSX.Element` (a `hono/jsx` component tree). A registered provider always has at least one entry by construction (the registry only instantiates providers for ids that appeared in `AUTH_ALLOW`); the "no entries to render" case is impossible. The login page composes the provider sections by embedding the returned JSX subtrees directly into the rendered tree.
 
 `resolveApiIdentity` SHALL return `undefined` when the provider cannot resolve a `UserContext` from the request. The dispatcher SHALL treat `undefined` as a 401 outcome — there SHALL NOT be a fall-through to "try the next provider", because the dispatcher already selected exactly one provider via `X-Auth-Provider`.
 
@@ -655,7 +655,7 @@ The route SHALL always render an HTML page — it SHALL NEVER initiate a provide
 Behavior:
 1. Read the `returnTo` query parameter; sanitize to a same-origin relative path (default `/`).
 2. Read the `auth_flash` cookie if present; unseal and clear it.
-3. Iterate the provider registry in registration order. For each registered provider, call `provider.renderLoginSection(returnTo)` and concatenate the returned `HtmlEscapedString` into the login card.
+3. Iterate the provider registry in registration order. For each registered provider, call `provider.renderLoginSection(returnTo)` and embed the returned `JSX.Element` into the login card's JSX tree.
 4. Respond `200 OK` with an HTML page containing:
    - The brand element.
    - The provider sections from step 3 (or no sections if the registry is empty).

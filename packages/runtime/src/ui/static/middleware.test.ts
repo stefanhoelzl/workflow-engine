@@ -10,22 +10,16 @@ function mountApp() {
 }
 
 describe("staticMiddleware", () => {
-	it("serves 404.html with text/html content-type", async () => {
+	it("does NOT serve 404.html (rendered per-request via JSX, no static file)", async () => {
 		const app = mountApp();
 		const res = await app.request("/static/404.html");
-		expect(res.status).toBe(200);
-		expect(res.headers.get("content-type")).toBe("text/html");
-		const body = await res.text();
-		expect(body).toContain("Page not found");
+		expect(res.status).toBe(404);
 	});
 
-	it("serves error.html with text/html content-type", async () => {
+	it("does NOT serve error.html (rendered per-request via JSX, no static file)", async () => {
 		const app = mountApp();
 		const res = await app.request("/static/error.html");
-		expect(res.status).toBe(200);
-		expect(res.headers.get("content-type")).toBe("text/html");
-		const body = await res.text();
-		expect(body).toContain("Something went wrong");
+		expect(res.status).toBe(404);
 	});
 
 	it("serves workflow-engine.css with text/css content-type", async () => {

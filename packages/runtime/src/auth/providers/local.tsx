@@ -1,6 +1,5 @@
 import type { Context, Hono } from "hono";
 import { setCookie } from "hono/cookie";
-import { html } from "hono/html";
 import type { CookieOptions } from "hono/utils/cookie";
 import {
 	HTTP_BAD_REQUEST,
@@ -77,8 +76,8 @@ function writeOpts(secure: boolean, maxAge: number): CookieOptions {
 	return { ...clearOpts(secure), maxAge };
 }
 
-function renderOption(name: string): LoginSection {
-	return html`<option value="${name}">${name}</option>`;
+function LocalUserOption({ name }: { name: string }) {
+	return <option value={name}>{name}</option>;
 }
 
 function buildSignin(
@@ -133,13 +132,24 @@ function createLocalProvider(
 		id: ID,
 
 		renderLoginSection(returnTo: string): LoginSection {
-			const options = entries.map((e) => renderOption(e.name));
-			return html`<form method="POST" action="/auth/local/signin" class="auth-card__local">
-  <input type="hidden" name="returnTo" value="${returnTo}">
-  <label for="local-user">Sign in as</label>
-  <select id="local-user" name="user">${options}</select>
-  <button type="submit" class="btn btn--primary">Sign in (local)</button>
-</form>`;
+			return (
+				<form
+					method="post"
+					action="/auth/local/signin"
+					class="auth-card__local"
+				>
+					<input type="hidden" name="returnTo" value={returnTo} />
+					<label for="local-user">Sign in as</label>
+					<select id="local-user" name="user">
+						{entries.map((e) => (
+							<LocalUserOption name={e.name} />
+						))}
+					</select>
+					<button type="submit" class="btn btn--primary">
+						Sign in (local)
+					</button>
+				</form>
+			);
 		},
 
 		mountAuthRoutes(app: Hono): void {

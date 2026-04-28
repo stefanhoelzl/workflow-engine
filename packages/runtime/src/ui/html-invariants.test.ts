@@ -9,9 +9,11 @@ import {
 	renderDashboardPage,
 	renderInvocationList,
 } from "./dashboard/page.js";
-import notFoundHtml from "./static/404.html?raw";
-import errorHtml from "./static/error.html?raw";
+import { ErrorPage, NotFoundPage } from "./error-pages.js";
 import { renderRepoTriggerPage } from "./trigger/page.js";
+
+const notFoundHtml = String(NotFoundPage());
+const errorHtml = String(ErrorPage());
 
 // ---------------------------------------------------------------------------
 // CSP invariant assertions (SECURITY.md §6)

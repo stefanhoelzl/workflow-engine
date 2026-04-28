@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import type { HtmlEscapedString } from "hono/utils/html";
+import type { Child } from "hono/jsx";
 import type { SessionPayload } from "../session-cookie.js";
 import type { UserContext } from "../user-context.js";
 
@@ -12,7 +12,10 @@ interface ProviderRouteDeps {
 	readonly baseUrl?: string;
 }
 
-type LoginSection = HtmlEscapedString | Promise<HtmlEscapedString>;
+// `LoginSection` is a JSX subtree composed by the login page. Providers
+// return a JSX node from `renderLoginSection`; the login page embeds it
+// directly into its tree (no HtmlEscapedString concat).
+type LoginSection = Child;
 
 interface AuthProvider {
 	readonly id: string;

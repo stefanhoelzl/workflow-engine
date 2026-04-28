@@ -11,7 +11,12 @@ const ERROR_HTML =
 	"<!DOCTYPE html><html><body><span>Something went wrong (fixture)</span></body></html>";
 
 function fixturePages() {
-	return { pages: { notFound: NOT_FOUND_HTML, error: ERROR_HTML } };
+	return {
+		pages: {
+			NotFoundPage: () => NOT_FOUND_HTML,
+			ErrorPage: () => ERROR_HTML,
+		},
+	};
 }
 
 function subApp(

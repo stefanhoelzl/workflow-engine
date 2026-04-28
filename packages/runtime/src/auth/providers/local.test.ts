@@ -76,11 +76,11 @@ describe("create", () => {
 });
 
 describe("renderLoginSection", () => {
-	it('markup contains <form method="POST" action="/auth/local/signin">', async () => {
+	it('markup contains <form method="post" action="/auth/local/signin">', async () => {
 		const provider = localProviderFactory.create(["dev"], DEPS);
 		const section = await provider.renderLoginSection("/");
 		const markup = String(section);
-		expect(markup).toContain('<form method="POST" action="/auth/local/signin"');
+		expect(markup).toContain('<form method="post" action="/auth/local/signin"');
 	});
 
 	it("renders one <option> per entry name", async () => {
@@ -98,7 +98,7 @@ describe("renderLoginSection", () => {
 		const provider = localProviderFactory.create(["dev"], DEPS);
 		const markup = String(await provider.renderLoginSection("/dashboard"));
 		expect(markup).toContain(
-			'<input type="hidden" name="returnTo" value="/dashboard">',
+			'<input type="hidden" name="returnTo" value="/dashboard"/>',
 		);
 	});
 });
