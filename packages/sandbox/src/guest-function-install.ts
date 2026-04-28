@@ -168,6 +168,16 @@ function marshalArg(vm: QuickJS, value: unknown): JSValueHandle {
 function makeCallable(vm: QuickJS, handle: JSValueHandle): Callable {
 	const dup = handle.dup();
 	let disposed = false;
+	// Re-entry-safe disposal: a Callable may be invoked from inside its own
+	// guest frame (e.g. `let id = setInterval(() => clearInterval(id), 0)`
+	// routes through the timers plugin's `cancel`, which calls
+	// `entry.callable.dispose()` while QuickJS is still executing inside
+	// `dup`). Releasing `dup` while it is on the WASM stack triggers a
+	// `RuntimeError: memory access out of bounds` when QuickJS unwinds back
+	// through the freed handle. We track invocation depth and defer the
+	// underlying `dup.dispose()` until depth returns to 0.
+	let depth = 0;
+	let pendingDispose = false;
 	const invoke = async (
 		...args: readonly GuestValue[]
 	): Promise<GuestValue> => {
@@ -175,6 +185,7 @@ function makeCallable(vm: QuickJS, handle: JSValueHandle): Callable {
 			throw new CallableDisposedError();
 		}
 		const argHandles = args.map((a) => marshalArg(vm, a));
+		depth++;
 		try {
 			const retHandle = callGuestFn(vm, dup, argHandles);
 			return await awaitGuestResult(vm, retHandle);
@@ -182,11 +193,20 @@ function makeCallable(vm: QuickJS, handle: JSValueHandle): Callable {
 			for (const h of argHandles) {
 				h.dispose();
 			}
+			depth--;
+			if (depth === 0 && pendingDispose && !disposed) {
+				disposed = true;
+				dup.dispose();
+			}
 		}
 	};
 	const callable = invoke as Callable;
 	callable.dispose = () => {
-		if (disposed) {
+		if (disposed || pendingDispose) {
+			return;
+		}
+		if (depth > 0) {
+			pendingDispose = true;
 			return;
 		}
 		disposed = true;

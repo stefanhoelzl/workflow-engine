@@ -240,6 +240,42 @@ describe("createTimersPlugin", () => {
 		expect(cb2.invocations).toBe(0);
 	});
 
+	it("setInterval callback that synchronously calls clearInterval(id) for its own id stops cleanly without re-firing or throwing (F-1 plugin-side regression)", async () => {
+		// F-1 reproducer at the plugin layer. The crash itself was a WASM
+		// trap inside QuickJS — covered by the real-VM test elsewhere — but
+		// the plugin-side invariant is observable: cancel-during-fire must
+		// (a) stop the Node interval, (b) prevent further callable
+		// invocations, and (c) not throw. With the re-entry-safe Callable in
+		// the sandbox layer, the timers plugin's straight-line dispose call
+		// in cancel() is now safe; this test pins that the timers plugin
+		// itself does not regress to a shape that depends on synchronous
+		// release.
+		const ctx = recordingCtx();
+		const setup = worker(ctx);
+		const setIntervalDesc = setup.guestFunctions?.find(
+			(d: GuestDescriptor) => d.name === "setInterval",
+		);
+		const clearIntervalDesc = setup.guestFunctions?.find(
+			(d: GuestDescriptor) => d.name === "clearInterval",
+		);
+		let id = -1;
+		const cb = stubCallable(() => {
+			(clearIntervalDesc?.handler as unknown as (id: number) => void)(id);
+		});
+		id = (
+			setIntervalDesc?.handler as unknown as (
+				cb: Callable,
+				delay: number,
+			) => number
+		)(cb, 0);
+		await vi.advanceTimersByTimeAsync(5);
+		expect(cb.invocations).toBe(1);
+		expect(cb.disposed).toBe(true);
+		// Further ticks must be no-ops; no second invocation.
+		await vi.advanceTimersByTimeAsync(50);
+		expect(cb.invocations).toBe(1);
+	});
+
 	it("clamps negative/NaN/overflow delays to 0 instead of warning", async () => {
 		const ctx = recordingCtx();
 		const setup = worker(ctx);
