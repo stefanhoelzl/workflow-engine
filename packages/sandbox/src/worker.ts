@@ -15,10 +15,6 @@ import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
 import { urlExtension } from "quickjs-wasi/url";
 import { type Bridge, createBridge } from "./bridge-factory.js";
 import {
-	buildGuestFunctionHandler,
-	installGuestFunctions,
-} from "./guest-function-install.js";
-import {
 	accountOutputBytes,
 	configureWorkerLimits,
 	resetRunCounters,
@@ -386,7 +382,9 @@ async function runPluginBootPipeline(
 	// (`const x = globalThis.__x; delete globalThis.__x;`). Public
 	// descriptors remain visible through Phase 3 and into user source.
 	const guestFunctions = collectGuestFunctions(phase1);
-	installGuestFunctions(vm, ctx, guestFunctions);
+	for (const { descriptor } of guestFunctions) {
+		bridge.installDescriptor(ctx, descriptor);
+	}
 
 	// Phase 2 — plugin source eval.
 	const evaluator: SourceEvaluator = {
@@ -418,22 +416,17 @@ async function runPluginBootPipeline(
 	};
 }
 
-// Re-register host callbacks against the restored VM. The Bridge and
-// SandboxContext are reused across restores (bridge.rebind switches the
-// underlying VM in place), so plugin lifecycle hooks (which closed over the
-// boot ctx via `pluginLifecycle.setups`) keep emitting through the live
-// bridge. Only guest-function host callbacks need rebinding because they
-// are registered on a specific QuickJS instance.
-function rebindGuestCallbacks(
-	vm: QuickJS,
-	ctx: SandboxContext,
-	guestFunctions: readonly GuestFunctionEntry[],
-): void {
-	for (const { descriptor } of guestFunctions) {
-		vm.registerHostCallback(
-			descriptor.name,
-			buildGuestFunctionHandler(vm, ctx, descriptor),
-		);
+// Re-register host callbacks against the restored VM via the bridge.
+// The Bridge and SandboxContext are reused across restores
+// (bridge.rebind switches the underlying VM in place), so plugin
+// lifecycle hooks (which closed over the boot ctx via
+// `pluginLifecycle.setups`) keep emitting through the live bridge. Only
+// guest-function host callbacks need rebinding because they are
+// registered on a specific QuickJS instance — `bridge.rebindDescriptor`
+// re-registers each on the bridge's current VM.
+function rebindGuestCallbacks(currentState: SandboxState): void {
+	for (const { descriptor } of currentState.guestFunctions) {
+		currentState.bridge.rebindDescriptor(currentState.ctx, descriptor);
 	}
 }
 
@@ -455,36 +448,34 @@ function startRestore(currentState: SandboxState): Promise<void> {
 				"injected restore failure (WFE_TEST_SANDBOX_RESTORE_FAIL)",
 			);
 		}
-		// Build the new VM BEFORE disposing the old one. The previous order
-		// (dispose → restore) left a window where the old VM was already
-		// disposed but late host-callback / sink work scheduled by guest
-		// async that resolved just before `post({type:"done"})` then hit
-		// the disposed VM, the worker's `promise.catch →
-		// queueMicrotask(throw)` raised an uncaught error, and main's
-		// `worker.on("error")` rejected the run promise with `"QuickJS
-		// instance has been disposed"` — usually before the queued `done`
-		// message was processed. Surfaced under concurrent WPT load
-		// (idlharness, fetch suites). Holding two VMs briefly costs
-		// transient memory but eliminates the race; `pnpm test:wpt` is the
-		// integration check (a synthetic regression test could not match
-		// the timing characteristics of the WPT harness load).
+		// Dispose the old VM up-front, then restore. The historical race —
+		// late host-callback work scheduled by guest async that resolved
+		// just before `post({type:"done"})` calling into the freshly
+		// disposed VM, surfaced under concurrent WPT load (idlharness,
+		// fetch suites) — is now closed structurally by the Callable-leak
+		// audit at end of `runLifecycleAfter`: every Callable holding a
+		// `JSValueHandle` into the outgoing VM is auto-disposed before
+		// this point, so no remaining host code can re-enter the VM.
+		// Disposing first avoids holding two VMs briefly. If a future leak
+		// path reintroduces a hazard, the audit's
+		// `sandbox.plugin.callable_leak` log line names the offending
+		// descriptor.
+		currentState.vm.dispose();
 		wasiState.anchor.ns = perfNowNs();
 		const newVm = await QuickJS.restore(
 			currentState.snapshotRef,
 			currentState.createOptions,
 		);
-		const oldVm = currentState.vm;
 		// Re-point the bridge at the restored VM in place. ctx + pluginLifecycle
 		// setups close over this same bridge instance; rebinding here is what
 		// keeps onBeforeRunStarted / onRunFinished emitting on every run, not
 		// just the first.
 		currentState.bridge.rebind(newVm);
-		rebindGuestCallbacks(newVm, currentState.ctx, currentState.guestFunctions);
+		rebindGuestCallbacks(currentState);
 		applyStackLimit(newVm, stackSizeForNextCreate);
 		currentState.vm = newVm;
 		currentState.runState = "ready";
 		currentState.restorePromise = null;
-		oldVm.dispose();
 	})();
 	// Surface failures through Node's uncaught-error pathway so the worker
 	// dies and main fires onTerminated. The awaiting handleRun will also see the
@@ -559,6 +550,7 @@ function runLifecycleBefore(
  */
 function runLifecycleAfter(
 	pluginLifecycle: PluginLifecycleState,
+	bridge: Bridge,
 	runInput: import("./plugin.js").RunInput,
 	payload: RunResultPayload,
 ): void {
@@ -572,6 +564,27 @@ function runLifecycleAfter(
 		runInput,
 		warn: logDanglingFrame,
 	});
+	// Callable leak audit. After every plugin's `onRunFinished` drain has
+	// run, no Callable should remain live: by contract, a plugin that
+	// receives a guest Callable owns disposal. Survivors are leaks — and
+	// dangerous: their `dup` JSValueHandle is into the run's VM, which
+	// the post-run snapshot-restore is about to dispose. A late invocation
+	// from an unflushed host-callback would call into a freed VM and
+	// crash the worker (the historical race the
+	// `build-new-VM-before-dispose-old` fix in startRestore worked around).
+	// We close that race structurally: log each survivor naming the
+	// originating descriptor, and call `.dispose()` so any later invoke
+	// throws a defined `CallableDisposedError` instead of touching the VM.
+	const leaks = bridge.drainCallableLeaks();
+	for (const { callable, descriptor } of leaks) {
+		post({
+			type: "log",
+			level: "error",
+			message: "sandbox.plugin.callable_leak",
+			meta: { descriptor },
+		});
+		callable.dispose();
+	}
 }
 
 function readExportFromIife(
@@ -665,7 +678,7 @@ interface RunFinalizeArgs {
 function finalizeRun(args: RunFinalizeArgs): void {
 	const { state, runInput, payload } = args;
 	const { bridge, pluginLifecycle } = state;
-	runLifecycleAfter(pluginLifecycle, runInput, payload);
+	runLifecycleAfter(pluginLifecycle, bridge, runInput, payload);
 	state.currentAbort?.abort();
 	state.currentAbort = null;
 	// Close the worker-side run window so any late host-callback

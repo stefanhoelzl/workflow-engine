@@ -1,19 +1,21 @@
 import { QuickJS } from "quickjs-wasi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type Bridge, createBridge } from "./bridge-factory.js";
 import {
 	GuestArgTypeMismatchError,
 	GuestValidationError,
-	installGuestFunction,
-} from "./guest-function-install.js";
+} from "./guest-errors.js";
 import type { GuestFunctionDescription } from "./plugin.js";
 import { Guest } from "./plugin-types.js";
 import { recordingContext } from "./recording-context.js";
 
-describe("installGuestFunction", () => {
+describe("bridge.installDescriptor", () => {
 	let vm: QuickJS;
+	let bridge: Bridge;
 
 	beforeEach(async () => {
 		vm = await QuickJS.create();
+		bridge = createBridge(vm, { ns: 0n });
 	});
 
 	afterEach(() => {
@@ -29,7 +31,7 @@ describe("installGuestFunction", () => {
 			handler: ((a: number, b: number) =>
 				`${a}+${b}=${a + b}`) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode("join(2, 3)", "<test>");
 		expect(vm.dump(out)).toBe("2+3=5");
 		out.dispose();
@@ -54,7 +56,7 @@ describe("installGuestFunction", () => {
 			},
 			log: { event: "timer.set" },
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode("setTimeout(5)", "<test>");
 		out.dispose();
 		expect(ctx.flatEvents).toEqual([
@@ -72,7 +74,7 @@ describe("installGuestFunction", () => {
 			handler: (url) => `fetched:${url}`,
 			log: { request: "fetch" },
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode("globalThis['$fetch/do']('http://x')", "<test>");
 		expect(vm.dump(out)).toBe("fetched:http://x");
 		out.dispose();
@@ -94,7 +96,7 @@ describe("installGuestFunction", () => {
 			result: Guest.object(),
 			handler: (input) => ({ ...(input as object), wrapped: true }),
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode("wrap({a: 1})", "<test>");
 		expect(vm.dump(out)).toEqual({ a: 1, wrapped: true });
 		out.dispose();
@@ -110,7 +112,7 @@ describe("installGuestFunction", () => {
 				/* no-op */
 			},
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		// Arg mismatch surfaces as a QuickJS exception because
 		// vm.newFunction's trampoline catches the host throw and re-raises
 		// it into the guest. We verify from the host side that the error
@@ -139,7 +141,7 @@ describe("installGuestFunction", () => {
 				captured = cb;
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode(`registerCb((n) => 'got:' + n); 'ok';`, "<test>");
 		expect(vm.dump(out)).toBe("ok");
 		out.dispose();
@@ -187,8 +189,8 @@ describe("installGuestFunction", () => {
 				(captured as unknown as import("./plugin.js").Callable)?.dispose();
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, registerDesc);
-		installGuestFunction(vm, ctx, disposeMeDesc);
+		bridge.installDescriptor(ctx, registerDesc);
+		bridge.installDescriptor(ctx, disposeMeDesc);
 		const out = vm.evalCode(
 			`registerCb(() => { disposeMe(); return 'done'; }); 'ok';`,
 			"<test>",
@@ -233,8 +235,8 @@ describe("installGuestFunction", () => {
 				}
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, registerDesc);
-		installGuestFunction(vm, ctx, reenterDesc);
+		bridge.installDescriptor(ctx, registerDesc);
+		bridge.installDescriptor(ctx, reenterDesc);
 		const out = vm.evalCode(
 			`registerCb(async (n) => { if (n === 1) await reenter(1); return 'depth-' + n; }); 'ok';`,
 			"<test>",
@@ -274,8 +276,8 @@ describe("installGuestFunction", () => {
 				cb.dispose();
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, registerDesc);
-		installGuestFunction(vm, ctx, disposeTwiceDesc);
+		bridge.installDescriptor(ctx, registerDesc);
+		bridge.installDescriptor(ctx, disposeTwiceDesc);
 		const out = vm.evalCode(
 			`registerCb(() => { disposeTwice(); return 'ok'; }); 'ok';`,
 			"<test>",
@@ -297,7 +299,7 @@ describe("installGuestFunction", () => {
 				captured = cb;
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode(
 			`registerReject(async () => { throw new Error("boom from guest"); });`,
 			"<test>",
@@ -317,7 +319,7 @@ describe("installGuestFunction", () => {
 			result: Guest.number(),
 			handler: () => "not-a-number" as unknown as number,
 		};
-		installGuestFunction(vm, ctx, desc);
+		bridge.installDescriptor(ctx, desc);
 		const out = vm.evalCode(
 			`try { lies(); "ok"; } catch (e) { "err:" + e.message; }`,
 			"<test>",

@@ -37,7 +37,7 @@ interface RecordingContext extends SandboxContext {
 // `SandboxContext.emit` signature already narrows the return type to `void`
 // for non-open framings — these policies only affect what the runtime
 // produces under the hood when a test forces inspection via the cast surface
-// (e.g. asserting on minted ids in guest-function-install fixtures).
+// (e.g. asserting on minted ids in bridge.installDescriptor fixtures).
 // - "open-only" (default): mint a fresh CallId only when `options.type === "open"`,
 //   matching the bridge's real wire behaviour.
 // - "always": mint a CallId for every emission. Useful when the test inspects
