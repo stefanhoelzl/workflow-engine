@@ -165,7 +165,10 @@ describe("bridge.installDescriptor", () => {
 		const result = await (
 			captured as unknown as import("./plugin.js").Callable
 		)("hello");
-		expect(result).toBe("got:hello");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value).toBe("got:hello");
+		}
 		// Disposal is idempotent; a second call no-ops, a post-dispose
 		// invoke throws CallableDisposedError.
 		(captured as unknown as import("./plugin.js").Callable).dispose();
@@ -213,7 +216,10 @@ describe("bridge.installDescriptor", () => {
 		const callable = captured as unknown as import("./plugin.js").Callable;
 		// Mid-invocation dispose must not crash; the call returns normally.
 		const result = await callable();
-		expect(result).toBe("done");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value).toBe("done");
+		}
 		// After the outer frame unwound, the deferred dispose ran; a follow-
 		// up invoke now throws CallableDisposedError.
 		await expect(callable()).rejects.toThrow(/Callable has been disposed/);
@@ -244,7 +250,7 @@ describe("bridge.installDescriptor", () => {
 				if (depth === 1) {
 					cb.dispose();
 					const inner = await cb(0);
-					if (inner === "depth-0") {
+					if (inner.ok && inner.value === "depth-0") {
 						nestedCallReturned = true;
 					}
 				}
@@ -259,7 +265,10 @@ describe("bridge.installDescriptor", () => {
 		out.dispose();
 		const callable = captured as unknown as import("./plugin.js").Callable;
 		const result = await callable(1);
-		expect(result).toBe("depth-1");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value).toBe("depth-1");
+		}
 		expect(nestedCallReturned).toBe(true);
 		// Outermost frame has unwound; dispose has run.
 		await expect(callable(0)).rejects.toThrow(/Callable has been disposed/);
@@ -300,11 +309,11 @@ describe("bridge.installDescriptor", () => {
 		);
 		out.dispose();
 		const callable = captured as unknown as import("./plugin.js").Callable;
-		await expect(callable()).resolves.toBe("ok");
+		await expect(callable()).resolves.toMatchObject({ ok: true, value: "ok" });
 		await expect(callable()).rejects.toThrow(/Callable has been disposed/);
 	});
 
-	it("propagates guest-side rejections out of a Callable as host Error", async () => {
+	it("surfaces guest-side rejections from a Callable as a CallableResult error envelope", async () => {
 		const ctx = recordingContext({ callIds: "always" });
 		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
@@ -322,10 +331,15 @@ describe("bridge.installDescriptor", () => {
 			"<test>",
 		);
 		out.dispose();
-		await expect(
-			(captured as unknown as import("./plugin.js").Callable)(),
-		).rejects.toThrow(/boom from guest/);
-		(captured as unknown as import("./plugin.js").Callable).dispose();
+		const callable = captured as unknown as import("./plugin.js").Callable;
+		const result = await callable();
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toBeInstanceOf(Error);
+			expect(result.error.message).toMatch(/boom from guest/);
+			expect(result.error.name).toBe("Error");
+		}
+		callable.dispose();
 	});
 
 	it("validates result types and throws GuestValidationError on mismatch", () => {

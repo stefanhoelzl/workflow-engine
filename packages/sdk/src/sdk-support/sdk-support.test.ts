@@ -1,5 +1,13 @@
-import type { Callable, DepsMap } from "@workflow-engine/sandbox";
-import { recordingContext } from "@workflow-engine/sandbox";
+import type {
+	Callable,
+	CallableResult,
+	DepsMap,
+} from "@workflow-engine/sandbox";
+import {
+	CALLABLE_RESULT_BRAND,
+	GuestThrownError,
+	recordingContext,
+} from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import {
 	guest,
@@ -9,6 +17,30 @@ import {
 	worker,
 } from "./index.js";
 
+function brandEnvelope(env: CallableResult): CallableResult {
+	Object.defineProperty(env, CALLABLE_RESULT_BRAND, { value: true });
+	return env;
+}
+
+function asGuestThrownError(err: unknown): GuestThrownError {
+	if (err instanceof GuestThrownError) {
+		return err;
+	}
+	const message = err instanceof Error ? err.message : String(err);
+	const ge = new GuestThrownError(message);
+	if (err instanceof Error) {
+		ge.name = err.name;
+		if (err.stack) {
+			ge.stack = err.stack;
+		}
+	}
+	return ge;
+}
+
+// Mirrors the real Callable contract: guest throws surface as a
+// resolved {ok:false,error} envelope (not a rejection) so `pluginRequest`
+// auto-unwraps onto the action.error close. CallableDisposedError-style
+// engine errors keep rejecting.
 function makeCallableDouble(
 	impl: (...args: readonly unknown[]) => unknown,
 ): Callable & { disposed: boolean } {
@@ -17,7 +49,12 @@ function makeCallableDouble(
 		if (disposed) {
 			throw new Error("callable disposed");
 		}
-		return impl(...args);
+		try {
+			const value = await impl(...args);
+			return brandEnvelope({ ok: true, value: value as never });
+		} catch (err) {
+			return brandEnvelope({ ok: false, error: asGuestThrownError(err) });
+		}
 	}) as Callable & { disposed: boolean };
 	invoke.dispose = () => {
 		disposed = true;
