@@ -7,6 +7,7 @@
 	"private": true,
 	"exports": {
 		".": "./src/index.ts",
+		"./constants": "./src/constants.ts",
 		"./test-utils": "./src/test-utils.ts",
 		"./secrets-crypto": "./src/secrets/index.ts"
 	},

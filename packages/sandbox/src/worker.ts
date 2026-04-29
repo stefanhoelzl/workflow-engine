@@ -1,5 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import { IIFE_NAMESPACE } from "@workflow-engine/core";
+import { IIFE_NAMESPACE } from "@workflow-engine/core/constants";
 import {
 	JSException,
 	type JSValueHandle,
