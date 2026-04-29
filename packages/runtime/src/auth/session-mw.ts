@@ -46,7 +46,12 @@ async function writeSession(
 	secure: boolean,
 ) {
 	const sealed = await sealSession(payload);
-	setCookie(c, SESSION_COOKIE, sealed, writeOpts("/", secure, SEVEN_DAYS_SECONDS));
+	setCookie(
+		c,
+		SESSION_COOKIE,
+		sealed,
+		writeOpts("/", secure, SEVEN_DAYS_SECONDS),
+	);
 }
 
 function sessionMiddleware(
