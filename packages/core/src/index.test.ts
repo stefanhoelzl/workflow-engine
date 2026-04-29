@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { IIFE_NAMESPACE as IIFE_NAMESPACE_FROM_CONSTANTS } from "./constants.js";
 import type { EventKind, InvocationEvent } from "./index.js";
 import {
 	computeKeyId,
@@ -13,6 +14,16 @@ import { makeEvent } from "./test-utils.js";
 describe("IIFE_NAMESPACE", () => {
 	it("is the shared constant used by plugin, runtime, and sandbox", () => {
 		expect(IIFE_NAMESPACE).toBe("__wfe_exports__");
+	});
+
+	// `index.ts` and `constants.ts` each declare the literal independently —
+	// `constants.ts` is a zero-dep subpath module the sandbox worker imports
+	// without pulling in zod, while `index.ts` keeps its inline declaration so
+	// Node's TS-strip mode doesn't have to resolve a relative `.js` → `.ts`
+	// import at runtime (which broke `node packages/sdk/dist/cli/cli.js
+	// build`). This test pins them to the same value.
+	it("matches the literal exported from @workflow-engine/core/constants", () => {
+		expect(IIFE_NAMESPACE).toBe(IIFE_NAMESPACE_FROM_CONSTANTS);
 	});
 });
 
