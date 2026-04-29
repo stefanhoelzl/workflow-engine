@@ -19,11 +19,14 @@ import {
 	isManualTrigger,
 	isSecret,
 	isWorkflow,
+	isWsTrigger,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
 	secret,
 	WORKFLOW_BRAND,
+	WS_TRIGGER_BRAND,
+	wsTrigger,
 	z,
 } from "./index.js";
 
@@ -402,6 +405,100 @@ describe("brands and type guards", () => {
 		expect(() =>
 			// @ts-expect-error — missing handler
 			imapTrigger(imapBaseConfig),
+		).toThrow(/missing a handler/);
+	});
+
+	// ---------------------------------------------------------------------------
+	// WS trigger
+	// ---------------------------------------------------------------------------
+
+	it("wsTrigger() returns a callable branded with WS_TRIGGER_BRAND", () => {
+		const t = wsTrigger({
+			request: z.object({ greet: z.string() }),
+			handler: async ({ data }) => ({ echo: data.greet }),
+		});
+		expect(typeof t).toBe("function");
+		expect((t as unknown as Record<symbol, unknown>)[WS_TRIGGER_BRAND]).toBe(
+			true,
+		);
+		expect(isWsTrigger(t)).toBe(true);
+	});
+
+	it("wsTrigger exposes request, response, inputSchema, outputSchema", () => {
+		const req = z.object({ greet: z.string() });
+		const res = z.object({ echo: z.string() });
+		const t = wsTrigger({
+			request: req,
+			response: res,
+			handler: async ({ data }) => ({ echo: data.greet }),
+		});
+		expect(t.request).toBe(req);
+		expect(t.response).toBe(res);
+		expect(t.outputSchema).toBe(res);
+		// inputSchema wraps request as {data: <request>}
+		const parsed = t.inputSchema.parse({ data: { greet: "hi" } });
+		expect(parsed).toEqual({ data: { greet: "hi" } });
+		expect(() => t.inputSchema.parse({ data: { greet: 1 } })).toThrow();
+	});
+
+	it("wsTrigger defaults response to z.any() when omitted", () => {
+		const t = wsTrigger({
+			request: z.object({}),
+			handler: async () => "ok",
+		});
+		// z.any() accepts anything
+		expect(t.response.parse({ anything: 1 })).toEqual({ anything: 1 });
+		expect(t.response.parse(null)).toBe(null);
+	});
+
+	it("wsTrigger callable invokes the handler with the payload", async () => {
+		const seen: unknown[] = [];
+		const t = wsTrigger({
+			request: z.object({ x: z.number() }),
+			handler: async (payload) => {
+				seen.push(payload);
+				return { y: payload.data.x * 2 };
+			},
+		});
+		const out = await t({ data: { x: 21 } });
+		expect(out).toEqual({ y: 42 });
+		expect(seen).toEqual([{ data: { x: 21 } }]);
+	});
+
+	it("wsTrigger does not expose handler as a property", () => {
+		const t = wsTrigger({
+			request: z.object({}),
+			handler: async () => "ok",
+		});
+		expect("handler" in t).toBe(false);
+	});
+
+	it("isWsTrigger rejects other trigger kinds and plain values", () => {
+		const ws = wsTrigger({
+			request: z.object({}),
+			handler: async () => "ok",
+		});
+		const cron = cronTrigger({
+			schedule: "0 0 * * *",
+			tz: "UTC",
+			handler: async () => {},
+		});
+		const manual = manualTrigger({ handler: async () => {} });
+		expect(isWsTrigger(ws)).toBe(true);
+		expect(isWsTrigger(cron)).toBe(false);
+		expect(isWsTrigger(manual)).toBe(false);
+		expect(isWsTrigger(null)).toBe(false);
+		expect(isWsTrigger({})).toBe(false);
+		expect(isCronTrigger(ws)).toBe(false);
+		expect(isManualTrigger(ws)).toBe(false);
+		expect(isHttpTrigger(ws)).toBe(false);
+		expect(isImapTrigger(ws)).toBe(false);
+	});
+
+	it("wsTrigger throws when handler is omitted", () => {
+		expect(() =>
+			// @ts-expect-error — missing handler
+			wsTrigger({ request: z.object({}) }),
 		).toThrow(/missing a handler/);
 	});
 });

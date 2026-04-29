@@ -124,6 +124,18 @@ function ImapIcon({ class: cls = "icon" }: IconProps = {}) {
 	);
 }
 
+// plug — ws (Lucide power-plug; signals bidirectional persistent connection)
+function WsIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<path d="M9 2v6" fill="none" />
+			<path d="M15 2v6" fill="none" />
+			<path d="M6 8h12v4a6 6 0 0 1-12 0z" fill="none" />
+			<path d="M12 18v4" fill="none" />
+		</Svg>
+	);
+}
+
 function kindGlyph(kind: string): Child {
 	switch (kind) {
 		case "cron":
@@ -134,6 +146,8 @@ function kindGlyph(kind: string): Child {
 			return <ManualIcon />;
 		case "imap":
 			return <ImapIcon />;
+		case "ws":
+			return <WsIcon />;
 		default:
 			// Unknown kind — neutral dot so layout stays stable without leaking
 			// emoji or `?` glyphs. Author-visible only when a new kind is

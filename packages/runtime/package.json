@@ -30,10 +30,12 @@
 		"pino": "^10.3.1",
 		"postal-mime": "^2.7.4",
 		"quickjs-wasi": "^2.2.0",
-		"tar-stream": "^3.1.8"
+		"tar-stream": "^3.1.8",
+		"ws": "^8.18.0"
 	},
 	"devDependencies": {
 		"@types/tar-stream": "^3.1.4",
+		"@types/ws": "^8.5.13",
 		"linkedom": "^0.18.12",
 		"s3rver": "^3.7.1",
 		"vite": "^8.0.8",

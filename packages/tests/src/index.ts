@@ -21,9 +21,12 @@ export type {
 	Scenario,
 	ScenarioState,
 	SignalOpts,
+	Sock,
 	SqlCapture,
 	UploadEntry,
 	WebhookOpts,
 	WorkflowOpts,
 	WorkflowRef,
+	WsCloseInfo,
+	WsOpts,
 } from "./types.js";

@@ -961,6 +961,117 @@ describe("triggerMiddleware: imap trigger rendering", () => {
 	});
 });
 
+describe("triggerMiddleware: ws trigger rendering + dispatch", () => {
+	function makeWsStub(
+		owner: string,
+		workflowName: string,
+		spec: {
+			name: string;
+			request?: Record<string, unknown>;
+			response?: Record<string, unknown>;
+		},
+		fire?: Fire,
+	): StubEntry {
+		const requestSchema = spec.request ?? {
+			type: "object",
+			properties: { greet: { type: "string" } },
+			required: ["greet"],
+			additionalProperties: false,
+		};
+		const responseSchema = spec.response ?? {};
+		const inputSchema: Record<string, unknown> = {
+			type: "object",
+			properties: { data: requestSchema },
+			required: ["data"],
+			additionalProperties: false,
+		};
+		const descriptor = withZodSchemas({
+			kind: "ws" as const,
+			type: "ws" as const,
+			name: spec.name,
+			workflowName,
+			request: requestSchema,
+			response: responseSchema,
+			inputSchema,
+			outputSchema: responseSchema,
+		});
+		const defaultFire: Fire = async (input) => {
+			const v = validate(descriptor, input);
+			if (!v.ok) {
+				return {
+					ok: false,
+					error: { message: "payload_validation_failed", issues: v.issues },
+				};
+			}
+			const data = (v.input as { data: { greet: string } }).data;
+			return { ok: true, output: { echo: data.greet } };
+		};
+		const triggerEntry: TriggerEntry = {
+			descriptor,
+			fire: fire ?? defaultFire,
+			exception: vi.fn(async () => undefined),
+		};
+		return {
+			owner,
+			repo: DEFAULT_REPO,
+			workflowName,
+			triggerName: spec.name,
+			triggerEntry,
+			workflowEntry: {
+				owner,
+				repo: DEFAULT_REPO,
+				workflow: {
+					name: workflowName,
+					module: `${workflowName}.js`,
+					sha: "0".repeat(64),
+					env: {},
+					actions: [],
+					triggers: [],
+				},
+				bundleSource: "",
+				triggers: [descriptor],
+			},
+		};
+	}
+
+	it("renders a ws trigger card with electric-plug icon and ws meta", async () => {
+		const registry = makeStubRegistry([
+			makeWsStub("t0", "chat", { name: "messages" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0", { headers: AUTH_HEADERS });
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		expect(body).toContain('class="trigger-group-title">chat</h2>');
+		expect(body).toContain('<span class="trigger-name">messages</span>');
+		expect(body).toContain('title="ws"');
+		expect(body).toContain("trigger-kind-icon--ws");
+		expect(body).toContain("ws /ws/t0/r0/chat/messages");
+	});
+
+	it("POST wraps submitted body as {data} and dispatches via manual path", async () => {
+		const fire = vi.fn<Fire>(async (input) => {
+			expect(input).toEqual({ data: { greet: "hi" } });
+			return { ok: true as const, output: { echo: "hi" } };
+		});
+		const registry = makeStubRegistry([
+			makeWsStub("t0", "chat", { name: "messages" }, fire),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/chat/messages", {
+			method: "POST",
+			headers: { ...AUTH_HEADERS, "content-type": "application/json" },
+			body: JSON.stringify({ greet: "hi" }),
+		});
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { ok: true; output: unknown };
+		expect(json.output).toEqual({ echo: "hi" });
+		expect(fire).toHaveBeenCalledTimes(1);
+		const dispatch = fire.mock.calls[0]?.[1] as { source: string };
+		expect(dispatch.source).toBe("manual");
+	});
+});
+
 describe("prepareSchema", () => {
 	it("promotes example to default when no default exists", () => {
 		const schema = {

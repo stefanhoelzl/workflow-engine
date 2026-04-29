@@ -6,6 +6,7 @@ import type {
 	ImapTriggerDescriptor,
 	ManualTriggerDescriptor,
 	TriggerDescriptor,
+	WsTriggerDescriptor,
 } from "../../executor/types.js";
 import type { WorkflowEntry } from "../../workflow-registry.js";
 import { ChevronIcon, TriggerKindIcon } from "../icons.js";
@@ -44,6 +45,10 @@ function triggerCardMeta(
 	if (descriptor.kind === "imap") {
 		const imap = descriptor as ImapTriggerDescriptor;
 		return `${imap.host}:${String(imap.port)} ${imap.folder}`;
+	}
+	if (descriptor.kind === "ws") {
+		const ws = descriptor as WsTriggerDescriptor;
+		return `ws /ws/${owner}/${repo}/${workflow}/${ws.name}`;
 	}
 	// manual — no meta line.
 	return "";
@@ -202,6 +207,7 @@ function composeHttpFormSchema(http: HttpTriggerDescriptor): object {
 	};
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: per-kind dispatch — each branch builds the same TriggerCardData shape from a different descriptor type; splitting fragments the kind switch
 function descriptorToCardData(
 	owner: string,
 	repo: string,
@@ -238,6 +244,24 @@ function descriptorToCardData(
 			kind: "cron",
 			schema: (cron.inputSchema ?? { type: "object" }) as object,
 			submitUrl: `/trigger/${owner}/${repo}/${workflow}/${cron.name}`,
+			submitMethod: "POST",
+			meta,
+		};
+	}
+	if (descriptor.kind === "ws") {
+		const ws = descriptor as WsTriggerDescriptor;
+		// The trigger UI renders the form for the inbound `request` schema —
+		// the manual-fire path wraps the submitted JSON as `{data: <input>}`
+		// before dispatching to the handler. The schema served to jedison is
+		// therefore the request schema (one level "deeper" than inputSchema).
+		return {
+			owner,
+			repo,
+			workflow,
+			trigger: ws.name,
+			kind: "ws",
+			schema: (ws.request ?? { type: "object" }) as object,
+			submitUrl: `/trigger/${owner}/${repo}/${workflow}/${ws.name}`,
 			submitMethod: "POST",
 			meta,
 		};

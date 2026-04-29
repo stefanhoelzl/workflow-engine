@@ -1,3 +1,5 @@
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import type { DispatchMeta } from "@workflow-engine/core";
 import type { TriggerExceptionParams } from "../executor/exception.js";
 import type { BaseTriggerDescriptor, InvokeResult } from "../executor/types.js";
@@ -70,9 +72,37 @@ interface TriggerSource<
 	): Promise<ReconfigureResult>;
 }
 
+// ---------------------------------------------------------------------------
+// UpgradeProvider — separate contract for backends that own a slice of the
+// http.Server's `'upgrade'` event (e.g. WS, future WebTransport).
+// ---------------------------------------------------------------------------
+//
+// Orthogonal to TriggerSource. A backend MAY implement both (the WS backend
+// does); a backend MAY implement only one. The shape stays open for additive
+// growth (subprotocols, maxPayload, …) — the consumer in services/server.ts
+// is the single place that knows how to wire each new field.
+
+interface UpgradeProvider {
+	upgradeHandler(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+	// Optional millisecond cadence for socket-liveness ping/pong. When set,
+	// the consumer in services/server.ts (or the provider itself, if it
+	// owns its own timer) is responsible for wiring the heartbeat.
+	readonly pingInterval?: number;
+}
+
+function isUpgradeProvider(value: unknown): value is UpgradeProvider {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		typeof (value as { upgradeHandler?: unknown }).upgradeHandler === "function"
+	);
+}
+
 export type {
 	ReconfigureResult,
 	TriggerConfigError,
 	TriggerEntry,
 	TriggerSource,
+	UpgradeProvider,
 };
+export { isUpgradeProvider };

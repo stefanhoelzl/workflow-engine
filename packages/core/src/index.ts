@@ -153,7 +153,7 @@ interface InvocationEventError {
  * present on `system.upload` (uploads are always authenticated).
  */
 interface DispatchMeta {
-	readonly source: "trigger" | "manual" | "upload";
+	readonly source: "trigger" | "manual" | "upload" | "ws";
 	readonly user?: { readonly login: string; readonly mail: string };
 }
 
@@ -370,6 +370,15 @@ const imapMessageSchema = z.object({
 	),
 });
 
+const wsTriggerManifestSchema = z.object({
+	name: z.string().regex(TRIGGER_NAME_RE),
+	type: z.literal("ws"),
+	request: jsonSchemaValidator,
+	response: jsonSchemaValidator,
+	inputSchema: jsonSchemaValidator,
+	outputSchema: jsonSchemaValidator,
+});
+
 const imapTriggerManifestSchema = z.object({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("imap"),
@@ -392,12 +401,14 @@ const triggerManifestSchema = z.discriminatedUnion("type", [
 	cronTriggerManifestSchema,
 	manualTriggerManifestSchema,
 	imapTriggerManifestSchema,
+	wsTriggerManifestSchema,
 ]);
 
 type HttpTriggerManifest = z.infer<typeof httpTriggerManifestSchema>;
 type CronTriggerManifest = z.infer<typeof cronTriggerManifestSchema>;
 type ManualTriggerManifest = z.infer<typeof manualTriggerManifestSchema>;
 type ImapTriggerManifest = z.infer<typeof imapTriggerManifestSchema>;
+type WsTriggerManifest = z.infer<typeof wsTriggerManifestSchema>;
 type ImapMessage = z.infer<typeof imapMessageSchema>;
 type ImapTriggerResult = z.infer<typeof imapTriggerResultSchema>;
 type TriggerManifest = z.infer<typeof triggerManifestSchema>;
@@ -619,6 +630,7 @@ export type {
 	SandboxEvent,
 	TriggerManifest,
 	WorkflowManifest,
+	WsTriggerManifest,
 };
 
 export {

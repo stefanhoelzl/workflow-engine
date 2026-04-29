@@ -21,8 +21,10 @@ import {
 	isImapTrigger,
 	isManualTrigger,
 	isWorkflow,
+	isWsTrigger,
 	type ManualTrigger,
 	type Workflow,
+	type WsTrigger,
 } from "../index.js";
 
 interface BuildContext {
@@ -322,11 +324,21 @@ interface ManifestImapTriggerEntry {
 	outputSchema: Record<string, unknown>;
 }
 
+interface ManifestWsTriggerEntry {
+	name: string;
+	type: "ws";
+	request: Record<string, unknown>;
+	response: Record<string, unknown>;
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown>;
+}
+
 type ManifestTriggerEntry =
 	| ManifestHttpTriggerEntry
 	| ManifestCronTriggerEntry
 	| ManifestManualTriggerEntry
-	| ManifestImapTriggerEntry;
+	| ManifestImapTriggerEntry
+	| ManifestWsTriggerEntry;
 
 interface DiscoveredExports {
 	workflowEntries: [string, Workflow][];
@@ -335,6 +347,7 @@ interface DiscoveredExports {
 	cronTriggerEntries: [string, CronTrigger][];
 	imapTriggerEntries: [string, ImapTrigger][];
 	manualTriggerEntries: [string, ManualTrigger][];
+	wsTriggerEntries: [string, WsTrigger][];
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear if/else chain dispatching by trigger brand — each branch is a simple isX(value) → push; refactoring into a registry would obscure the per-kind discovery contract
@@ -348,6 +361,7 @@ function discoverExports(
 	const cronTriggerEntries: [string, CronTrigger][] = [];
 	const manualTriggerEntries: [string, ManualTrigger][] = [];
 	const imapTriggerEntries: [string, ImapTrigger][] = [];
+	const wsTriggerEntries: [string, WsTrigger][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
 		if (exportName === "default" && isAction(value)) {
 			buildContext.error(
@@ -366,6 +380,8 @@ function discoverExports(
 			manualTriggerEntries.push([exportName, value]);
 		} else if (isImapTrigger(value)) {
 			imapTriggerEntries.push([exportName, value]);
+		} else if (isWsTrigger(value)) {
+			wsTriggerEntries.push([exportName, value]);
 		}
 	}
 	return {
@@ -375,6 +391,7 @@ function discoverExports(
 		cronTriggerEntries,
 		manualTriggerEntries,
 		imapTriggerEntries,
+		wsTriggerEntries,
 	};
 }
 
@@ -824,6 +841,45 @@ function buildManualTriggerEntry(
 	};
 }
 
+function buildWsTriggerEntry(
+	exportName: string,
+	trigger: WsTrigger,
+	workflowName: string,
+): ManifestWsTriggerEntry {
+	if (typeof trigger !== "function") {
+		buildContext.error(
+			`Workflow "${workflowName}": ws trigger "${exportName}" is missing a handler function`,
+		);
+	}
+	if (!TRIGGER_NAME_RE.test(exportName)) {
+		buildContext.error(
+			`Workflow "${workflowName}": ws trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
+		);
+	}
+	const requestLabel = `ws trigger "${exportName}".request`;
+	assertZodSchema(trigger.request, requestLabel, workflowName);
+	const responseLabel = `ws trigger "${exportName}".response`;
+	assertZodSchema(trigger.response, responseLabel, workflowName);
+	const inputSchemaLabel = `ws trigger "${exportName}".inputSchema`;
+	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName);
+	return {
+		name: exportName,
+		type: "ws",
+		request: stripDraftMarker(
+			toJsonSchema(trigger.request, requestLabel, workflowName),
+		),
+		response: stripDraftMarker(
+			toJsonSchema(trigger.response, responseLabel, workflowName),
+		),
+		inputSchema: stripDraftMarker(
+			toJsonSchema(trigger.inputSchema, inputSchemaLabel, workflowName),
+		),
+		outputSchema: stripDraftMarker(
+			toJsonSchema(trigger.response, responseLabel, workflowName),
+		),
+	};
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: manifest assembly threads discovery → validation → per-kind entry builders; each step is already a named helper
 function buildManifestFromMod(
 	mod: Record<string, unknown>,
@@ -837,6 +893,7 @@ function buildManifestFromMod(
 		cronTriggerEntries,
 		manualTriggerEntries,
 		imapTriggerEntries,
+		wsTriggerEntries,
 	} = discoverExports(mod, filestem);
 
 	if (workflowEntries.length > 1) {
@@ -876,6 +933,7 @@ function buildManifestFromMod(
 			buildManualTriggerEntry(k, v, name),
 		),
 		...imapTriggerEntries.map(([k, v]) => buildImapTriggerEntry(k, v, name)),
+		...wsTriggerEntries.map(([k, v]) => buildWsTriggerEntry(k, v, name)),
 	];
 
 	const built: UnsealedWorkflowManifest = {

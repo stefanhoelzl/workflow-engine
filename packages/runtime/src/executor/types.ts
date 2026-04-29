@@ -72,11 +72,22 @@ interface ImapTriggerDescriptor extends BaseTriggerDescriptor<"imap"> {
 	readonly onError: { readonly command?: readonly string[] };
 }
 
+interface WsTriggerDescriptor extends BaseTriggerDescriptor<"ws"> {
+	readonly type: "ws";
+	// JSON Schema for the inbound message data; the UI uses this to render the
+	// request form on the WS trigger card.
+	readonly request: Record<string, unknown>;
+	// JSON Schema for the handler reply; defaults to JSON Schema for `z.any()`
+	// (i.e. `{}`) when the author omits `response`.
+	readonly response: Record<string, unknown>;
+}
+
 type TriggerDescriptor =
 	| HttpTriggerDescriptor
 	| CronTriggerDescriptor
 	| ManualTriggerDescriptor
-	| ImapTriggerDescriptor;
+	| ImapTriggerDescriptor
+	| WsTriggerDescriptor;
 
 interface ValidationIssue {
 	readonly path: readonly (string | number)[];
@@ -110,4 +121,5 @@ export type {
 	ManualTriggerDescriptor,
 	TriggerDescriptor,
 	ValidationIssue,
+	WsTriggerDescriptor,
 };
