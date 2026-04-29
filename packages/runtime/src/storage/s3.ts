@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	CopyObjectCommand,
 	DeleteObjectCommand,
@@ -9,6 +10,50 @@ import {
 	S3Client,
 } from "@aws-sdk/client-s3";
 import type { StorageBackend } from "./index.js";
+
+// UpCloud Object Storage requires legacy `Content-MD5` on `DeleteObjects` and
+// rejects the AWS-SDK-v3 flexible-checksum headers (`x-amz-sdk-checksum-*`,
+// `x-amz-checksum-*`). The SDK does not expose `ChecksumAlgorithm: "MD5"` on
+// the DeleteObjects command input, so we inject Content-MD5 ourselves at the
+// `build` step (after serialization, before signing — so MD5 ends up in the
+// signed canonical request) and strip the flexible-checksum headers the SDK
+// added in an earlier build-step middleware.
+function injectDeleteObjectsContentMd5(client: S3Client): void {
+	client.middlewareStack.add(
+		(next, context) => (args) => {
+			if (context.commandName !== "DeleteObjectsCommand") {
+				return next(args);
+			}
+			const request = args.request as {
+				body?: string | Uint8Array;
+				headers: Record<string, string>;
+			};
+			const body = request.body ?? "";
+			const buf =
+				typeof body === "string"
+					? Buffer.from(body, "utf-8")
+					: Buffer.from(body);
+			for (const key of Object.keys(request.headers)) {
+				const lower = key.toLowerCase();
+				if (
+					lower === "x-amz-sdk-checksum-algorithm" ||
+					lower.startsWith("x-amz-checksum-")
+				) {
+					delete request.headers[key];
+				}
+			}
+			request.headers["content-md5"] = createHash("md5")
+				.update(buf)
+				.digest("base64");
+			return next(args);
+		},
+		{
+			step: "build",
+			name: "upcloudDeleteObjectsContentMd5",
+			priority: "low",
+		},
+	);
+}
 
 interface S3StorageOptions {
 	bucket: string;
@@ -41,6 +86,7 @@ function createS3Storage(options: S3StorageOptions): StorageBackend {
 			? { endpoint: options.endpoint, forcePathStyle: true }
 			: {}),
 	});
+	injectDeleteObjectsContentMd5(client);
 
 	return {
 		async init() {
