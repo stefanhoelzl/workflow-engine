@@ -107,11 +107,12 @@ describe("secureHeadersMiddleware", () => {
 		expect(headers.hsts).toBe("max-age=31536000; includeSubDomains");
 	});
 
-	it("omits HSTS when LOCAL_DEPLOYMENT=1", async () => {
+	it("omits HSTS and frame-blocking headers when LOCAL_DEPLOYMENT=1", async () => {
 		const headers = await fetchHeaders("1");
 		expect(headers.hsts).toBeNull();
 		expect(headers.csp).not.toBeNull();
-		expect(headers.xfo).toBe("DENY");
+		expect(headers.csp).toContain("frame-ancestors 'self' vscode-webview:");
+		expect(headers.xfo).toBeNull();
 	});
 
 	it("emits HSTS when LOCAL_DEPLOYMENT has any non-'1' value", async () => {
@@ -192,21 +193,37 @@ describe("secureHeadersMiddleware: per-route integration", () => {
 		});
 	}
 
-	it("omits HSTS on every route family when LOCAL_DEPLOYMENT=1", async () => {
+	function missingLocalBaselineHeaders(res: Response): string[] {
+		const baseline = missingBaselineHeaders(res).filter(
+			(name) => name !== "X-Frame-Options",
+		);
+		const csp = res.headers.get("Content-Security-Policy");
+		if (
+			csp === null ||
+			!csp.includes("frame-ancestors 'self' vscode-webview:")
+		) {
+			baseline.push("Content-Security-Policy:frame-ancestors-local");
+		}
+		return baseline;
+	}
+
+	it("omits HSTS and X-Frame-Options on every route family when LOCAL_DEPLOYMENT=1", async () => {
 		const app = buildTestApp("1");
 		const results = await Promise.all(
 			ROUTE_FAMILIES.map(async (family) => {
 				const res = await app.request(family.path);
 				return {
 					name: family.name,
-					missing: missingBaselineHeaders(res),
+					missing: missingLocalBaselineHeaders(res),
 					hsts: res.headers.get("Strict-Transport-Security"),
+					xfo: res.headers.get("X-Frame-Options"),
 				};
 			}),
 		);
 		for (const result of results) {
 			expect(result.missing).toEqual([]);
 			expect(result.hsts).toBeNull();
+			expect(result.xfo).toBeNull();
 		}
 	});
 });
