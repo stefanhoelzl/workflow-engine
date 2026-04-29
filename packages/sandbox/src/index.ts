@@ -18,6 +18,8 @@ export {
 export type { Logger } from "./logger.js";
 export type {
 	Callable,
+	CallableErrorPayload,
+	CallableResult,
 	CallId,
 	DepsMap,
 	EmitFraming,
@@ -42,7 +44,11 @@ export type {
 	WasiRandomArgs,
 	WasiRandomResult,
 } from "./plugin.js";
-export { serializeLifecycleError } from "./plugin.js";
+export {
+	CALLABLE_RESULT_BRAND,
+	isCallableResult,
+	serializeLifecycleError,
+} from "./plugin.js";
 export type {
 	ArgSpec,
 	ArgTypes,

@@ -608,6 +608,11 @@ plugin, and every change that adds a guest-visible surface.
    Skipping R-4 leaks state across runs (sockets/handles persist past
    the QuickJS snapshot-restore boundary because the Node worker thread
    is not snapshot-managed) and starves the next run of worker time.
+
+   **Pairs with R-13 at the rejection boundary.** R-4 governs the
+   disposal protocol that runs WHEN a run finishes; R-13 governs the
+   `Callable` rejection contract that prevents a guest throw from
+   PREMATURELY ending the worker before R-4 can run.
 5. **R-5 ctx-only emission.** All events flow through `ctx.emit` /
    `ctx.request`. Direct `bridge.*` mutation from plugin code is
    prohibited. `seq`, `ref`, `ts`, `at`, and `callId` are stamped by
@@ -819,6 +824,41 @@ plugin, and every change that adds a guest-visible surface.
     error rethrow uses GuestThrownError"; per-dispatcher field provenance
     lives in `openspec/specs/sandbox-stdlib/spec.md` under the
     `FetchError` / `MailError` / `SqlError` requirements.
+13. **R-13 Guest→host boundary opacity (audit integrity).** NEVER
+    let a guest-originated throw escape into Node's
+    `unhandledRejection` / `uncaughtException` escalation path.
+    `Callable.invoke` (`bridge.ts`) surfaces guest throws as resolved
+    `Promise<CallableResult>` envelopes — `{ ok: false, error:
+    GuestThrownError }` — instead of rejected promises;
+    `pluginRequest` (`plugin.ts`) auto-unwraps the envelope onto the
+    `prefix.error` close and resolves its outer promise (never
+    rethrows on envelope-error). Engine-side errors —
+    `CallableDisposedError`, host `marshalArg` failures, vm-disposed
+    mid-call — continue to reject (fail-loud signal preserved for
+    genuine engine bugs). The contract change is type-checker-
+    enforced: out-of-tree plugin consumers who upgrade
+    `@workflow-engine/sandbox` see TS errors at every `await
+    callable()` site that treats the result as a raw `GuestValue`,
+    forcing migration to envelope inspection. R-13 is the symmetric
+    twin of R-12: R-12 closes host→guest information leakage; R-13
+    closes guest→host crash-channel abuse. Together they make the
+    bridge a two-way opaque boundary. **Rationale.** A hostile
+    workflow author can otherwise force `kind:"crash"` worker
+    terminations and `worker exited with code N` run rejections by
+    deferring a throw past handler return (e.g. `setTimeout(() => {
+    throw }, 0)` plus any async wait in the handler reproduces it
+    100%). This (a) flips a successful run into a failed run on the
+    operator's dashboard view, corrupting audit signal indistinguishable
+    from a genuine engine bug; (b) drops in-flight events between the
+    throw and the worker's restore boundary; (c) forces a cold-start
+    on the next run (full WASM instantiate + plugin source eval +
+    Phase-3 deletes + initial snapshot), amplifying the author's CPU
+    budget by the cold-start cost. R-4 (cleanup ordering) governs
+    the disposal protocol that runs WHEN a run finishes; R-13
+    governs the contract that prevents a guest throw from PREMATURELY
+    ending the worker before R-4 can run. See `openspec/specs/
+    sandbox/spec.md` "Guest→host boundary opacity (Callable envelope
+    contract)" and "pluginRequest auto-unwraps Callable envelopes".
 
 Additional standing rules that predate the plugin rewrite:
 

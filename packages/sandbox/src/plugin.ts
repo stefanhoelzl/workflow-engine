@@ -1,5 +1,6 @@
 import type { InvocationEventError } from "@workflow-engine/core";
 import type { Bridge } from "./bridge.js";
+import type { GuestThrownError } from "./guest-errors.js";
 import { enterPendingCallable, exitPendingCallable } from "./limit-counters.js";
 import type { ArgSpec, GuestValue, ResultSpec } from "./plugin-types.js";
 import type { WorkerToMain } from "./protocol.js";
@@ -38,9 +39,81 @@ interface PluginDescriptor<
 
 type DepsMap = Record<string, Record<string, unknown>>;
 
+/**
+ * Brand symbol stamped on every `CallableResult` envelope returned by a
+ * `Callable.invoke` call. Used by `pluginRequest` to discriminate envelopes
+ * from non-envelope return values without shape-sniffing. Attached via
+ * `Object.defineProperty` so the brand is non-enumerable: it does not appear
+ * in `Object.keys`, `JSON.stringify`, or `structuredClone` clone trees.
+ *
+ * Registered via `Symbol.for(...)` so identical envelopes constructed in any
+ * realm (in practice, only the sandbox worker thread) share the same brand.
+ */
+const CALLABLE_RESULT_BRAND = Symbol.for(
+	"@workflow-engine/sandbox#callableResult",
+);
+
+/**
+ * Serialised plain-object shape of a `GuestThrownError` for consumers that
+ * need a JSON-clean payload — primarily the `system.error` event wire
+ * shape produced by `pluginRequest`'s envelope auto-unwrap. Always carries
+ * `name`, `message`, and `stack`; enumerable own-properties of the
+ * originating guest exception (structured discriminants like `kind` /
+ * `code`) are copied across alongside.
+ *
+ * Note: `CallableResult.error` is the live `GuestThrownError` instance
+ * (an `Error` subclass), NOT this serialised payload. Plugin authors who
+ * `throw result.error` in Pattern-2 (explicit-await) call sites benefit
+ * from the bridge closure rule's `GuestThrownError` pass-through; passing
+ * a plain object would route via the `BridgeError` catch-all and lose
+ * `.name` / structured discriminants.
+ */
+type CallableErrorPayload = {
+	readonly name: string;
+	readonly message: string;
+	readonly stack: string;
+} & Readonly<Record<string, unknown>>;
+
+/**
+ * Discriminated-union envelope returned by `Callable.invoke`. Guest-
+ * originated throws surface as `{ ok: false, error }` resolutions (not
+ * rejections) so the host plugin boundary stays opaque to Node's
+ * `unhandledRejection` escalation path. Engine-side errors
+ * (`CallableDisposedError`, marshal failures, vm-disposed mid-call)
+ * continue to reject — they signal engine bugs, not guest behaviour.
+ *
+ * See `openspec/specs/sandbox/spec.md` "Guest→host boundary opacity
+ * (Callable envelope contract)".
+ *
+ * `error` is the live `GuestThrownError` instance so plugins can rethrow
+ * it directly under the bridge closure rule's pass-through branch (R-12).
+ * Wire serialisation to a plain `CallableErrorPayload` happens at the
+ * `pluginRequest` emission boundary, not at the envelope's construction
+ * site.
+ */
+type CallableResult =
+	| { readonly ok: true; readonly value: GuestValue }
+	| { readonly ok: false; readonly error: GuestThrownError };
+
 interface Callable {
-	(...args: readonly GuestValue[]): Promise<GuestValue>;
+	(...args: readonly GuestValue[]): Promise<CallableResult>;
 	dispose(): void;
+}
+
+/**
+ * Predicate that detects whether a value is a Callable envelope. Used by
+ * `pluginRequest`'s resolve handler to branch on envelope vs non-envelope
+ * return values. The check is unambiguous because the brand is a
+ * registered Symbol (`Symbol.for(...)`); shape-sniffing would mis-fire on
+ * plugins legitimately returning `{ ok, value }` literals from non-Callable
+ * code paths.
+ */
+function isCallableResult(value: unknown): value is CallableResult {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		(value as Record<symbol, unknown>)[CALLABLE_RESULT_BRAND] === true
+	);
 }
 
 type EventKind = string;
@@ -248,6 +321,31 @@ interface LifecycleError {
 	readonly issues?: unknown;
 }
 
+/**
+ * Serialise a live `GuestThrownError` to a wire-clean
+ * `CallableErrorPayload`. Used by `pluginRequest`'s envelope-error path
+ * to put the structured guest-throw on the `system.error` event.
+ * Distinct from `serializeLifecycleError` (lossy on `.name` and
+ * own-properties) by design: the envelope path preserves F-2's
+ * extended-own-property work.
+ */
+function serializeCallableEnvelopeError(
+	err: GuestThrownError,
+): CallableErrorPayload {
+	const payload: Record<string, unknown> = {
+		name: err.name,
+		message: err.message,
+		stack: err.stack ?? "",
+	};
+	for (const key of Object.keys(err)) {
+		if (key === "name" || key === "message" || key === "stack") {
+			continue;
+		}
+		payload[key] = (err as unknown as Record<string, unknown>)[key];
+	}
+	return payload as CallableErrorPayload;
+}
+
 function serializeLifecycleError(err: unknown): LifecycleError {
 	if (err instanceof Error) {
 		const serialized: LifecycleError = {
@@ -307,6 +405,7 @@ function pluginEmit(
  * after emitting the error event, so callers see the same failure they
  * would without the wrap.
  */
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: pluginRequest binds open/close emission helpers (emitResponse, emitErrorFromException, emitErrorFromEnvelope) to the request frame's captured callId, then dispatches the wrapped fn across sync/async/envelope/rejection paths — splitting would shuttle the callId closure across helpers and lose the open/close pairing invariant
 function pluginRequest<T>(
 	bridge: Bridge,
 	prefix: string,
@@ -328,7 +427,12 @@ function pluginRequest<T>(
 		});
 	}
 
-	function emitError(err: unknown): void {
+	// Engine-bug / dispatcher-error path: the wrapped fn rejected with a
+	// non-envelope error. Run through serializeLifecycleError, which
+	// produces today's LifecycleError shape (lossy on `.name` and most
+	// own-properties; widening tracked as the audit-trail symmetry follow-
+	// up — see `openspec/changes/callable-envelope-contract/proposal.md`).
+	function emitErrorFromException(err: unknown): void {
 		pluginEmit(bridge, `${prefix}.error`, {
 			name: options.name,
 			...(options.input === undefined ? {} : { input: options.input }),
@@ -337,11 +441,29 @@ function pluginRequest<T>(
 		});
 	}
 
+	// Envelope-error path: the wrapped fn resolved with a CallableResult
+	// envelope whose `ok` is false. The envelope's `error` field is the
+	// live `GuestThrownError` instance produced by awaitGuestResult /
+	// callGuestFn; serialise to a wire-clean plain payload here so the
+	// system.error event carries the curated {name, message, stack,
+	// ...ownProps} surface (preserving F-2's structured-discriminant
+	// work). The `GuestThrownError` itself remains on the envelope for
+	// any awaiting plugin that wants to rethrow under the bridge closure
+	// rule's pass-through branch.
+	function emitErrorFromEnvelope(error: GuestThrownError): void {
+		pluginEmit(bridge, `${prefix}.error`, {
+			name: options.name,
+			...(options.input === undefined ? {} : { input: options.input }),
+			error: serializeCallableEnvelopeError(error),
+			type: { close: callId },
+		});
+	}
+
 	let maybeResult: T | Promise<T>;
 	try {
 		maybeResult = fn();
 	} catch (err) {
-		emitError(err);
+		emitErrorFromException(err);
 		throw err;
 	}
 	if (!isPromiseLike(maybeResult)) {
@@ -357,12 +479,31 @@ function pluginRequest<T>(
 	return (maybeResult as Promise<T>).then(
 		(value) => {
 			exitPendingCallable();
+			// Auto-unwrap CallableResult envelopes (Guest→host boundary
+			// opacity contract). Envelope-error MUST NOT rethrow — that
+			// would re-create the chained-rejection escape path that is
+			// the F-3 finding's root cause. Instead we resolve the outer
+			// promise with the envelope; awaiting plugins inspect, fire-
+			// and-forget plugins discard. See `openspec/specs/sandbox/
+			// spec.md` "pluginRequest auto-unwraps Callable envelopes".
+			if (isCallableResult(value)) {
+				if (value.ok) {
+					emitResponse(value.value);
+				} else {
+					emitErrorFromEnvelope(value.error);
+				}
+				return value;
+			}
 			emitResponse(value);
 			return value;
 		},
 		(err: unknown) => {
 			exitPendingCallable();
-			emitError(err);
+			// Engine-bug rejection (not a Callable envelope-error). Keep
+			// the existing rethrow shape so callers that wrap pluginRequest
+			// in their own try/catch (e.g. the bridge buildHandler closure)
+			// continue to observe the rejection.
+			emitErrorFromException(err);
 			throw err;
 		},
 	);
@@ -391,6 +532,8 @@ function createPluginContext(bridge: Bridge): PluginContext {
 
 export type {
 	Callable,
+	CallableErrorPayload,
+	CallableResult,
 	CallId,
 	DepsMap,
 	EmitFraming,
@@ -415,4 +558,9 @@ export type {
 	WasiRandomArgs,
 	WasiRandomResult,
 };
-export { createPluginContext, serializeLifecycleError };
+export {
+	CALLABLE_RESULT_BRAND,
+	createPluginContext,
+	isCallableResult,
+	serializeLifecycleError,
+};

@@ -9,7 +9,9 @@ import {
 	GuestValidationError,
 } from "./guest-errors.js";
 import {
+	CALLABLE_RESULT_BRAND,
 	type Callable,
+	type CallableResult,
 	createPluginContext,
 	type GuestFunctionDescription,
 	type LogConfig,
@@ -368,6 +370,41 @@ function marshalArg(vm: QuickJS, value: unknown): JSValueHandle {
 	return handle;
 }
 
+/**
+ * Construct a `{ ok: true, value }` envelope. Brand attached via
+ * `Object.defineProperty` so it is non-enumerable (defaults to writable /
+ * configurable / enumerable all `false`) — keeps the envelope clone-clean
+ * for `JSON.stringify` and `structuredClone`.
+ */
+function makeOkEnvelope(value: GuestValue): CallableResult {
+	const env: CallableResult = { ok: true, value };
+	Object.defineProperty(env, CALLABLE_RESULT_BRAND, { value: true });
+	return env;
+}
+
+/**
+ * Construct a `{ ok: false, error }` envelope carrying the live
+ * `GuestThrownError` instance. The bridge closure rule's pass-through
+ * branch (R-12, F-2) handles `GuestThrownError` instances thrown from
+ * Pattern-2 (explicit-await) callers; wire serialisation to a plain
+ * payload happens at `pluginRequest`'s emission boundary.
+ */
+function makeErrEnvelope(error: GuestThrownError): CallableResult {
+	const env: CallableResult = { ok: false, error };
+	Object.defineProperty(env, CALLABLE_RESULT_BRAND, { value: true });
+	return env;
+}
+
+/**
+ * Sync invocation of a guest function via `vm.callFunction`. Surfaces a
+ * guest-side `JSException` as a `GuestThrownError` (carrying the original
+ * `.name` / `.message` / guest `.stack` verbatim) so the caller can route
+ * the failure into the appropriate channel. `Callable.invoke` consumes
+ * this rejection and re-shapes it into a `CallableResult` error envelope
+ * (Guest→host boundary opacity); other (non-Callable) callers, if any,
+ * see the rethrown `GuestThrownError` and route via the bridge closure
+ * rule (sanitizeForGuest).
+ */
 function callGuestFn(
 	vm: QuickJS,
 	handle: JSValueHandle,
@@ -377,12 +414,6 @@ function callGuestFn(
 		return vm.callFunction(handle, vm.undefined, ...argHandles);
 	} catch (err) {
 		if (err instanceof JSException) {
-			// JSException is an Error instance, not a JSValueHandle — read
-			// `.name` / `.message` / `.stack` directly. The rethrow uses
-			// `GuestThrownError` (a `GuestSafeError` subclass) so the closure
-			// rule's pass-through branch preserves the original guest
-			// identity (`.name`, `.message`, guest `.stack`) when the error
-			// crosses back into a calling guest VM via the bridge.
 			const message = err.message || "guest function threw";
 			const innerName =
 				typeof (err as { name?: unknown }).name === "string"
@@ -636,6 +667,7 @@ function createBridge(
 		return assignedId;
 	}
 
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: closure groups dup-handle ownership, re-entry-safe disposal counters, envelope-vs-engine-bug routing, and live-Callable registry membership as one unit — splitting would shuttle the disposed/depth/pendingDispose state across helper functions
 	function makeCallable(
 		handle: JSValueHandle,
 		descriptorName?: string,
@@ -645,27 +677,52 @@ function createBridge(
 		// Re-entry-safe disposal: see Bridge.makeCallable doc comment.
 		let depth = 0;
 		let pendingDispose = false;
+		// On exit from any single invoke (success, envelope-error, or
+		// engine-bug rejection): dispose marshalled arg handles, decrement
+		// depth, and run any pendingDispose now that the outermost frame
+		// has unwound. Extracted so `invoke`'s body stays focused on the
+		// boundary-opacity contract; the disposal bookkeeping is mechanical.
+		function invokeFinally(argHandles: readonly JSValueHandle[]): void {
+			for (const h of argHandles) {
+				h.dispose();
+			}
+			depth--;
+			if (depth === 0 && pendingDispose && !disposed) {
+				disposed = true;
+				dup.dispose();
+				liveCallables.delete(callable);
+			}
+		}
 		const invoke = async (
 			...args: readonly GuestValue[]
-		): Promise<GuestValue> => {
+		): Promise<CallableResult> => {
+			// Engine-side failures — fail loud (reject, do NOT envelope).
+			// Disposed Callable / unmarshallable arg both signal host plugin
+			// programming bugs, not guest behaviour. See
+			// `openspec/specs/sandbox/spec.md` "Guest→host boundary opacity
+			// (Callable envelope contract)".
 			if (disposed) {
 				throw new CallableDisposedError();
 			}
 			const argHandles = args.map((a) => marshalArg(currentVm, a));
 			depth++;
 			try {
-				const retHandle = callGuestFn(currentVm, dup, argHandles);
-				return await awaitGuestResult(currentVm, retHandle);
+				try {
+					const retHandle = callGuestFn(currentVm, dup, argHandles);
+					const value = await awaitGuestResult(currentVm, retHandle);
+					return makeOkEnvelope(value);
+				} catch (err) {
+					// `callGuestFn` (sync guest throw) and `awaitGuestResult`
+					// (async guest throw / promise rejection) both surface
+					// `GuestThrownError`. Convert to envelope (R-13). Anything
+					// else is an engine bug and keeps rejecting.
+					if (err instanceof GuestThrownError) {
+						return makeErrEnvelope(err);
+					}
+					throw err;
+				}
 			} finally {
-				for (const h of argHandles) {
-					h.dispose();
-				}
-				depth--;
-				if (depth === 0 && pendingDispose && !disposed) {
-					disposed = true;
-					dup.dispose();
-					liveCallables.delete(callable);
-				}
+				invokeFinally(argHandles);
 			}
 		};
 		const callable = invoke as Callable;

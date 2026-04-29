@@ -119,7 +119,12 @@ function translateValidatorThrow(err: unknown): GuestSafeError {
  * Installs the locked `__sdk.dispatchAction` surface that every SDK-produced
  * `action()` callable routes through. The dispatcher body:
  *   1. Calls `deps["host-call-action"].validateAction(name, input)`.
- *   2. Invokes the guest handler callable → `raw`.
+ *   2. Invokes the guest handler callable; inspects the returned
+ *      `CallableResult` envelope (Guest→host boundary opacity, R-13).
+ *      On `result.ok === false`, rethrows `result.error` (a live
+ *      `GuestThrownError`) so the surrounding `buildHandler` closure rule
+ *      passes it through to the calling guest VM unchanged (R-12).
+ *      On `result.ok === true`, binds `raw = result.value` and continues.
  *   3. Calls `deps["host-call-action"].validateActionOutput(name, raw)`
  *      host-side to enforce the declared output schema and return the
  *      validated value.
@@ -152,10 +157,16 @@ function worker(_ctx: PluginContext, deps: DepsMap): PluginSetup {
 				// Guest-side input/output always cross the bridge as
 				// JSON-shaped GuestValue — the SDK's Zod validation
 				// produces plain JSON shapes. Cast is structural only.
-				// Action-handler throws come back as GuestThrownError (from
-				// callGuestFn / awaitGuestResult) and are passed through
-				// unchanged by the bridge-closure rule.
-				const raw = await handler(input as GuestValue);
+				// Action-handler throws surface as a CallableResult envelope
+				// (Guest→host boundary opacity, R-13). Rethrowing
+				// `result.error` (a live `GuestThrownError`) routes through
+				// the surrounding `buildHandler` closure rule's pass-through
+				// branch (R-12) and reaches the calling guest VM unchanged.
+				const result = await handler(input as GuestValue);
+				if (!result.ok) {
+					throw result.error;
+				}
+				const raw = result.value;
 				try {
 					return validateActionOutput(actionName, raw);
 				} catch (err) {
