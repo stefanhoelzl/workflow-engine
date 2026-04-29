@@ -1,7 +1,5 @@
 // biome-ignore lint/style/noExportedImports: z is re-exported for consumers alongside locally defined exports
 import { z } from "zod";
-// biome-ignore lint/style/noExportedImports: IIFE_NAMESPACE is re-exported alongside the rest of the public surface; the constant lives in its own zero-dep module so the sandbox worker can import it without pulling in zod
-import { IIFE_NAMESPACE } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // HTTP trigger result
@@ -490,6 +488,23 @@ const ManifestSchema = z
 
 type Manifest = z.infer<typeof ManifestSchema>;
 type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
+
+// ---------------------------------------------------------------------------
+// IIFE namespace
+// ---------------------------------------------------------------------------
+//
+// Each sandbox worker evaluates exactly one workflow in an isolated VM, so
+// the namespace need not be per-workflow. Plugin, runtime, and SDK CLI
+// import this constant from `@workflow-engine/core`. The sandbox worker
+// imports the SAME literal from `@workflow-engine/core/constants` (a
+// zero-dep subpath module) to keep the worker bundle free of zod + the
+// rest of `core/index.ts`. The two literals MUST stay in sync;
+// `index.test.ts` asserts equality. Inlining here (rather than re-
+// importing from `./constants.js`) avoids a runtime relative-import that
+// Node's TS-strip mode doesn't auto-rewrite (`.js` → `.ts`), which broke
+// `node packages/sdk/dist/cli/cli.js build`.
+
+const IIFE_NAMESPACE = "__wfe_exports__";
 
 // ---------------------------------------------------------------------------
 // Exports
