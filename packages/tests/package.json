@@ -19,8 +19,10 @@
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.59.1",
+		"@types/async-exit-hook": "^2.0.2",
 		"@types/smtp-server": "^3.5.13",
 		"@types/ws": "^8.5.13",
+		"async-exit-hook": "^2.0.1",
 		"embedded-postgres": "17.9.0-beta.17",
 		"smtp-server": "^3.18.4",
 		"typescript": "^6.0.2",
