@@ -47,8 +47,8 @@ export const workflow = defineWorkflow({
 });
 
 export const echo = httpTrigger({
-	body: z.object({}),
-	responseBody: z.object({hash: z.string()}),
+	request: { body: z.object({}) },
+	response: { body: z.object({hash: z.string()}) },
 	handler: async () => {
 		const enc = new TextEncoder().encode(workflow.env.API_KEY);
 		const buf = await crypto.subtle.digest("SHA-256", enc);

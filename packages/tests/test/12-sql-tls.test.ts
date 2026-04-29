@@ -32,8 +32,8 @@ export const workflow = defineWorkflow({
 });
 
 export const probe = httpTrigger({
-	body: z.object({}),
-	responseBody: z.object({n: z.number()}),
+	request: { body: z.object({}) },
+	response: { body: z.object({n: z.number()}) },
 	handler: async () => {
 		const r = await executeSql(
 			{

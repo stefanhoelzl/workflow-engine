@@ -20,8 +20,8 @@ export const workflow = defineWorkflow({
 });
 
 export const ping = httpTrigger({
-	body: z.object({}),
-	responseBody: z.object({g: z.string()}),
+	request: { body: z.object({}) },
+	response: { body: z.object({g: z.string()}) },
 	handler: async () => ({body: {g: workflow.env.GREETING}}),
 });
 `,

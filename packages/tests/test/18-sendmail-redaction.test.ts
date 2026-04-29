@@ -51,7 +51,7 @@ export const workflow = defineWorkflow({
 });
 
 export const send = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => {
 		await sendMail({
 			smtp: {

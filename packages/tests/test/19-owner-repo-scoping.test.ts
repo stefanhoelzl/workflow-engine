@@ -17,7 +17,7 @@ const SOURCE = `
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const ping = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => ({status: 200, body: "pong"}),
 });
 `;

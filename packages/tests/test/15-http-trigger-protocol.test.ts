@@ -16,12 +16,17 @@ describe("httpTrigger protocol adapter", () => {
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const echo = httpTrigger({
-	body: z.object({greet: z.string()}),
-	responseBody: z.object({
-		body: z.unknown(),
-		headerVal: z.string().nullable(),
-		query: z.record(z.string(), z.string()),
-	}),
+	request: {
+		body: z.object({greet: z.string()}),
+		headers: z.object({"x-test-in": z.string().optional()}),
+	},
+	response: {
+		body: z.object({
+			body: z.unknown(),
+			headerVal: z.string().nullable(),
+			query: z.record(z.string(), z.string()),
+		}),
+	},
 	handler: async (payload) => {
 		const parsed = new URL(payload.url);
 		const params = new URLSearchParams(parsed.search);
@@ -71,7 +76,7 @@ export const echo = httpTrigger({
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const strict = httpTrigger({
-	body: z.object({greet: z.string()}),
+	request: { body: z.object({greet: z.string()}) },
 	handler: async () => ({status: 200, body: "ok"}),
 });
 `,
