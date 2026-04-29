@@ -3,7 +3,6 @@
 ## Purpose
 
 Unified in-app authentication for the workflow-engine runtime. Resolves the authenticated caller into a `UserContext` from either a sealed session cookie (UI routes) or a GitHub Bearer token (API routes), enforces the `AUTH_ALLOW` allow-list, and owns the GitHub OAuth login flow (`/login`, `/auth/github/signin`, `/auth/github/callback`, `/auth/logout`). Replaces the former oauth2-proxy sidecar and the parallel `github-auth`/`dashboard-auth` capabilities.
-
 ## Requirements
 ### Requirement: UserContext shape
 
@@ -35,6 +34,7 @@ UserContext = {
 - **WHEN** the runtime resolves their `UserContext`
 - **THEN** it SHALL be `{ login: "bob", mail: "", orgs: ["bob"] }`
 - **AND** `orgs` SHALL contain exactly one element, the user's own login
+
 ### Requirement: AuthProvider interface
 
 The runtime SHALL expose an `AuthProvider` interface that captures every per-request behavior of an authentication provider:
@@ -336,6 +336,7 @@ This predicate scopes *which owners an already-allowed user can act as*. It is o
 - **GIVEN** `user = { login: "../etc/passwd", mail: "", orgs: ["../etc/passwd"] }`
 - **WHEN** `isMember(user, "../etc/passwd")` is called
 - **THEN** it SHALL return false because the regex validation rejects the identifier first
+
 ### Requirement: Owner-authorization middleware
 
 The runtime SHALL expose a `requireOwnerMember()` Hono middleware factory in the `auth` capability. The middleware SHALL enforce the owner/repo-isolation invariant (SECURITY.md §4) for any route that accepts a `:owner` path parameter (optionally followed by a `:repo` path parameter), returning `404 Not Found` fail-closed on any failure mode (invalid identifier, non-member, or missing user).
@@ -404,6 +405,7 @@ Any future route that accepts `:owner` or `:owner/:repo` path parameters SHALL m
 - **WHEN** a request to `POST /trigger/victim/repo/wf/tr` arrives from alice
 - **THEN** `requireOwnerMember()` SHALL respond with `404 Not Found`
 - **AND** the body SHALL be `{"error":"Not Found"}`
+
 ### Requirement: GitHub OAuth scope
 
 The runtime SHALL request GitHub OAuth scope `user:email read:org` when constructing the authorize URL. This scope set SHALL be sufficient to populate `UserContext.login`, `UserContext.email`, and `UserContext.orgs` including private-org memberships.
@@ -566,6 +568,7 @@ The sealed cookie SHALL be no larger than 4096 bytes; if the payload would excee
 - **THEN** unsealing SHALL fail (new seal password invalidates the old cookie)
 - **AND** the session cookie SHALL be cleared
 - **AND** the response SHALL be `302 Found` with `Location: /login?returnTo=...`
+
 ### Requirement: State cookie contract
 
 The `auth_state` cookie carries CSRF protection and post-login redirect target for the OAuth handshake. It SHALL have:
@@ -657,19 +660,21 @@ Behavior:
 2. Read the `auth_flash` cookie if present; unseal and clear it.
 3. Iterate the provider registry in registration order. For each registered provider, call `provider.renderLoginSection(returnTo)` and embed the returned `JSX.Element` into the login card's JSX tree.
 4. Respond `200 OK` with an HTML page containing:
-   - The brand element.
+   - The universal topbar per the `ui-foundation` "Universal topbar" requirement, rendered without user identity (the visitor is by definition not logged in on this route).
    - The provider sections from step 3 (or no sections if the registry is empty).
    - If the flash payload was `{ kind: "denied", login }`: a "Not authorized" banner identifying the rejected login and containing an inline prose link to `https://github.com/logout` framed as account-switching guidance (for example, "To try a different account, sign out of GitHub first"). The link SHALL be rendered as a plain anchor inside the banner body, SHALL include `target="_blank"` and `rel="noopener noreferrer"`, and SHALL NOT be rendered as a styled action button in the action area.
    - If the flash payload was `{ kind: "logged-out" }`: a "Signed out" banner with no GitHub-related body addendum and no GitHub signout link anywhere on the page.
    - No banner when no flash cookie is present.
 
-The HTML SHALL contain no inline script, no inline style, no `on*=` event-handler attributes, and no `style=` attributes, per the app's CSP. The page SHALL NOT include the app chrome (topbar, sidebar, tenant selector) — it is a standalone layout for unauthenticated users.
+The HTML SHALL contain no inline script, no inline style, no `on*=` event-handler attributes, and no `style=` attributes, per the app's CSP. The page SHALL render the universal topbar (per `ui-foundation`) but SHALL NOT include other authenticated app chrome — the sidebar and tenant selector SHALL NOT appear, since the visitor is unauthenticated and has no scope-bearing context to display.
 
-When the registry is empty, the rendered card SHALL contain the brand and any flash banner but no provider sections; the page SHALL still respond `200 OK`. It is not an error to have no providers configured.
+The login card itself SHALL NOT embed a separate brand element — branding is delivered exclusively by the universal topbar above the card. The card body SHALL contain only the provider sections and any active flash banner.
+
+When the registry is empty, the rendered card SHALL contain no provider sections and any active flash banner; the page SHALL still respond `200 OK`. It is not an error to have no providers configured. The universal topbar SHALL render its brand wordmark regardless of registry composition.
 
 The `GET /login` handler SHALL NOT consult any provider-specific hook to render flash-banner addenda. `AuthProvider` SHALL NOT expose `renderFlashBody` or `renderFlashAction` methods; banner content is decided entirely by the login-page renderer from the `FlashPayload.kind` discriminator.
 
-> **Note:** that the user "cannot proceed past the page" is an emergent consequence of rendering no provider sections (no button or form to submit), not a separate enforce point the handler needs to check. If the registry is empty, the login card renders with only the brand/banner; the handler does not inspect or reject this state, and there is no fallback redirect.
+> **Note:** that the user "cannot proceed past the page" is an emergent consequence of rendering no provider sections (no button or form to submit), not a separate enforce point the handler needs to check. If the registry is empty, the login card renders with only the topbar and any banner; the handler does not inspect or reject this state, and there is no fallback redirect.
 
 #### Scenario: Renders github section when only github is registered
 
@@ -698,9 +703,17 @@ The `GET /login` handler SHALL NOT consult any provider-specific hook to render 
 - **GIVEN** registry contains no providers (`AUTH_ALLOW` unset)
 - **WHEN** `GET /login` is requested
 - **THEN** the handler SHALL respond `200 OK`
-- **AND** the body SHALL contain the brand
+- **AND** the body SHALL render the universal topbar with the brand wordmark
 - **AND** the body SHALL NOT contain any provider section
 - **AND** the response SHALL NOT include a `Location` header
+
+#### Scenario: Login page renders the universal topbar without user identity
+
+- **WHEN** `GET /login` is requested
+- **THEN** the rendered body SHALL include the universal topbar (per `ui-foundation`)
+- **AND** the topbar SHALL display the brand wordmark
+- **AND** the topbar SHALL NOT display any user identity element (since the visitor is unauthenticated)
+- **AND** the body SHALL NOT contain a sidebar element
 
 #### Scenario: Denied flash renders inline account-switch link, not an action button
 
@@ -726,12 +739,7 @@ The `GET /login` handler SHALL NOT consult any provider-specific hook to render 
 - **GIVEN** no flash cookie is present
 - **WHEN** `GET /login` is requested
 - **THEN** the handler SHALL respond `200 OK`
-- **AND** the response SHALL NOT include a `Location` header
-
-#### Scenario: Malformed returnTo defaults to /
-
-- **WHEN** `GET /login?returnTo=//evil.example` is requested with a github-only registry
-- **THEN** the github section in the rendered page SHALL link to `/auth/github/signin?returnTo=%2F`
+- **AND** the response SHALL NOT contain a `Location` header
 
 ### Requirement: GitHub signin route
 
@@ -974,3 +982,4 @@ Changes to this capability that introduce new threats, weaken or remove a docume
 - **WHEN** the change does not affect any item enumerated in `/SECURITY.md §4` or `/SECURITY.md §1`
 - **THEN** no update to `/SECURITY.md` is required
 - **AND** the proposal SHALL note that threat-model alignment was checked
+

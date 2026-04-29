@@ -3,6 +3,7 @@ import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it } from "vitest";
 import { withZodSchemas } from "../triggers/test-descriptors.js";
 import type { WorkflowEntry } from "../workflow-registry.js";
+import { LoginPage } from "./auth/login-page.js";
 import { renderFlamegraph } from "./dashboard/flamegraph.js";
 import {
 	type InvocationRow,
@@ -14,6 +15,11 @@ import { renderRepoTriggerPage } from "./trigger/page.js";
 
 const notFoundHtml = String(NotFoundPage());
 const errorHtml = String(ErrorPage());
+
+// Universal-topbar contract assertions (ui-foundation): wordmark always
+// renders inside .topbar-brand; user section appears only when user prop
+// is supplied. The brand-mark SVG element no longer exists; the wordmark
+// is text-only in --accent.
 
 // ---------------------------------------------------------------------------
 // CSP invariant assertions (SECURITY.md §6)
@@ -185,6 +191,57 @@ describe("HTML CSP invariants", () => {
 		expect(errorHtml).not.toMatch(JAVASCRIPT_URL_RE);
 		expect(errorHtml).not.toMatch(/<style\b/i);
 		expect(errorHtml).toContain('href="/static/workflow-engine.css"');
+	});
+
+	it("NotFoundPage with no user renders the wordmark but no user section", () => {
+		expect(notFoundHtml).toContain('class="topbar-brand"');
+		expect(notFoundHtml).toContain("Workflow Engine");
+		expect(notFoundHtml).not.toContain('class="topbar-user"');
+		expect(notFoundHtml).not.toContain('class="brand-mark"');
+	});
+
+	it("NotFoundPage with user renders the user section in the topbar", () => {
+		const html = String(
+			NotFoundPage({ user: "alice", email: "alice@example.com" }),
+		);
+		expect(html).toContain('class="topbar-brand"');
+		expect(html).toContain("Workflow Engine");
+		expect(html).toContain('class="topbar-user"');
+		expect(html).toContain("alice");
+		expect(html).toContain("alice@example.com");
+	});
+
+	it("ErrorPage with no user renders the wordmark but no user section", () => {
+		expect(errorHtml).toContain('class="topbar-brand"');
+		expect(errorHtml).toContain("Workflow Engine");
+		expect(errorHtml).not.toContain('class="topbar-user"');
+		expect(errorHtml).not.toContain('class="brand-mark"');
+	});
+
+	it("LoginPage renders the universal topbar without user identity", () => {
+		const html = String(
+			LoginPage({ flash: undefined, returnTo: "/", sections: [] }),
+		);
+		expect(html).toContain('class="topbar-brand"');
+		expect(html).toContain("Workflow Engine");
+		expect(html).not.toContain('class="topbar-user"');
+		expect(html).not.toContain('class="auth-card__brand-icon"');
+		expect(html).not.toContain('class="auth-card__brand-text"');
+	});
+
+	it("renderDashboardPage with user renders the user section", async () => {
+		const html = (
+			await renderDashboardPage({
+				user: "alice",
+				email: "alice@example.com",
+				owners: ["acme"],
+				rows: [],
+			})
+		).toString();
+		expect(html).toContain('class="topbar-brand"');
+		expect(html).toContain('class="topbar-user"');
+		expect(html).toContain("alice");
+		expect(html).not.toContain('class="brand-mark"');
 	});
 
 	it("renderFlamegraph (populated) output has no forbidden inline patterns", async () => {

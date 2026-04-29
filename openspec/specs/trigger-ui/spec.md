@@ -28,6 +28,7 @@ All GET routes SHALL require an authenticated session. `:owner` and `:repo` path
 - **WHEN** a user who is NOT a member of `victim-org` requests `GET /trigger/victim-org`, `GET /trigger/victim-org/foo`, or `GET /trigger/victim-org/foo/deploy/run`
 - **THEN** the runtime SHALL respond `404 Not Found`
 - **AND** the response SHALL be indistinguishable from the response for a non-existent owner
+
 ### Requirement: Event list page
 
 The system SHALL serve an HTML page at `GET /trigger/` listing all defined workflow events by name, rendered with authenticated user identity. Identity SHALL come from the authenticated session: `sessionMw` on `/trigger/*` reads the sealed `session` cookie, unseals it, and sets `c.set("user", UserContext)` where `UserContext = { name, mail, orgs }`. The trigger middleware SHALL read `c.get("user")` and extract the `.name` and `.mail` fields, passing them as separate `user` and `email` parameters to the page renderer; the shared layout then displays both strings in the top-bar user block. The middleware SHALL NOT pass the raw `UserContext` object through to the renderer — only the two display strings cross that boundary.
@@ -72,24 +73,28 @@ The page SHALL NOT read `X-Auth-Request-*` headers. Those headers are no longer 
 - **AND** SHALL NOT display `attacker` or `attacker@evil.test`
 
 ### Requirement: Lazy form initialization
-The system SHALL provide a client-side `initForm` procedure in the external JavaScript file (`/static/trigger-forms.js`) that initializes a Jedison form instance when a `<details>` block is first expanded. When the server-rendered trigger card carries no form container (because the trigger's input schema has no `properties` and no `additionalProperties`), no Jedison instance SHALL be created and the card SHALL present only the Submit control.
 
-#### Scenario: First expansion creates form
-- **WHEN** a `<details>` block containing a form container is opened for the first time
-- **THEN** the embedded JSON Schema is read from the `<script>` element
-- **THEN** a Jedison instance is created targeting the form container inside that `<details>` block
-- **THEN** the Jedison instance is cached on the DOM element
+The `/trigger` UI SHALL initialise the form for a trigger card on demand, the first time the user expands the card. When the trigger's input schema declares user-settable fields (i.e. has `properties` or `additionalProperties`), the form SHALL render schema-derived inputs scoped to the expanded card; when the schema declares no user-settable fields, the card SHALL render the Submit control alone with no input form.
 
-#### Scenario: Subsequent toggles reuse instance
-- **WHEN** a `<details>` block is collapsed and re-opened
-- **THEN** no new Jedison instance is created
-- **THEN** the previously entered form data is preserved
+The form library and binding mechanism are implementation choices and are not part of this requirement; the contract is on the user-observable behaviour (form appears on first expand, schema fields drive the inputs, no form when no fields, Submit always present).
+
+#### Scenario: First expansion renders the form
+
+- **WHEN** a trigger card containing a schema with user-settable fields is expanded for the first time
+- **THEN** the card SHALL render input controls derived from the schema fields
+- **AND** the Submit control SHALL be present
+
+#### Scenario: Subsequent toggles preserve form state
+
+- **WHEN** a trigger card with a previously-initialised form is collapsed and re-expanded
+- **THEN** the card SHALL re-display the same form
+- **AND** any user-entered field values SHALL be preserved across the collapse/expand cycle
 
 #### Scenario: Trigger with no user-settable inputs renders no form
+
 - **GIVEN** a trigger whose input schema has neither `properties` nor `additionalProperties`
-- **WHEN** the trigger card is rendered on the server
-- **THEN** the card's body SHALL NOT contain a form container element
-- **AND** when its `<details>` block is opened, no Jedison instance SHALL be created for that card
+- **WHEN** the trigger card is rendered and expanded
+- **THEN** no input form SHALL be rendered
 - **AND** the Submit control SHALL be the only interactive element visible inside the card body
 
 ### Requirement: Event submission
@@ -225,18 +230,6 @@ The system SHALL provide a client-side submit procedure in `/static/trigger-form
 - **WHEN** the client-side `fetch()` rejects before receiving a response
 - **THEN** the client SHALL open the shared result dialog in the server-error visual state with a human-readable banner indicating network failure
 
-### Requirement: Jedison styling
-The system SHALL use Jedison's base theme with custom CSS that uses the shared layout's CSS variables for consistent light/dark mode theming.
-
-#### Scenario: Form elements styled with CSS variables
-- **WHEN** the Jedison form is rendered
-- **THEN** `input`, `select`, and `textarea` elements use `var(--bg-elevated)` for background and `var(--border)` for borders
-- **THEN** `label` elements use `var(--text-secondary)` for color
-
-#### Scenario: Dark mode support
-- **WHEN** the user's system preference is dark mode
-- **THEN** form elements automatically use the dark mode CSS variable values
-
 ### Requirement: Example values on schema fields
 Workflow authors SHALL be able to attach example values to Zod event schema fields using `.meta({ example: <value> })`. These values are for UI pre-filling only and SHALL NOT affect server-side validation behavior.
 
@@ -307,6 +300,7 @@ At the owner-scope view (`/trigger/:owner`) and at the root view (`/trigger`), t
 - **WHEN** the response is rendered
 - **THEN** cards SHALL be grouped under a `<section>` per workflow
 - **AND** the page header SHALL identify the current scope as `acme / foo`
+
 ### Requirement: Dialog reflects trigger-fire outcome visually
 
 The trigger-fire result dialog SHALL distinguish three outcome categories determined solely by the HTTP response status class returned by the dispatch endpoint: success (status `2xx`), client error (status `4xx`), and server error (status `5xx` or an unresolved fetch rejection). Each category SHALL apply a distinct visual treatment (colour, border, banner text) so that the outcome is readable without inspecting the response body. The contract SHALL be kind-agnostic: a trigger backend that honours the status-class invariant SHALL receive the corresponding visual treatment automatically.
@@ -464,6 +458,7 @@ The form inside the pre-opened `<details>` SHALL initialise on page load. Becaus
 - **THEN** the response status SHALL be `200 OK`
 - **AND** the body SHALL contain a "Trigger not found" message
 - **AND** SHALL NOT be a `404 Not Found`
+
 ### Requirement: HTMX fragment for repo trigger cards
 
 The runtime SHALL expose `GET /trigger/:owner/:repo/cards` that returns the same workflow-grouped cards fragment rendered inline in the leaf view, without the page shell. The `/trigger/:owner` tree uses this endpoint via `hx-get` + `hx-trigger="toggle once"` to lazy-load each repo's cards when its `<details>` is opened.
@@ -501,3 +496,4 @@ The card's submit handler SHALL POST a JSON envelope `{ body, headers }` (rather
 - **GIVEN** an HTTP descriptor with declared headers schema and a user-filled card with body `{ "x": 1 }` and header value `x-trace-id: abc`
 - **WHEN** the user clicks Submit
 - **THEN** the card SHALL POST `{ "body": { "x": 1 }, "headers": { "x-trace-id": "abc" } }` to `/trigger/acme/w/webhook`
+

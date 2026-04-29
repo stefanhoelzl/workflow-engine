@@ -1,9 +1,5 @@
-# Shared Layout Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Provide a shared HTML layout with navigation sidebar reused across dashboard and trigger UI pages.
-## Requirements
 ### Requirement: Shared layout API
 
 Every authenticated UI surface (`/dashboard/*`, `/trigger/*`) SHALL render with three regions: a topbar (delegated to the universal topbar contract in `ui-foundation`), a navigation sidebar, and a content area for the page-specific body. The runtime SHALL expose a single shared mechanism that authenticated route handlers use to compose these regions; surface-specific handlers SHALL NOT reimplement the shell layout.
@@ -81,3 +77,16 @@ Authenticated UI surfaces SHALL render a topbar above the sidebar and main conte
 - **WHEN** the user clicks the "Sign out" link in the topbar
 - **THEN** the browser submits a POST to `/auth/logout`
 
+## REMOVED Requirements
+
+### Requirement: Shared CSS variables
+
+**Reason**: The CSS-variable list and external-CSS-file requirement bind specific implementation choices that are not externally observable. The CSP-clean rendering invariant (no inline `<style>`) is now owned by `ui-foundation`'s "CSP-clean rendering" requirement; the existence and values of design tokens are an implementation concern documented in `docs/ui-guidelines.md`.
+
+**Migration**: Pages must continue to render without inline `<style>` elements (enforced by `ui-foundation` CSP-clean rendering). The set of CSS variables defined and their values are not part of any spec; refer to `packages/runtime/src/ui/static/workflow-engine.css` and `docs/ui-guidelines.md`.
+
+### Requirement: Shared script tags
+
+**Reason**: The "universal script set on every page" requirement and its enumerated list of specific script filenames bind implementation choices that are not externally observable. Whether a page loads alpine.js, htmx, or any specific script bundle is an internal performance/architecture decision; the user-observable contract is "page interactivity works" and "scripts come from same-origin `/static/*`" — both of which are owned by `ui-foundation` (asset delivery + CSP-clean rendering) and `http-security` (CSP).
+
+**Migration**: All script references must continue to be served from same-origin `/static/*` paths (enforced by `ui-foundation` asset delivery + `http-security` CSP). The specific scripts emitted and how they are split per-surface are implementation choices documented in `docs/ui-guidelines.md` and the rendering code; they are not part of any spec.

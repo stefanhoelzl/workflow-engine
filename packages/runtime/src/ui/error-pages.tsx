@@ -1,15 +1,15 @@
 import { raw } from "hono/html";
+import { TopBar } from "./icons.js";
 
 // Error pages — rendered per-request via c.html(<NotFoundPage/>) /
 // c.html(<ErrorPage/>) by the global notFound / onError handlers.
 //
-// Visible content matches the previous static `static/404.html` and
-// `static/error.html` exactly: minimal topbar with brand only (no user
-// identity, no sidebar, no Alpine/htmx scripts), centered error card with
-// title/message/link. The "delivered the same way as other pages"
-// requirement (c.html() through the JSX path) is satisfied without
-// pulling in the full <Layout> chrome — error pages remain a separate
-// visual category, anonymous by construction.
+// Per `ui-foundation` "Universal topbar" + `ui-errors` page-outcome
+// requirements: error pages render the same topbar as authenticated
+// surfaces. User identity appears iff the request resolved a session;
+// otherwise the topbar shows the brand wordmark only. No defensive
+// try-catch on session resolution — if c.get("user") is undefined for
+// any reason, the topbar simply renders without a user section.
 
 interface ErrorShellProps {
 	readonly title: string;
@@ -18,6 +18,8 @@ interface ErrorShellProps {
 	readonly linkText: string;
 	readonly linkHref: string;
 	readonly bodyClass: string;
+	readonly user?: string;
+	readonly email?: string;
 }
 
 function ErrorShell({
@@ -27,7 +29,16 @@ function ErrorShell({
 	linkText,
 	linkHref,
 	bodyClass,
+	user,
+	email,
 }: ErrorShellProps) {
+	const topBarProps: { user?: string; email?: string } = {};
+	if (user !== undefined) {
+		topBarProps.user = user;
+	}
+	if (email !== undefined) {
+		topBarProps.email = email;
+	}
 	return (
 		<>
 			{raw("<!DOCTYPE html>")}
@@ -42,13 +53,7 @@ function ErrorShell({
 					<link rel="stylesheet" href="/static/workflow-engine.css" />
 				</head>
 				<body class={bodyClass}>
-					<div class="topbar">
-						<div class="topbar-brand">
-							<span class="icon">W</span>
-							<span>Workflow Engine</span>
-						</div>
-					</div>
-
+					<TopBar {...topBarProps} />
 					<div class="error-content">
 						<div class="error-card">
 							<div class="error-title">{heading}</div>
@@ -64,7 +69,19 @@ function ErrorShell({
 	);
 }
 
-function NotFoundPage() {
+interface ErrorPageProps {
+	readonly user?: string;
+	readonly email?: string;
+}
+
+function NotFoundPage({ user, email }: ErrorPageProps = {}) {
+	const userProps: { user?: string; email?: string } = {};
+	if (user !== undefined) {
+		userProps.user = user;
+	}
+	if (email !== undefined) {
+		userProps.email = email;
+	}
 	return (
 		<ErrorShell
 			title="Not Found - Workflow Engine"
@@ -73,11 +90,19 @@ function NotFoundPage() {
 			linkText="Go to dashboard"
 			linkHref="/dashboard/"
 			bodyClass="error-page"
+			{...userProps}
 		/>
 	);
 }
 
-function ErrorPage() {
+function ErrorPage({ user, email }: ErrorPageProps = {}) {
+	const userProps: { user?: string; email?: string } = {};
+	if (user !== undefined) {
+		userProps.user = user;
+	}
+	if (email !== undefined) {
+		userProps.email = email;
+	}
 	return (
 		<ErrorShell
 			title="Error - Workflow Engine"
@@ -86,8 +111,10 @@ function ErrorPage() {
 			linkText="Go home"
 			linkHref="/"
 			bodyClass="error-page"
+			{...userProps}
 		/>
 	);
 }
 
+export type { ErrorPageProps };
 export { ErrorPage, NotFoundPage };

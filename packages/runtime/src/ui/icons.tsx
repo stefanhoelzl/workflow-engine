@@ -1,105 +1,275 @@
-// Shared icon components used by <Layout>, <SidebarTree>, and other UI
-// surfaces. Each icon is a tiny sync component returning a single <svg>
-// (lucide-style stroke icons) or a single <span> (unicode-glyph-based
-// trigger-kind icons). Centralising them here keeps the icon registry in
-// one place and lets every consumer use plain JSX (<DashboardIcon/>) instead
+// Shared icon + topbar components used across UI surfaces. Centralising
+// these here keeps the icon registry in one place and lets every consumer
+// use plain JSX (<DashboardIcon/>, <TriggerKindIcon kind="cron"/>) instead
 // of reaching for raw('<svg .../>') string constants.
 //
 // Every icon is decorative; aria-hidden="true" is set inline (not via spread)
 // so Biome's noSvgWithoutTitle rule sees it.
+//
+// Icon strokes use Lucide's design (1.6–2px, round caps, 24×24 viewBox),
+// adapted to inherit currentColor. Cross-platform-stable per the
+// `ui-foundation` "Icon rendering invariants" requirement (no emoji, no
+// external icon-font fetch, no platform-emoji rendering).
 
-// activity — dashboard
-function DashboardIcon({ class: cls = "icon" }: { class?: string } = {}) {
+import type { Child } from "hono/jsx";
+
+interface IconProps {
+	class?: string;
+}
+
+function Svg({
+	class: cls = "icon",
+	stroke = "2",
+	width,
+	height,
+	children,
+}: {
+	class?: string;
+	stroke?: string;
+	width?: string;
+	height?: string;
+	children: unknown;
+}) {
 	return (
 		<svg
 			class={cls}
 			viewBox="0 0 24 24"
+			width={width}
+			height={height}
 			fill="none"
 			stroke="currentColor"
-			stroke-width="2"
+			stroke-width={stroke}
 			stroke-linecap="round"
 			stroke-linejoin="round"
 			aria-hidden="true"
 		>
+			{children}
+		</svg>
+	);
+}
+
+// activity — dashboard nav
+function DashboardIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls}>
 			<path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-		</svg>
+		</Svg>
 	);
 }
 
-// zap — trigger
-function TriggerIcon({ class: cls = "icon" }: { class?: string } = {}) {
+// zap — trigger nav
+function TriggerIcon({ class: cls = "icon" }: IconProps = {}) {
 	return (
-		<svg
-			class={cls}
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
-		>
+		<Svg class={cls}>
 			<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
-		</svg>
+		</Svg>
 	);
 }
 
-// workflow — brand mark (small rounded-square "W"-ish glyph)
-function BrandIcon({ class: cls = "icon" }: { class?: string } = {}) {
-	return (
-		<svg
-			class={cls}
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
-		>
-			<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-		</svg>
-	);
-}
-
-// chevron-right — shared expand affordance. Sized smaller (14×14) for
+// chevron-right — shared expand affordance, sized smaller (14×14) for
 // inline use in the sidebar tree.
-function ChevronIcon({ class: cls = "icon" }: { class?: string } = {}) {
+function ChevronIcon({ class: cls = "icon" }: IconProps = {}) {
 	return (
-		<svg
-			class={cls}
-			viewBox="0 0 24 24"
-			width="14"
-			height="14"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
-		>
+		<Svg class={cls} width="14" height="14">
 			<path d="m9 18 6-6-6-6" />
-		</svg>
+		</Svg>
 	);
 }
 
-// Unicode-glyph trigger-kind icons. Replaces the host-side
-// `triggerKindIcon(kind)` function from `triggers.ts`. The dashboard list,
-// flamegraph header, sidebar leaves, and trigger card all consume this.
-const KIND_GLYPHS: Record<string, string> = {
-	http: "\u{1F310}", // globe
-	cron: "\u{23F0}", // alarm clock
-	manual: "\u{1F464}", // bust in silhouette
-	imap: "\u{1F4E8}", // incoming envelope
-};
+// ---------------------------------------------------------------------------
+// Trigger-kind icons (cross-platform-stable replacement for the old
+// emoji glyphs). Each kind has a distinct Lucide-derived shape per the
+// `ui-foundation` "Distinct visual indicator per trigger kind" requirement.
+// ---------------------------------------------------------------------------
+
+// clock — cron (Lucide: face circle + hour/minute hands)
+function CronIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<circle cx="12" cy="12" r="10" fill="none" />
+			<polyline points="12 6 12 12 16 14" fill="none" />
+		</Svg>
+	);
+}
+
+// globe — http (Lucide: circle + equator + dual-arc longitude)
+function HttpIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<circle cx="12" cy="12" r="10" fill="none" />
+			<path d="M2 12h20" fill="none" />
+			<path d="M12 2a14.5 14.5 0 0 1 0 20 14.5 14.5 0 0 1 0-20" fill="none" />
+		</Svg>
+	);
+}
+
+// user — manual (was mouse-pointer-click; user prefers the person silhouette)
+function ManualIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" fill="none" />
+			<circle cx="12" cy="7" r="4" fill="none" />
+		</Svg>
+	);
+}
+
+// mail — imap (Lucide envelope; explicit fill="none" so the rect doesn't
+// inherit a stray fill from any nearby selector)
+function ImapIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<rect width="20" height="16" x="2" y="4" rx="2" fill="none" />
+			<path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" fill="none" />
+		</Svg>
+	);
+}
+
+function kindGlyph(kind: string): Child {
+	switch (kind) {
+		case "cron":
+			return <CronIcon />;
+		case "http":
+			return <HttpIcon />;
+		case "manual":
+			return <ManualIcon />;
+		case "imap":
+			return <ImapIcon />;
+		default:
+			// Unknown kind — neutral dot so layout stays stable without leaking
+			// emoji or `?` glyphs. Author-visible only when a new kind is
+			// registered without a matching icon (implementation gap).
+			return (
+				<Svg stroke="1.8">
+					<circle cx="12" cy="12" r="4" />
+				</Svg>
+			);
+	}
+}
 
 function TriggerKindIcon({ kind }: { kind: string }) {
-	const glyph = KIND_GLYPHS[kind] ?? "\u{25CF}";
+	const cls = `trigger-kind-icon trigger-kind-icon--${kind}`;
 	return (
-		<span class="trigger-kind-icon" role="img" title={kind} aria-label={kind}>
-			{glyph}
+		<span class={cls} role="img" title={kind} aria-label={kind}>
+			{kindGlyph(kind)}
 		</span>
 	);
 }
 
-export { BrandIcon, ChevronIcon, DashboardIcon, TriggerIcon, TriggerKindIcon };
+// ---------------------------------------------------------------------------
+// Event-prefix icons — leftmost row gutter on the dashboard list and event
+// log, plus flamegraph slice indicators. Distinct shape per top-level prefix
+// per the `ui-foundation` "Distinct visual indicator per event prefix"
+// requirement. Colour comes from the parent's currentColor (see the
+// `--kind-trigger` / `--kind-action` / `--kind-rest` tokens).
+// ---------------------------------------------------------------------------
+
+// zap — trigger.* events
+function TriggerPrefixIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="1.8">
+			<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
+		</Svg>
+	);
+}
+
+// box — action.* events
+function ActionPrefixIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="1.8">
+			<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+			<path d="m3.3 7 8.7 5 8.7-5" />
+			<path d="M12 22V12" />
+		</Svg>
+	);
+}
+
+// terminal — system.* events
+function SystemPrefixIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="1.8">
+			<polyline points="4 17 10 11 4 5" />
+			<line x1="12" y1="19" x2="20" y2="19" />
+		</Svg>
+	);
+}
+
+function prefixGlyph(prefix: string): Child {
+	switch (prefix) {
+		case "trigger":
+			return <TriggerPrefixIcon />;
+		case "action":
+			return <ActionPrefixIcon />;
+		case "system":
+			return <SystemPrefixIcon />;
+		default:
+			return (
+				<Svg stroke="1.8">
+					<circle cx="12" cy="12" r="4" />
+				</Svg>
+			);
+	}
+}
+
+function EventPrefixIcon({ prefix }: { prefix: string }) {
+	const cls = `row-icon row-icon--${prefix}`;
+	return (
+		<span class={cls} aria-hidden="true">
+			{prefixGlyph(prefix)}
+		</span>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Universal topbar — used by <Layout/> (authenticated surfaces), the login
+// page, and the error pages. Renders the brand wordmark always; renders the
+// user section iff `user` is supplied. Per `ui-foundation` "Universal
+// topbar" requirement.
+// ---------------------------------------------------------------------------
+
+interface TopBarProps {
+	user?: string;
+	email?: string;
+}
+
+function TopBar({ user, email }: TopBarProps = {}) {
+	return (
+		<div class="topbar">
+			<div class="topbar-brand">Workflow Engine</div>
+			{user ? (
+				<div class="topbar-right">
+					<section class="topbar-user" aria-label={`Signed in as ${user}`}>
+						<div class="topbar-user-line">
+							<span class="topbar-username">{user}</span>
+							<form
+								class="topbar-signout-form"
+								method="post"
+								action="/auth/logout"
+							>
+								<button class="topbar-signout" type="submit">
+									Sign out
+								</button>
+							</form>
+						</div>
+						{email ? <div class="topbar-email">{email}</div> : null}
+					</section>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+export {
+	ActionPrefixIcon,
+	ChevronIcon,
+	CronIcon,
+	DashboardIcon,
+	EventPrefixIcon,
+	HttpIcon,
+	ImapIcon,
+	ManualIcon,
+	SystemPrefixIcon,
+	TopBar,
+	TriggerIcon,
+	TriggerKindIcon,
+	TriggerPrefixIcon,
+};

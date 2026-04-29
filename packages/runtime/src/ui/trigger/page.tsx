@@ -242,15 +242,19 @@ function descriptorToCardData(
 			meta,
 		};
 	}
-	const manual = descriptor as ManualTriggerDescriptor;
+	// Manual + IMAP (and any future non-http/non-cron kinds) share the same
+	// card shape: server-side input schema, POST to /trigger/.../<name>.
+	// Carry through the descriptor's actual kind so the kind icon matches
+	// (this used to hardcode "manual" and silently mis-render imap triggers).
+	const other = descriptor as ManualTriggerDescriptor;
 	return {
 		owner,
 		repo,
 		workflow,
-		trigger: manual.name,
-		kind: "manual",
-		schema: (manual.inputSchema ?? { type: "object" }) as object,
-		submitUrl: `/trigger/${owner}/${repo}/${workflow}/${manual.name}`,
+		trigger: other.name,
+		kind: descriptor.kind,
+		schema: (other.inputSchema ?? { type: "object" }) as object,
+		submitUrl: `/trigger/${owner}/${repo}/${workflow}/${other.name}`,
 		submitMethod: "POST",
 		meta,
 	};

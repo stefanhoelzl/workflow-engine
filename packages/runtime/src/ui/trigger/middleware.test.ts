@@ -813,7 +813,10 @@ describe("triggerMiddleware: manual trigger rendering + dispatch", () => {
 		expect(body).toContain('class="trigger-group-title">ops</h2>');
 		expect(body).toContain('<span class="trigger-name">rerun</span>');
 		expect(body).toContain('title="manual"');
-		expect(body).toContain("\u{1F464}"); // bust in silhouette
+		// Manual trigger renders the Lucide mouse-pointer-click icon (no emoji
+		// glyphs anymore — see ui-foundation "Icon rendering invariants").
+		expect(body).toContain("trigger-kind-icon--manual");
+		expect(body).not.toContain("\u{1F464}"); // emoji bust no longer used
 		expect(body).toContain('data-trigger-url="/trigger/t0/r0/ops/rerun"');
 		expect(body).toContain('data-trigger-method="POST"');
 	});
@@ -935,7 +938,10 @@ describe("triggerMiddleware: imap trigger rendering", () => {
 		expect(body).toContain('class="trigger-group-title">mail</h2>');
 		expect(body).toContain('<span class="trigger-name">inbound</span>');
 		expect(body).toContain('title="imap"');
-		expect(body).toContain("\u{1F4E8}"); // incoming envelope
+		// IMAP trigger renders the Lucide mail icon (no emoji glyphs — see
+		// ui-foundation "Icon rendering invariants").
+		expect(body).toContain("trigger-kind-icon--imap");
+		expect(body).not.toContain("\u{1F4E8}"); // emoji envelope no longer used
 		expect(body).toContain("imap.example.com:993 INBOX");
 	});
 
