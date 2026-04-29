@@ -48,8 +48,26 @@ interface PersistenceDeps {
 	readonly logger?: PersistenceOptions["logger"];
 }
 
-function isTerminal(kind: string): boolean {
+// A trigger-bearing invocation completes when one of these terminal events
+// fires; persistence then archives the full id and clears pending.
+function isTriggerTerminal(kind: string): boolean {
 	return kind === "trigger.response" || kind === "trigger.error";
+}
+
+// Standalone one-shot events that own their `id` and have no follow-up.
+// They MUST be archived as a single-event invocation immediately, otherwise
+// they sit in `pending/<id>/` forever and on the next runtime boot recovery
+// treats them as orphaned mid-invocation crashes (R-7 reserved-prefix kinds
+// `system.upload` and `trigger.rejection` from the 2026-04-27 dashboard
+// change). `system.request|call|exception|...` are emitted INSIDE a regular
+// invocation under a parent `trigger.request` id, so they archive normally
+// when the trigger's terminal fires — they do NOT belong here.
+function isSelfTerminal(kind: string): boolean {
+	return kind === "system.upload" || kind === "trigger.rejection";
+}
+
+function isTerminal(kind: string): boolean {
+	return isTriggerTerminal(kind) || isSelfTerminal(kind);
 }
 
 async function writePending(
