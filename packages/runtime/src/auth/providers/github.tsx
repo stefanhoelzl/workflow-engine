@@ -1,7 +1,6 @@
 import { webcrypto } from "node:crypto";
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
 import { GithubIcon } from "../../ui/icons.js";
 import {
 	FIVE_MINUTES_SECONDS,
@@ -15,6 +14,7 @@ import {
 	SIXTY_SECONDS,
 	STATE_COOKIE,
 } from "../constants.js";
+import { clearOpts, writeOpts } from "../cookie-opts.js";
 import { sealFlash } from "../flash-cookie.js";
 import { buildAuthorizeUrl, exchangeCode, resolveUser } from "../github-api.js";
 import { type SessionPayload, sealSession } from "../session-cookie.js";
@@ -59,28 +59,6 @@ function parseGithubRest(rest: string): GithubEntry {
 		);
 	}
 	return { kind, id };
-}
-
-// See session-mw.ts `clearOpts` for the iframe-friendly local-dev variant.
-function clearOpts(path: string, secure: boolean): CookieOptions {
-	if (secure) {
-		return { path, secure: true, httpOnly: true, sameSite: "Lax" };
-	}
-	return {
-		path,
-		secure: true,
-		httpOnly: true,
-		sameSite: "None",
-		partitioned: true,
-	};
-}
-
-function writeOpts(
-	path: string,
-	secure: boolean,
-	maxAge: number,
-): CookieOptions {
-	return { ...clearOpts(path, secure), maxAge };
 }
 
 function generateState(): string {

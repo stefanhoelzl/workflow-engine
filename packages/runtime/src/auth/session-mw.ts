@@ -1,6 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
 import {
 	FLASH_COOKIE,
 	LOGIN_PATH,
@@ -8,6 +7,7 @@ import {
 	SEVEN_DAYS_SECONDS,
 	SIXTY_SECONDS,
 } from "./constants.js";
+import { clearOpts, writeOpts } from "./cookie-opts.js";
 import { sealFlash } from "./flash-cookie.js";
 import type { ProviderRegistry } from "./providers/index.js";
 import {
@@ -25,31 +25,6 @@ interface SessionMiddlewareOptions {
 	readonly nowFn?: () => number;
 }
 
-// In local dev (`secure=false`), the session cookie must work inside the
-// VS Code Simple Browser webview, which embeds localhost in an iframe whose
-// top-level origin is `vscode-webview://…`. From Chrome's view that's a
-// cross-site context, so a `SameSite=Lax` cookie is dropped. Localhost is a
-// "potentially trustworthy" origin per the W3C Secure Contexts spec, so
-// Chrome accepts `Secure` cookies on `http://localhost`. The `Partitioned`
-// attribute opts into CHIPS so the cookie is keyed to the embedding
-// vscode-webview origin.
-function clearOpts(secure: boolean): CookieOptions {
-	if (secure) {
-		return { path: "/", secure: true, httpOnly: true, sameSite: "Lax" };
-	}
-	return {
-		path: "/",
-		secure: true,
-		httpOnly: true,
-		sameSite: "None",
-		partitioned: true,
-	};
-}
-
-function writeOpts(secure: boolean, maxAge: number): CookieOptions {
-	return { ...clearOpts(secure), maxAge };
-}
-
 function loginRedirectUrl(c: Context): string {
 	const url = new URL(c.req.url);
 	const returnTo = url.pathname + url.search;
@@ -57,12 +32,12 @@ function loginRedirectUrl(c: Context): string {
 }
 
 function clearSession(c: Context, secure: boolean) {
-	deleteCookie(c, SESSION_COOKIE, clearOpts(secure));
+	deleteCookie(c, SESSION_COOKIE, clearOpts("/", secure));
 }
 
 async function setFlash(c: Context, login: string, secure: boolean) {
 	const sealed = await sealFlash({ kind: "denied", login });
-	setCookie(c, FLASH_COOKIE, sealed, writeOpts(secure, SIXTY_SECONDS));
+	setCookie(c, FLASH_COOKIE, sealed, writeOpts("/", secure, SIXTY_SECONDS));
 }
 
 async function writeSession(
@@ -71,7 +46,7 @@ async function writeSession(
 	secure: boolean,
 ) {
 	const sealed = await sealSession(payload);
-	setCookie(c, SESSION_COOKIE, sealed, writeOpts(secure, SEVEN_DAYS_SECONDS));
+	setCookie(c, SESSION_COOKIE, sealed, writeOpts("/", secure, SEVEN_DAYS_SECONDS));
 }
 
 function sessionMiddleware(

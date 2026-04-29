@@ -1,6 +1,5 @@
 import type { Context, Hono } from "hono";
 import { setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
 import { ChevronDownIcon } from "../../ui/icons.js";
 import {
 	HTTP_BAD_REQUEST,
@@ -8,6 +7,7 @@ import {
 	SEVEN_DAYS_MS,
 	SEVEN_DAYS_SECONDS,
 } from "../constants.js";
+import { writeOpts } from "../cookie-opts.js";
 import { type SessionPayload, sealSession } from "../session-cookie.js";
 import { sanitizeReturnTo } from "../state-cookie.js";
 import type { UserContext } from "../user-context.js";
@@ -69,24 +69,6 @@ function userFromEntry(entry: LocalEntry): UserContext {
 	};
 }
 
-// See session-mw.ts `clearOpts` for the iframe-friendly local-dev variant.
-function clearOpts(secure: boolean): CookieOptions {
-	if (secure) {
-		return { path: "/", secure: true, httpOnly: true, sameSite: "Lax" };
-	}
-	return {
-		path: "/",
-		secure: true,
-		httpOnly: true,
-		sameSite: "None",
-		partitioned: true,
-	};
-}
-
-function writeOpts(secure: boolean, maxAge: number): CookieOptions {
-	return { ...clearOpts(secure), maxAge };
-}
-
 function LocalUserItem({ name }: { name: string }) {
 	return (
 		<button type="submit" name="user" value={name} class="auth-local__item">
@@ -129,7 +111,7 @@ function buildSignin(
 			c,
 			SESSION_COOKIE,
 			sealed,
-			writeOpts(deps.secureCookies, SEVEN_DAYS_SECONDS),
+			writeOpts("/", deps.secureCookies, SEVEN_DAYS_SECONDS),
 		);
 		const returnTo = sanitizeReturnTo(returnToRaw);
 		return c.redirect(returnTo);

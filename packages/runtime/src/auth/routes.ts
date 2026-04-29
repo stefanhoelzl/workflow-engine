@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
 import type { Middleware } from "../triggers/http.js";
 import { renderLoginPage } from "../ui/auth/login-page.js";
 import {
@@ -10,6 +9,7 @@ import {
 	SESSION_COOKIE,
 	SIXTY_SECONDS,
 } from "./constants.js";
+import { clearOpts, writeOpts } from "./cookie-opts.js";
 import { sealFlash, unsealFlash } from "./flash-cookie.js";
 import type { ProviderRegistry } from "./providers/index.js";
 import { sanitizeReturnTo } from "./state-cookie.js";
@@ -22,18 +22,6 @@ interface LoginPageOptions {
 interface AuthRoutesOptions {
 	readonly secureCookies: boolean;
 	readonly registry: ProviderRegistry;
-}
-
-function clearOpts(path: string, secure: boolean): CookieOptions {
-	return { path, secure, httpOnly: true, sameSite: "Lax" };
-}
-
-function writeOpts(
-	path: string,
-	secure: boolean,
-	maxAge: number,
-): CookieOptions {
-	return { ...clearOpts(path, secure), maxAge };
 }
 
 function loginPageMiddleware(options: LoginPageOptions): Middleware {
