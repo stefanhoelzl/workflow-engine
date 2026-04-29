@@ -615,10 +615,11 @@ function readExportFromIife(
 // sync throw, dumped VM error on promise rejection).
 async function callGuestFunction(
 	vm: QuickJS,
+	bridge: Bridge,
 	fnHandle: JSValueHandle,
 	ctx: unknown,
 ): Promise<RunResultPayload> {
-	const ctxHandle = vm.hostToHandle(ctx);
+	const ctxHandle = bridge.hostToHandle(ctx);
 	let callResultHandle: JSValueHandle;
 	try {
 		callResultHandle = vm.callFunction(fnHandle, vm.undefined, ctxHandle);
@@ -653,6 +654,7 @@ async function callGuestFunction(
 
 async function invokeGuestHandler(
 	vm: QuickJS,
+	bridge: Bridge,
 	exportName: string,
 	ctx: unknown,
 ): Promise<RunResultPayload> {
@@ -667,7 +669,7 @@ async function invokeGuestHandler(
 		};
 	}
 	try {
-		return await callGuestFunction(vm, fnHandle, ctx);
+		return await callGuestFunction(vm, bridge, fnHandle, ctx);
 	} finally {
 		fnHandle.dispose();
 	}
@@ -745,7 +747,7 @@ async function handleRun(
 
 	let payload: RunResultPayload;
 	try {
-		payload = await invokeGuestHandler(vm, msg.exportName, msg.ctx);
+		payload = await invokeGuestHandler(vm, bridge, msg.exportName, msg.ctx);
 	} catch (err) {
 		const e = serializeError(err);
 		payload = { ok: false, error: { message: e.message, stack: e.stack } };

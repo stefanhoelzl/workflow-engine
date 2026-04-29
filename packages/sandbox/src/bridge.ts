@@ -190,6 +190,19 @@ interface Bridge {
 	 * logging each entry and calling `.dispose()` on the survivors.
 	 */
 	drainCallableLeaks(): readonly CallableLeak[];
+	/**
+	 * Marshal a host JS value into a VM handle. Wraps quickjs-wasi's
+	 * `vm.hostToHandle` so top-level Promise values can resolve safely after
+	 * the VM has been disposed: the deferred's `.then` callbacks no-op on
+	 * late disposal instead of triggering an unhandled rejection that would
+	 * kill the worker. Non-Promise values are forwarded unchanged.
+	 *
+	 * Nested Promises inside object/array trees are not supported (quickjs-
+	 * wasi recurses with its own unguarded `hostToHandle` callsite); a dev-
+	 * mode scan asserts the invariant. Plugin authors must `await` host-side
+	 * before returning data that contains a Promise.
+	 */
+	hostToHandle(value: unknown): JSValueHandle;
 }
 
 // --- Extractor construction ---
@@ -258,13 +271,92 @@ function assertMatchesKind(
 	}
 }
 
+// quickjs-wasi's `hostToHandle` is unguarded against late VM disposal when
+// `value instanceof Promise`: it installs `.then(r => deferred.resolve(
+// vm.hostToHandle(r)))` callbacks that fire as microtasks at promise-
+// resolution time. If the VM is disposed between the call and the resolve,
+// `assertNotDisposed` throws inside the .then body, surfaces as an
+// unhandled rejection, and kills the worker (observed under WPT idlharness
+// concurrency, where a host fetch resolves after the run's snapshot
+// restore has already disposed the outgoing VM).
+//
+// `safeHostToHandle` wraps the upstream API so the deferred-resolution
+// path no-ops on disposal. For non-Promise values we forward straight
+// through. Nested Promises inside object/array trees are not supported
+// (quickjs-wasi recurses with its own unguarded callsite); a dev-mode
+// scan asserts the invariant so a future plugin author hits a hard error
+// instead of silently re-opening the race.
+// Bounded recursion depth for the nested-Promise scan. Plugin-shaped
+// payloads (fetch responses, sql rows, mail send args) are shallow; 8
+// covers any realistic envelope without risking a runaway walk on
+// pathological inputs.
+const NESTED_PROMISE_SCAN_MAX_DEPTH = 8;
+
+function assertNoNestedPromise(value: unknown, depth: number): void {
+	if (
+		depth > NESTED_PROMISE_SCAN_MAX_DEPTH ||
+		value === null ||
+		value === undefined
+	) {
+		return;
+	}
+	if (value instanceof Promise) {
+		throw new Error(
+			"safeHostToHandle: nested Promise not supported; await host-side before marshalling",
+		);
+	}
+	if (Array.isArray(value)) {
+		for (const v of value) {
+			assertNoNestedPromise(v, depth + 1);
+		}
+		return;
+	}
+	if (typeof value !== "object") {
+		return;
+	}
+	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+		return;
+	}
+	for (const v of Object.values(value as Record<string, unknown>)) {
+		assertNoNestedPromise(v, depth + 1);
+	}
+}
+
+function safeHostToHandle(vm: QuickJS, value: unknown): JSValueHandle {
+	if (value instanceof Promise) {
+		const deferred = vm.newPromise();
+		value.then(
+			(r) => {
+				try {
+					deferred.resolve(safeHostToHandle(vm, r));
+					vm.executePendingJobs();
+				} catch {
+					// Late VM disposal between marshal and resolve. Guest is gone;
+					// silently drop.
+				}
+			},
+			(err) => {
+				try {
+					deferred.reject(safeHostToHandle(vm, err));
+					vm.executePendingJobs();
+				} catch {
+					// Late VM disposal between marshal and reject; silently drop.
+				}
+			},
+		);
+		return deferred.handle;
+	}
+	assertNoNestedPromise(value, 0);
+	return vm.hostToHandle(value);
+}
+
 // quickjs-wasi's `vm.hostToHandle` returns shared singletons for null,
 // undefined, true, and false — the same JSValueHandle instance the VM uses
 // everywhere. Disposing one of those singletons decrements the shared
 // refcount and corrupts subsequent use. Always dup singletons so the caller
 // owns an independent handle whose dispose only affects the dup.
 function marshalArg(vm: QuickJS, value: unknown): JSValueHandle {
-	const handle = vm.hostToHandle(value);
+	const handle = safeHostToHandle(vm, value);
 	if (
 		value === null ||
 		value === undefined ||
@@ -485,7 +577,7 @@ function createBridge(
 	const marshal = {
 		string: (value: string) => currentVm.newString(value),
 		number: (value: number) => currentVm.newNumber(value),
-		json: (value: unknown) => currentVm.hostToHandle(value),
+		json: (value: unknown) => safeHostToHandle(currentVm, value),
 		boolean: (value: unknown) => (value ? currentVm.true : currentVm.false),
 		// biome-ignore lint/suspicious/noConfusingVoidType: must accept void return values from impl
 		void: (_value: void) => currentVm.undefined,
@@ -775,6 +867,9 @@ function createBridge(
 		installDescriptor,
 		rebindDescriptor,
 		drainCallableLeaks,
+		hostToHandle(value: unknown) {
+			return safeHostToHandle(currentVm, value);
+		},
 	};
 	internalCtx = options?.ctxOverride ?? createPluginContext(bridge);
 	return bridge;
