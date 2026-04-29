@@ -6,6 +6,7 @@
 type Recipient = string | readonly string[];
 
 type MailErrorKind =
+	| "invalid-input"
 	| "auth"
 	| "recipient-rejected"
 	| "message-rejected"

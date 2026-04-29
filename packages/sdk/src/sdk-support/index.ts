@@ -6,7 +6,7 @@ import type {
 	PluginContext,
 	PluginSetup,
 } from "@workflow-engine/sandbox";
-import { Guest } from "@workflow-engine/sandbox";
+import { Guest, GuestSafeError } from "@workflow-engine/sandbox";
 
 // The private dispatcher descriptor name. Phase-3 deletes it from globalThis
 // after Phase-2 guest() has captured it into the locked `__sdk` object,
@@ -58,6 +58,63 @@ function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 const name = "sdk-support";
 const dependsOn: readonly string[] = ["host-call-action"];
 
+interface ValidationIssueLike {
+	readonly path: readonly (string | number)[];
+	readonly message: string;
+}
+
+function isValidationErrorLike(
+	err: unknown,
+): err is { readonly issues: readonly ValidationIssueLike[]; message: string } {
+	if (typeof err !== "object" || err === null) {
+		return false;
+	}
+	const e = err as { name?: unknown; issues?: unknown };
+	if (e.name !== "ValidationError") {
+		return false;
+	}
+	return Array.isArray(e.issues);
+}
+
+function formatValidationIssues(
+	issues: readonly ValidationIssueLike[],
+): string {
+	if (issues.length === 0) {
+		return "validation failed";
+	}
+	return issues
+		.map((issue) => {
+			const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+			return `${path}: ${issue.message}`;
+		})
+		.join("; ");
+}
+
+/**
+ * Translate a `host-call-action` plugin throw into a `GuestSafeError` so the
+ * bridge-closure rule propagates a curated message to the guest. The plugin
+ * raises:
+ *   - `GuestSafeError("action \"X\" is not declared")` for unknown action
+ *     names — pass through unchanged.
+ *   - `ValidationError(message, issues, errors)` for input/output schema
+ *     violations — re-shape as a flat issue summary; `.errors` and `.issues`
+ *     arrays SHALL NOT cross the bridge per `specs/actions/spec.md`.
+ *   - Anything else — collapse to a generic GuestSafeError so the bridge
+ *     closure-rule's pass-through still applies.
+ */
+function translateValidatorThrow(err: unknown): GuestSafeError {
+	if (err instanceof GuestSafeError) {
+		return err;
+	}
+	if (isValidationErrorLike(err)) {
+		return new GuestSafeError(formatValidationIssues(err.issues));
+	}
+	if (err instanceof Error) {
+		return new GuestSafeError(err.message);
+	}
+	return new GuestSafeError(String(err));
+}
+
 /**
  * Installs the locked `__sdk.dispatchAction` surface that every SDK-produced
  * `action()` callable routes through. The dispatcher body:
@@ -79,16 +136,31 @@ function worker(_ctx: PluginContext, deps: DepsMap): PluginSetup {
 
 	const dispatcher: GuestFunctionDescription = {
 		name: SDK_DISPATCH_DESCRIPTOR,
+		// Guest-facing alias used by the bridge-closure rule for the
+		// `__sdk.dispatchAction failed: …` message prefix and the
+		// `<bridge:__sdk.dispatchAction>` synthetic stack frame.
+		publicName: "__sdk.dispatchAction",
 		args: [Guest.string(), Guest.raw(), Guest.callable()],
 		result: Guest.raw(),
 		handler: (async (actionName: string, input: unknown, handler: Callable) => {
 			try {
-				validateAction(actionName, input);
+				try {
+					validateAction(actionName, input);
+				} catch (err) {
+					throw translateValidatorThrow(err);
+				}
 				// Guest-side input/output always cross the bridge as
 				// JSON-shaped GuestValue — the SDK's Zod validation
 				// produces plain JSON shapes. Cast is structural only.
+				// Action-handler throws come back as GuestThrownError (from
+				// callGuestFn / awaitGuestResult) and are passed through
+				// unchanged by the bridge-closure rule.
 				const raw = await handler(input as GuestValue);
-				return validateActionOutput(actionName, raw);
+				try {
+					return validateActionOutput(actionName, raw);
+				} catch (err) {
+					throw translateValidatorThrow(err);
+				}
 			} finally {
 				handler.dispose();
 			}

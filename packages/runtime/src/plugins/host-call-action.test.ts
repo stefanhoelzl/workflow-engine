@@ -138,9 +138,7 @@ describe("host-call-action plugin (§10 shape)", () => {
 			name: string,
 			input: unknown,
 		) => void;
-		expect(() => validateAction("z", {})).toThrow(
-			/"z" is not declared in the manifest/,
-		);
+		expect(() => validateAction("z", {})).toThrow(/"z" is not declared/);
 	});
 
 	it("compiled validators instantiate once; subsequent calls reuse them", () => {
@@ -225,9 +223,7 @@ describe("host-call-action plugin (§10 shape)", () => {
 			name: string,
 			output: unknown,
 		) => unknown;
-		expect(() => validateActionOutput("z", {})).toThrow(
-			/"z" is not declared in the manifest/,
-		);
+		expect(() => validateActionOutput("z", {})).toThrow(/"z" is not declared/);
 	});
 
 	it("compiled output validators are reused across calls", () => {

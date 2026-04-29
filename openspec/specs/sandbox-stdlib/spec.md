@@ -716,3 +716,66 @@ The `assertHostIsPublic` primitive SHALL be called before socket creation by eve
 - **GIVEN** an SQL plugin configured with the default redaction rule
 - **WHEN** guest code calls `executeSql(conn, "SELECT $1", ["secret"])`
 - **THEN** the emitted `system.request` event's input SHALL NOT contain the literal value `"secret"`
+
+### Requirement: FetchError shape for `$fetch/do` failures
+
+The fetch dispatcher's host-side handler SHALL convert every error path into a `FetchError` (subclass of `GuestSafeError`) before letting it propagate toward the guest VM trampoline. `FetchError` SHALL carry:
+
+- `name: "FetchError"`.
+- `reason`: one of `"bad-scheme" | "invalid-url" | "private-address" | "redirect-loop" | "network-error" | "aborted"`.
+- `code?: string` — forwarded verbatim from the underlying error's `.code` field when it is a string; `undefined` otherwise.
+- `url?: string` — the guest-supplied URL or, after redirects, the final redirect target URL.
+
+Translation table:
+
+- `HostBlockedError(reason="bad-scheme", …)` → `FetchError({reason: "bad-scheme", url})`.
+- `HostBlockedError(reason="private-ip", …)` and `HostBlockedError(reason="redirect-to-private", …)` → `FetchError({reason: "private-address", url})`.
+- `HostBlockedError(reason="redirect-loop", …)` → `FetchError({reason: "redirect-loop", url})`.
+- `TypeError` whose message starts with `"invalid URL: "` → `FetchError({reason: "invalid-url", url})`.
+- `AbortError` and signal-aborted errors → `FetchError({reason: "aborted", url})`.
+- Any other error → `FetchError({reason: "network-error", url, code: err.code})`.
+
+The descriptor's `publicName` SHALL be `"fetch"`.
+
+#### Scenario: undici failures produce FetchError with reason network-error and forwarded code
+
+- **GIVEN** guest code calls `fetch("https://example.com/")`
+- **AND** the underlying undici call rejects with an error carrying `.code === "ENOTFOUND"`
+- **WHEN** the dispatcher catches the rejection
+- **THEN** the guest-observed `e.reason === "network-error"` and `e.code === "ENOTFOUND"`
+- **AND** `e.stack` SHALL NOT contain undici-internal frames, `node_modules` paths, or any host fs path
+
+### Requirement: MailError shape for `$mail/send` failures
+
+The mail dispatcher's host-side handler SHALL convert every error path into a `MailError` (subclass of `GuestSafeError`). `MailError` SHALL carry:
+
+- `name: "MailError"`.
+- `kind`: one of `"invalid-input" | "auth" | "timeout" | "connection" | "recipient-rejected" | "message-rejected"`.
+- `code?: string` — nodemailer code (`"EAUTH"`, `"ETIMEDOUT"`, etc.).
+- `responseCode?: number` — SMTP numeric response code.
+- `response?: string` — the remote SMTP server's reply text.
+
+The nodemailer error's `.message` SHALL NOT be forwarded to the guest. `MailError.message` SHALL be constructed from the structured fields above. Validation-phase throws SHALL be `MailError({kind: "invalid-input", message})`.
+
+The descriptor's `publicName` SHALL be `"sendMail"`.
+
+#### Scenario: nodemailer .message containing host paths is not forwarded
+
+- **GIVEN** nodemailer throws an error whose `.message` is `"ENOENT: ENOENT, open '/etc/ssl/certs/local.pem'"`
+- **WHEN** the dispatcher catches and re-throws as `MailError`
+- **THEN** the guest-observed `e.message` SHALL NOT contain the substring `"/etc/"`
+
+### Requirement: SqlError shape for `$sql/do` failures
+
+The SQL dispatcher's host-side handler SHALL convert every error path into a `SqlError` (subclass of `GuestSafeError`). `SqlError` SHALL carry: `name: "SqlError"`, `kind`, optional `code`, `severity`, `position`, `detail`, `hint`, `schemaName`, `tableName`, `columnName`, `constraintName`, `dataTypeName`. The driver `.message`, `.stack`, `.cause`, `.file`, `.line`, `.routine`, `.internal_query`, `.internal_position`, `.where`, and `.query` fields SHALL NOT be forwarded.
+
+`kind` enum: `"invalid-input" | "connection" | "timeout" | "auth" | "query-error"`. SQLSTATE-class mapping: `08*`/`53*` → connection, `28*` → auth, `57014` → timeout, else query-error. Driver codes `CONNECTION_*` → connection, `*_TIMEOUT` → timeout.
+
+The descriptor's `publicName` SHALL be `"executeSql"`.
+
+#### Scenario: driver .message and .stack are not forwarded
+
+- **GIVEN** a postgres error whose `.message` includes `"ENOENT: open '/etc/postgres/server.crt'"`
+- **WHEN** the dispatcher catches and re-throws as `SqlError`
+- **THEN** the guest-observed `e.message` SHALL NOT contain `"/etc/"`
+- **AND** the guest-observed `e.stack` SHALL contain `"<bridge:executeSql>"` only — no postgres-driver frames, no host fs paths

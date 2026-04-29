@@ -8,6 +8,13 @@ export type {
 } from "./factory.js";
 // biome-ignore lint/performance/noBarrelFile: public package entry surfaces the factory alongside sandbox(), intentionally a single module
 export { createSandboxFactory } from "./factory.js";
+export {
+	BridgeError,
+	GuestArgTypeMismatchError,
+	GuestSafeError,
+	GuestThrownError,
+	GuestValidationError,
+} from "./guest-errors.js";
 export type { Logger } from "./logger.js";
 export type {
 	Callable,

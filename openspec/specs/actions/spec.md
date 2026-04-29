@@ -156,3 +156,26 @@ The plugin's `config` (produced by `compileActionValidators(manifest)`) SHALL be
 - **THEN** the same rehydrated validator instances SHALL be used
 - **AND** no rehydration SHALL occur between runs
 
+
+### Requirement: dispatchAction surfaces failures via GuestSafeError hierarchy
+
+The `__sdk.dispatchAction` host-callback descriptor SHALL convert every failure path into an instance of the `GuestSafeError` hierarchy before letting it propagate toward the guest VM trampoline:
+
+1. **Unknown action name.** The host-side handler in `host-call-action.ts` SHALL throw `new GuestSafeError("action \"X\" is not declared")`.
+2. **Input/output validation failure.** The dispatcher SHALL catch the host-side `ValidationError` and rethrow as `new GuestSafeError(<formatted issue summary>)`. The original `ValidationError` shape (`.errors`, `.issues`) SHALL NOT be exposed across the bridge.
+3. **Action handler throws.** When the action's own guest VM throws, the host's `callGuestFn` / `awaitGuestResult` paths surface the throw as a `GuestThrownError`. The dispatcher SHALL allow that `GuestThrownError` to propagate unchanged; the closure rule's pass-through branch handles the cross-bridge stamping.
+
+#### Scenario: Unknown action name reaches guest as GuestSafeError
+
+- **GIVEN** a manifest containing actions `["a", "b"]` and a guest call to `__sdk.dispatchAction("nope", {}, () => {})`
+- **WHEN** the host-side handler detects the unknown name
+- **THEN** the guest-observed `e.name === "GuestSafeError"`, `e.message === "__sdk.dispatchAction failed: action \"nope\" is not declared"`
+- **AND** `e.stack` SHALL contain `"<bridge:__sdk.dispatchAction>"` and SHALL NOT contain any of `"/var/"`, `"node_modules"`, `"data:text/javascript"`
+
+#### Scenario: Action handler TypeError reaches calling guest with original name and message
+
+- **GIVEN** an action `a` whose handler does `throw new TypeError("oops")`
+- **WHEN** guest calls `__sdk.dispatchAction("a", {}, ...)` and the action handler throws
+- **THEN** `e.name === "TypeError"`, `e.message === "oops"` (no `"__sdk.dispatchAction failed:"` prefix)
+- **AND** `e.stack` SHALL contain frames originating from the action's own guest source
+- **AND** `e.stack` SHALL contain a single appended frame `at <bridge:__sdk.dispatchAction>`

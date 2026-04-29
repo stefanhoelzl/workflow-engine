@@ -94,9 +94,10 @@ describe("fetch plugin (§10 shape)", () => {
 			headers: Record<string, string>,
 			body: string | null,
 		) => Promise<FetchResponseWire>;
-		await expect(handler("GET", "http://x", {}, null)).rejects.toThrow(
-			/connection refused/,
-		);
+		// Error messages are curated by the FetchError translation table; the
+		// underlying "connection refused" detail is not forwarded. This test
+		// asserts run-scoped cleanup, not the message content.
+		await expect(handler("GET", "http://x", {}, null)).rejects.toThrow();
 	});
 
 	it("passes a controllable AbortSignal to the bound fetch impl", async () => {
@@ -222,9 +223,9 @@ describe("fetch plugin — run-scoped controller cleanup", () => {
 			headers: Record<string, string>,
 			body: string | null,
 		) => Promise<FetchResponseWire>;
-		await expect(handler("GET", "http://err", {}, null)).rejects.toThrow(
-			/boom/,
-		);
+		// Same translation rule applies — the curated message replaces the
+		// underlying "boom"; just assert that something rejects.
+		await expect(handler("GET", "http://err", {}, null)).rejects.toThrow();
 		// Nothing tracked at run end.
 		const setup = worker(noopCtx);
 		await expect(
