@@ -113,7 +113,20 @@ async function scanEvents(
 		readPendingEvents(persistencePath),
 		readArchivedEvents(persistencePath),
 	]);
-	return [...pending, ...archived];
+	// Persistence's archive flow is `writePending → writeArchive →
+	// removePrefix(pending)`. During the window between writeArchive and
+	// removePrefix completing, the same `(id, seq)` event lives in both
+	// directories. Dedup by `(id, seq)` so the test layer sees an event
+	// exactly once. Archive wins because it's the post-terminal authoritative
+	// view; pending is transient.
+	const byKey = new Map<string, InvocationEvent>();
+	for (const event of pending) {
+		byKey.set(`${event.id}:${String(event.seq)}`, event);
+	}
+	for (const event of archived) {
+		byKey.set(`${event.id}:${String(event.seq)}`, event);
+	}
+	return [...byKey.values()];
 }
 
 const TRIGGER_KINDS = new Set<string>([
