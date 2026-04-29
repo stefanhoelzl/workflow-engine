@@ -1,4 +1,4 @@
-import type { SandboxContext } from "@workflow-engine/sandbox";
+import type { PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import {
 	dependsOn as FETCH_DEPENDS_ON,
@@ -10,7 +10,7 @@ import {
 	worker,
 } from "./index.js";
 
-const noopCtx: SandboxContext = {
+const noopCtx: PluginContext = {
 	emit() {
 		return 0 as never;
 	},

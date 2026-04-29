@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { Bridge, EmitFraming } from "./bridge-factory.js";
+import type { Bridge, EmitFraming } from "./bridge.js";
+import { createPluginContext } from "./plugin.js";
 import type { WireEvent } from "./protocol.js";
-import { createSandboxContext } from "./sandbox-context.js";
 
 /**
  * Minimal Bridge stand-in. Exposes the post-refactor Bridge surface:
  * `buildEvent(kind, name, framing, extra) → CallId`, `setSink`, `emit`,
  * `setRunActive`/`clearRunActive`/`resetCallIds`, plus VM/marshal/arg/anchor
- * methods touched by createSandboxContext only via type compatibility. The
+ * methods touched by createPluginContext only via type compatibility. The
  * fake is pre-activated so tests don't need to call setRunActive themselves.
  */
 interface FakeBridge extends Bridge {
@@ -80,18 +80,18 @@ function createFakeBridge(): FakeBridge {
 			/* unused */
 		},
 		// marshal/arg/install/makeCallable fields are not invoked by
-		// createSandboxContext; satisfy the type with empty shims so the
+		// createPluginContext; satisfy the type with empty shims so the
 		// compiler is happy.
 		marshal: {} as unknown as FakeBridge["marshal"],
 		arg: {} as unknown as FakeBridge["arg"],
 		makeCallable: (() => {
-			throw new Error("not used in sandbox-context tests");
+			throw new Error("not used in plugin-context tests");
 		}) as unknown as FakeBridge["makeCallable"],
 		installDescriptor: () => {
-			throw new Error("not used in sandbox-context tests");
+			throw new Error("not used in plugin-context tests");
 		},
 		rebindDescriptor: () => {
-			throw new Error("not used in sandbox-context tests");
+			throw new Error("not used in plugin-context tests");
 		},
 		drainCallableLeaks: () => [],
 	} satisfies FakeBridge;
@@ -101,7 +101,7 @@ function createFakeBridge(): FakeBridge {
 describe("ctx.emit — leaf default", () => {
 	it("emits a leaf event when type is omitted", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		ctx.emit("system.call", { name: "console.log", input: { args: ["hi"] } });
 		expect(bridge.events).toHaveLength(1);
 		expect(bridge.events[0]?.type).toBe("leaf");
@@ -112,7 +112,7 @@ describe("ctx.emit — leaf default", () => {
 
 	it("emits a leaf event when type is explicit 'leaf'", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		ctx.emit("user.click", { name: "btn", type: "leaf" });
 		expect(bridge.events[0]?.type).toBe("leaf");
 	});
@@ -121,7 +121,7 @@ describe("ctx.emit — leaf default", () => {
 describe("ctx.emit — open", () => {
 	it("returns the minted CallId and emits {open: id}", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		const callId = ctx.emit("trigger.request", {
 			name: "demo",
 			input: { x: 1 },
@@ -133,7 +133,7 @@ describe("ctx.emit — open", () => {
 
 	it("each open mints a fresh id", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		const a = ctx.emit("system.request", { name: "fetchA", type: "open" });
 		const b = ctx.emit("system.request", { name: "fetchB", type: "open" });
 		expect(a).not.toBe(b);
@@ -145,7 +145,7 @@ describe("ctx.emit — open", () => {
 describe("ctx.emit — close echoes the supplied callId", () => {
 	it("emits {close: id} echoing the caller's id", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		ctx.emit("trigger.response", {
 			name: "demo",
 			output: { ok: true },
@@ -157,7 +157,7 @@ describe("ctx.emit — close echoes the supplied callId", () => {
 
 	it("type-system enforces close.callId is a number, not arbitrary", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		// closes must carry their CallId as a number via `{ close: callId }`.
 		// Passing a non-number must be a compile-time error — this guards the
 		// structural pairing contract.
@@ -170,7 +170,7 @@ describe("ctx.emit — close echoes the supplied callId", () => {
 describe("ctx.request — sync fn", () => {
 	it("emits open and close around fn, pairing via callId", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		const out = ctx.request(
 			"system",
 			{ name: "fetch", input: { url: "x" } },
@@ -189,7 +189,7 @@ describe("ctx.request — sync fn", () => {
 
 	it("emits open and error close on throw, then rethrows", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		expect(() =>
 			ctx.request("system", { name: "fail" }, () => {
 				throw new Error("boom");
@@ -207,7 +207,7 @@ describe("ctx.request — sync fn", () => {
 describe("ctx.request — async fn", () => {
 	it("emits open synchronously, response after await", async () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		const promise = ctx.request("system", { name: "fetch" }, async () => 7);
 		// Open already emitted synchronously
 		expect(bridge.events).toHaveLength(1);
@@ -221,7 +221,7 @@ describe("ctx.request — async fn", () => {
 
 	it("emits open synchronously, error close on rejection", async () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		await expect(
 			ctx.request("system", { name: "fetch" }, async () => {
 				throw new Error("network");
@@ -234,7 +234,7 @@ describe("ctx.request — async fn", () => {
 
 	it("concurrent requests pair correctly via callId — Promise.all shape", async () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		const a = ctx.request("system", { name: "A" }, async () => "A_result");
 		const b = ctx.request("system", { name: "B" }, async () => "B_result");
 		await Promise.all([a, b]);
@@ -261,7 +261,7 @@ describe("ctx.request — async fn", () => {
 describe("ctx.emit — present-only payload fields", () => {
 	it("omits input/output/error when not provided", () => {
 		const bridge = createFakeBridge();
-		const ctx = createSandboxContext(bridge);
+		const ctx = createPluginContext(bridge);
 		ctx.emit("system.call", { name: "x" });
 		expect("input" in (bridge.events[0] ?? {})).toBe(false);
 		expect("output" in (bridge.events[0] ?? {})).toBe(false);

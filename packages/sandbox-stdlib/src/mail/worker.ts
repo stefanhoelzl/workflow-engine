@@ -1,7 +1,7 @@
 import type {
 	GuestFunctionDescription,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import nodemailer, { type Transporter } from "nodemailer";
@@ -490,7 +490,7 @@ function mailDispatcherDescriptor(): GuestFunctionDescription {
 	};
 }
 
-function worker(_ctx: SandboxContext): PluginSetup {
+function worker(_ctx: PluginContext): PluginSetup {
 	return {
 		guestFunctions: [mailDispatcherDescriptor()],
 		onRunFinished: handles.drain,

@@ -1,4 +1,4 @@
-import type { SandboxContext } from "@workflow-engine/sandbox";
+import type { PluginContext } from "@workflow-engine/sandbox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the DNS resolver used by net-guard so we can drive public / private /
@@ -67,7 +67,7 @@ function validOpts(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe("mail plugin — descriptor shape", () => {
 	it("exposes name + dependsOn + dispatcher descriptor with log.request:'system'", () => {
-		const noopCtx: SandboxContext = {
+		const noopCtx: PluginContext = {
 			emit() {
 				return 0 as never;
 			},
@@ -84,7 +84,7 @@ describe("mail plugin — descriptor shape", () => {
 	});
 
 	it("logName uses the first recipient", () => {
-		const noopCtx: SandboxContext = {
+		const noopCtx: PluginContext = {
 			emit() {
 				return 0 as never;
 			},
@@ -100,7 +100,7 @@ describe("mail plugin — descriptor shape", () => {
 	});
 
 	it("logInput strips text/html/attachments AND smtp.auth", () => {
-		const noopCtx: SandboxContext = {
+		const noopCtx: PluginContext = {
 			emit() {
 				return 0 as never;
 			},
@@ -381,7 +381,7 @@ describe("mail plugin — structured throw on send failure", () => {
 });
 
 describe("mail plugin — run-scoped transport cleanup", () => {
-	const noopCtx: SandboxContext = {
+	const noopCtx: PluginContext = {
 		emit() {
 			return 0 as never;
 		},

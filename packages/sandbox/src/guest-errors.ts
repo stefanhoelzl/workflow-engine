@@ -1,6 +1,6 @@
 // Error classes for guest-function descriptor validation and Callable
 // lifecycle. Extracted from the former `guest-function-install.ts` so
-// `bridge-factory.ts` (which now owns the install/marshal pipeline)
+// `bridge.ts` (which now owns the install/marshal pipeline)
 // and tests can import them without a circular dependency.
 
 class GuestArgTypeMismatchError extends Error {

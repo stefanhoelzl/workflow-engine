@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	Plugin,
+	PluginContext,
 	PluginDescriptor,
 	PluginSetup,
 	RunInput,
 	RunResult,
-	SandboxContext,
 } from "./plugin.js";
 import {
 	collectGuestFunctions,
@@ -23,8 +23,8 @@ import {
 } from "./plugin-runtime.js";
 import type { WorkerToMain } from "./protocol.js";
 
-const noopCtx: SandboxContext = {
-	// Cast to `never` matches the boundary cast in `createSandboxContext` —
+const noopCtx: PluginContext = {
+	// Cast to `never` matches the boundary cast in `createPluginContext` —
 	// `emit` has a conditional return type that narrows per call site.
 	emit() {
 		return 0 as never;

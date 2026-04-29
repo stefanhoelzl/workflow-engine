@@ -18,14 +18,15 @@ export type {
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
+	LifecycleError,
 	LogConfig,
 	Plugin,
+	PluginContext,
 	PluginDescriptor,
 	PluginSetup,
 	RequestOptions,
 	RunInput,
 	RunResult as PluginRunResult,
-	SandboxContext,
 	SerializableConfig,
 	WasiClockArgs,
 	WasiClockResult,
@@ -34,6 +35,7 @@ export type {
 	WasiRandomArgs,
 	WasiRandomResult,
 } from "./plugin.js";
+export { serializeLifecycleError } from "./plugin.js";
 export type {
 	ArgSpec,
 	ArgTypes,
@@ -55,8 +57,6 @@ export type {
 export { recordingContext } from "./recording-context.js";
 export type { RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
 export { sandbox } from "./sandbox.js";
-export type { LifecycleError } from "./sandbox-context.js";
-export { serializeLifecycleError } from "./sandbox-context.js";
 export { withPluginSandbox, withStagedGlobals } from "./test-harness.js";
 export type {
 	LimitDim,

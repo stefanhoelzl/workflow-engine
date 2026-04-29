@@ -13,16 +13,17 @@ import { encodingExtension } from "quickjs-wasi/encoding";
 import { headersExtension } from "quickjs-wasi/headers";
 import { structuredCloneExtension } from "quickjs-wasi/structured-clone";
 import { urlExtension } from "quickjs-wasi/url";
-import { type Bridge, createBridge } from "./bridge-factory.js";
+import { type Bridge, createBridge } from "./bridge.js";
 import {
 	accountOutputBytes,
 	configureWorkerLimits,
 	resetRunCounters,
 } from "./limit-counters.js";
-import type {
-	GuestFunctionDescription,
-	PluginDescriptor,
-	SandboxContext,
+import {
+	createPluginContext,
+	type GuestFunctionDescription,
+	type PluginContext,
+	type PluginDescriptor,
 } from "./plugin.js";
 import {
 	collectGuestFunctions,
@@ -43,7 +44,6 @@ import type {
 	SerializedError,
 	WorkerToMain,
 } from "./protocol.js";
-import { createSandboxContext } from "./sandbox-context.js";
 import {
 	createWasiFactory,
 	createWasiState,
@@ -204,15 +204,16 @@ interface GuestFunctionEntry {
 
 type RunState = "ready" | "running" | "restoring" | "dead";
 
-interface SandboxState {
+interface WorkerState {
 	vm: QuickJS;
-	// Bridge and ctx are built once at init and survive every snapshot
-	// restore via `bridge.rebind(newVm)`. Plugin lifecycle hooks closed
-	// over `ctx` at boot — keeping the same instance across restores is
-	// what makes onBeforeRunStarted / onRunFinished emit through the live
-	// VM on every run, not just the first.
+	// Bridge is built once at init and survives every snapshot restore via
+	// `bridge.rebind(newVm)`. Plugin lifecycle hooks closed over the boot-time
+	// PluginContext — that ctx is pinned by the plugin closures themselves
+	// (in `pluginLifecycle.setups`); the bridge owns its own internal ctx
+	// for descriptor log auto-wrap. Either way, what survives restores is the
+	// bridge instance — re-binding swaps the VM underneath while the sink,
+	// anchor, and emit path stay live.
 	readonly bridge: Bridge;
-	readonly ctx: SandboxContext;
 	currentAbort: AbortController | null;
 	pluginLifecycle: PluginLifecycleState;
 	// Snapshot-restore bookkeeping. After init, the worker takes one
@@ -227,7 +228,7 @@ interface SandboxState {
 	restorePromise: Promise<void> | null;
 }
 
-let state: SandboxState | null = null;
+let state: WorkerState | null = null;
 
 // Test seam: when set, the next async restore after a run throws
 // synthetically. Used by the `Restore failure marks sandbox dead`
@@ -325,7 +326,6 @@ async function handleInit(
 		state = {
 			vm,
 			bridge,
-			ctx: bootResult.ctx,
 			currentAbort: null,
 			pluginLifecycle: bootResult.pluginLifecycle,
 			snapshotRef,
@@ -353,7 +353,6 @@ async function handleInit(
 interface BootPipelineResult {
 	readonly pluginLifecycle: PluginLifecycleState;
 	readonly guestFunctions: readonly GuestFunctionEntry[];
-	readonly ctx: SandboxContext;
 }
 
 async function runPluginBootPipeline(
@@ -361,7 +360,12 @@ async function runPluginBootPipeline(
 	bridge: Bridge,
 	descriptors: readonly PluginDescriptor[],
 ): Promise<BootPipelineResult> {
-	const ctx = createSandboxContext(bridge);
+	// Plugin-facing ctx for `plugin.worker(ctx, deps, config)`. Pinned by each
+	// plugin's returned closure (in `pluginLifecycle.setups`), so it survives
+	// across snapshot restores as long as the plugin holds it. The bridge
+	// owns its own internal ctx for descriptor log auto-wrap; this one is
+	// only handed to plugin authors.
+	const ctx: PluginContext = createPluginContext(bridge);
 	// Phase 1a — module load + plugin.worker().
 	const loaded = await loadPluginModules(descriptors, defaultPluginLoader);
 	const phase1 = await runPhaseWorker(loaded, ctx);
@@ -383,7 +387,7 @@ async function runPluginBootPipeline(
 	// descriptors remain visible through Phase 3 and into user source.
 	const guestFunctions = collectGuestFunctions(phase1);
 	for (const { descriptor } of guestFunctions) {
-		bridge.installDescriptor(ctx, descriptor);
+		bridge.installDescriptor(descriptor);
 	}
 
 	// Phase 2 — plugin source eval.
@@ -412,21 +416,21 @@ async function runPluginBootPipeline(
 	return {
 		pluginLifecycle: { setups: phase1.setups, order: phase1.order },
 		guestFunctions,
-		ctx,
 	};
 }
 
 // Re-register host callbacks against the restored VM via the bridge.
-// The Bridge and SandboxContext are reused across restores
-// (bridge.rebind switches the underlying VM in place), so plugin
-// lifecycle hooks (which closed over the boot ctx via
-// `pluginLifecycle.setups`) keep emitting through the live bridge. Only
-// guest-function host callbacks need rebinding because they are
-// registered on a specific QuickJS instance — `bridge.rebindDescriptor`
-// re-registers each on the bridge's current VM.
-function rebindGuestCallbacks(currentState: SandboxState): void {
+// The Bridge is reused across restores (bridge.rebind switches the
+// underlying VM in place), so plugin lifecycle hooks — which closed over
+// the boot-time PluginContext via `pluginLifecycle.setups` — keep emitting
+// through the live bridge. The bridge's internal ctx (used by descriptor
+// log auto-wrap) is also stable across restores. Only guest-function host
+// callbacks need rebinding because they are registered on a specific
+// QuickJS instance — `bridge.rebindDescriptor` re-registers each on the
+// bridge's current VM.
+function rebindGuestCallbacks(currentState: WorkerState): void {
 	for (const { descriptor } of currentState.guestFunctions) {
-		currentState.bridge.rebindDescriptor(currentState.ctx, descriptor);
+		currentState.bridge.rebindDescriptor(descriptor);
 	}
 }
 
@@ -438,7 +442,7 @@ function rebindGuestCallbacks(currentState: SandboxState): void {
 // ...)` handler doesn't observe this promise, so we route errors through
 // Node's unhandled-rejection path which terminates the worker and fires
 // `onTerminated` on main.
-function startRestore(currentState: SandboxState): Promise<void> {
+function startRestore(currentState: WorkerState): Promise<void> {
 	if (currentState.restorePromise) {
 		return currentState.restorePromise;
 	}
@@ -670,7 +674,7 @@ async function invokeGuestHandler(
 }
 
 interface RunFinalizeArgs {
-	readonly state: SandboxState;
+	readonly state: WorkerState;
 	readonly runInput: import("./plugin.js").RunInput;
 	readonly payload: RunResultPayload;
 }

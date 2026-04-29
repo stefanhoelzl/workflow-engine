@@ -1,4 +1,4 @@
-import type { SandboxContext } from "@workflow-engine/sandbox";
+import type { PluginContext } from "@workflow-engine/sandbox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock DNS so we can drive public / private / reserved addresses per test.
@@ -93,7 +93,7 @@ function captureOptions(): Record<string, unknown> {
 	return last.options as Record<string, unknown>;
 }
 
-function noopCtx(): SandboxContext {
+function noopCtx(): PluginContext {
 	return {
 		emit() {
 			/* no-op */
@@ -101,7 +101,7 @@ function noopCtx(): SandboxContext {
 		request(_p: unknown, _n: unknown, _e: unknown, fn: () => unknown) {
 			return fn();
 		},
-	} as unknown as SandboxContext;
+	} as unknown as PluginContext;
 }
 
 beforeEach(() => {

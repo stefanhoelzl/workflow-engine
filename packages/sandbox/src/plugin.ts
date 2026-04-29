@@ -1,4 +1,6 @@
 import type { InvocationEventError } from "@workflow-engine/core";
+import type { Bridge } from "./bridge.js";
+import { enterPendingCallable, exitPendingCallable } from "./limit-counters.js";
 import type { ArgSpec, GuestValue, ResultSpec } from "./plugin-types.js";
 import type { WorkerToMain } from "./protocol.js";
 
@@ -71,7 +73,7 @@ interface RequestOptions {
 }
 
 /**
- * Conditional return type for `SandboxContext.emit`. The bridge only mints a
+ * Conditional return type for `PluginContext.emit`. The bridge only mints a
  * CallId on `type: "open"`; for leaves and closes there is no meaningful id
  * to return. Encoding that in the type means a caller writing
  * `const x = ctx.emit(k, {name})` against a leaf is a compile error rather
@@ -85,7 +87,7 @@ type EmitReturn<O extends { readonly type?: EmitFraming }> = O extends {
 	: // biome-ignore lint/suspicious/noConfusingVoidType: `void` here is the conditional return for non-open framings — using `undefined` would force callers to write `void ctx.emit(...)` to discard, which is worse ergonomics
 		void;
 
-interface SandboxContext {
+interface PluginContext {
 	/**
 	 * Emit a single bus event. Returns a `CallId` only when
 	 * `options.type === "open"` (capture it to pair with a future close).
@@ -225,10 +227,157 @@ interface Plugin<Config extends SerializableConfig = SerializableConfig> {
 	readonly name: string;
 	readonly dependsOn?: readonly string[];
 	worker(
-		ctx: SandboxContext,
+		ctx: PluginContext,
 		deps: DepsMap,
 		config: Config,
 	): PluginSetup | undefined | Promise<PluginSetup | undefined>;
+}
+
+interface LifecycleError {
+	readonly message: string;
+	readonly stack: string;
+	readonly issues?: unknown;
+}
+
+function serializeLifecycleError(err: unknown): LifecycleError {
+	if (err instanceof Error) {
+		const serialized: LifecycleError = {
+			message: err.message,
+			stack: err.stack ?? "",
+		};
+		const source = err as unknown as Record<string, unknown>;
+		if ("issues" in source) {
+			return { ...serialized, issues: source.issues };
+		}
+		return serialized;
+	}
+	return { message: String(err), stack: "" };
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		typeof (value as { then?: unknown }).then === "function"
+	);
+}
+
+/**
+ * Public emit — single SDK signature dispatching on `options.type` (default
+ * `"leaf"`). Returns the worker-minted CallId for opens (so callers capture
+ * it to pair with a future close); leaves and closes return an opaque
+ * value callers ignore. Framing is explicit at the API boundary; `kind` is
+ * free-form metadata that the worker→main pipeline does not parse.
+ */
+function pluginEmit(
+	bridge: Bridge,
+	kind: EventKind,
+	options: EmitOptions,
+): CallId {
+	const framing = options.type ?? "leaf";
+	const extra: { input?: unknown; output?: unknown; error?: unknown } = {};
+	if (options.input !== undefined) {
+		extra.input = options.input;
+	}
+	if (options.output !== undefined) {
+		extra.output = options.output;
+	}
+	if (options.error !== undefined) {
+		extra.error = options.error;
+	}
+	return bridge.buildEvent(kind, options.name, framing, extra);
+}
+
+/**
+ * Wraps a unit of work in `<prefix>.request`/`<prefix>.response`/
+ * `<prefix>.error` lifecycle events. Captures the open's CallId in closure
+ * and passes it back on the matching close, so concurrent calls (Promise.all
+ * shape) pair correctly via the explicit token.
+ *
+ * The original thrown exception (or rejected promise reason) is re-thrown
+ * after emitting the error event, so callers see the same failure they
+ * would without the wrap.
+ */
+function pluginRequest<T>(
+	bridge: Bridge,
+	prefix: string,
+	options: RequestOptions,
+	fn: () => T | Promise<T>,
+): T | Promise<T> {
+	const callId = pluginEmit(bridge, `${prefix}.request`, {
+		name: options.name,
+		...(options.input === undefined ? {} : { input: options.input }),
+		type: "open",
+	});
+
+	function emitResponse(output: unknown): void {
+		pluginEmit(bridge, `${prefix}.response`, {
+			name: options.name,
+			...(options.input === undefined ? {} : { input: options.input }),
+			...(output === undefined ? {} : { output }),
+			type: { close: callId },
+		});
+	}
+
+	function emitError(err: unknown): void {
+		pluginEmit(bridge, `${prefix}.error`, {
+			name: options.name,
+			...(options.input === undefined ? {} : { input: options.input }),
+			error: serializeLifecycleError(err),
+			type: { close: callId },
+		});
+	}
+
+	let maybeResult: T | Promise<T>;
+	try {
+		maybeResult = fn();
+	} catch (err) {
+		emitError(err);
+		throw err;
+	}
+	if (!isPromiseLike(maybeResult)) {
+		emitResponse(maybeResult as unknown);
+		return maybeResult;
+	}
+	// Async path: this is a pending host-callable for the duration of the
+	// await. Bound the in-flight count via the worker-side pending-callables
+	// counter (see `limit-counters.ts`). Entering AFTER emitRequest matches
+	// the intuitive "request visible on the wire before we claim a slot"
+	// ordering; exiting on either resolve or reject.
+	enterPendingCallable();
+	return (maybeResult as Promise<T>).then(
+		(value) => {
+			exitPendingCallable();
+			emitResponse(value);
+			return value;
+		},
+		(err: unknown) => {
+			exitPendingCallable();
+			emitError(err);
+			throw err;
+		},
+	);
+}
+
+/**
+ * Builds the PluginContext exposed to plugin.worker(). Wraps the underlying
+ * Bridge's emit primitives with the public ctx.emit / ctx.request surface.
+ * The bridge mints CallIds for opens; the sequencer (on main) stamps seq/ref.
+ */
+function createPluginContext(bridge: Bridge): PluginContext {
+	return {
+		// The cast to `never` (then to the conditional return) is the
+		// implementation-side acknowledgement that the type system narrows
+		// the return per call site (`CallId` for opens, `void` otherwise);
+		// the runtime always produces a number, but leaves/closes' callers
+		// get `void` and cannot inspect it.
+		emit(kind, options) {
+			return pluginEmit(bridge, kind, options) as never;
+		},
+		request(prefix, options, fn) {
+			return pluginRequest(bridge, prefix, options, fn);
+		},
+	};
 }
 
 export type {
@@ -240,14 +389,15 @@ export type {
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
+	LifecycleError,
 	LogConfig,
 	Plugin,
+	PluginContext,
 	PluginDescriptor,
 	PluginSetup,
 	RequestOptions,
 	RunInput,
 	RunResult,
-	SandboxContext,
 	SerializableConfig,
 	WasiClockArgs,
 	WasiClockResult,
@@ -256,3 +406,4 @@ export type {
 	WasiRandomArgs,
 	WasiRandomResult,
 };
+export { createPluginContext, serializeLifecycleError };
