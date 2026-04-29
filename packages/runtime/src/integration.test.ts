@@ -1383,7 +1383,7 @@ describe("sandbox cpu terminal limit — full runtime pipeline", () => {
 			logger,
 			memoryBytes: 67_108_864,
 			stackBytes: 524_288,
-			cpuMs: 1,
+			cpuMs: 10,
 			outputBytes: 33_554_432,
 			pendingCallables: 256,
 		});
@@ -1446,7 +1446,7 @@ describe("sandbox cpu terminal limit — full runtime pipeline", () => {
 		expect(exhaustion).toBeDefined();
 		expect(exhaustion?.name).toBe("cpu");
 		const exhInput = exhaustion?.input as { budget?: number } | undefined;
-		expect(exhInput?.budget).toBe(1);
+		expect(exhInput?.budget).toBe(10);
 		expect(typeof exhaustion?.seq).toBe("number");
 		expect((exhaustion?.seq ?? -1) >= 0).toBe(true);
 		expect(exhaustion?.ref).not.toBeNull();
