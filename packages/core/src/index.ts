@@ -489,16 +489,7 @@ const ManifestSchema = z
 type Manifest = z.infer<typeof ManifestSchema>;
 type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
 
-// ---------------------------------------------------------------------------
-// IIFE namespace
-// ---------------------------------------------------------------------------
-//
-// Each sandbox worker evaluates exactly one workflow in an isolated VM, so
-// the namespace need not be per-workflow. Plugin, runtime, and sandbox all
-// import this single constant to agree on the global that Rollup's IIFE
-// output assigns exports to.
-
-const IIFE_NAMESPACE = "__wfe_exports__";
+import { IIFE_NAMESPACE } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Exports
