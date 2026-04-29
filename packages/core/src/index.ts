@@ -1,5 +1,7 @@
 // biome-ignore lint/style/noExportedImports: z is re-exported for consumers alongside locally defined exports
 import { z } from "zod";
+// biome-ignore lint/style/noExportedImports: IIFE_NAMESPACE is re-exported alongside the rest of the public surface; the constant lives in its own zero-dep module so the sandbox worker can import it without pulling in zod
+import { IIFE_NAMESPACE } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // HTTP trigger result
@@ -488,8 +490,6 @@ const ManifestSchema = z
 
 type Manifest = z.infer<typeof ManifestSchema>;
 type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
-
-import { IIFE_NAMESPACE } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Exports

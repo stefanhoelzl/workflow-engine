@@ -4,3 +4,4 @@ dist/
 .persistence/
 scripts/.dev-imap-cert/
 packages/tests/.cache/
+.claude/scheduled_tasks.lock

@@ -1,4 +1,4 @@
-import type { QuickJS } from "quickjs-wasi";
+import type { JSValueHandle, QuickJS } from "quickjs-wasi";
 import { describe, expect, it } from "vitest";
 import { type Bridge, createBridge } from "./bridge.js";
 import type { WireEvent } from "./protocol.js";
@@ -215,5 +215,89 @@ describe("Bridge.emit — sink dispatch", () => {
 		bridge.setSink(null);
 		bridge.buildEvent("system.call", "b", "leaf", {});
 		expect(events).toHaveLength(1);
+	});
+});
+
+// Regression: a host Promise marshalled into a VM that is disposed before
+// the promise resolves used to crash the worker via quickjs-wasi's
+// unguarded `.then(r => deferred.resolve(vm.hostToHandle(r)))` callback
+// (see safeHostToHandle in bridge.ts). The wrapper must silently no-op the
+// late resolution instead of throwing into the unhandled-rejection path.
+describe("Bridge.hostToHandle — Promise marshalling vs late dispose", () => {
+	it("does not throw an unhandled rejection when the VM is disposed before the promise resolves", async () => {
+		let pendingResolve: ((value: unknown) => void) | undefined;
+		const pending = new Promise((resolve) => {
+			pendingResolve = resolve;
+		});
+
+		const deferredHandle = {} as JSValueHandle;
+		let disposed = false;
+		const fakeDeferred = {
+			handle: deferredHandle,
+			resolve: (_h: JSValueHandle) => {
+				if (disposed) {
+					throw new Error("QuickJS instance has been disposed");
+				}
+			},
+			reject: (_h: JSValueHandle) => {
+				if (disposed) {
+					throw new Error("QuickJS instance has been disposed");
+				}
+			},
+		};
+		const stubVm = {
+			newPromise: () => {
+				if (disposed) {
+					throw new Error("QuickJS instance has been disposed");
+				}
+				return fakeDeferred;
+			},
+			hostToHandle: (_v: unknown) => {
+				if (disposed) {
+					throw new Error("QuickJS instance has been disposed");
+				}
+				return {} as JSValueHandle;
+			},
+			executePendingJobs: () => {
+				if (disposed) {
+					throw new Error("QuickJS instance has been disposed");
+				}
+			},
+		} as unknown as QuickJS;
+
+		const unhandled: unknown[] = [];
+		const onReject = (err: unknown) => unhandled.push(err);
+		process.on("unhandledRejection", onReject);
+
+		try {
+			const bridge = createBridge(stubVm, freshAnchor());
+			const handle = bridge.hostToHandle(pending);
+			expect(handle).toBe(deferredHandle);
+
+			disposed = true;
+			pendingResolve?.("late");
+
+			// Yield twice so any unhandled rejection from the .then microtask
+			// has a chance to surface.
+			await new Promise((r) => setImmediate(r));
+			await new Promise((r) => setImmediate(r));
+
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onReject);
+		}
+	});
+
+	it("rejects nested Promise inside an object/array tree (dev-mode assertion)", () => {
+		const stubVm = {
+			hostToHandle: () => ({}) as JSValueHandle,
+		} as unknown as QuickJS;
+		const bridge = createBridge(stubVm, freshAnchor());
+		expect(() => bridge.hostToHandle({ data: Promise.resolve(1) })).toThrow(
+			/nested Promise not supported/,
+		);
+		expect(() => bridge.hostToHandle([1, 2, Promise.resolve(3)])).toThrow(
+			/nested Promise not supported/,
+		);
 	});
 });

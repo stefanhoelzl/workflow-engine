@@ -94,6 +94,9 @@ function createFakeBridge(): FakeBridge {
 			throw new Error("not used in plugin-context tests");
 		},
 		drainCallableLeaks: () => [],
+		hostToHandle: (() => {
+			throw new Error("not used in plugin-context tests");
+		}) as unknown as FakeBridge["hostToHandle"],
 	} satisfies FakeBridge;
 	return bridge;
 }
