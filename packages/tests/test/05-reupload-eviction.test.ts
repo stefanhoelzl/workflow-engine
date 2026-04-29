@@ -18,7 +18,7 @@ describe("re-upload + sandbox eviction", {
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const ping = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => ({status: 200, body: "v1"}),
 });
 `,
@@ -32,7 +32,7 @@ export const ping = httpTrigger({
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const ping = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => ({status: 200, body: "v2"}),
 });
 `,

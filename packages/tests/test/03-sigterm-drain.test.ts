@@ -20,7 +20,7 @@ describe("sigterm graceful drain", () => {
 import {httpTrigger, z} from "@workflow-engine/sdk";
 
 export const slow = httpTrigger({
-	body: z.object({}),
+	request: { body: z.object({}) },
 	handler: async () => {
 		await new Promise((r) => setTimeout(r, 500));
 		return {body: {ok: true}};

@@ -29,11 +29,13 @@ export const workflow = defineWorkflow({
 });
 
 export const probe = httpTrigger({
-	body: z.object({}),
-	responseBody: z.object({
-		blocked: z.boolean(),
-		message: z.string().optional(),
-	}),
+	request: { body: z.object({}) },
+	response: {
+		body: z.object({
+			blocked: z.boolean(),
+			message: z.string().optional(),
+		}),
+	},
 	handler: async () => {
 		try {
 			const r = await fetch(workflow.env.LOOPBACK_URL);
