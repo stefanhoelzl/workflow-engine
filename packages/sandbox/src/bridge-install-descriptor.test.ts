@@ -1,6 +1,6 @@
 import { QuickJS } from "quickjs-wasi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Bridge, createBridge } from "./bridge-factory.js";
+import { type Bridge, createBridge } from "./bridge.js";
 import {
 	GuestArgTypeMismatchError,
 	GuestValidationError,
@@ -11,19 +11,27 @@ import { recordingContext } from "./recording-context.js";
 
 describe("bridge.installDescriptor", () => {
 	let vm: QuickJS;
-	let bridge: Bridge;
 
 	beforeEach(async () => {
 		vm = await QuickJS.create();
-		bridge = createBridge(vm, { ns: 0n });
 	});
 
 	afterEach(() => {
 		vm.dispose();
 	});
 
+	// Build a bridge whose internal PluginContext is the supplied recording
+	// context, so descriptor log auto-wrap routes events into the test's
+	// `ctx.flatRequests` / `ctx.flatEvents` for assertion. Production code
+	// never passes `ctxOverride` — the bridge builds its own ctx via
+	// `createPluginContext(self)`.
+	function bridgeWith(ctx: ReturnType<typeof recordingContext>): Bridge {
+		return createBridge(vm, { ns: 0n }, { ctxOverride: ctx });
+	}
+
 	it("marshals number args and returns a string result through ctx.request by default", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "join",
 			args: [Guest.number(), Guest.number()],
@@ -31,7 +39,7 @@ describe("bridge.installDescriptor", () => {
 			handler: ((a: number, b: number) =>
 				`${a}+${b}=${a + b}`) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode("join(2, 3)", "<test>");
 		expect(vm.dump(out)).toBe("2+3=5");
 		out.dispose();
@@ -47,6 +55,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("honours log: { event: ... } by emitting a leaf event instead of wrapping in ctx.request", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "setTimeout",
 			args: [Guest.number()],
@@ -56,7 +65,7 @@ describe("bridge.installDescriptor", () => {
 			},
 			log: { event: "timer.set" },
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode("setTimeout(5)", "<test>");
 		out.dispose();
 		expect(ctx.flatEvents).toEqual([
@@ -67,6 +76,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("honours a custom log: { request: '...' } prefix", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "$fetch/do",
 			args: [Guest.string()],
@@ -74,7 +84,7 @@ describe("bridge.installDescriptor", () => {
 			handler: (url) => `fetched:${url}`,
 			log: { request: "fetch" },
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode("globalThis['$fetch/do']('http://x')", "<test>");
 		expect(vm.dump(out)).toBe("fetched:http://x");
 		out.dispose();
@@ -90,13 +100,14 @@ describe("bridge.installDescriptor", () => {
 
 	it("marshals object args and object results via vm.dump / vm.hostToHandle", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "wrap",
 			args: [Guest.object()],
 			result: Guest.object(),
 			handler: (input) => ({ ...(input as object), wrapped: true }),
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode("wrap({a: 1})", "<test>");
 		expect(vm.dump(out)).toEqual({ a: 1, wrapped: true });
 		out.dispose();
@@ -104,6 +115,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("throws GuestArgTypeMismatchError when the guest passes a wrong-typed argument", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "strict",
 			args: [Guest.number()],
@@ -112,7 +124,7 @@ describe("bridge.installDescriptor", () => {
 				/* no-op */
 			},
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		// Arg mismatch surfaces as a QuickJS exception because
 		// vm.newFunction's trampoline catches the host throw and re-raises
 		// it into the guest. We verify from the host side that the error
@@ -132,6 +144,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("marshals a callable arg as a host-side Callable that can be invoked and disposed", async () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
 		const desc: GuestFunctionDescription = {
 			name: "registerCb",
@@ -141,7 +154,7 @@ describe("bridge.installDescriptor", () => {
 				captured = cb;
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode(`registerCb((n) => 'got:' + n); 'ok';`, "<test>");
 		expect(vm.dump(out)).toBe("ok");
 		out.dispose();
@@ -172,6 +185,7 @@ describe("bridge.installDescriptor", () => {
 		// invocation depth returns to 0 — the call returns normally, then
 		// subsequent invokes throw CallableDisposedError.
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
 		const registerDesc: GuestFunctionDescription = {
 			name: "registerCb",
@@ -189,8 +203,8 @@ describe("bridge.installDescriptor", () => {
 				(captured as unknown as import("./plugin.js").Callable)?.dispose();
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, registerDesc);
-		bridge.installDescriptor(ctx, disposeMeDesc);
+		bridge.installDescriptor(registerDesc);
+		bridge.installDescriptor(disposeMeDesc);
 		const out = vm.evalCode(
 			`registerCb(() => { disposeMe(); return 'done'; }); 'ok';`,
 			"<test>",
@@ -207,6 +221,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("nested re-entry while a dispose is pending stays depth-correct: release runs only when the outermost frame unwinds", async () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
 		let nestedCallReturned = false;
 		const registerDesc: GuestFunctionDescription = {
@@ -235,8 +250,8 @@ describe("bridge.installDescriptor", () => {
 				}
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, registerDesc);
-		bridge.installDescriptor(ctx, reenterDesc);
+		bridge.installDescriptor(registerDesc);
+		bridge.installDescriptor(reenterDesc);
 		const out = vm.evalCode(
 			`registerCb(async (n) => { if (n === 1) await reenter(1); return 'depth-' + n; }); 'ok';`,
 			"<test>",
@@ -257,6 +272,7 @@ describe("bridge.installDescriptor", () => {
 		// double dispose during normal use already covers idempotence; here
 		// we cover the deferred-window variant.
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
 		const registerDesc: GuestFunctionDescription = {
 			name: "registerCb",
@@ -276,8 +292,8 @@ describe("bridge.installDescriptor", () => {
 				cb.dispose();
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, registerDesc);
-		bridge.installDescriptor(ctx, disposeTwiceDesc);
+		bridge.installDescriptor(registerDesc);
+		bridge.installDescriptor(disposeTwiceDesc);
 		const out = vm.evalCode(
 			`registerCb(() => { disposeTwice(); return 'ok'; }); 'ok';`,
 			"<test>",
@@ -290,6 +306,7 @@ describe("bridge.installDescriptor", () => {
 
 	it("propagates guest-side rejections out of a Callable as host Error", async () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		let captured: import("./plugin.js").Callable | null = null;
 		const desc: GuestFunctionDescription = {
 			name: "registerReject",
@@ -299,7 +316,7 @@ describe("bridge.installDescriptor", () => {
 				captured = cb;
 			}) as unknown as GuestFunctionDescription["handler"],
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode(
 			`registerReject(async () => { throw new Error("boom from guest"); });`,
 			"<test>",
@@ -313,13 +330,14 @@ describe("bridge.installDescriptor", () => {
 
 	it("validates result types and throws GuestValidationError on mismatch", () => {
 		const ctx = recordingContext({ callIds: "always" });
+		const bridge = bridgeWith(ctx);
 		const desc: GuestFunctionDescription = {
 			name: "lies",
 			args: [],
 			result: Guest.number(),
 			handler: () => "not-a-number" as unknown as number,
 		};
-		bridge.installDescriptor(ctx, desc);
+		bridge.installDescriptor(desc);
 		const out = vm.evalCode(
 			`try { lies(); "ok"; } catch (e) { "err:" + e.message; }`,
 			"<test>",

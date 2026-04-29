@@ -1,4 +1,4 @@
-import type { EmitOptions, RequestOptions, SandboxContext } from "./plugin.js";
+import type { EmitOptions, PluginContext, RequestOptions } from "./plugin.js";
 
 interface EmittedEvent {
 	readonly kind: string;
@@ -26,7 +26,7 @@ interface FlatRequest {
 	error?: unknown;
 }
 
-interface RecordingContext extends SandboxContext {
+interface RecordingContext extends PluginContext {
 	readonly events: EmittedEvent[];
 	readonly flatEvents: FlatEvent[];
 	readonly requests: RecordedRequest[];
@@ -34,7 +34,7 @@ interface RecordingContext extends SandboxContext {
 }
 
 // Controls what `emit()` returns at runtime. Note the public
-// `SandboxContext.emit` signature already narrows the return type to `void`
+// `PluginContext.emit` signature already narrows the return type to `void`
 // for non-open framings — these policies only affect what the runtime
 // produces under the hood when a test forces inspection via the cast surface
 // (e.g. asserting on minted ids in bridge.installDescriptor fixtures).
@@ -66,7 +66,7 @@ function recordingContext(opts?: RecordingContextOptions): RecordingContext {
 			name: options.name,
 			...(options.input === undefined ? {} : { input: options.input }),
 		});
-		// Same boundary cast as the real `createSandboxContext` — the runtime
+		// Same boundary cast as the real `createPluginContext` — the runtime
 		// always produces a number, but the public type narrows to `void` for
 		// non-open call sites.
 		if (policy === "always") {

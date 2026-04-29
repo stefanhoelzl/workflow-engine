@@ -1,8 +1,8 @@
 import type {
 	Callable,
+	PluginContext,
 	PluginRunResult,
 	RunInput,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { name as TIMERS_PLUGIN_NAME, worker } from "./index.js";
@@ -17,7 +17,7 @@ interface EmittedEvent {
 	extra: unknown;
 }
 
-interface RecordingCtx extends SandboxContext {
+interface RecordingCtx extends PluginContext {
 	events: EmittedEvent[];
 }
 

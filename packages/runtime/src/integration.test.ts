@@ -513,7 +513,7 @@ describe("end-to-end event flow", () => {
 	});
 
 	// Regression: the trigger plugin's onBeforeRunStarted / onRunFinished close
-	// over the SandboxContext built at boot. After every run the sandbox swaps
+	// over the PluginContext built at boot. After every run the sandbox swaps
 	// VMs via snapshot-restore; if the bridge those hooks emit through is not
 	// rebound, only the first run produces trigger.request / .response — every
 	// later invocation lands in pending/ forever and is invisible to the

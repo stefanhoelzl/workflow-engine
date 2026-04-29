@@ -2,11 +2,11 @@ import type {
 	DepsMap,
 	GuestFunctionDescription,
 	Plugin,
+	PluginContext,
 	PluginDescriptor,
 	PluginSetup,
 	RunInput,
 	RunResult,
-	SandboxContext,
 	SerializableConfig,
 } from "./plugin.js";
 import type { ArgSpec, ResultSpec } from "./plugin-types.js";
@@ -96,7 +96,7 @@ interface Phase1Result {
  */
 async function runPhaseWorker(
 	loaded: readonly LoadedPlugin[],
-	ctx: SandboxContext,
+	ctx: PluginContext,
 ): Promise<Phase1Result> {
 	const setups = new Map<string, PluginSetup>();
 	const order: string[] = [];

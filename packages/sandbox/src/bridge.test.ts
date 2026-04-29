@@ -1,6 +1,6 @@
 import type { QuickJS } from "quickjs-wasi";
 import { describe, expect, it } from "vitest";
-import { type Bridge, createBridge } from "./bridge-factory.js";
+import { type Bridge, createBridge } from "./bridge.js";
 import type { WireEvent } from "./protocol.js";
 import type { AnchorCell } from "./wasi.js";
 

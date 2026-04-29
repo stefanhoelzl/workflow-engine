@@ -1,7 +1,7 @@
 import type {
 	GuestFunctionDescription,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import postgres from "postgres";
@@ -620,7 +620,7 @@ function sqlDispatcherDescriptor(): GuestFunctionDescription {
 	};
 }
 
-function worker(_ctx: SandboxContext): PluginSetup {
+function worker(_ctx: PluginContext): PluginSetup {
 	return {
 		guestFunctions: [sqlDispatcherDescriptor()],
 		onRunFinished: handles.drain,

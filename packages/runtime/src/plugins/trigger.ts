@@ -1,9 +1,9 @@
 import type {
 	CallId,
+	PluginContext,
 	PluginRunResult,
 	PluginSetup,
 	RunInput,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { serializeLifecycleError } from "@workflow-engine/sandbox";
 
@@ -19,7 +19,7 @@ import { serializeLifecycleError } from "@workflow-engine/sandbox";
  */
 const name = "trigger";
 
-function worker(ctx: SandboxContext): PluginSetup {
+function worker(ctx: PluginContext): PluginSetup {
 	// Captured between onBeforeRunStarted (open) and onRunFinished (close).
 	// PluginSetup host-side state is allowed to persist between hooks per
 	// SECURITY.md R-4. Sandbox is single-run-at-a-time, so a single slot is

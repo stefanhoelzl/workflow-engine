@@ -9,7 +9,7 @@ import { TEST_SANDBOX_LIMITS } from "./test-harness.js";
 // bounds` because the timers plugin's `cancel()` synchronously disposed
 // the guest Callable while QuickJS was still executing inside the same
 // handle. With re-entry-safe Callable disposal in `bridge.makeCallable`
-// (bridge-factory.ts), the underlying handle release is deferred until
+// (bridge.ts), the underlying handle release is deferred until
 // invocation depth returns to 0, the guest frame unwinds cleanly, and
 // the sandbox stays alive for subsequent runs.
 

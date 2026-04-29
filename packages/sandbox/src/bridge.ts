@@ -5,11 +5,12 @@ import {
 	GuestArgTypeMismatchError,
 	GuestValidationError,
 } from "./guest-errors.js";
-import type {
-	Callable,
-	GuestFunctionDescription,
-	LogConfig,
-	SandboxContext,
+import {
+	type Callable,
+	createPluginContext,
+	type GuestFunctionDescription,
+	type LogConfig,
+	type PluginContext,
 } from "./plugin.js";
 import type { ArgSpec, GuestValue, ResultSpec } from "./plugin-types.js";
 import type { WireEvent, WireFraming } from "./protocol.js";
@@ -140,7 +141,7 @@ interface Bridge {
 	// Re-point the bridge at a new VM after a snapshot restore. Resets per-run
 	// state (runActive, seq, refStack); preserves sink + anchor so plugin
 	// lifecycle hooks (which closed over this bridge at boot via
-	// SandboxContext) keep emitting against the live VM. Without this, the
+	// PluginContext) keep emitting against the live VM. Without this, the
 	// bridge's marshal closures would still hold the disposed VM and
 	// onBeforeRunStarted/onRunFinished emissions would silently no-op on
 	// every run after the first — see openspec note re. trigger.request
@@ -170,21 +171,16 @@ interface Bridge {
 	 * Install a guest-function descriptor as a host callback on the current
 	 * VM's globalThis. The trampoline closure unmarshalArgs → invokes
 	 * descriptor.handler → marshalResult, dispatching log events through
-	 * `ctx.emit` or `ctx.request` per descriptor.log.
+	 * the bridge's internal `PluginContext` (built once at factory time over
+	 * `self`) per descriptor.log.
 	 */
-	installDescriptor(
-		ctx: SandboxContext,
-		descriptor: GuestFunctionDescription,
-	): void;
+	installDescriptor(descriptor: GuestFunctionDescription): void;
 	/**
 	 * Re-register the host trampoline for a descriptor against the bridge's
 	 * current VM. Called from worker.ts on the snapshot-restore rebind path
 	 * after `bridge.rebind(newVm)`.
 	 */
-	rebindDescriptor(
-		ctx: SandboxContext,
-		descriptor: GuestFunctionDescription,
-	): void;
+	rebindDescriptor(descriptor: GuestFunctionDescription): void;
 	/**
 	 * Snapshot live Callables and clear the registry. Returned in insertion
 	 * order. Caller (worker.ts `runLifecycleAfter`) is responsible for
@@ -334,14 +330,37 @@ function resolveLog(descriptor: GuestFunctionDescription): LogConfig {
 
 // --- Factory ---
 
+interface CreateBridgeOptions {
+	/**
+	 * Test-only override for the internal `PluginContext` used by descriptor
+	 * log auto-wrap. Production code does NOT pass this; the bridge builds
+	 * its own ctx via `createPluginContext(self)`. Tests inject a
+	 * `recordingContext` here to capture descriptor-trigger events without
+	 * having to install a sink and translate WireEvents back to PluginContext
+	 * shape.
+	 */
+	readonly ctxOverride?: PluginContext;
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups marshal helpers, framing transformation, anchor/ts, callId minting, sink wiring, the live-Callable registry, the makeCallable + unmarshalArgs + marshalResult + installDescriptor pipeline as one cohesive VM-host boundary unit
-function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
+function createBridge(
+	vm: QuickJS,
+	anchor: AnchorCell,
+	options?: CreateBridgeOptions,
+): Bridge {
 	let currentVm: QuickJS = vm;
 	let nextCallId = 0;
 	let runActive = false;
 	let sink: EventSink | null = null;
 	// Map preserves insertion order so leak-audit output is deterministic.
 	const liveCallables = new Map<Callable, string>();
+	// Bridge-owned plugin context for descriptor log auto-wrap. Built after
+	// the bridge object is assembled (`createPluginContext(bridge)` needs the
+	// concrete bridge), then closed over by `buildHandler`. The non-null
+	// assertion is safe because `buildHandler` is only invoked at
+	// guest-callback-call time, which cannot happen before the factory
+	// returns its assembled bridge.
+	let internalCtx!: PluginContext;
 
 	function resetAnchor(): void {
 		anchor.ns = BigInt(Math.trunc(performance.now() * NS_PER_MS));
@@ -542,7 +561,6 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 	}
 
 	function buildHandler(
-		ctx: SandboxContext,
 		descriptor: GuestFunctionDescription,
 	): (...handles: JSValueHandle[]) => JSValueHandle {
 		const log = resolveLog(descriptor);
@@ -561,16 +579,16 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 			if ("event" in log) {
 				// Single-leaf event before handler invocation; handler result is
 				// NOT wrapped so caller controls event shape explicitly via
-				// ctx.emit.
-				ctx.emit(log.event, { name: eventName, input: eventInput });
+				// internalCtx.emit.
+				internalCtx.emit(log.event, { name: eventName, input: eventInput });
 				const raw = invoke();
 				return marshalResult(descriptor.name, descriptor.result, raw);
 			}
-			// request-style wrap: ctx.request emits prefix.request/response/error
-			// around the handler. For sync handlers the raw value is available
-			// immediately; the async variant is handled in a later PR when
-			// Promise-returning guest functions become mainstream.
-			const raw = ctx.request(
+			// request-style wrap: internalCtx.request emits prefix.request/
+			// response/error around the handler. For sync handlers the raw
+			// value is available immediately; the async variant is handled in a
+			// later PR when Promise-returning guest functions become mainstream.
+			const raw = internalCtx.request(
 				log.request,
 				{ name: eventName, input: eventInput },
 				invoke,
@@ -579,26 +597,14 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		};
 	}
 
-	function installDescriptor(
-		ctx: SandboxContext,
-		descriptor: GuestFunctionDescription,
-	): void {
-		const fn = currentVm.newFunction(
-			descriptor.name,
-			buildHandler(ctx, descriptor),
-		);
+	function installDescriptor(descriptor: GuestFunctionDescription): void {
+		const fn = currentVm.newFunction(descriptor.name, buildHandler(descriptor));
 		currentVm.setProp(currentVm.global, descriptor.name, fn);
 		fn.dispose();
 	}
 
-	function rebindDescriptor(
-		ctx: SandboxContext,
-		descriptor: GuestFunctionDescription,
-	): void {
-		currentVm.registerHostCallback(
-			descriptor.name,
-			buildHandler(ctx, descriptor),
-		);
+	function rebindDescriptor(descriptor: GuestFunctionDescription): void {
+		currentVm.registerHostCallback(descriptor.name, buildHandler(descriptor));
 	}
 
 	function drainCallableLeaks(): readonly CallableLeak[] {
@@ -610,7 +616,7 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		return out;
 	}
 
-	return {
+	const bridge: Bridge = {
 		arg: ARG_EXTRACTORS,
 		marshal,
 		setRunActive() {
@@ -649,6 +655,8 @@ function createBridge(vm: QuickJS, anchor: AnchorCell): Bridge {
 		rebindDescriptor,
 		drainCallableLeaks,
 	};
+	internalCtx = options?.ctxOverride ?? createPluginContext(bridge);
+	return bridge;
 }
 
 export type { Bridge, CallableLeak, EmitFraming, EventSink };

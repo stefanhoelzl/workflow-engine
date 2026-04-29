@@ -1,7 +1,7 @@
 import type {
 	GuestFunctionDescription,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
@@ -119,7 +119,7 @@ function fetchDispatcherDescriptor(
 	};
 }
 
-function worker(_ctx: SandboxContext): PluginSetup {
+function worker(_ctx: PluginContext): PluginSetup {
 	return {
 		guestFunctions: [fetchDispatcherDescriptor(hardenedFetch)],
 		onRunFinished: handles.drain,

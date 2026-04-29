@@ -1,8 +1,8 @@
 import type {
 	Callable,
 	GuestFunctionDescription,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 
@@ -58,7 +58,7 @@ function disposeAndStop(entry: PendingTimer): void {
 // stopped and callables disposed; the map is emptied so the next run
 // starts clean.
 function clearAllPending(
-	ctx: SandboxContext,
+	ctx: PluginContext,
 	pending: Map<number, PendingTimer>,
 ): void {
 	for (const [id, entry] of pending) {
@@ -70,7 +70,7 @@ function clearAllPending(
 	pending.clear();
 }
 
-function createTimerRegistry(ctx: SandboxContext): TimerRegistry {
+function createTimerRegistry(ctx: PluginContext): TimerRegistry {
 	const pending = new Map<number, PendingTimer>();
 
 	function fire(numId: number, kind: TimerKind): void {
@@ -200,7 +200,7 @@ function timersGuestFunctions(
  */
 const name = "timers";
 
-function worker(ctx: SandboxContext): PluginSetup {
+function worker(ctx: PluginContext): PluginSetup {
 	const registry = createTimerRegistry(ctx);
 	return {
 		guestFunctions: timersGuestFunctions(registry),

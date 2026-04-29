@@ -2,7 +2,7 @@ import type { PluginSetup, WorkerToMain } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import { worker } from "./secrets.js";
 
-// The secrets plugin's `worker()` takes a SandboxContext it never uses, so
+// The secrets plugin's `worker()` takes a PluginContext it never uses, so
 // we pass null through an unknown cast. Each test calls `worker()` fresh to
 // reseed the module-scoped `activePlaintexts` list from the config.
 function bootstrap(

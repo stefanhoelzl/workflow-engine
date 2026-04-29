@@ -1,7 +1,7 @@
 import type {
 	GuestFunctionDescription,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import { install } from "./guest/install.js";
@@ -19,7 +19,7 @@ interface ReportErrorPayload {
 }
 
 function reportErrorHostDescriptor(
-	_ctx: SandboxContext,
+	_ctx: PluginContext,
 ): GuestFunctionDescription {
 	return {
 		name: REPORT_ERROR_HOST,
@@ -58,7 +58,7 @@ function reportErrorHostDescriptor(
  */
 const name = "web-platform";
 
-function worker(ctx: SandboxContext): PluginSetup {
+function worker(ctx: PluginContext): PluginSetup {
 	return {
 		guestFunctions: [reportErrorHostDescriptor(ctx)],
 	};

@@ -1,4 +1,4 @@
-import type { SandboxContext } from "@workflow-engine/sandbox";
+import type { PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import {
 	guest,
@@ -14,7 +14,7 @@ interface EmittedEvent {
 	extra: unknown;
 }
 
-function recordingCtx(): SandboxContext & { events: EmittedEvent[] } {
+function recordingCtx(): PluginContext & { events: EmittedEvent[] } {
 	const events: EmittedEvent[] = [];
 	return {
 		events,

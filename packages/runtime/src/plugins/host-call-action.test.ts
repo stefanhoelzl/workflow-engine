@@ -1,5 +1,5 @@
 import type { WorkflowManifest } from "@workflow-engine/core";
-import type { DepsMap, SandboxContext } from "@workflow-engine/sandbox";
+import type { DepsMap, PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import { compileActionValidators } from "../host-call-action-config.js";
 import {
@@ -10,7 +10,7 @@ import {
 	worker,
 } from "./host-call-action.js";
 
-const ctx: SandboxContext = {
+const ctx: PluginContext = {
 	emit() {
 		return 0 as never;
 	},

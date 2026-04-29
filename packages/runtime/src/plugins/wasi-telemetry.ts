@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 	WasiClockArgs,
 	WasiFdWriteArgs,
 	WasiRandomArgs,
@@ -30,7 +30,7 @@ function sha256First16(bytes: Uint8Array): string {
 		.slice(0, SHA256_HEX_PREFIX_LEN);
 }
 
-function worker(ctx: SandboxContext): PluginSetup {
+function worker(ctx: PluginContext): PluginSetup {
 	return {
 		wasiHooks: {
 			clockTimeGet: (args: WasiClockArgs): undefined => {

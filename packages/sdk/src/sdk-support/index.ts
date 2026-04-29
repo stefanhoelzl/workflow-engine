@@ -3,8 +3,8 @@ import type {
 	DepsMap,
 	GuestFunctionDescription,
 	GuestValue,
+	PluginContext,
 	PluginSetup,
-	SandboxContext,
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 
@@ -73,7 +73,7 @@ const dependsOn: readonly string[] = ["host-call-action"];
  * validation is host-side regardless, so the security property holds even
  * when the guest shape lags behind.
  */
-function worker(_ctx: SandboxContext, deps: DepsMap): PluginSetup {
+function worker(_ctx: PluginContext, deps: DepsMap): PluginSetup {
 	const { validateAction, validateActionOutput } =
 		resolveHostCallActionDeps(deps);
 

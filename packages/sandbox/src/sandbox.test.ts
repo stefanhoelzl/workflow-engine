@@ -207,7 +207,7 @@ describe("sandbox onEvent — emits SandboxEvent intrinsic fields", () => {
 	});
 
 	// Regression guard: plugin lifecycle hooks (here, onBeforeRunStarted)
-	// close over the SandboxContext built at boot. Snapshot-restore between
+	// close over the PluginContext built at boot. Snapshot-restore between
 	// runs swaps the underlying QuickJS VM; if the bridge those hooks emit
 	// through is not rebound to the new VM, only the first run produces
 	// events. Repro of the multi-trigger dashboard bug where every
@@ -293,7 +293,7 @@ describe("sandbox sequencer integration — stamping and synthesis", () => {
 	it("does NOT carry seq or ref on the wire — only on the stamped event surface", async () => {
 		// The stamped events delivered to onEvent carry seq + ref (because
 		// they were stamped main-side). We verify the values are sensible —
-		// the absence-on-wire invariant lives in bridge-factory.test.ts.
+		// the absence-on-wire invariant lives in bridge.test.ts.
 		const { events } = await runSource(defaultHandler("return 'ok';"), {
 			plugins: [FRAMING_PLUGIN],
 		});
@@ -334,7 +334,7 @@ describe("sandbox sequencer integration — stamping and synthesis", () => {
 			// reaching past the public API. Instead, assert via the stamped
 			// event: the stamped SandboxEvent carries seq and ref, but the
 			// WireEvent transformation is the only place where they could
-			// have been added. The bridge-factory unit test directly asserts
+			// have been added. The bridge.test.ts unit test directly asserts
 			// the wire shape — this integration test asserts the stamped
 			// counterpart is internally consistent.
 			const events: SandboxEvent[] = [];
