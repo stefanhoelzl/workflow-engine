@@ -350,6 +350,7 @@ async function main(): Promise<void> {
 	}
 
 	await runUpload(port);
+	// `tenant=dev` is a stable agent-parseable ready marker; the actual upload owner is `local`.
 	console.log(`Dev ready on http://localhost:${String(port)} (tenant=dev)`);
 	watchWorkflows(port);
 	watchRuntime(

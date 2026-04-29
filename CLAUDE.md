@@ -17,15 +17,12 @@
 
 ## CLI (`wfe`)
 
-The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke it from the workflows project root via `pnpm exec`:
+The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke from the workflows project root via `pnpm exec`:
 
-- `pnpm exec wfe upload --owner <name>` — build and upload the current project's bundle to the default URL.
-- `pnpm exec wfe upload --owner <name> --url http://localhost:8080` — target local dev.
-- `pnpm exec wfe upload --owner <name> --user <name>` — local-provider auth (requires server `LOCAL_DEPLOYMENT=1`).
-- `pnpm exec wfe upload --owner <name> --token <ghp_…>` — github-provider auth (explicit token).
-- `pnpm exec wfe upload --owner <name>` with `GITHUB_TOKEN=<ghp_…>` in the env — same as `--token`.
+- `pnpm exec wfe upload --owner <name> --user <name>` — local-provider auth (server needs `LOCAL_DEPLOYMENT=1`); add `--url http://localhost:8080` to target local dev.
+- `pnpm exec wfe upload --owner <name> --token <ghp_…>` — github-provider auth; `GITHUB_TOKEN` env var works too.
 
-`--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive. The check runs *before* the build; a conflicting invocation fails fast and produces no artefacts (see SECURITY.md §4 "CLI authentication").
+`--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive — see `SECURITY.md` §4 "CLI authentication".
 
 ## Infrastructure (OpenTofu + kind)
 
@@ -58,28 +55,10 @@ Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the
 ### Spawn & readiness
 
 1. Start backgrounded: `pnpm dev --random-port --kill`. Agents use `run_in_background` so the process tree is owned by the agent.
-2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (tenant=dev)`. Parse the port from that line — the literal `tenant=dev` is a stale legacy string emitted by `scripts/dev.ts:353`; the actual upload target is owner `local`, not `dev`. Do NOT probe before the marker appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
+2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (tenant=dev)`. Parse the port from that line. Do NOT probe before the marker appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
 3. Kill the process tree at end of task. `.persistence/` is left as-is between tasks; each boot re-uploads the bundle anyway.
 
-### Auth fixture
-
-`scripts/dev.ts` sets `AUTH_ALLOW=local:local,local:alice:acme,local:bob` and `LOCAL_DEPLOYMENT=1`. Gotchas:
-
-- `/api/*`: `X-Auth-Provider: local` + `Authorization: User <name>`. The only API routes are `POST /api/workflows/<owner>/<repo>` and `GET /api/workflows/<owner>/public-key` — there is no `GET /api/workflows/<owner>` listing; scrape `/dashboard/<owner>` instead.
-- `/webhooks/*` is public.
-- UI routes: `POST /auth/local/signin` form field is `user=` (NOT `name=` — handler reads `body.user`); reuse the sealed `session` cookie. For Alpine interactivity, use Playwright.
-
-### Canonical fixture
-
-`workflows/src/demo.ts` is the probe target. Its triggers: `runDemo` cron, http GET + POST under `/webhooks/local/demo/*`, manual `fail` (exercises the `action.error` / `trigger.error` path). SDK or sandbox-stdlib changes must keep `demo.ts` in sync (see `## Example workflows`), so the probe surface stays stable.
-
-### Probe toolkit
-
-- **HTTP**: `curl` against `POST /webhooks/local/demo/<trigger>` (public webhooks), `/dashboard/local/demo` (session cookie), `/trigger/local/demo` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the dashboard HTML — there is no `GET /api/workflows/<owner>` JSON listing.
-- **EventStore**: inspect `.persistence/` for emitted events (`invocation.started`, `invocation.completed`, `trigger.request`, `action.error`, …). Useful when verifying owner scoping or event-shape changes without a UI.
-- **Dashboard HTML scraping**: grep rendered output for expected classes (`kind-trigger`, `kind-action`, `kind-rest`, `.entry.skeleton`) — cheap UI regression check without a browser.
-- **Stdout tailing**: tee the dev process's stdout to a file; grep for error traces and upload confirmations.
-- **Playwright** (agent-only; NOT in `pnpm test` / `pnpm validate`): use for Alpine-driven interactivity, focus rings, form submission, copy-event buttons. First-time use in a fresh clone requires `pnpm exec playwright install chromium` (~300 MB download, one-time). Scripts are ad-hoc via `pnpm exec playwright test -c <inline-config>` or `node -e '...'` — no test suite wiring.
+Probe recipes (curl, EventStore, dashboard scrape, Playwright, auth fixture, canonical `demo.ts` triggers) live in `docs/dev-probes.md`.
 
 ### `tasks.md` pattern
 
@@ -108,10 +87,7 @@ Every non-failure trigger dispatches the same `runDemo` orchestrator so any kind
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
 - SDK surface or sandbox-stdlib changes must land with a matching update to `workflows/src/demo.ts` — see `## Example workflows`.
 - PRs that change `packages/runtime/src/ui/static/workflow-engine.css` (or `trigger.css`) should keep `docs/ui-guidelines.md` in sync — token values, the green allowlist, kind/prefix icon tables, and component recipes are documented there. Behaviour contracts (theme detection, motion respect, CSP cleanliness, universal topbar, asset delivery) live in the `ui-foundation` and `ui-errors` OpenSpec capabilities — touching those requires a proposal.
-
-### Formatter
-
-Biome defaults (configured in `biome.jsonc`): tabs for indentation, 80-char line width, LF line endings, double quotes for JS/TS strings. `pnpm format` writes these in place; `pnpm lint` (aliased to `biome check --error-on-warnings .`) fails on formatter drift. Any rule disabled in `biome.jsonc` MUST carry an inline `//` comment explaining why — same convention as in-source `biome-ignore`.
+- Biome defaults (`biome.jsonc`): tabs, 80-char width, LF, double quotes. `pnpm format` writes; `pnpm lint` fails on drift. Any rule disabled in `biome.jsonc` MUST carry an inline `//` reason — same convention as in-source `biome-ignore`.
 
 ## Security Invariants
 
