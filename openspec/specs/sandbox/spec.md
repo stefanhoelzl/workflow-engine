@@ -1638,3 +1638,91 @@ The `SandboxStore` SHALL be the SOLE production subscriber to `Sandbox.onTermina
 - **WHEN** that sandbox's `onTerminated` fires with `{kind:"crash", err}`
 - **THEN** the `SandboxStore` SHALL remove the `(owner="acme", sha="abc")` entry from its cache
 
+
+### Requirement: Host/sandbox boundary opacity for thrown errors
+
+The sandbox SHALL NOT expose host implementation details to guest code via thrown errors. Errors that surface as guest-visible exceptions (i.e. throws raised by host-callback closures installed via `vm.newFunction` or `vm.registerHostCallback` and converted to guest exceptions by the QuickJS trampoline) SHALL contain only sandbox-internal information: guest source the sandbox itself loaded, guest-supplied input, error-class names from a curated `GuestSafeError` hierarchy, and synthetic identifiers minted by the bridge (e.g. `<bridge:<publicName>>`).
+
+Host-domain content SHALL NOT be observable from guest code via these errors. In particular, the `.stack`, `.name`, and `.message` of guest-observed errors SHALL NOT contain absolute host filesystem paths, `node_modules` paths, pinned dependency versions (e.g. `quickjs-wasi@2.2.0`), `data:text/javascript;base64,...` URLs that decode to plugin source, or host-internal stack frames from Node.js / undici / nodemailer / postgres / `quickjs-wasi`.
+
+The bridge factory in `@workflow-engine/sandbox` SHALL wrap every host-callback closure body in a `try/catch`. The catch SHALL convert the caught error into a guest-bound error using the rule below.
+
+The closure rule:
+
+1. If the caught error is an instance of `GuestThrownError` (a subclass of `GuestSafeError` constructed by the sandbox's `callGuestFn` / `awaitGuestResult` rethrow paths to carry an inner-guest VM exception across the bridge), the closure SHALL preserve the error's `.name` and `.message` unchanged, append the synthetic frame `\n    at <bridge:<publicName>>` to the existing `.stack` (which is pure guest frames), and rethrow the same error instance.
+2. Otherwise, if the caught error is an instance of `GuestSafeError`, the closure SHALL construct a fresh `Error` with `.name` copied from the original error's `.name` (preserving subclass-name discrimination such as `"FetchError"`, `"MailError"`, `"SqlError"`, or `"GuestSafeError"`), `.message` set to `"<publicName> failed: <original.message>"`, and `.stack` set to `"<name>: <message>\n    at <bridge:<publicName>>"`. Enumerable own-properties of the original error other than `name`, `message`, and `stack` SHALL be copied onto the new error so structured fields (e.g. `.kind`, `.code`, `.responseCode`, `.reason`) reach the guest. The new error SHALL be thrown.
+3. Otherwise (the catch-all), the closure SHALL construct a fresh `Error` with `.name = "BridgeError"`, `.message = "<publicName> failed"` (no inner detail), and `.stack = "BridgeError: <message>\n    at <bridge:<publicName>>"`, and SHALL throw it.
+
+`<publicName>` resolves to `descriptor.publicName ?? descriptor.name`. The `publicName` field is an optional string on `GuestFunctionDescription`; when set, it is used in both the message prefix and the synthetic stack frame, replacing the descriptor's internal `name` for guest-visibility purposes.
+
+#### Scenario: Host throw with native stack reaches guest as BridgeError without leaks
+
+- **GIVEN** a host-callback descriptor `name = "$probe"`, `publicName = "probe"`
+- **AND** the descriptor's handler does `throw Object.assign(new Error("ENOENT: open '/etc/secret/foo'"), { stack: "Error: ENOENT\n    at /var/home/stefan/.../node_modules/.pnpm/quickjs-wasi@2.2.0/...\n    at data:text/javascript;base64,Ly8gQ29weXJpZ2h0..." })`
+- **WHEN** guest code calls `probe()` inside `try { ... } catch (e) { return { name: e.name, message: e.message, stack: e.stack } }`
+- **THEN** the returned `name` SHALL be `"BridgeError"`
+- **AND** the returned `message` SHALL be `"probe failed"`
+- **AND** the returned `stack` SHALL contain the substring `"<bridge:probe>"`
+- **AND** the returned `stack` SHALL NOT contain any of the substrings `"/var/"`, `"node_modules"`, `"quickjs-wasi@"`, `"data:text/javascript"`
+
+#### Scenario: GuestSafeError host throw propagates name and message with synthetic stack
+
+- **GIVEN** a host-callback descriptor `publicName = "fetch"`
+- **AND** the descriptor's handler does `throw new FetchError({ reason: "bad-scheme", url: "ftp://x" })` (a `GuestSafeError` subclass)
+- **WHEN** guest code catches the thrown error
+- **THEN** `e.name` SHALL be `"FetchError"`
+- **AND** `e.message` SHALL start with `"fetch failed: "`
+- **AND** `e.reason` SHALL be `"bad-scheme"`
+- **AND** `e.url` SHALL be `"ftp://x"`
+- **AND** `e.stack` SHALL contain `"<bridge:fetch>"` and SHALL NOT contain `"/var/"`, `"node_modules"`, or `"data:text/javascript"`
+
+#### Scenario: Cross-VM action throw passes through with guest stack and bridge frame appended
+
+- **GIVEN** an action `actionA` whose handler does `throw new TypeError("bad input")`
+- **AND** the calling guest invokes the action via `__sdk.dispatchAction("actionA", {}, () => {})`
+- **WHEN** the calling guest catches the thrown error
+- **THEN** `e.name` SHALL be `"TypeError"`
+- **AND** `e.message` SHALL be `"bad input"` (no `"<publicName> failed:"` prefix)
+- **AND** `e.stack` SHALL contain stack frames originating from `actionA`'s guest source
+- **AND** `e.stack` SHALL contain a single appended frame matching `at <bridge:__sdk.dispatchAction>`
+- **AND** `e.stack` SHALL NOT contain any host filesystem paths, `node_modules` paths, or `data:` URLs
+
+### Requirement: GuestSafeError class hierarchy
+
+The `@workflow-engine/sandbox` package SHALL export the following error classes, all of which are subclasses of the standard `Error` and form the closure rule's allowlist:
+
+- `GuestSafeError` — base class, directly throwable by dispatcher implementations to opt into propagation across the bridge.
+- `GuestArgTypeMismatchError extends GuestSafeError` — existing class, raised when a guest-supplied arg's runtime kind does not match the descriptor's declared kind.
+- `GuestValidationError extends GuestSafeError` — existing class, raised when a host handler's return value does not match the descriptor's result kind.
+- `GuestThrownError extends GuestSafeError` — constructed by `callGuestFn` and `awaitGuestResult` when rethrowing a guest-side `JSException` as a host error. Carries the original guest error's `.name` and `.message` and the guest-side `.stack` verbatim.
+
+The `BridgeError` class SHALL NOT extend `GuestSafeError`; it is the catch-all for unmarked throws and is never instantiated by plugin code.
+
+#### Scenario: Class hierarchy is exported
+
+- **WHEN** an SDK consumer imports from `@workflow-engine/sandbox`
+- **THEN** the symbols `GuestSafeError`, `GuestArgTypeMismatchError`, `GuestValidationError`, `GuestThrownError`, `BridgeError` SHALL be importable
+- **AND** `GuestArgTypeMismatchError`, `GuestValidationError`, and `GuestThrownError` SHALL be subclasses of `GuestSafeError`
+- **AND** `BridgeError` SHALL NOT be a subclass of `GuestSafeError`
+
+### Requirement: GuestFunctionDescription publicName field
+
+The `GuestFunctionDescription` interface SHALL accept an optional `publicName?: string` field. The closure rule resolves `<publicName>` as `descriptor.publicName ?? descriptor.name` for both message-prefix construction and synthetic stack frame stamping.
+
+#### Scenario: publicName replaces internal name in guest-visible output
+
+- **GIVEN** a descriptor with `name = "$fetch/do"` and `publicName = "fetch"`
+- **WHEN** the descriptor's handler throws (any error)
+- **THEN** the guest-observed error message SHALL start with `"fetch failed"`, not `"$fetch/do failed"`
+- **AND** the synthetic stack frame SHALL be `at <bridge:fetch>`, not `at <bridge:$fetch/do>`
+
+### Requirement: Guest-side error rethrow uses GuestThrownError
+
+The sandbox's `callGuestFn` and `awaitGuestResult` paths SHALL construct `GuestThrownError` instances when rethrowing a guest-side `JSException` as a host error. The original `JSException`'s `.name` and `.message` SHALL be preserved on the constructed `GuestThrownError`; the `JSException`'s `.stack` SHALL be set verbatim onto `GuestThrownError.stack`.
+
+#### Scenario: Guest TypeError reaches host as GuestThrownError
+
+- **GIVEN** a guest function `f` that does `throw new TypeError("bad")`
+- **WHEN** the host calls `f` via `vm.callFunction` and `callGuestFn` rethrows the `JSException`
+- **THEN** the host-side caught error SHALL be an instance of `GuestThrownError`
+- **AND** SHALL have `.name === "TypeError"` and `.message === "bad"`

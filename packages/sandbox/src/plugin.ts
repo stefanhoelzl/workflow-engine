@@ -120,6 +120,15 @@ interface GuestFunctionDescription<
 	readonly log?: LogConfig;
 	readonly public?: boolean;
 	/**
+	 * Optional guest-facing alias used by the closure rule in `bridge.ts`'s
+	 * `buildHandler` when constructing the synthetic `at <bridge:<publicName>>`
+	 * stack frame and the `<publicName> failed: …` message prefix on errors
+	 * that cross into the guest VM. Falls back to `name` when omitted. See
+	 * `openspec/specs/sandbox/spec.md` — "GuestFunctionDescription publicName
+	 * field".
+	 */
+	readonly publicName?: string;
+	/**
 	 * Override the event `name` field emitted by the log auto-wrap. Receives
 	 * the unmarshaled host-side args (Callables preserved) and returns the
 	 * string to stamp on `emit()`/`request()`. Defaults to `descriptor.name`.

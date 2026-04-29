@@ -1,5 +1,6 @@
 import { z } from "@workflow-engine/core";
 import type { DepsMap, PluginSetup } from "@workflow-engine/sandbox";
+import { GuestSafeError } from "@workflow-engine/sandbox";
 
 interface ValidationIssue {
 	readonly path: (string | number)[];
@@ -71,7 +72,11 @@ function runValidator(
 ): unknown {
 	const validator = validators.get(actionName);
 	if (!validator) {
-		throw new Error(`action "${actionName}" is not declared in the manifest`);
+		// GuestSafeError so the bridge-closure rule preserves the message
+		// when this throw crosses into the guest VM via the dispatchAction
+		// descriptor. "in the manifest" is dropped — manifest is a build-
+		// pipeline term, not part of the workflow-author surface.
+		throw new GuestSafeError(`action "${actionName}" is not declared`);
 	}
 	const result = validator.safeParse(value);
 	if (result.success) {

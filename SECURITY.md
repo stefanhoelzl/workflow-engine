@@ -789,6 +789,36 @@ plugin, and every change that adds a guest-visible surface.
     classification" and "Eviction on sandbox termination", and
     `openspec/specs/invocations/spec.md` "Requirement: system.exhaustion
     event kind".
+12. **R-12 Host/sandbox boundary opacity for thrown errors.** NEVER
+    throw an arbitrary `Error` toward the QuickJS trampoline from a
+    host-callback closure. Errors crossing into the guest VM MUST be
+    `GuestSafeError` instances (or one of its in-tree subclasses:
+    `GuestArgTypeMismatchError`, `GuestValidationError`,
+    `GuestThrownError`, `FetchError`, `MailError`, `SqlError`); the
+    bridge-closure rule (in `bridge.ts`'s `buildHandler`) converts
+    everything else into a generic `BridgeError` whose message is
+    `"<publicName> failed"` and whose stack is a single synthetic
+    `at <bridge:<publicName>>` frame. Plugin authors who want
+    guest-visible message detail MUST construct a `GuestSafeError` (or
+    subclass) with a curated `.message` containing only sandbox-internal
+    information — guest-supplied input, well-known enums (libuv errnos,
+    SQLSTATEs, SMTP response codes), and synthetic identifiers. Host
+    filesystem paths, `node_modules` paths, pinned dependency versions,
+    `data:text/javascript;base64,...` URLs, and Node-internal stack
+    frames SHALL NOT be observable from guest code via thrown errors.
+    Forwarding a third-party library's `.message` (undici / nodemailer /
+    postgres-driver) verbatim is forbidden — the dispatcher MUST translate
+    to a curated `*Error` shape and build the message from structured
+    fields. The guest→host rethrow path (`callGuestFn` /
+    `awaitGuestResult` in `bridge.ts`) SHALL construct `GuestThrownError`
+    instances so cross-VM action throws preserve the inner `.name` and
+    `.message` and the guest-side `.stack` (which is workflow-author
+    source — already known to that author). See
+    `openspec/specs/sandbox/spec.md` "Host/sandbox boundary opacity for
+    thrown errors", "GuestSafeError class hierarchy", and "Guest-side
+    error rethrow uses GuestThrownError"; per-dispatcher field provenance
+    lives in `openspec/specs/sandbox-stdlib/spec.md` under the
+    `FetchError` / `MailError` / `SqlError` requirements.
 
 Additional standing rules that predate the plugin rewrite:
 

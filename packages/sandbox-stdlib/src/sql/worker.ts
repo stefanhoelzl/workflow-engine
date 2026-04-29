@@ -8,6 +8,8 @@ import postgres from "postgres";
 import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
 import { assertHostIsPublic } from "../net-guard/index.js";
 import { SQL_DISPATCHER_NAME } from "./descriptor-name.js";
+import type { SqlErrorOptions } from "./sql-error.js";
+import { classifySqlKind, SqlError } from "./sql-error.js";
 import type {
 	SqlColumnMetaWire,
 	SqlConnectionObjectWire,
@@ -31,7 +33,10 @@ const CONNECT_TIMEOUT_SECONDS = 10;
 
 function assertNonEmptyString(value: unknown, path: string): string {
 	if (typeof value !== "string" || value.length === 0) {
-		throw new Error(`executeSql: ${path} must be a non-empty string`);
+		throw new SqlError({
+			kind: "invalid-input",
+			message: `${path} must be a non-empty string`,
+		});
 	}
 	return value;
 }
@@ -44,9 +49,10 @@ function assertParam(value: unknown, index: number): SqlParam {
 	if (t === "string" || t === "number" || t === "boolean") {
 		return value as SqlParam;
 	}
-	throw new Error(
-		`executeSql: params[${index}] must be string | number | boolean | null (got ${t === "object" ? Object.prototype.toString.call(value) : t})`,
-	);
+	throw new SqlError({
+		kind: "invalid-input",
+		message: `params[${index}] must be string | number | boolean | null (got ${t === "object" ? Object.prototype.toString.call(value) : t})`,
+	});
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the function is an exhaustive field-by-field validator — each `if` is a single optional-field branch with a type + error-message pair; collapsing them into a helper would hide the field/type/error mapping that's the point of the validator
@@ -55,9 +61,10 @@ function assertSslConfig(raw: unknown): boolean | SqlSslWire {
 		return raw;
 	}
 	if (raw === null || typeof raw !== "object") {
-		throw new Error(
-			"executeSql: connection.ssl must be a boolean or an object",
-		);
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "connection.ssl must be a boolean or an object",
+		});
 	}
 	const o = raw as Record<string, unknown>;
 	const out: {
@@ -69,33 +76,46 @@ function assertSslConfig(raw: unknown): boolean | SqlSslWire {
 	} = {};
 	if (o.ca !== undefined) {
 		if (typeof o.ca !== "string") {
-			throw new Error("executeSql: connection.ssl.ca must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.ssl.ca must be a string",
+			});
 		}
 		out.ca = o.ca;
 	}
 	if (o.cert !== undefined) {
 		if (typeof o.cert !== "string") {
-			throw new Error("executeSql: connection.ssl.cert must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.ssl.cert must be a string",
+			});
 		}
 		out.cert = o.cert;
 	}
 	if (o.key !== undefined) {
 		if (typeof o.key !== "string") {
-			throw new Error("executeSql: connection.ssl.key must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.ssl.key must be a string",
+			});
 		}
 		out.key = o.key;
 	}
 	if (o.rejectUnauthorized !== undefined) {
 		if (typeof o.rejectUnauthorized !== "boolean") {
-			throw new Error(
-				"executeSql: connection.ssl.rejectUnauthorized must be a boolean",
-			);
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.ssl.rejectUnauthorized must be a boolean",
+			});
 		}
 		out.rejectUnauthorized = o.rejectUnauthorized;
 	}
 	if (o.servername !== undefined) {
 		if (typeof o.servername !== "string") {
-			throw new Error("executeSql: connection.ssl.servername must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.ssl.servername must be a string",
+			});
 		}
 		out.servername = o.servername;
 	}
@@ -103,6 +123,7 @@ function assertSslConfig(raw: unknown): boolean | SqlSslWire {
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: same shape as assertSslConfig — one branch per optional field; each branch is a single-type check plus error message
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: line count reflects the SqlConnectionObjectWire field surface (one optional field per branch); collapsing into a helper would obscure the field/type/error mapping
 function assertConnectionObject(
 	raw: Record<string, unknown>,
 ): SqlConnectionObjectWire {
@@ -117,15 +138,19 @@ function assertConnectionObject(
 	} = {};
 	if (raw.connectionString !== undefined) {
 		if (typeof raw.connectionString !== "string") {
-			throw new Error(
-				"executeSql: connection.connectionString must be a string",
-			);
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.connectionString must be a string",
+			});
 		}
 		out.connectionString = raw.connectionString;
 	}
 	if (raw.host !== undefined) {
 		if (typeof raw.host !== "string") {
-			throw new Error("executeSql: connection.host must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.host must be a string",
+			});
 		}
 		out.host = raw.host;
 	}
@@ -135,25 +160,37 @@ function assertConnectionObject(
 			!Number.isInteger(raw.port) ||
 			raw.port <= 0
 		) {
-			throw new Error("executeSql: connection.port must be a positive integer");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.port must be a positive integer",
+			});
 		}
 		out.port = raw.port;
 	}
 	if (raw.user !== undefined) {
 		if (typeof raw.user !== "string") {
-			throw new Error("executeSql: connection.user must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.user must be a string",
+			});
 		}
 		out.user = raw.user;
 	}
 	if (raw.password !== undefined) {
 		if (typeof raw.password !== "string") {
-			throw new Error("executeSql: connection.password must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.password must be a string",
+			});
 		}
 		out.password = raw.password;
 	}
 	if (raw.database !== undefined) {
 		if (typeof raw.database !== "string") {
-			throw new Error("executeSql: connection.database must be a string");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection.database must be a string",
+			});
 		}
 		out.database = raw.database;
 	}
@@ -166,12 +203,18 @@ function assertConnectionObject(
 function assertConnection(raw: unknown): SqlConnectionWire {
 	if (typeof raw === "string") {
 		if (raw.length === 0) {
-			throw new Error("executeSql: connection string must be non-empty");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection string must be non-empty",
+			});
 		}
 		return raw;
 	}
 	if (raw === null || typeof raw !== "object") {
-		throw new Error("executeSql: connection must be a string or object");
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "connection must be a string or object",
+		});
 	}
 	return assertConnectionObject(raw as Record<string, unknown>);
 }
@@ -181,7 +224,10 @@ function assertOptions(raw: unknown): SqlOptionsWire | undefined {
 		return;
 	}
 	if (raw === null || typeof raw !== "object") {
-		throw new Error("executeSql: options must be an object if provided");
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "options must be an object if provided",
+		});
 	}
 	const o = raw as Record<string, unknown>;
 	const out: { timeoutMs?: number } = {};
@@ -191,9 +237,10 @@ function assertOptions(raw: unknown): SqlOptionsWire | undefined {
 			!Number.isInteger(o.timeoutMs) ||
 			o.timeoutMs <= 0
 		) {
-			throw new Error(
-				"executeSql: options.timeoutMs must be a positive integer",
-			);
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "options.timeoutMs must be a positive integer",
+			});
 		}
 		out.timeoutMs = o.timeoutMs;
 	}
@@ -202,13 +249,19 @@ function assertOptions(raw: unknown): SqlOptionsWire | undefined {
 
 function assertInput(raw: unknown): SqlInputWire {
 	if (raw === null || typeof raw !== "object") {
-		throw new Error("executeSql: input must be an object");
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "input must be an object",
+		});
 	}
 	const o = raw as Record<string, unknown>;
 	const connection = assertConnection(o.connection);
 	const query = assertNonEmptyString(o.query, "query");
 	if (o.params !== undefined && !Array.isArray(o.params)) {
-		throw new Error("executeSql: params must be an array if provided");
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "params must be an array if provided",
+		});
 	}
 	const rawParams = (o.params ?? []) as readonly unknown[];
 	const params: SqlParam[] = rawParams.map((p, i) => assertParam(p, i));
@@ -234,12 +287,16 @@ function extractHostnameFromDsn(dsn: string): string {
 	try {
 		url = new URL(dsn);
 	} catch {
-		throw new Error(
-			"executeSql: connection string is not a valid URL (expected postgres://...)",
-		);
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "connection string is not a valid URL (expected postgres://...)",
+		});
 	}
 	if (!url.hostname) {
-		throw new Error("executeSql: connection string has no host");
+		throw new SqlError({
+			kind: "invalid-input",
+			message: "connection string has no host",
+		});
 	}
 	return url.hostname;
 }
@@ -259,7 +316,10 @@ function extractConnectionFacts(conn: SqlConnectionWire): ConnectionFacts {
 		const hostname = url.hostname;
 		const database = url.pathname.replace(LEADING_SLASH_RE, "") || "";
 		if (!hostname) {
-			throw new Error("executeSql: connection string has no host");
+			throw new SqlError({
+				kind: "invalid-input",
+				message: "connection string has no host",
+			});
 		}
 		return { hostname, database };
 	}
@@ -395,28 +455,100 @@ function coerceRow(r: Record<string, unknown>): SqlRowWire {
 // Error shaping
 // ---------------------------------------------------------------------------
 
-function shapeDriverError(err: unknown): { message: string; code?: string } {
+/**
+ * Shape a postgres-driver error into the structured field set forwarded
+ * across the bridge as a `SqlError`. The driver `.message`, `.stack`,
+ * `.cause`, `.file`, `.line`, `.routine`, `.internal_query`,
+ * `.internal_position`, `.where`, and `.query` fields are intentionally
+ * dropped — they leak host topology and DB binary version. See
+ * `openspec/specs/sandbox-stdlib/spec.md` "SqlError shape for `$sql/do`
+ * failures".
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each branch surfaces one of the curated structured fields; collapsing into a helper would obscure the per-field provenance contract
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: line count reflects the count of curated fields (code, severity, position, detail, hint, schemaName, tableName, columnName, constraintName, dataTypeName), not compounded logic
+function shapeDriverError(err: unknown): SqlErrorOptions {
 	const e = (err ?? {}) as {
-		message?: unknown;
 		code?: unknown;
+		severity?: unknown;
+		position?: unknown;
+		detail?: unknown;
+		hint?: unknown;
+		// biome-ignore lint/style/useNamingConvention: porsager/postgres mirrors the SQLSTATE field names verbatim
+		schema_name?: unknown;
+		// biome-ignore lint/style/useNamingConvention: same
+		table_name?: unknown;
+		// biome-ignore lint/style/useNamingConvention: same
+		column_name?: unknown;
+		// biome-ignore lint/style/useNamingConvention: same
+		constraint_name?: unknown;
+		// biome-ignore lint/style/useNamingConvention: same
+		data_type_name?: unknown;
 	};
-	const message =
-		typeof e.message === "string" && e.message.length > 0
-			? e.message
-			: "sql query failed";
-	const out: { message: string; code?: string } = { message };
-	if (typeof e.code === "string" && e.code.length > 0) {
-		out.code = e.code;
+	const code =
+		typeof e.code === "string" && e.code.length > 0 ? e.code : undefined;
+	const severity = typeof e.severity === "string" ? e.severity : undefined;
+	const positionRaw = e.position;
+	let position: number | undefined;
+	if (typeof positionRaw === "number" && Number.isFinite(positionRaw)) {
+		position = positionRaw;
+	} else if (typeof positionRaw === "string" && positionRaw.length > 0) {
+		const parsed = Number.parseInt(positionRaw, 10);
+		if (Number.isFinite(parsed)) {
+			position = parsed;
+		}
+	}
+	const out: SqlErrorOptions = { kind: classifySqlKind(code, severity) };
+	const w = out as {
+		kind: SqlErrorOptions["kind"];
+		code?: string;
+		severity?: string;
+		position?: number;
+		detail?: string;
+		hint?: string;
+		schemaName?: string;
+		tableName?: string;
+		columnName?: string;
+		constraintName?: string;
+		dataTypeName?: string;
+	};
+	if (code !== undefined) {
+		w.code = code;
+	}
+	if (severity !== undefined) {
+		w.severity = severity;
+	}
+	if (position !== undefined) {
+		w.position = position;
+	}
+	if (typeof e.detail === "string") {
+		w.detail = e.detail;
+	}
+	if (typeof e.hint === "string") {
+		w.hint = e.hint;
+	}
+	if (typeof e.schema_name === "string") {
+		w.schemaName = e.schema_name;
+	}
+	if (typeof e.table_name === "string") {
+		w.tableName = e.table_name;
+	}
+	if (typeof e.column_name === "string") {
+		w.columnName = e.column_name;
+	}
+	if (typeof e.constraint_name === "string") {
+		w.constraintName = e.constraint_name;
+	}
+	if (typeof e.data_type_name === "string") {
+		w.dataTypeName = e.data_type_name;
 	}
 	return out;
 }
 
 function throwStructured(err: unknown): never {
-	const shaped = shapeDriverError(err);
-	const thrown = new Error(shaped.message);
-	Object.assign(thrown, shaped);
-	(thrown as { name: string }).name = "SqlError";
-	throw thrown;
+	if (err instanceof SqlError) {
+		throw err;
+	}
+	throw new SqlError(shapeDriverError(err));
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +706,10 @@ async function dispatchSqlExecute(input: SqlInputWire): Promise<SqlResultWire> {
 function sqlDispatcherDescriptor(): GuestFunctionDescription {
 	return {
 		name: SQL_DISPATCHER_NAME,
+		// Guest-facing alias used by the bridge-closure rule for the
+		// `executeSql failed: …` message prefix and the `<bridge:executeSql>`
+		// synthetic stack frame on error paths.
+		publicName: "executeSql",
 		args: [Guest.raw()],
 		result: Guest.raw(),
 		handler: (async (raw: unknown) => {

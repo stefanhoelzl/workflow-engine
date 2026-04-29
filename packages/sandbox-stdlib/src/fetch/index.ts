@@ -5,6 +5,8 @@ import type {
 } from "@workflow-engine/sandbox";
 import { Guest } from "@workflow-engine/sandbox";
 import { createRunScopedHandles } from "../internal/run-scoped-handles.js";
+import { HostBlockedError } from "../net-guard/index.js";
+import { FetchError } from "./fetch-error.js";
 import { hardenedFetch } from "./hardened-fetch.js";
 
 // The private descriptor name exposed to plugin source only — owner code
@@ -41,28 +43,81 @@ const handles = createRunScopedHandles<AbortController>((controller) => {
 	controller.abort();
 });
 
+/**
+ * Translate any throw originating from `hardenedFetch` (or a test-only
+ * `fetchImpl` override) into a `FetchError` carrying a curated `reason`
+ * enum. See `openspec/specs/sandbox-stdlib/spec.md` "FetchError shape for
+ * `$fetch/do` failures" for the translation table.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exhaustive translation table — one branch per HostBlockedError.reason and per Error subclass — collapsing it would hide the per-case mapping
+function translateFetchError(err: unknown, url: string): FetchError {
+	if (err instanceof FetchError) {
+		return err;
+	}
+	if (err instanceof HostBlockedError) {
+		switch (err.reason) {
+			case "bad-scheme":
+				return new FetchError({ reason: "bad-scheme", url });
+			case "private-ip":
+			case "redirect-to-private":
+				return new FetchError({ reason: "private-address", url });
+			case "zone-id":
+				return new FetchError({ reason: "private-address", url });
+			default:
+				return new FetchError({ reason: "network-error", url });
+		}
+	}
+	if (err instanceof TypeError) {
+		const msg = err.message;
+		if (msg.startsWith("invalid URL") || msg.startsWith("invalid redirect")) {
+			return new FetchError({ reason: "invalid-url", url });
+		}
+	}
+	if (err instanceof Error) {
+		const name = err.name;
+		const code = (err as { code?: unknown }).code;
+		const codeStr = typeof code === "string" ? code : undefined;
+		if (name === "AbortError" || name === "TimeoutError") {
+			return new FetchError({ reason: "aborted", url });
+		}
+		if (err.message.includes("redirect chain exceeded")) {
+			return new FetchError({ reason: "redirect-loop", url });
+		}
+		return new FetchError(
+			codeStr === undefined
+				? { reason: "network-error", url }
+				: { reason: "network-error", url, code: codeStr },
+		);
+	}
+	return new FetchError({ reason: "network-error", url });
+}
+
 async function dispatchFetch(
 	args: DispatchFetchArgs,
 ): Promise<FetchResponseWire> {
 	const { fetchImpl, method, url, headers, body } = args;
 	const controller = handles.track(new AbortController());
 	try {
-		const response = await fetchImpl(url, {
-			method,
-			headers,
-			body,
-			signal: controller.signal,
-		});
-		const outHeaders: Record<string, string> = {};
-		response.headers.forEach((v, k) => {
-			outHeaders[k] = v;
-		});
-		return {
-			status: response.status,
-			statusText: response.statusText,
-			headers: outHeaders,
-			body: await response.text(),
-		};
+		try {
+			const response = await fetchImpl(url, {
+				method,
+				headers,
+				body,
+				signal: controller.signal,
+			});
+			const outHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => {
+				outHeaders[k] = v;
+			});
+			return {
+				status: response.status,
+				statusText: response.statusText,
+				headers: outHeaders,
+				body: await response.text(),
+			};
+		} catch (err) {
+			throw translateFetchError(err, url);
+		}
 	} finally {
 		await handles.release(controller);
 	}
@@ -90,6 +145,10 @@ function fetchDispatcherDescriptor(
 ): GuestFunctionDescription {
 	return {
 		name: FETCH_DISPATCHER_NAME,
+		// Guest-facing alias used by the bridge-closure rule for the
+		// `fetch failed: …` message prefix and the `<bridge:fetch>`
+		// synthetic stack frame on error paths.
+		publicName: "fetch",
 		args: [Guest.string(), Guest.string(), Guest.object(), Guest.raw()],
 		result: Guest.object(),
 		handler: ((

@@ -604,7 +604,8 @@ describe("sql plugin — error shaping", () => {
 				params: [],
 			}),
 		).rejects.toMatchObject({
-			message: "canceling statement due to statement timeout",
+			name: "SqlError",
+			kind: "timeout",
 			code: "57014",
 		});
 	});
@@ -623,7 +624,8 @@ describe("sql plugin — error shaping", () => {
 				params: [],
 			}),
 		).rejects.toMatchObject({
-			message: "password authentication failed",
+			name: "SqlError",
+			kind: "auth",
 			code: "28P01",
 		});
 	});
@@ -642,15 +644,20 @@ describe("sql plugin — error shaping", () => {
 				params: [],
 			}),
 		).rejects.toMatchObject({
-			message: 'syntax error at or near "SELCT"',
+			name: "SqlError",
+			kind: "query-error",
 			code: "42601",
 		});
 	});
 
 	it("omits code when driver error has none (pre-handshake failure)", () => {
 		const shaped = shapeDriverError(new Error("connect ECONNREFUSED"));
-		expect(shaped).toEqual({ message: "connect ECONNREFUSED" });
+		// Driver-without-code maps to kind="connection"; .message is built
+		// from the structured fields by the SqlError constructor and is not
+		// present on the shape itself.
+		expect(shaped).toEqual({ kind: "connection" });
 		expect("code" in shaped).toBe(false);
+		expect("message" in shaped).toBe(false);
 	});
 });
 
@@ -673,13 +680,15 @@ describe("sql plugin — cleanup", () => {
 	it("awaits sql.end({timeout:0}) on error", async () => {
 		mockPublicHost(PUBLIC_IP);
 		mockDriverError(new Error("boom"));
+		// Driver-without-code maps to a curated SqlError with kind=connection;
+		// the underlying "boom" message is intentionally not surfaced.
 		await expect(
 			dispatchSqlExecute({
 				connection: "postgres://db.example.com/app",
 				query: "SELECT 1",
 				params: [],
 			}),
-		).rejects.toThrow(/boom/);
+		).rejects.toMatchObject({ name: "SqlError" });
 		expect(pgMock.end).toHaveBeenCalledWith({ timeout: 0 });
 	});
 

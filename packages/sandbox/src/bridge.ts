@@ -1,8 +1,11 @@
 import { performance } from "node:perf_hooks";
 import { JSException, type JSValueHandle, type QuickJS } from "quickjs-wasi";
 import {
+	BridgeError,
 	CallableDisposedError,
 	GuestArgTypeMismatchError,
+	GuestSafeError,
+	GuestThrownError,
 	GuestValidationError,
 } from "./guest-errors.js";
 import {
@@ -283,14 +286,20 @@ function callGuestFn(
 	} catch (err) {
 		if (err instanceof JSException) {
 			// JSException is an Error instance, not a JSValueHandle — read
-			// `.message` / `.stack` directly. The prior `vm.dump(err as
-			// unknown as JSValueHandle)` cast returned `undefined` and
-			// masked every guest-side error with the generic fallback
-			// message below.
+			// `.name` / `.message` / `.stack` directly. The rethrow uses
+			// `GuestThrownError` (a `GuestSafeError` subclass) so the closure
+			// rule's pass-through branch preserves the original guest
+			// identity (`.name`, `.message`, guest `.stack`) when the error
+			// crosses back into a calling guest VM via the bridge.
 			const message = err.message || "guest function threw";
+			const innerName =
+				typeof (err as { name?: unknown }).name === "string"
+					? (err as { name: string }).name
+					: "Error";
 			const stack = err.stack ?? "";
 			err.dispose();
-			const rethrown = new Error(message);
+			const rethrown = new GuestThrownError(message);
+			rethrown.name = innerName;
 			if (stack) {
 				rethrown.stack = stack;
 			}
@@ -310,10 +319,15 @@ async function awaitGuestResult(
 	const outcome = await resolved;
 	if ("error" in outcome) {
 		const detail = vm.dump(outcome.error) as
-			| { message?: string; stack?: string }
+			| { name?: string; message?: string; stack?: string }
 			| undefined;
 		outcome.error.dispose();
-		const e = new Error(detail?.message ?? "guest callable rejected");
+		const e = new GuestThrownError(
+			detail?.message ?? "guest callable rejected",
+		);
+		if (typeof detail?.name === "string" && detail.name.length > 0) {
+			e.name = detail.name;
+		}
 		if (detail?.stack !== undefined) {
 			e.stack = detail.stack;
 		}
@@ -322,6 +336,103 @@ async function awaitGuestResult(
 	const value = vm.dump(outcome.value) as GuestValue;
 	outcome.value.dispose();
 	return value;
+}
+
+/**
+ * Closure rule for converting a host throw into a guest-bound error before
+ * it crosses the QuickJS trampoline. See `openspec/specs/sandbox/spec.md`
+ * "Host/sandbox boundary opacity for thrown errors".
+ *
+ *   - `GuestThrownError` → pass-through; preserve `.name` / `.message`,
+ *     append a single `at <bridge:<publicName>>` frame to the existing
+ *     guest stack.
+ *   - `GuestSafeError` (any other subclass) → rebuild a fresh `Error`
+ *     with `.name` carried over, `.message = "<publicName> failed: <inner>"`,
+ *     synthetic single-frame stack, and structured own-properties copied.
+ *   - Anything else → `BridgeError` catch-all with no inner detail.
+ */
+function sanitizeForGuest(err: unknown, publicName: string): Error {
+	const bridgeFrame = `    at <bridge:${publicName}>`;
+	if (err instanceof GuestThrownError) {
+		const existing = err.stack ?? "";
+		err.stack =
+			existing.length > 0 ? `${existing}\n${bridgeFrame}` : bridgeFrame;
+		return err;
+	}
+	if (err instanceof GuestSafeError) {
+		const innerName = err.name;
+		const innerMessage = err.message;
+		const message = innerMessage
+			? `${publicName} failed: ${innerMessage}`
+			: `${publicName} failed`;
+		const out = new Error(message);
+		out.name = innerName;
+		out.stack = `${innerName}: ${message}\n${bridgeFrame}`;
+		for (const key of Object.keys(err)) {
+			if (key === "name" || key === "message" || key === "stack") {
+				continue;
+			}
+			(out as unknown as Record<string, unknown>)[key] = (
+				err as unknown as Record<string, unknown>
+			)[key];
+		}
+		return out;
+	}
+	const message = `${publicName} failed`;
+	const out = new BridgeError(message);
+	out.stack = `BridgeError: ${message}\n${bridgeFrame}`;
+	return out;
+}
+
+/**
+ * Idempotently extends `vm.newError` so it copies enumerable own-properties
+ * of host-side `Error` instances onto the guest exception alongside
+ * `name` / `message` / `stack`. Without this, dispatcher-curated structured
+ * fields (`.reason`, `.kind`, `.code`, `.responseCode`, …) get dropped by
+ * `quickjs-wasi`'s default `newError` and never reach the guest's
+ * `try/catch` handler. Installed lazily on first descriptor install per VM;
+ * the marker symbol on the VM instance ensures we wrap each VM exactly once.
+ */
+const NEW_ERROR_EXTENDED = Symbol.for(
+	"@workflow-engine/sandbox#newErrorExtended",
+);
+
+function ensureExtendedNewError(vm: QuickJS): void {
+	const carrier = vm as unknown as Record<symbol, true | undefined>;
+	if (carrier[NEW_ERROR_EXTENDED] === true) {
+		return;
+	}
+	const originalNewError = vm.newError.bind(vm);
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: enumerable-own-prop walk with a fixed skip-list (name/message/stack) and skip-marshal set (functions/symbols) plus the singleton-dispose guard mirroring the existing patch on quickjs-wasi's hostToHandle; collapsing into a helper would obscure the singleton-handle ownership rule
+	const extended = (messageOrError: string | Error) => {
+		const handle = originalNewError(messageOrError);
+		if (typeof messageOrError === "string" || !messageOrError) {
+			return handle;
+		}
+		const carrierObj = messageOrError as unknown as Record<string, unknown>;
+		for (const key of Object.keys(carrierObj)) {
+			if (key === "name" || key === "message" || key === "stack") {
+				continue;
+			}
+			const value = carrierObj[key];
+			if (typeof value === "function" || typeof value === "symbol") {
+				continue;
+			}
+			const valHandle = vm.hostToHandle(value);
+			handle.setProp(key, valHandle);
+			if (
+				value !== null &&
+				value !== undefined &&
+				value !== true &&
+				value !== false
+			) {
+				valHandle.dispose();
+			}
+		}
+		return handle;
+	};
+	(vm as unknown as { newError: typeof extended }).newError = extended;
+	carrier[NEW_ERROR_EXTENDED] = true;
 }
 
 function resolveLog(descriptor: GuestFunctionDescription): LogConfig {
@@ -564,46 +675,56 @@ function createBridge(
 		descriptor: GuestFunctionDescription,
 	): (...handles: JSValueHandle[]) => JSValueHandle {
 		const log = resolveLog(descriptor);
+		const publicName = descriptor.publicName ?? descriptor.name;
 		// Cast handler to a uniform unknown-arg signature — the descriptor's
 		// typed ArgSpec shape is enforced by the test harness/author, not the
 		// runtime, so the VM-side invocation path treats args as opaque values.
 		type AnyHandler = (...args: readonly unknown[]) => unknown;
 		const handler = descriptor.handler as unknown as AnyHandler;
 		return (...handles) => {
-			const args = unmarshalArgs(descriptor.name, descriptor.args, handles);
-			const invoke = () => handler(...args);
-			const eventName = descriptor.logName
-				? descriptor.logName(args)
-				: descriptor.name;
-			const eventInput = descriptor.logInput ? descriptor.logInput(args) : args;
-			if ("event" in log) {
-				// Single-leaf event before handler invocation; handler result is
-				// NOT wrapped so caller controls event shape explicitly via
-				// internalCtx.emit.
-				internalCtx.emit(log.event, { name: eventName, input: eventInput });
-				const raw = invoke();
+			try {
+				const args = unmarshalArgs(descriptor.name, descriptor.args, handles);
+				const invoke = () => handler(...args);
+				const eventName = descriptor.logName
+					? descriptor.logName(args)
+					: descriptor.name;
+				const eventInput = descriptor.logInput
+					? descriptor.logInput(args)
+					: args;
+				if ("event" in log) {
+					// Single-leaf event before handler invocation; handler result is
+					// NOT wrapped so caller controls event shape explicitly via
+					// internalCtx.emit.
+					internalCtx.emit(log.event, { name: eventName, input: eventInput });
+					const raw = invoke();
+					return marshalResult(descriptor.name, descriptor.result, raw);
+				}
+				// request-style wrap: internalCtx.request emits prefix.request/
+				// response/error around the handler. For sync handlers the raw
+				// value is available immediately; the async variant is handled in
+				// a later PR when Promise-returning guest functions become
+				// mainstream.
+				const raw = internalCtx.request(
+					log.request,
+					{ name: eventName, input: eventInput },
+					invoke,
+				);
 				return marshalResult(descriptor.name, descriptor.result, raw);
+			} catch (err) {
+				throw sanitizeForGuest(err, publicName);
 			}
-			// request-style wrap: internalCtx.request emits prefix.request/
-			// response/error around the handler. For sync handlers the raw
-			// value is available immediately; the async variant is handled in a
-			// later PR when Promise-returning guest functions become mainstream.
-			const raw = internalCtx.request(
-				log.request,
-				{ name: eventName, input: eventInput },
-				invoke,
-			);
-			return marshalResult(descriptor.name, descriptor.result, raw);
 		};
 	}
 
 	function installDescriptor(descriptor: GuestFunctionDescription): void {
+		ensureExtendedNewError(currentVm);
 		const fn = currentVm.newFunction(descriptor.name, buildHandler(descriptor));
 		currentVm.setProp(currentVm.global, descriptor.name, fn);
 		fn.dispose();
 	}
 
 	function rebindDescriptor(descriptor: GuestFunctionDescription): void {
+		ensureExtendedNewError(currentVm);
 		currentVm.registerHostCallback(descriptor.name, buildHandler(descriptor));
 	}
 
