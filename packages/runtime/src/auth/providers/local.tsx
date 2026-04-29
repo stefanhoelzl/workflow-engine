@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import { setCookie } from "hono/cookie";
 import type { CookieOptions } from "hono/utils/cookie";
+import { ChevronDownIcon } from "../../ui/icons.js";
 import {
 	HTTP_BAD_REQUEST,
 	SESSION_COOKIE,
@@ -86,8 +87,15 @@ function writeOpts(secure: boolean, maxAge: number): CookieOptions {
 	return { ...clearOpts(secure), maxAge };
 }
 
-function LocalUserOption({ name }: { name: string }) {
-	return <option value={name}>{name}</option>;
+function LocalUserItem({ name }: { name: string }) {
+	return (
+		<button type="submit" name="user" value={name} class="auth-local__item">
+			<span class="auth-local__avatar" aria-hidden="true">
+				{name.slice(0, 1).toUpperCase()}
+			</span>
+			<span class="auth-local__name">{name}</span>
+		</button>
+	);
 }
 
 function buildSignin(
@@ -149,15 +157,17 @@ function createLocalProvider(
 					class="auth-card__local"
 				>
 					<input type="hidden" name="returnTo" value={returnTo} />
-					<label for="local-user">Sign in as</label>
-					<select id="local-user" name="user">
-						{entries.map((e) => (
-							<LocalUserOption name={e.name} />
-						))}
-					</select>
-					<button type="submit" class="btn btn--primary">
-						Sign in (local)
-					</button>
+					<details class="auth-local">
+						<summary class="auth-btn auth-btn--local auth-local__summary">
+							<span>Sign in locally</span>
+							<ChevronDownIcon class="auth-btn__chevron" />
+						</summary>
+						<div class="auth-local__list">
+							{entries.map((e) => (
+								<LocalUserItem name={e.name} />
+							))}
+						</div>
+					</details>
 				</form>
 			);
 		},

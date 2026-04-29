@@ -2,6 +2,7 @@ import { webcrypto } from "node:crypto";
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { CookieOptions } from "hono/utils/cookie";
+import { GithubIcon } from "../../ui/icons.js";
 import {
 	FIVE_MINUTES_SECONDS,
 	FLASH_COOKIE,
@@ -264,8 +265,9 @@ function createGithubProvider(
 		renderLoginSection(returnTo: string): LoginSection {
 			const href = `/auth/github/signin?returnTo=${encodeURIComponent(returnTo)}`;
 			return (
-				<a href={href} class="btn btn--primary">
-					Sign in with GitHub
+				<a href={href} class="auth-btn auth-btn--github">
+					<GithubIcon class="auth-btn__icon" />
+					<span>Sign in with GitHub</span>
 				</a>
 			);
 		},
