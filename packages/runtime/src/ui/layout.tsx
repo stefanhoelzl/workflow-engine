@@ -1,6 +1,6 @@
 import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
-import { BrandIcon, DashboardIcon, TriggerIcon } from "./icons.js";
+import { DashboardIcon, TopBar, TriggerIcon } from "./icons.js";
 
 const NAV_ITEMS = [
 	{ href: "/dashboard", label: "Dashboard", Icon: DashboardIcon },
@@ -22,33 +22,6 @@ function Nav({ activePath }: { activePath: string }) {
 				</a>
 			))}
 		</>
-	);
-}
-
-function UserSection({ user, email }: { user: string; email: string }) {
-	const displayName = user || "anonymous";
-	if (user) {
-		return (
-			<section class="topbar-user" aria-label={`Signed in as ${displayName}`}>
-				<div class="topbar-user-line">
-					<span class="topbar-username">{displayName}</span>
-					<form class="topbar-signout-form" method="post" action="/auth/logout">
-						<button class="topbar-signout" type="submit">
-							Sign out
-						</button>
-					</form>
-				</div>
-				{email ? <div class="topbar-email">{email}</div> : null}
-			</section>
-		);
-	}
-	return (
-		<section class="topbar-user">
-			<div class="topbar-user-line">
-				<span class="topbar-username">{displayName}</span>
-			</div>
-			{email ? <div class="topbar-email">{email}</div> : null}
-		</section>
 	);
 }
 
@@ -91,17 +64,7 @@ function Layout({
 					<script defer={true} src="/static/trigger-forms.js" />
 				</head>
 				<body>
-					<div class="topbar">
-						<div class="topbar-brand">
-							<span class="brand-mark">
-								<BrandIcon />
-							</span>
-							Workflow Engine
-						</div>
-						<div class="topbar-right">
-							<UserSection user={user} email={email} />
-						</div>
-					</div>
+					<TopBar user={user} email={email} />
 
 					<nav class="sidebar">
 						{sidebarTree ? (

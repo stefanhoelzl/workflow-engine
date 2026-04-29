@@ -72,21 +72,22 @@ The dashboard SHALL render a user-visible loading state before invocation data i
 
 ### Requirement: Invocation rows are expandable into an inline flamegraph
 
-Each rendered invocation row (for `succeeded` or `failed` status) SHALL be wrapped in a native `<details>`/`<summary>` element that an operator can toggle open to reveal an inline flamegraph fragment for that invocation. Pending invocations SHALL NOT render an expand affordance.
+Each rendered invocation row whose status is `succeeded` or `failed` SHALL provide an expand affordance that, when activated by the user, reveals an inline flamegraph fragment for that invocation. Pending invocations SHALL NOT provide an expand affordance. Multiple rows MAY be expanded simultaneously (no accordion coordination).
 
-Expansion SHALL lazily load the flamegraph fragment via HTMX the first time the row is opened. The `hx-get` URL is constructed from the row's own `owner` and `repo` (not the page-level filter), so a cross-scope view still resolves each row's flamegraph correctly. Subsequent open/close cycles SHALL rely on native `<details>` behavior (no re-fetch). Multiple rows MAY be expanded simultaneously (no accordion coordination).
+The flamegraph fragment SHALL be loaded on demand the first time a row is expanded, scoped to that row's own `(owner, repo)` rather than to the page-level filter — so a cross-scope view still resolves each row's flamegraph correctly. Subsequent toggles on a row that has already loaded its fragment SHALL NOT trigger a re-fetch.
 
-#### Scenario: Completed row uses its own scope in the hx-get URL
+#### Scenario: Completed row's flamegraph is fetched from its own scope
 
 - **GIVEN** a cross-scope `/dashboard` request and a succeeded invocation `evt_abc` belonging to `(alice, utils)`
-- **WHEN** the invocation list is rendered
-- **THEN** the row's `<details>` SHALL carry `hx-get="/dashboard/alice/utils/invocations/evt_abc/flamegraph"` (not the page's current filter scope)
+- **WHEN** the user expands the row for `evt_abc`
+- **THEN** the runtime SHALL request the flamegraph fragment for `evt_abc` scoped to `(alice, utils)`, not to the page's current filter scope
 
 #### Scenario: Pending row has no expand affordance
 
 - **GIVEN** a pending invocation `evt_ghi`
 - **WHEN** the invocation list is rendered
-- **THEN** the row SHALL NOT contain a `<details>` element and SHALL NOT carry any `hx-get` attribute referencing `/flamegraph`
+- **THEN** the row SHALL NOT include an expand affordance
+- **AND** activating the row SHALL NOT trigger a flamegraph fetch
 
 ### Requirement: Flamegraph fragment endpoint
 
@@ -164,44 +165,38 @@ Where the computed `width` in visual pixels would fall below a minimum-width flo
 
 ### Requirement: Bar visual treatment by kind and status
 
-The flamegraph SHALL render bars with visual treatment determined by their kind, with the following kind union:
+The flamegraph SHALL classify each rendered bar by a kind discriminator derived from the event-kind prefix:
 
-```ts
-type BarKind = "trigger" | "action" | "rest";
-```
+- A bar produced from `trigger.request` / `trigger.response` / `trigger.error` events is a `trigger` bar.
+- A bar produced from `action.request` / `action.response` / `action.error` events is an `action` bar.
+- A bar produced from `system.*` request / response / error pairs (covering fetch, sendMail, executeSql, timers, custom plugin-emitted pairs) is a `rest` bar.
+- An event that is not the closing half of a `request → response/error` pair (e.g. `system.call`, `system.exception`) SHALL NOT render as a bar; it MAY render as an instant marker (see "Instant markers for single-record events").
 
-The kind discriminator from event kinds SHALL be:
+Bars SHALL render using the cross-surface kind colour mapping defined in `ui-foundation` ("Cross-surface kind colour mapping"); the flamegraph SHALL NOT use a colour palette distinct from the rest of the UI for kind colouring.
 
-- `kind.startsWith("trigger.")` → `"trigger"`
-- `kind.startsWith("action.")` → `"action"`
-- `kind.endsWith(".request") || kind.endsWith(".response") || kind.endsWith(".error")` (and not matching the above; covers the consolidated `system.*` family for fetch / sendMail / executeSql / setTimeout / setInterval / etc.) → `"rest"`
-- Otherwise: not a bar (the event may be a marker — `system.call`, `system.exception` — see the marker requirements)
-
-The `trigger` bar SHALL use the outermost visual styling. The `action` bar SHALL use nested action styling. Any other request/response/error pair (system.* operations across fetch, sendMail, executeSql, timers, custom plugin-emitted pairs) SHALL render with the uniform `rest` styling. Per-`name` color coding (e.g. distinguishing fetch from sendMail under the shared `system.*` prefix) MAY be layered on top as a presentation choice, but the layout logic treats all non-trigger, non-action request/response bars uniformly.
-
-Bars SHALL use a red "errored" visual treatment when the terminal event (closing the span) has kind ending in `.error`. Otherwise they SHALL use the success treatment.
+Bars whose terminal event ends with `.error` SHALL render with an error visual treatment (consistent with the "failed" status colour token); otherwise they SHALL render with the success treatment.
 
 #### Scenario: system.request/response bars render as rest
 
 - **GIVEN** a flamegraph layout for a run that emitted `system.request` and `system.response` events with `name = "fetch"`
 - **WHEN** the flamegraph is rendered
 - **THEN** a single bar SHALL appear for the fetch span
-- **AND** the bar's kind SHALL be `"rest"`
-- **AND** the bar SHALL use the standard rest styling (not trigger-styled, not action-styled)
+- **AND** the bar's kind SHALL be `rest`
 
-#### Scenario: Timer firing emits paired system.* under rest
-
-- **GIVEN** a setTimeout callback that fired and returned successfully via `system.request name="setTimeout"` / `system.response name="setTimeout"` events
-- **WHEN** the flamegraph renders the pair
-- **THEN** a bar SHALL be produced with kind `"rest"`
-
-#### Scenario: trigger and action bars retain distinct styling
+#### Scenario: Trigger and action bars retain distinct visual identity
 
 - **GIVEN** a flamegraph with `trigger.*`, `action.*`, and `system.*` events
-- **WHEN** rendered
-- **THEN** the trigger bar SHALL use trigger styling
-- **AND** the action bar(s) SHALL use action styling
-- **AND** the system.* bar(s) SHALL use rest styling
+- **WHEN** the flamegraph is rendered
+- **THEN** the trigger bar SHALL render with a colour distinct from the action bar
+- **AND** both SHALL render with colours distinct from rest bars
+- **AND** the colours used SHALL match the cross-surface kind palette per `ui-foundation`
+
+#### Scenario: Errored bar uses error visual treatment
+
+- **GIVEN** a span whose terminal event has kind ending in `.error`
+- **WHEN** the flamegraph renders that span
+- **THEN** the bar SHALL render with the error colour treatment
+- **AND** non-error bars in the same flamegraph SHALL render with the success treatment
 
 ### Requirement: Orphan bar treatment for engine-crashed invocations
 
@@ -601,3 +596,4 @@ The lookup SHALL be implemented as a LEFT JOIN against the `events` table on `(i
 - **GIVEN** a failed invocation whose terminal `trigger.error` has no preceding `system.exhaustion` event
 - **WHEN** the row is rendered
 - **THEN** NO dimension pill SHALL appear
+

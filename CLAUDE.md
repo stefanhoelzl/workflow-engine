@@ -167,6 +167,7 @@ Surface intentionally NOT exercised by demo.ts (would bloat the file without add
 - Named exports only. Separate `export type {}` from value exports. Exception: data-only modules whose filename already conveys identity (e.g. `skip.ts`) may use `export default`.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
 - SDK surface or sandbox-stdlib changes must land with a matching update to `workflows/src/demo.ts` — see `## Example workflows`.
+- PRs that change `packages/runtime/src/ui/static/workflow-engine.css` (or `trigger.css`) should keep `docs/ui-guidelines.md` in sync — token values, the green allowlist, kind/prefix icon tables, and component recipes are documented there. Behaviour contracts (theme detection, motion respect, CSP cleanliness, universal topbar, asset delivery) live in the `ui-foundation` and `ui-errors` OpenSpec capabilities — touching those requires a proposal.
 
 ### Formatter
 

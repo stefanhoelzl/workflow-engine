@@ -18,31 +18,34 @@
 	letter-spacing: 0.01em;
 }
 
+/* Trigger card — same density + hover-bg-only treatment as dashboard
+   .entry rows so the two surfaces feel consistent. */
 .trigger-details {
 	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	margin-bottom: var(--sp-2);
 	overflow: hidden;
-	transition: box-shadow 0.15s ease;
+	transition: background-color 0.08s ease;
 }
 
 .trigger-details:hover {
-	box-shadow: var(--shadow);
+	background: var(--bg-hover);
 }
 
 .trigger-details[open] {
-	box-shadow: var(--shadow);
+	background: var(--bg-elevated);
 }
 
 .trigger-summary {
-	padding: var(--sp-3) var(--sp-4);
+	padding: var(--sp-2) var(--sp-3);
 	cursor: pointer;
 	user-select: none;
 	list-style: none;
 	display: flex;
 	align-items: center;
 	gap: var(--sp-3);
+	min-height: 32px;
 }
 
 .trigger-summary::-webkit-details-marker {

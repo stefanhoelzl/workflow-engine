@@ -1,13 +1,15 @@
-/* Theme */
+/* Theme — see docs/ui-guidelines.md for the canonical token reference */
 :root {
-	/* Surfaces */
-	--bg: #ffffff;
-	--bg-surface: #f8f9fa;
+	/* Surfaces (neutral zinc family — no blue tint) */
+	--bg: #fafafa;
+	--bg-surface: #f4f4f5;
 	--bg-elevated: #ffffff;
-	--border: #e1e4e8;
-	--text: #1a1a2e;
-	--text-secondary: #5a6070;
-	--text-muted: #8b8fa3;
+	--bg-hover: #ededee;
+	--border: #e4e4e7;
+	--border-strong: #d4d4d8;
+	--text: #18181b;
+	--text-secondary: #52525b;
+	--text-muted: #71717a;
 
 	/* Shadows */
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -15,22 +17,29 @@
 	--shadow-modal: 0 10px 30px rgba(0, 0, 0, 0.18);
 
 	/* Status palette */
-	--green: #22c55e;
+	--green: #16a34a;
 	--green-bg: #f0fdf4;
 	--green-border: #bbf7d0;
-	--red: #ef4444;
+	--red: #dc2626;
 	--red-bg: #fef2f2;
 	--red-border: #fecaca;
-	--yellow: #f59e0b;
+	--yellow: #d97706;
 	--yellow-bg: #fffbeb;
 	--yellow-border: #fde68a;
-	--grey: #94a3b8;
-	--grey-bg: #f1f5f9;
-	--grey-border: #cbd5e1;
-	--blue: #3b82f6;
+	--grey: #71717a;
+	--grey-bg: #f4f4f5;
+	--grey-border: #d4d4d8;
+	--blue: #2563eb;
 	--blue-bg: #eff6ff;
 	--blue-border: #bfdbfe;
-	--accent: #6366f1;
+
+	/* Accent (brand green; cross-surface usage per ui-foundation allowlist) */
+	--accent: #16a34a;
+	--accent-strong: #15803d;
+	--accent-bg: rgba(22, 163, 74, 0.1);
+
+	/* Technical-emphasis text (sky blue; used for event-kind names etc.) */
+	--text-accent: #0369a1;
 
 	/* Foreground-on-accent / on-coloured-bar */
 	--on-accent: #ffffff;
@@ -39,10 +48,11 @@
 	--overlay-strong: rgba(0, 0, 0, 0.45);
 	--overlay-weak: rgba(0, 0, 0, 0.08);
 
-	/* Primary button (light mode GitHub-black; re-declared per mode) */
-	--btn-bg: #24292f;
-	--btn-bg-hover: #32383f;
-	--btn-fg: #ffffff;
+	/* Primary button uses --accent so it reads as the brand action.
+	   Hover steps to --accent-strong (slightly deeper green). */
+	--btn-bg: var(--accent);
+	--btn-bg-hover: var(--accent-strong);
+	--btn-fg: var(--on-accent);
 
 	/* Type scale */
 	--fs-micro: 10px;
@@ -69,44 +79,66 @@
 	/* Focus ring (two-layer: inner surface + outer accent) */
 	--focus-ring: 0 0 0 2px var(--bg-elevated), 0 0 0 4px var(--accent);
 
-	/* Kind colours (flamegraph + badges) */
-	--kind-trigger: #3b82f6;
-	--kind-action: #a855f7;
-	--kind-rest: #b45309;
+	/* Kind colours (cross-surface per ui-foundation: prefix → colour).
+	   `--kind-rest` is the colour for the `system` prefix (event log, flamegraph).
+	   See dashboard-list-view "Bar visual treatment by kind and status". */
+	--kind-trigger: #2563eb;
+	--kind-action: #9333ea;
+	--kind-rest: #d97706;
 
 	/* Fonts + layout */
 	--font:
 		-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, sans-serif;
-	--font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+	--font-mono:
+		"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", monospace;
 	--sidebar-width: 240px;
-	--topbar-height: 48px;
+	--topbar-height: 40px;
 }
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #0f1117;
-		--bg-surface: #161822;
-		--bg-elevated: #1e2030;
-		--border: #2e3148;
-		--text: #e2e4f0;
-		--text-secondary: #a0a4c0;
-		--text-muted: #6b6f8a;
+		--bg: #131316;
+		--bg-surface: #18181b;
+		--bg-elevated: #1d1d20;
+		--bg-hover: #232327;
+		--border: #2a2a2e;
+		--border-strong: #3f3f46;
+		--text: #e8e8ea;
+		--text-secondary: #a1a1aa;
+		--text-muted: #71717a;
+
 		--shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
 		--shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.4);
 		--shadow-modal: 0 10px 30px rgba(0, 0, 0, 0.5);
-		--green-bg: #052e16;
+
+		--green: #22c55e;
+		--green-bg: rgba(34, 197, 94, 0.14);
 		--green-border: #166534;
-		--red-bg: #350a0a;
+		--red: #f87171;
+		--red-bg: rgba(248, 113, 113, 0.14);
 		--red-border: #7f1d1d;
-		--yellow-bg: #3b2506;
+		--yellow: #fbbf24;
+		--yellow-bg: rgba(251, 191, 36, 0.14);
 		--yellow-border: #92400e;
-		--grey-bg: #1e293b;
-		--grey-border: #475569;
-		--blue-bg: #0b2447;
+		--grey: #a1a1aa;
+		--grey-bg: rgba(161, 161, 170, 0.14);
+		--grey-border: #52525b;
+		--blue: #60a5fa;
+		--blue-bg: rgba(96, 165, 250, 0.14);
 		--blue-border: #1d4ed8;
+
+		--accent: #22c55e;
+		--accent-strong: #16a34a;
+		--accent-bg: rgba(34, 197, 94, 0.14);
+
+		--text-accent: #7dd3fc;
+
 		--overlay-weak: rgba(255, 255, 255, 0.06);
-		--btn-bg: #30363d;
-		--btn-bg-hover: #3e444c;
+
+		/* Kind colours: brighter family for dark surfaces */
+		--kind-trigger: #60a5fa;
+		--kind-action: #c084fc;
+		--kind-rest: #fbbf24;
 	}
 }
 
@@ -188,29 +220,58 @@ body {
 	z-index: 200;
 }
 
+/* Wordmark — sole branding element on every UI surface (universal topbar
+   per ui-foundation). No icon; text in --accent with a slight negative
+   letter-spacing for a tighter, dev-tool-leaning feel. */
 .topbar-brand {
-	display: flex;
-	align-items: center;
-	gap: var(--sp-2);
 	font-size: var(--fs-md);
-	font-weight: 700;
-	color: var(--text);
+	font-weight: 600;
+	color: var(--accent);
+	letter-spacing: -0.01em;
+	white-space: nowrap;
 }
 
-.topbar-brand .brand-mark {
-	width: 20px;
-	height: 20px;
-	background: var(--accent);
-	border-radius: var(--radius-sm);
+/* Row-leading prefix/kind icons (dashboard list, event log). Sized 14×14
+   to align with mono text baselines; colour comes from currentColor on
+   the surrounding row-icon--<prefix> / trigger-kind-icon--<kind> class. */
+.row-icon,
+.trigger-kind-icon {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	color: var(--on-accent);
-}
-
-.topbar-brand .brand-mark .icon {
+	flex-shrink: 0;
 	width: 14px;
 	height: 14px;
+}
+.row-icon .icon,
+.trigger-kind-icon .icon {
+	width: 14px;
+	height: 14px;
+}
+.row-icon--trigger {
+	color: var(--kind-trigger);
+}
+.row-icon--action {
+	color: var(--kind-action);
+}
+.row-icon--system {
+	color: var(--kind-rest);
+}
+/* Three semantic categories, three colour tokens:
+     internal (self-scheduled)            → --kind-rest    (amber)
+     external (caller-driven: http, imap) → --kind-trigger (blue)
+     manual   (human-initiated)           → --kind-action  (purple) */
+.trigger-kind-icon--cron {
+	color: var(--kind-rest);
+}
+.trigger-kind-icon--http {
+	color: var(--kind-trigger);
+}
+.trigger-kind-icon--imap {
+	color: var(--kind-trigger);
+}
+.trigger-kind-icon--manual {
+	color: var(--kind-action);
 }
 
 .topbar-right {
@@ -496,25 +557,28 @@ body {
 	color: var(--text-secondary);
 }
 
-/* Entry cards */
+/* Entry cards. Hover uses a background lift only (no shadow) per the
+   ui-foundation density rule: rows stay calm visually until interacted
+   with, then surface via colour rather than depth. */
 .entry {
 	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	margin-bottom: var(--sp-2);
 	overflow: hidden;
-	transition: box-shadow 0.15s ease;
+	transition: background-color 0.08s ease;
 }
 
 .entry:hover {
-	box-shadow: var(--shadow);
+	background: var(--bg-hover);
 }
 
 .entry-header {
-	padding: var(--sp-3) var(--sp-4);
+	padding: var(--sp-2) var(--sp-3);
 	display: flex;
 	align-items: center;
 	gap: var(--sp-3);
+	min-height: 32px;
 }
 
 .entry-expand-chevron {
@@ -1431,40 +1495,29 @@ body {
 	color: var(--text);
 	font-family: var(--font);
 	padding: var(--sp-5);
+	/* Reserve room for the fixed universal topbar so the centered card
+	   never falls behind it. */
+	padding-top: calc(var(--topbar-height) + var(--sp-5));
 }
 
+/* Auth card. Narrower than before since the brand wordmark moved up to
+   the universal topbar; lighter shadow (was --shadow-modal) so the card
+   sits in the page rather than feeling like a modal overlay. */
 .auth-card {
 	width: 100%;
-	max-width: 440px;
-	padding: var(--sp-6);
-	background: var(--bg-surface);
+	max-width: 380px;
+	padding: var(--sp-5);
+	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	display: flex;
 	flex-direction: column;
-	gap: var(--sp-5);
-	box-shadow: var(--shadow-modal);
+	gap: var(--sp-4);
+	box-shadow: var(--shadow);
 }
 
-.auth-card__brand {
-	display: flex;
-	align-items: center;
-	gap: var(--sp-2);
-	font-size: var(--fs-lg);
-	font-weight: 600;
-}
-
-.auth-card__brand-icon {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 28px;
-	height: 28px;
-	border-radius: var(--radius-sm);
-	background: var(--accent);
-	color: var(--on-accent);
-	font-weight: 700;
-}
+/* .auth-card__brand* removed: branding now lives in the universal topbar
+   above the auth card per ui-foundation. */
 
 .auth-card__banner {
 	padding: var(--sp-3) var(--sp-4);
@@ -1555,38 +1608,52 @@ body.error-page {
 	margin-top: var(--topbar-height);
 }
 
+/* Centered error card. Adopts the same .btn--primary visual recipe as
+   the rest of the app for the "Go to dashboard"/"Go home" link, so error
+   pages feel like part of the same product rather than a separate
+   minimal layout. */
 .error-card {
 	text-align: center;
-	padding: 48px 24px;
+	padding: var(--sp-7) var(--sp-5);
+	background: var(--bg-elevated);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	max-width: 420px;
+	margin: 0 var(--sp-4);
 }
 
 .error-title {
-	font-size: 18px;
-	font-weight: 700;
-	margin-bottom: 8px;
+	font-size: var(--fs-lg);
+	font-weight: 600;
+	color: var(--text);
+	margin-bottom: var(--sp-2);
 }
 
 .error-message {
-	color: var(--text-muted);
-	font-size: 14px;
-	margin-bottom: 24px;
+	color: var(--text-secondary);
+	font-size: var(--fs-md);
+	margin-bottom: var(--sp-5);
+	line-height: 1.5;
 }
 
 .error-link {
 	display: inline-flex;
 	align-items: center;
-	padding: 8px 20px;
-	background: var(--accent);
-	color: white;
-	border-radius: var(--radius-sm);
-	font-size: 13px;
-	font-weight: 600;
+	gap: var(--sp-2);
+	padding: var(--sp-2) var(--sp-4);
+	border-radius: var(--radius);
+	border: 1px solid var(--btn-bg);
+	background: var(--btn-bg);
+	color: var(--btn-fg);
+	font-size: var(--fs-md);
+	font-weight: 500;
 	text-decoration: none;
-	transition: opacity 0.15s ease;
+	transition: background-color 0.08s ease;
 }
 
 .error-link:hover {
-	opacity: 0.9;
+	background: var(--btn-bg-hover);
+	border-color: var(--btn-bg-hover);
 }
 
 /* ----- Dashboard / trigger collapsible tree --------------------------- */

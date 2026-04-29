@@ -97,7 +97,12 @@ describe("GET /login", () => {
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain("Sign in with GitHub");
-		expect(html).not.toContain("topbar");
+		// Universal topbar (per ui-foundation): renders on login page with
+		// the brand wordmark but no user identity (visitor is unauthenticated).
+		expect(html).toContain('class="topbar"');
+		expect(html).toContain('class="topbar-brand"');
+		expect(html).not.toContain('class="topbar-user"');
+		// Sidebar is still suppressed on the login surface.
 		expect(html).not.toContain("sidebar");
 		expect(html).toContain("/auth/github/signin?returnTo=%2Fdashboard");
 	});
