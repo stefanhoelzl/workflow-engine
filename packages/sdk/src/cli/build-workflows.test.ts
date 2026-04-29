@@ -511,6 +511,113 @@ describe("buildWorkflows: manual trigger entry", () => {
 	});
 });
 
+const WS_WORKFLOW_DEFAULT_RESPONSE = `
+import { defineWorkflow, wsTrigger, z } from "@workflow-engine/sdk";
+
+export default defineWorkflow();
+export const echo = wsTrigger({
+    request: z.object({ greet: z.string() }),
+    handler: async ({ data }) => ({ echo: data.greet }),
+});
+`;
+
+const WS_WORKFLOW_AUTHOR_RESPONSE = `
+import { defineWorkflow, wsTrigger, z } from "@workflow-engine/sdk";
+
+export default defineWorkflow();
+export const chat = wsTrigger({
+    request: z.object({ greet: z.string() }),
+    response: z.object({ echo: z.string() }),
+    handler: async ({ data }) => ({ echo: data.greet }),
+});
+`;
+
+const WS_WORKFLOW_INVALID_NAME = `
+import { defineWorkflow, wsTrigger, z } from "@workflow-engine/sdk";
+
+export default defineWorkflow();
+export const $weird = wsTrigger({
+    request: z.object({}),
+    handler: async () => "ok",
+});
+`;
+
+const WS_AND_HTTP_WORKFLOW = `
+import { defineWorkflow, httpTrigger, wsTrigger, z } from "@workflow-engine/sdk";
+
+export default defineWorkflow();
+export const echoHttp = httpTrigger({
+    handler: async () => ({ status: 200, body: "ok" }),
+});
+export const echoWs = wsTrigger({
+    request: z.object({ greet: z.string() }),
+    handler: async ({ data }) => ({ echo: data.greet }),
+});
+`;
+
+describe("buildWorkflows: ws trigger entry", () => {
+	it("emits ws descriptor with default response schema", async () => {
+		const { result } = await buildFixture({
+			files: { "ws.ts": WS_WORKFLOW_DEFAULT_RESPONSE },
+			workflows: ["./ws.ts"],
+		});
+		const manifest = getManifest(result, "ws");
+		expect(manifest.triggers).toHaveLength(1);
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("echo");
+		expect(t.type).toBe("ws");
+		expect(t.request).toBeDefined();
+		expect(t.response).toBeDefined();
+		expect(t.inputSchema).toBeDefined();
+		expect(t.outputSchema).toBeDefined();
+		// Author-omitted response → z.any() → empty JSON Schema {}
+		expect(Object.keys(t.response as object)).toHaveLength(0);
+		expect(t.method).toBeUndefined();
+		expect(t.schedule).toBeUndefined();
+	});
+
+	it("emits ws descriptor with author-provided response schema", async () => {
+		const { result } = await buildFixture({
+			files: { "ws2.ts": WS_WORKFLOW_AUTHOR_RESPONSE },
+			workflows: ["./ws2.ts"],
+		});
+		const manifest = getManifest(result, "ws2");
+		const t = manifest.triggers[0] as unknown as Record<string, unknown>;
+		expect(t.name).toBe("chat");
+		expect(t.type).toBe("ws");
+		const responseSchema = t.response as {
+			properties?: Record<string, unknown>;
+		};
+		expect(responseSchema.properties?.echo).toBeDefined();
+		const inputSchema = t.inputSchema as {
+			properties?: Record<string, unknown>;
+		};
+		expect(inputSchema.properties?.data).toBeDefined();
+	});
+
+	it("fails the build when a ws trigger export name is not URL-safe", async () => {
+		await expect(
+			buildFixture({
+				files: { "bad.ts": WS_WORKFLOW_INVALID_NAME },
+				workflows: ["./bad.ts"],
+			}),
+		).rejects.toThrow(/\$weird/);
+	});
+
+	it("emits both http and ws entries when one workflow declares both", async () => {
+		const { result } = await buildFixture({
+			files: { "mixed.ts": WS_AND_HTTP_WORKFLOW },
+			workflows: ["./mixed.ts"],
+		});
+		const manifest = getManifest(result, "mixed");
+		expect(manifest.triggers).toHaveLength(2);
+		const types = manifest.triggers.map(
+			(t) => (t as unknown as Record<string, unknown>).type,
+		);
+		expect(types.sort()).toEqual(["http", "ws"]);
+	});
+});
+
 describe("buildWorkflows: build failures", () => {
 	it("fails when more than one defineWorkflow is exported", async () => {
 		await expect(

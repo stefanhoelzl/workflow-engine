@@ -119,6 +119,14 @@ function wrapInputForDescriptor(
 			method: http.method,
 		};
 	}
+	if (descriptor.kind === "ws") {
+		// Manual-fire of a wsTrigger reshapes the submitted JSON to the
+		// `{data}` payload the handler receives over the wire. The raw socket
+		// equivalent fires once per inbound frame; the UI submits one input
+		// at a time. Identity does not survive — `dispatch.source` becomes
+		// `manual` per `buildDispatch` (no client connection involved).
+		return { data: posted };
+	}
 	return posted;
 }
 

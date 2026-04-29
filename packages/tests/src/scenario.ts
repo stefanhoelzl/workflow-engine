@@ -1,3 +1,4 @@
+import { WebSocket as WsClient } from "ws";
 import { loginViaForm, runBrowserStep } from "./browser.js";
 import { createCapturedSeq } from "./captured-seq.js";
 import { type InternalFilter, scanEvents, waitForEvent } from "./events.js";
@@ -18,11 +19,14 @@ import type {
 	Scenario,
 	ScenarioState,
 	SignalOpts,
+	Sock,
 	SqlCapture,
 	UploadEntry,
 	WebhookOpts,
 	WorkflowOpts,
 	WorkflowRef,
+	WsCloseInfo,
+	WsOpts,
 } from "./types.js";
 import { uploadFixture } from "./upload.js";
 
@@ -517,6 +521,137 @@ async function runWaitForEvent(args: WaitForEventArgs): Promise<void> {
 	await waitForEvent(ctx.getChild().persistencePath, rest, opts);
 }
 
+// biome-ignore lint/complexity/useMaxParams: orthogonal inputs (state, ctx, triggerName, opts, callback); packaging would just shuffle the same fields and obscure the call site
+async function runWsStep(
+	state: MutableState,
+	ctx: ScenarioRunContext,
+	triggerName: string,
+	opts: WsOpts,
+	callback: (sock: Sock) => Promise<void>,
+): Promise<void> {
+	const owner = opts.owner ?? DEFAULT_OWNER;
+	const repo = opts.repo ?? DEFAULT_REPO;
+	const wfRef = state.workflows.find(
+		(w) => w.owner === owner && w.repo === repo,
+	);
+	if (!wfRef) {
+		throw new Error(
+			`ws: no uploaded workflow under (${owner}, ${repo}); call .workflow(...) first`,
+		);
+	}
+	const workflow = opts.workflow ?? wfRef.name;
+	const headers: Record<string, string> = {};
+	if (opts.auth !== undefined) {
+		const creds = await resolveAuth(state, ctx, {
+			user: opts.auth.user,
+			via: opts.auth.via ?? "api-header",
+		});
+		for (const [k, v] of Object.entries(creds.headers)) {
+			headers[k] = v;
+		}
+	}
+	const baseUrl = ctx.getChild().baseUrl;
+	const wsUrl = baseUrl.replace(/^http/, "ws");
+	const url = `${wsUrl}/ws/${owner}/${repo}/${workflow}/${triggerName}`;
+	const client = new WsClient(url, { headers });
+
+	const replyQueue: unknown[] = [];
+	const waiters: ((value: unknown) => void)[] = [];
+	let closeInfo: WsCloseInfo | undefined;
+	const closeWaiters: ((value: WsCloseInfo) => void)[] = [];
+	const closedPromise = new Promise<WsCloseInfo>((resolve) => {
+		closeWaiters.push(resolve);
+	});
+
+	client.on("message", (data) => {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(data.toString());
+		} catch {
+			parsed = data.toString();
+		}
+		const w = waiters.shift();
+		if (w) {
+			w(parsed);
+		} else {
+			replyQueue.push(parsed);
+		}
+	});
+	client.on("close", (code, reason) => {
+		closeInfo = { code, reason: reason.toString() };
+		for (const cw of closeWaiters) {
+			cw(closeInfo);
+		}
+		closeWaiters.length = 0;
+		// Reject any outstanding waiters with a closure error.
+		for (const w of waiters) {
+			w(undefined);
+		}
+		waiters.length = 0;
+	});
+	client.on("error", () => {
+		// Ignored; close fires too. Errors before open propagate via close.
+	});
+
+	await new Promise<void>((resolve, reject) => {
+		const onOpen = () => {
+			client.off("close", onClose);
+			resolve();
+		};
+		const onClose = (code: number, reason: Buffer) => {
+			client.off("open", onOpen);
+			reject(
+				new Error(
+					`ws connection closed before open: code=${String(code)} reason=${reason.toString()}`,
+				),
+			);
+		};
+		client.once("open", onOpen);
+		client.once("close", onClose);
+	});
+
+	const sock: Sock = {
+		send(data: unknown): Promise<unknown> {
+			client.send(JSON.stringify(data));
+			if (replyQueue.length > 0) {
+				return Promise.resolve(replyQueue.shift());
+			}
+			return new Promise<unknown>((resolve) => {
+				waiters.push(resolve);
+			});
+		},
+		sendRaw(payload: string | Buffer): void {
+			client.send(payload);
+		},
+		get closed(): Promise<WsCloseInfo> {
+			if (closeInfo !== undefined) {
+				return Promise.resolve(closeInfo);
+			}
+			return closedPromise;
+		},
+		close(code?: number): void {
+			client.close(code ?? 1000);
+		},
+	};
+
+	try {
+		await callback(sock);
+	} finally {
+		if (
+			client.readyState === WsClient.OPEN ||
+			client.readyState === WsClient.CONNECTING
+		) {
+			client.close(1000);
+			// Wait briefly for the close to land so the next chain step doesn't
+			// race against an in-flight server-side cleanup.
+			await Promise.race([
+				closedPromise,
+				new Promise((res) => setTimeout(res, 200)),
+			]);
+		}
+	}
+}
+
 async function runSigkill(
 	state: MutableState,
 	ctx: ScenarioRunContext,
@@ -629,6 +764,30 @@ function createScenario(): Scenario & ScenarioInternals {
 		sigkill(opts?: SignalOpts) {
 			const fixed = opts ?? {};
 			steps.push((state, ctx) => runSigkill(state, ctx, fixed));
+			return scenario;
+		},
+		ws(
+			triggerName: string,
+			optsOrCallback: WsOpts | ((sock: Sock) => Promise<void>),
+			maybeCallback?: (sock: Sock) => Promise<void>,
+		): Scenario {
+			let opts: WsOpts;
+			let callback: (sock: Sock) => Promise<void>;
+			if (typeof optsOrCallback === "function") {
+				opts = {};
+				callback = optsOrCallback;
+			} else {
+				opts = optsOrCallback;
+				if (maybeCallback === undefined) {
+					throw new Error("scenario.ws(): callback is required");
+				}
+				callback = maybeCallback;
+			}
+			steps.push(async (state, ctx) => {
+				await flushUploads(queue, state, ctx);
+				await awaitInFlight(state);
+				await runWsStep(state, ctx, triggerName, opts, callback);
+			});
 			return scenario;
 		},
 		browser(cb: (c: BrowserContext) => Promise<void>) {

@@ -9,6 +9,7 @@ import {
 	ManifestSchema,
 	type ManualTriggerManifest,
 	type WorkflowManifest,
+	type WsTriggerManifest,
 	z,
 } from "@workflow-engine/core";
 import { extract as tarExtract } from "tar-stream";
@@ -20,6 +21,7 @@ import type {
 	ImapTriggerDescriptor,
 	ManualTriggerDescriptor,
 	TriggerDescriptor,
+	WsTriggerDescriptor,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
@@ -264,6 +266,22 @@ function buildManualDescriptor(
 	};
 }
 
+function buildWsDescriptor(
+	workflowName: string,
+	entry: WsTriggerManifest,
+): Omit<WsTriggerDescriptor, "zodInputSchema" | "zodOutputSchema"> {
+	return {
+		kind: "ws",
+		type: "ws",
+		name: entry.name,
+		workflowName,
+		request: entry.request as Record<string, unknown>,
+		response: entry.response as Record<string, unknown>,
+		inputSchema: entry.inputSchema as Record<string, unknown>,
+		outputSchema: entry.outputSchema as Record<string, unknown>,
+	};
+}
+
 function buildImapDescriptor(
 	workflowName: string,
 	entry: ImapTriggerManifest,
@@ -336,6 +354,9 @@ function buildPreResolvedDescriptor(
 	}
 	if (entry.type === "imap") {
 		return buildImapDescriptor(workflowName, entry);
+	}
+	if (entry.type === "ws") {
+		return buildWsDescriptor(workflowName, entry);
 	}
 	return {
 		error:

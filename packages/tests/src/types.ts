@@ -35,6 +35,26 @@ interface ManualOpts {
 	label?: string;
 }
 
+interface WsOpts {
+	auth?: { user: string; via?: "api-header" };
+	owner?: string;
+	repo?: string;
+	workflow?: string;
+	label?: string;
+}
+
+interface WsCloseInfo {
+	code: number;
+	reason?: string;
+}
+
+interface Sock {
+	send(data: unknown): Promise<unknown>;
+	sendRaw(payload: string | Buffer): void;
+	readonly closed: Promise<WsCloseInfo>;
+	close(code?: number): void;
+}
+
 interface EventFilter {
 	label?: string;
 	kind?: "trigger.request" | "trigger.response" | "trigger.error";
@@ -171,6 +191,12 @@ interface Scenario {
 	sigterm(opts?: SignalOpts): Scenario;
 	sigkill(opts?: SignalOpts): Scenario;
 	browser(callback: (ctx: BrowserContext) => Promise<void>): Scenario;
+	ws(
+		triggerName: string,
+		opts: WsOpts,
+		callback: (sock: Sock) => Promise<void>,
+	): Scenario;
+	ws(triggerName: string, callback: (sock: Sock) => Promise<void>): Scenario;
 }
 
 export type {
@@ -192,9 +218,12 @@ export type {
 	Scenario,
 	ScenarioState,
 	SignalOpts,
+	Sock,
 	SqlCapture,
 	UploadEntry,
 	WebhookOpts,
 	WorkflowOpts,
 	WorkflowRef,
+	WsCloseInfo,
+	WsOpts,
 };

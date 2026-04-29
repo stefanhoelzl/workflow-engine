@@ -33,6 +33,8 @@ import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
 import { createImapTriggerSource } from "./triggers/imap.js";
 import { createManualTriggerSource } from "./triggers/manual.js";
+import { isUpgradeProvider, type UpgradeProvider } from "./triggers/source.js";
+import { createWsTriggerSource } from "./triggers/ws.js";
 import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
@@ -191,7 +193,17 @@ async function init() {
 	const imapSource = createImapTriggerSource({
 		logger: runtimeLogger,
 	});
-	const triggerBackends = [httpSource, cronSource, manualSource, imapSource];
+	const wsSource = createWsTriggerSource({
+		logger: runtimeLogger,
+		authRegistry,
+	});
+	const triggerBackends = [
+		httpSource,
+		cronSource,
+		manualSource,
+		imapSource,
+		wsSource,
+	];
 	await Promise.all(triggerBackends.map((s) => s.start()));
 
 	// 7. Workflow registry. Boots from the storage backend by LISTing
@@ -234,9 +246,15 @@ async function init() {
 	//    routes, unprotected) → /dashboard (UI, session-guarded) → /trigger
 	//    (UI, session-guarded) → /api. The session middleware is mounted
 	//    inside the dashboard/trigger middleware factories.
+	const upgradeProviders: UpgradeProvider[] = [];
+	for (const backend of triggerBackends) {
+		if (isUpgradeProvider(backend)) {
+			upgradeProviders.push(backend);
+		}
+	}
 	const server = createServer(
 		config.port,
-		{ logger: runtimeLogger },
+		{ logger: runtimeLogger, upgradeProviders },
 		secureHeadersMiddleware({
 			localDeployment: config.localDeployment,
 		}),

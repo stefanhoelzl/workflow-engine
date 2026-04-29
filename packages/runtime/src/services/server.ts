@@ -5,6 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Logger } from "../logger.js";
 import type { Middleware } from "../triggers/http.js";
+import type { UpgradeProvider } from "../triggers/source.js";
 import {
 	createErrorHandler,
 	createNotFoundHandler,
@@ -21,6 +22,11 @@ const HTTP_FOUND = constants.HTTP_STATUS_FOUND as typeof HTTP_FOUND_STATUS;
 interface AppOptions {
 	pages?: Pages;
 	logger?: Logger;
+	// Backends that own a slice of the http.Server's `'upgrade'` event.
+	// Each provider's `upgradeHandler` is registered as an `'upgrade'`
+	// listener after `serve()` binds. When omitted/empty, the http server
+	// receives no upgrade listener (default Node behavior: socket reset).
+	upgradeProviders?: readonly UpgradeProvider[];
 }
 
 function createApp(opts: AppOptions = {}, ...middlewares: Middleware[]): Hono {
@@ -67,6 +73,12 @@ function createServer(
 		start(): Promise<void> {
 			return new Promise<void>((resolve, reject) => {
 				server = serve({ fetch: app.fetch, port });
+				const providers = opts.upgradeProviders ?? [];
+				for (const provider of providers) {
+					server.on("upgrade", (req, socket, head) => {
+						provider.upgradeHandler(req, socket, head);
+					});
+				}
 				server.on("error", reject);
 				server.on("listening", () => {
 					server?.removeListener("error", reject);

@@ -361,6 +361,92 @@ describe("ManifestSchema imap trigger", () => {
 	});
 });
 
+describe("ManifestSchema ws trigger", () => {
+	const base = (triggers: unknown[]) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: {},
+				actions: [],
+				triggers,
+			},
+		],
+	});
+	const validWs = {
+		name: "chat",
+		type: "ws" as const,
+		request: {
+			type: "object",
+			properties: { greet: { type: "string" } },
+			required: ["greet"],
+			additionalProperties: false,
+		},
+		response: {},
+		inputSchema: {
+			type: "object",
+			properties: {
+				data: {
+					type: "object",
+					properties: { greet: { type: "string" } },
+					required: ["greet"],
+					additionalProperties: false,
+				},
+			},
+			required: ["data"],
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
+
+	it("accepts a valid ws descriptor", () => {
+		const parsed = ManifestSchema.parse(base([validWs]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "ws") {
+			throw new Error("expected ws");
+		}
+		expect(trigger.name).toBe("chat");
+	});
+
+	it("strips http-only fields from a ws entry", () => {
+		const bad = { ...validWs, method: "POST", body: {} };
+		const parsed = ManifestSchema.parse(base([bad]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "ws") {
+			throw new Error("expected ws");
+		}
+		expect("method" in trigger).toBe(false);
+		expect("body" in trigger).toBe(false);
+	});
+
+	it("strips cron-only fields from a ws entry", () => {
+		const bad = { ...validWs, schedule: "0 9 * * *", tz: "UTC" };
+		const parsed = ManifestSchema.parse(base([bad]));
+		const trigger = parsed.workflows[0]?.triggers[0];
+		if (trigger?.type !== "ws") {
+			throw new Error("expected ws");
+		}
+		expect("schedule" in trigger).toBe(false);
+		expect("tz" in trigger).toBe(false);
+	});
+
+	it("rejects a ws entry missing request", () => {
+		const { request: _r, ...rest } = validWs;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects a ws entry missing response", () => {
+		const { response: _r, ...rest } = validWs;
+		expect(() => ManifestSchema.parse(base([rest]))).toThrow();
+	});
+
+	it("rejects a ws entry with a non-URL-safe name", () => {
+		const bad = { ...validWs, name: "$weird" };
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow();
+	});
+});
+
 describe("ManifestSchema secrets + secretsKeyId", () => {
 	const base = (overrides: Record<string, unknown> = {}) => ({
 		workflows: [

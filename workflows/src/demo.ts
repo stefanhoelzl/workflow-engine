@@ -9,6 +9,7 @@ import {
 	manualTrigger,
 	secret,
 	sendMail,
+	wsTrigger,
 	z,
 } from "@workflow-engine/sdk";
 
@@ -451,6 +452,19 @@ export const fireCron = httpTrigger({
 	handler: async () => {
 		await everyFiveMinutes();
 		return { status: 202, body: { fired: "everyFiveMinutes" } };
+	},
+});
+
+// wsTrigger — bidirectional connection. Each inbound frame fires the handler
+// once with `{data}`; the return value is sent back to the originating client
+// as a single text frame (FIFO-correlated with the request). Demo dispatches
+// the same `runDemo` orchestrator so the WS path exercises the full surface.
+export const wsRun = wsTrigger({
+	request: z.object({ name: z.string().meta({ example: "ws-demo" }) }),
+	response: z.object({ greeting: z.string(), name: z.string() }),
+	handler: async ({ data }) => {
+		const result = await runDemo({ name: data.name });
+		return { greeting: result.greeting, name: data.name };
 	},
 });
 

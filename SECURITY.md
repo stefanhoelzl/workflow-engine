@@ -938,6 +938,24 @@ Cron triggers are exposed only via the authenticated `/trigger` UI's
 "Run now" affordance, which sits behind `sessionMiddleware` +
 `requireOwnerMember` (§4).
 
+**WS triggers are NOT on this surface either.** `wsTrigger(...)` is reachable
+only via authenticated WebSocket upgrades at
+`/ws/{owner}/{repo}/{workflow}/{trigger_name}` —
+`packages/runtime/src/triggers/ws.ts`. The upgrade handler runs the same
+`apiAuthMiddleware` semantics as `/api/*` (Bearer + provider header → resolved
+`UserContext`) and additionally requires `isMember(user, owner)`. Every
+failure mode (no Authorization, unknown provider, bad Bearer, owner not
+member, trigger not registered, trigger wrong kind, missing `Upgrade:
+websocket` header, malformed path) writes a byte-identical
+`HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`
+on the socket and destroys it — no existence/authorization information leaks
+on the wire. Per-message frames are JSON-parsed and validated against the
+trigger's `request` zod schema by the registry-built `fire` closure before the
+sandbox is entered; a malformed frame closes the connection with code 1007.
+The handler's return value is JSON-serialized and sent back to the originating
+client only (FIFO-ordered with the per-workflow runQueue). No identity is
+surfaced into the handler payload — the workflow sees only `{data}`.
+
 ### Entry points
 
 - `POST /webhooks/{owner}/{repo}/{workflow}/{trigger_name}` (or whatever

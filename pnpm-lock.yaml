@@ -138,10 +138,16 @@ importers:
       tar-stream:
         specifier: ^3.1.8
         version: 3.1.8
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
     devDependencies:
       '@types/tar-stream':
         specifier: ^3.1.4
         version: 3.1.4
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       linkedom:
         specifier: ^0.18.12
         version: 0.18.12
@@ -301,6 +307,9 @@ importers:
       '@workflow-engine/sdk':
         specifier: workspace:*
         version: link:../sdk
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.59.1
@@ -308,6 +317,9 @@ importers:
       '@types/smtp-server':
         specifier: ^3.5.13
         version: 3.5.13
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       embedded-postgres:
         specifier: 17.9.0-beta.17
         version: 17.9.0-beta.17
@@ -1535,6 +1547,9 @@ packages:
 
   '@types/ungap__structured-clone@1.2.0':
     resolution: {integrity: sha512-ZoaihZNLeZSxESbk9PUAPZOlSpcKx81I1+4emtULDVmBLkYutTcMlCj2K9VNlf9EWODxdO6gkAqEaLorXwZQVA==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
@@ -3105,6 +3120,18 @@ packages:
     resolution: {integrity: sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q==}
     engines: {node: '>=10'}
 
+  ws@8.20.0:
+    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xoauth2@0.1.8:
     resolution: {integrity: sha512-pIjeEM2qvkwE23U6mnugihmlntul1Z+TqOhkZ9/5oE3opRGnSIQ7Srb+0M9BkEKgcVhqCFfhNh3zWcE3EvMfVQ==}
 
@@ -4527,6 +4554,10 @@ snapshots:
   '@types/triple-beam@1.3.5': {}
 
   '@types/ungap__structured-clone@1.2.0': {}
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 25.5.2
 
   '@ungap/structured-clone@1.3.0': {}
 
@@ -5953,6 +5984,8 @@ snapshots:
       ansi-styles: 4.3.0
       string-width: 4.2.3
       strip-ansi: 6.0.1
+
+  ws@8.20.0: {}
 
   xoauth2@0.1.8:
     optional: true

@@ -56,6 +56,9 @@ const MANUAL_TRIGGER_BRAND: unique symbol = Symbol.for(
 const IMAP_TRIGGER_BRAND: unique symbol = Symbol.for(
 	"@workflow-engine/imap-trigger",
 );
+const WS_TRIGGER_BRAND: unique symbol = Symbol.for(
+	"@workflow-engine/ws-trigger",
+);
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
 // Carries the list of envNames declared with `env({secret: true})` on the
@@ -810,10 +813,87 @@ function isImapTrigger(value: unknown): value is ImapTrigger {
 }
 
 // ---------------------------------------------------------------------------
+// WS trigger
+// ---------------------------------------------------------------------------
+
+interface WsTriggerPayload<Data> {
+	readonly data: Data;
+}
+
+interface WsTrigger<
+	Req extends z.ZodType = z.ZodType,
+	Res extends z.ZodType = z.ZodType,
+> {
+	(payload: WsTriggerPayload<z.infer<Req>>): Promise<z.infer<Res>>;
+	readonly [WS_TRIGGER_BRAND]: true;
+	readonly request: Req;
+	readonly response: Res;
+	readonly inputSchema: z.ZodType;
+	readonly outputSchema: Res;
+}
+
+function wsTrigger<
+	Req extends z.ZodType = z.ZodAny,
+	Res extends z.ZodType = z.ZodAny,
+>(config: {
+	request: Req;
+	response?: Res;
+	handler: (payload: WsTriggerPayload<z.infer<Req>>) => Promise<z.infer<Res>>;
+}): WsTrigger<Req, Res> {
+	if (typeof config.handler !== "function") {
+		throw new Error("wsTrigger(...) is missing a handler function");
+	}
+	const requestSchema = config.request;
+	const responseSchema = (config.response ?? z.any()) as Res;
+	const inputSchema = z.object({ data: requestSchema });
+	const handler = config.handler;
+	const callable = function callWsTrigger(
+		payload: WsTriggerPayload<z.infer<Req>>,
+	): Promise<z.infer<Res>> {
+		return handler(payload);
+	};
+	Object.defineProperty(callable, WS_TRIGGER_BRAND, {
+		value: true,
+		enumerable: false,
+		writable: false,
+		configurable: false,
+	});
+	for (const [key, value] of Object.entries({
+		request: requestSchema,
+		response: responseSchema,
+		inputSchema,
+		outputSchema: responseSchema,
+	})) {
+		Object.defineProperty(callable, key, {
+			value,
+			enumerable: true,
+			writable: false,
+			configurable: false,
+		});
+	}
+	return callable as unknown as WsTrigger<Req, Res>;
+}
+
+function isWsTrigger(value: unknown): value is WsTrigger {
+	if (value === null || value === undefined) {
+		return false;
+	}
+	if (typeof value !== "object" && typeof value !== "function") {
+		return false;
+	}
+	return (value as Record<symbol, unknown>)[WS_TRIGGER_BRAND] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Trigger union
 // ---------------------------------------------------------------------------
 
-type Trigger = HttpTrigger | CronTrigger | ManualTrigger | ImapTrigger;
+type Trigger =
+	| HttpTrigger
+	| CronTrigger
+	| ManualTrigger
+	| ImapTrigger
+	| WsTrigger;
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -856,6 +936,8 @@ export type {
 	ManualTrigger,
 	Trigger,
 	Workflow,
+	WsTrigger,
+	WsTriggerPayload,
 };
 export {
 	ACTION_BRAND,
@@ -877,6 +959,7 @@ export {
 	isManualTrigger,
 	isSecret,
 	isWorkflow,
+	isWsTrigger,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
@@ -884,5 +967,7 @@ export {
 	sendMail,
 	WORKFLOW_BRAND,
 	WORKFLOW_SECRET_BINDINGS_KEY,
+	WS_TRIGGER_BRAND,
+	wsTrigger,
 	z,
 };
