@@ -68,8 +68,18 @@ function userFromEntry(entry: LocalEntry): UserContext {
 	};
 }
 
+// See session-mw.ts `clearOpts` for the iframe-friendly local-dev variant.
 function clearOpts(secure: boolean): CookieOptions {
-	return { path: "/", secure, httpOnly: true, sameSite: "Lax" };
+	if (secure) {
+		return { path: "/", secure: true, httpOnly: true, sameSite: "Lax" };
+	}
+	return {
+		path: "/",
+		secure: true,
+		httpOnly: true,
+		sameSite: "None",
+		partitioned: true,
+	};
 }
 
 function writeOpts(secure: boolean, maxAge: number): CookieOptions {

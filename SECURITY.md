@@ -1927,7 +1927,13 @@ capabilities it does not need.
   localhost service for a year).
 - **X-Content-Type-Options: nosniff.** Prevents MIME sniffing.
 - **X-Frame-Options: DENY** and **CSP `frame-ancestors 'none'`.** Two
-  layers against clickjacking (H6).
+  layers against clickjacking (H6). Gated off in local via
+  `LOCAL_DEPLOYMENT=1`: `X-Frame-Options` is omitted and CSP relaxes to
+  `frame-ancestors 'self' vscode-webview:` so the VS Code Simple Browser
+  webview (used by the `/preview` slash command) can iframe local pages
+  to support sign-in flows. Production keeps both layers intact —
+  `LOCAL_DEPLOYMENT=1` is set only by `scripts/dev.ts` and the kind
+  cluster, never in staging or prod.
 - **Cross-Origin-Opener-Policy: same-origin.** No cross-origin window
   handle (H7). Safe because GitHub OAuth is redirect-based, not
   popup-based.

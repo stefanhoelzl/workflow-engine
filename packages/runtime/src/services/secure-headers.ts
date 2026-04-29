@@ -11,6 +11,16 @@ const CSP_DIRECTIVES: ReadonlyArray<readonly [string, string]> = [
 	["base-uri", "'none'"],
 ];
 
+// Local-dev override: allow embedding in the VS Code Simple Browser webview,
+// which loads pages inside an iframe. Production keeps `frame-ancestors 'none'`
+// and `X-Frame-Options: DENY` (clickjacking defence, SECURITY.md §6).
+const LOCAL_CSP_DIRECTIVES: ReadonlyArray<readonly [string, string]> =
+	CSP_DIRECTIVES.map(([name, value]) =>
+		name === "frame-ancestors"
+			? ([name, "'self' vscode-webview:"] as const)
+			: ([name, value] as const),
+	);
+
 const PERMISSIONS_DISABLED_FEATURES: readonly string[] = [
 	"accelerometer",
 	"ambient-light-sensor",
@@ -42,8 +52,9 @@ const PERMISSIONS_DISABLED_FEATURES: readonly string[] = [
 const HSTS_VALUE = "max-age=31536000; includeSubDomains";
 const LOCAL_DEPLOYMENT_FLAG = "1";
 
-function buildCsp(): string {
-	return CSP_DIRECTIVES.map(([name, value]) => `${name} ${value}`).join("; ");
+function buildCsp(isLocal = false): string {
+	const directives = isLocal ? LOCAL_CSP_DIRECTIVES : CSP_DIRECTIVES;
+	return directives.map(([name, value]) => `${name} ${value}`).join("; ");
 }
 
 function buildPermissionsPolicy(): string {
@@ -59,7 +70,7 @@ function secureHeadersMiddleware(
 	options: SecureHeadersOptions = {},
 ): Middleware {
 	const isLocal = options.localDeployment === LOCAL_DEPLOYMENT_FLAG;
-	const csp = buildCsp();
+	const csp = buildCsp(isLocal);
 	const permissionsPolicy = buildPermissionsPolicy();
 
 	return {
@@ -67,7 +78,9 @@ function secureHeadersMiddleware(
 		handler: async (c, next) => {
 			c.header("Content-Security-Policy", csp);
 			c.header("X-Content-Type-Options", "nosniff");
-			c.header("X-Frame-Options", "DENY");
+			if (!isLocal) {
+				c.header("X-Frame-Options", "DENY");
+			}
 			c.header("Referrer-Policy", "strict-origin-when-cross-origin");
 			c.header("Cross-Origin-Opener-Policy", "same-origin");
 			c.header("Cross-Origin-Resource-Policy", "same-origin");

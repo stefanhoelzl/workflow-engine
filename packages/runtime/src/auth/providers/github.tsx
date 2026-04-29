@@ -60,8 +60,18 @@ function parseGithubRest(rest: string): GithubEntry {
 	return { kind, id };
 }
 
+// See session-mw.ts `clearOpts` for the iframe-friendly local-dev variant.
 function clearOpts(path: string, secure: boolean): CookieOptions {
-	return { path, secure, httpOnly: true, sameSite: "Lax" };
+	if (secure) {
+		return { path, secure: true, httpOnly: true, sameSite: "Lax" };
+	}
+	return {
+		path,
+		secure: true,
+		httpOnly: true,
+		sameSite: "None",
+		partitioned: true,
+	};
 }
 
 function writeOpts(

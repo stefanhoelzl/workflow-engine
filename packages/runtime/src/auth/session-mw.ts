@@ -25,8 +25,25 @@ interface SessionMiddlewareOptions {
 	readonly nowFn?: () => number;
 }
 
+// In local dev (`secure=false`), the session cookie must work inside the
+// VS Code Simple Browser webview, which embeds localhost in an iframe whose
+// top-level origin is `vscode-webview://…`. From Chrome's view that's a
+// cross-site context, so a `SameSite=Lax` cookie is dropped. Localhost is a
+// "potentially trustworthy" origin per the W3C Secure Contexts spec, so
+// Chrome accepts `Secure` cookies on `http://localhost`. The `Partitioned`
+// attribute opts into CHIPS so the cookie is keyed to the embedding
+// vscode-webview origin.
 function clearOpts(secure: boolean): CookieOptions {
-	return { path: "/", secure, httpOnly: true, sameSite: "Lax" };
+	if (secure) {
+		return { path: "/", secure: true, httpOnly: true, sameSite: "Lax" };
+	}
+	return {
+		path: "/",
+		secure: true,
+		httpOnly: true,
+		sameSite: "None",
+		partitioned: true,
+	};
 }
 
 function writeOpts(secure: boolean, maxAge: number): CookieOptions {
