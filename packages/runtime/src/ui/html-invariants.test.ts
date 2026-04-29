@@ -218,15 +218,17 @@ describe("HTML CSP invariants", () => {
 		expect(errorHtml).not.toContain('class="brand-mark"');
 	});
 
-	it("LoginPage renders the universal topbar without user identity", () => {
+	it("LoginPage is a self-contained card with brand in the heading", () => {
 		const html = String(
 			LoginPage({ flash: undefined, returnTo: "/", sections: [] }),
 		);
-		expect(html).toContain('class="topbar-brand"');
-		expect(html).toContain("Workflow Engine");
+		// Login page intentionally omits the universal topbar; branding is
+		// carried by the heading via .auth-card__brand.
+		expect(html).not.toContain('class="topbar"');
+		expect(html).not.toContain('class="topbar-brand"');
 		expect(html).not.toContain('class="topbar-user"');
-		expect(html).not.toContain('class="auth-card__brand-icon"');
-		expect(html).not.toContain('class="auth-card__brand-text"');
+		expect(html).toContain('class="auth-card__brand"');
+		expect(html).toContain("Workflow Engine");
 	});
 
 	it("renderDashboardPage with user renders the user section", async () => {

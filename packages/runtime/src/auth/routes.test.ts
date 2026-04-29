@@ -97,12 +97,13 @@ describe("GET /login", () => {
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain("Sign in with GitHub");
-		// Universal topbar (per ui-foundation): renders on login page with
-		// the brand wordmark but no user identity (visitor is unauthenticated).
-		expect(html).toContain('class="topbar"');
-		expect(html).toContain('class="topbar-brand"');
+		// Login page is a single-card surface: no universal topbar, no
+		// sidebar. Branding lives in the heading via .auth-card__brand.
+		expect(html).not.toContain('class="topbar"');
+		expect(html).not.toContain('class="topbar-brand"');
 		expect(html).not.toContain('class="topbar-user"');
-		// Sidebar is still suppressed on the login surface.
+		expect(html).toContain('class="auth-card__brand"');
+		expect(html).toContain("Workflow Engine");
 		expect(html).not.toContain("sidebar");
 		expect(html).toContain("/auth/github/signin?returnTo=%2Fdashboard");
 	});
