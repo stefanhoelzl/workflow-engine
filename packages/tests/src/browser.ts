@@ -49,10 +49,12 @@ async function runBrowserStep(args: RunBrowserStepArgs): Promise<void> {
 async function loginViaForm(page: Page, user: string): Promise<void> {
 	const returnTo = "/dashboard";
 	await page.goto(`/login?returnTo=${encodeURIComponent(returnTo)}`);
-	await page.locator("select#local-user").selectOption(user);
+	await page.locator("details.auth-local > summary").click();
 	await Promise.all([
 		page.waitForURL(returnTo),
-		page.locator("form.auth-card__local button[type=submit]").click(),
+		page
+			.locator(`button.auth-local__item[name="user"][value="${user}"]`)
+			.click(),
 	]);
 }
 

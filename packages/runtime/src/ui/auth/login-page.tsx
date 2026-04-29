@@ -2,7 +2,6 @@ import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
 import type { FlashPayload } from "../../auth/flash-cookie.js";
 import type { LoginSection } from "../../auth/providers/index.js";
-import { TopBar } from "../icons.js";
 
 interface BannerContent {
 	readonly title: string;
@@ -65,8 +64,10 @@ function LoginPage({ flash, sections }: LoginPageProps) {
 					<link rel="stylesheet" href="/static/workflow-engine.css" />
 				</head>
 				<body class="auth-page">
-					<TopBar />
 					<main class="auth-card">
+						<h1 class="auth-card__title">
+							Sign in to <span class="auth-card__brand">Workflow Engine</span>
+						</h1>
 						{banner ? (
 							<div class="auth-card__banner" role={banner.role}>
 								<strong>{banner.heading}</strong>

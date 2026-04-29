@@ -83,15 +83,15 @@ describe("renderLoginSection", () => {
 		expect(markup).toContain('<form method="post" action="/auth/local/signin"');
 	});
 
-	it("renders one <option> per entry name", async () => {
+	it("renders one submit button per entry name", async () => {
 		const provider = localProviderFactory.create(
 			["dev", "alice:acme", "bob"],
 			DEPS,
 		);
 		const markup = String(await provider.renderLoginSection("/"));
-		expect(markup).toContain('<option value="dev">dev</option>');
-		expect(markup).toContain('<option value="alice">alice</option>');
-		expect(markup).toContain('<option value="bob">bob</option>');
+		expect(markup).toContain('name="user" value="dev"');
+		expect(markup).toContain('name="user" value="alice"');
+		expect(markup).toContain('name="user" value="bob"');
 	});
 
 	it("contains the hidden returnTo input carrying the passed-in value", async () => {
