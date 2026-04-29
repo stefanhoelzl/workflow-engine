@@ -5,8 +5,9 @@ import { getMocks } from "@workflow-engine/tests/mocks";
 // to porsager/postgres as the `statement_timeout` Postgres startup
 // parameter. A `pg_sleep(1)` against a 100 ms timeout must trigger a
 // server-side cancellation; the driver re-throws as a `SqlError` whose
-// message includes either "statement timeout" (libpq wording) or
-// "canceling" (Postgres wording).
+// `kind` is `"timeout"` and `code` is `"57014"`. (Verbatim driver messages
+// are no longer forwarded across the host/sandbox bridge per the
+// 2026-04-29 boundary-opacity change — assert on structured fields.)
 const { pg } = getMocks();
 
 describe("sql statement timeout", {
@@ -28,11 +29,14 @@ export const workflow = defineWorkflow({
 });
 
 export const probe = httpTrigger({
-	body: z.object({}),
-	responseBody: z.object({
-		ok: z.boolean(),
-		message: z.string(),
-	}),
+	request: { body: z.object({}) },
+	response: {
+		body: z.object({
+			ok: z.boolean(),
+			kind: z.string().optional(),
+			code: z.string().optional(),
+		}),
+	},
 	handler: async () => {
 		try {
 			await executeSql(
@@ -44,9 +48,10 @@ export const probe = httpTrigger({
 				[],
 				{timeoutMs: 100},
 			);
-			return {body: {ok: true, message: "no error"}};
+			return {body: {ok: true}};
 		} catch (err) {
-			return {body: {ok: false, message: err instanceof Error ? err.message : String(err)}};
+			const e = err as { kind?: string; code?: string };
+			return {body: {ok: false, kind: e?.kind, code: e?.code}};
 		}
 	},
 });
@@ -57,10 +62,11 @@ export const probe = httpTrigger({
 				expect(state.responses).toHaveLength(1);
 				const r = state.responses.byIndex(0) as {
 					status: number;
-					body: { ok: boolean; message: string };
+					body: { ok: boolean; kind?: string; code?: string };
 				};
 				expect(r.status).toBe(200);
 				expect(r.body.ok).toBe(false);
-				expect(r.body.message).toMatch(/statement timeout|canceling/i);
+				expect(r.body.kind).toBe("timeout");
+				expect(r.body.code).toBe("57014");
 			}));
 });
