@@ -49,7 +49,7 @@ resource "kubernetes_secret_v1" "s2" {
 }
 
 resource "kubernetes_deployment_v1" "s2" {
-  depends_on       = [module.s2_netpol]
+  depends_on       = [kubernetes_network_policy_v1.s2]
   wait_for_rollout = false
 
   metadata {
@@ -175,19 +175,38 @@ resource "kubernetes_service_v1" "s2" {
   }
 }
 
-module "s2_netpol" {
-  source = "../../netpol"
+# S2 NetworkPolicy: allow ingress from any workflow-engine pod (in any
+# workload namespace) on :9000. S2 has no external dependencies; default-deny
+# from baseline covers everything else.
+resource "kubernetes_network_policy_v1" "s2" {
+  metadata {
+    name      = "s2"
+    namespace = "default"
+  }
 
-  name         = "s2"
-  namespace    = "default"
-  pod_selector = local.s2_labels
+  spec {
+    pod_selector {
+      match_labels = local.s2_labels
+    }
 
-  rfc1918_except   = var.baseline.rfc1918_except
-  coredns_selector = var.baseline.coredns_selector
+    policy_types = ["Ingress"]
 
-  ingress_from_pods = [
-    { pod_selector = { "app.kubernetes.io/name" = "workflow-engine" }, namespace_selector = {}, port = 9000 },
-  ]
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "workflow-engine" }
+        }
+        # Empty namespace_selector matches all namespaces — without it the
+        # rule defaults to S2's own namespace (`default`), which would
+        # reject the app pod running in `workflow-engine`.
+        namespace_selector {}
+      }
+      ports {
+        protocol = "TCP"
+        port     = "9000"
+      }
+    }
+  }
 }
 
 output "endpoint" {

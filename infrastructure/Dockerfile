@@ -13,7 +13,7 @@ RUN pnpm fetch
 COPY . .
 RUN pnpm install --offline --frozen-lockfile
 
-RUN pnpm -r build
+RUN pnpm build
 RUN pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy
 RUN cp -r packages/runtime/dist/* /app/deploy/
 

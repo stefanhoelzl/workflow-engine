@@ -4,13 +4,13 @@ output "cluster_id" {
 }
 
 output "lb_hostname" {
-  value       = local.traefik_lb_hostname
-  description = "Traefik LoadBalancer DNS name"
+  value       = module.caddy.lb_hostname
+  description = "Caddy LoadBalancer DNS name (assigned by the UpCloud CCM)"
 }
 
-output "active_issuer_name" {
-  value       = module.cert_manager.active_issuer_name
-  description = "Name of the active cert-manager ClusterIssuer (letsencrypt-prod)"
+output "caddy_namespace" {
+  value       = "caddy"
+  description = "Namespace where Caddy runs. App projects pass this to modules/app-instance/ so the app's NetworkPolicy authorizes ingress from Caddy."
 }
 
 output "node_cidr" {

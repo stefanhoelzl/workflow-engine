@@ -4,7 +4,7 @@ Prod/staging deployment runbook. Local-dev instructions live in `CLAUDE.md` unde
 
 ## Authentication architecture
 
-Authentication is entirely in-app. The `oauth2-proxy` sidecar and Traefik forward-auth chain were removed by the `replace-oauth2-proxy` change. Traefik is now a pure TLS + routing gateway; it performs no authentication, authorization, or forward-auth gating. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (UI: `/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (API: `/api/*`) in-process. See `openspec/specs/auth/spec.md` for the full auth contract and `SECURITY.md §4` for the threat model.
+Authentication is entirely in-app. The `oauth2-proxy` sidecar and Traefik forward-auth chain were removed by the `replace-oauth2-proxy` change. Caddy (the current ingress) performs no authentication, authorization, or forward-auth gating — it is a pure TLS + reverse-proxy gateway. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (UI: `/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (API: `/api/*`) in-process. See `openspec/specs/auth/spec.md` for the full auth contract and `SECURITY.md §4` for the threat model.
 
 ## Production (OpenTofu + UpCloud)
 
@@ -15,9 +15,9 @@ Four OpenTofu projects under `infrastructure/envs/`:
 | Dir           | State key     | Owns                                                                 |
 | ------------- | ------------- | -------------------------------------------------------------------- |
 | `persistence/` | `persistence` | Prod app S3 bucket + scoped user (in a pre-created OS instance)      |
-| `cluster/`    | `cluster`     | K8s cluster, Traefik + LB, cert-manager + `letsencrypt-prod` issuer  |
-| `prod/`       | `prod`        | Prod namespace, Certificate, app, Dynu CNAME; reads persistence S3   |
-| `staging/`    | `staging`     | Staging namespace, own bucket, Certificate, app, Dynu CNAME          |
+| `cluster/`    | `cluster`     | K8s cluster, Caddy (ingress + LB) with built-in HTTP-01 ACME         |
+| `prod/`       | `prod`        | Prod namespace, app, Dynu CNAME; reads persistence S3                |
+| `staging/`    | `staging`     | Staging namespace, own bucket, app, Dynu CNAME                       |
 
 The S3 bucket is accessed by the runtime through the `StorageBackend` interface (`init`, `read`/`write`, `readBytes`/`writeBytes`, `list`, `remove`, `removePrefix`, `move`). Tenant bundles live under `workflows/<tenant>.tar.gz`; invocation events live under `events/pending/` and `events/archive/`. Both FS-backed (local dev) and S3-backed implementations exist; atomicity is provided per-write (FS: tmp+rename; S3: PutObject). The authoritative contract — including the FS-vs-S3 selection logic via `PERSISTENCE_PATH` / `PERSISTENCE_S3_*` env vars — is in `openspec/specs/storage-backend/spec.md`.
 
@@ -37,9 +37,11 @@ Shared across all projects:
 | `staging/`    | K8s read + Object Storage (own bucket)   | same as prod but `TF_VAR_auth_allow` sourced from GH variable `AUTH_ALLOW_STAGING`, plus `image_digest` supplied at apply time |
 
 Non-secret tfvars committed in each project's `terraform.tfvars`:
-- `cluster/`: `acme_email`
+- `cluster/`: `acme_email`, `sites` (list of `{domain, namespace}` per env served by the cluster's Caddy)
 - `prod/`: `domain`
 - `staging/`: `domain`, `service_uuid`, `service_endpoint`, `bucket_name`
+
+Adding a new app env requires editing `cluster/terraform.tfvars` `sites` to include the new domain/namespace pair and re-applying the cluster project before applying the new env. The cluster project owns the cluster-wide Caddyfile; per-env routing is declared at this seam.
 
 The `auth_allow` input for prod and staging is sourced from the `AUTH_ALLOW_PROD` / `AUTH_ALLOW_STAGING` GitHub repo variables (not secrets — the allowlist is not confidential) and passed to `tofu` via `TF_VAR_auth_allow` in the deploy workflows. `envs/local/terraform.tfvars` still carries `auth_allow` inline.
 
@@ -48,8 +50,8 @@ K8s cluster config (`zone`, `kubernetes_version`, `node_plan`, `node_cidr`) is h
 ### Apply order (one-time)
 
 1. `tofu -chdir=infrastructure/envs/persistence apply` — prod bucket + scoped user
-2. `tofu -chdir=infrastructure/envs/cluster apply` — cluster, Traefik, cert-manager, ClusterIssuer (~12-17 min)
-3. `tofu -chdir=infrastructure/envs/prod apply` — prod namespace, Certificate, app, DNS
+2. `tofu -chdir=infrastructure/envs/cluster apply` — cluster, Caddy ingress + LoadBalancer (~12-17 min). Caddy obtains the LE cert via HTTP-01 once Dynu CNAMEs from step 3/4 land.
+3. `tofu -chdir=infrastructure/envs/prod apply` — prod namespace, app, DNS
 4. Bootstrap staging: trigger the `Deploy staging` GHA workflow via `workflow_dispatch` to capture a digest, then locally run `tofu -chdir=infrastructure/envs/staging apply -var image_digest=sha256:...`
 
 ### Subsequent deploys
@@ -85,7 +87,7 @@ Staging and prod plans pass `-var image_digest=sha256:0000...` (dummy digest). `
 
 Required env vars for local apply: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (scoped to `tofu-state` bucket), `TF_VAR_state_passphrase`, `TF_VAR_upcloud_token`. `cluster/` additionally needs `TF_VAR_acme_email` (or the value from `terraform.tfvars`).
 
-**Known gap.** `tofu plan` detects drift only in Terraform-managed fields: Helm chart versions, module arguments, K8s manifests declared directly by Terraform. Raw `kubectl edit` on objects *inside* a Helm release (e.g., hand-editing the Traefik Deployment rendered by the Helm chart) produces drift the gate cannot see, because Terraform tracks the Helm release version, not its rendered objects. **Do not bypass Helm** for anything you want the gate to protect.
+**Known gap.** `tofu plan` detects drift only in Terraform-managed fields. Every cluster resource is now declared as a raw `kubernetes_manifest` (no Helm) so drift detection covers all rendered objects: Deployments, Services, ConfigMaps, NetworkPolicies, PVCs. Raw `kubectl edit` on a Terraform-managed object still produces visible drift on the next plan.
 
 **Escape hatch when the gate is broken.** The `main` ruleset has `bypass_actors: []` — no per-PR admin bypass. If the gate wedges:
 
@@ -109,34 +111,29 @@ Storage key layout: event records live under `events/pending/` and `events/archi
 
 ### Cert readiness check
 
-`tofu apply` on an app project returns once all K8s resources are created. ACME HTTP-01 issuance happens asynchronously over ~30-90 s. To block until the cert is served:
+Caddy obtains and renews certs via HTTP-01 ACME without any Certificate CRD. The cluster project's `tofu apply` returns once Caddy's Deployment is rolled out, but the cert is not yet served — issuance happens asynchronously over ~30-90 s after the LB hostname is reachable from the public internet (which requires Dynu CNAMEs from prod/staging applies). To verify:
 
 ```
-kubectl wait --for=condition=Ready certificate/prod-workflow-engine    -n prod    --timeout=5m
-kubectl wait --for=condition=Ready certificate/staging-workflow-engine -n staging --timeout=5m
+curl -I https://workflow-engine.webredirect.org
+curl -I https://staging.workflow-engine.webredirect.org
+kubectl logs deploy/caddy -n caddy | grep "certificate obtained"
 ```
 
-Failure of that wait means DNS, port 80 reachability, CAA records, or another prerequisite is misconfigured — inspect via `kubectl describe certificate <name> -n <ns>`.
+A `200` with a publicly-trusted certificate means ACME succeeded. A `200` with Caddy's internal CA means ACME has not yet completed (or HTTP-01 is failing); check the logs and ensure DNS + port 80 are reachable. Caddy retries on its own backoff schedule (default: every 9 min for the first hour, exponential thereafter).
 
-### cert-manager chart upgrades
+### Caddy upgrades
 
-`installCRDs=true` installs CRDs only on first release install, not on subsequent Helm upgrades. When bumping the cert-manager chart version in `infrastructure/modules/cert-manager/cert-manager.tf`, first apply the new CRDs manually (from the cluster project's kubeconfig):
-
-```
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/<new-version>/cert-manager.crds.yaml
-```
-
-then run `tofu -chdir=infrastructure/envs/cluster apply` to upgrade the Helm release.
+Bump `var.image_tag` in `infrastructure/modules/caddy/variables.tf` (or override via the cluster project) and re-apply. The Deployment rolls; the cert PVC persists across pod restarts, so no re-issuance happens. Major-version bumps should be deliberate — review the Caddy changelog for breaking Caddyfile-syntax changes.
 
 ### Pod-security baseline
 
 `modules/baseline/` owns three cluster-wide security controls consumed by every workload module:
 
 1. **Namespace creation with PodSecurity Admission (PSA) labels.** Each namespace in `var.namespaces` is created with `pod-security.kubernetes.io/<var.psa_mode>=restricted`. The mode is `enforce` by default; during a cluster bootstrap or major workload change it should be flipped to `warn` first.
-2. **Default-deny `NetworkPolicy`** in every namespace. App-level modules (`app-instance`, `traefik`, `object-storage/s2`) layer their own allow-rules on top via `modules/netpol/`.
-3. **Shared `security_context` / selector outputs** — `pod_security_context`, `container_security_context`, `rfc1918_except`, `node_cidr`, `coredns_selector`. The `coredns_selector` output uses the shorthand form `{ namespace = "kube-system", k8s_app_in = ["coredns", "kube-dns"] }`; `modules/netpol/` expands it into the verbose K8s `namespace_selector` + pod `match_expressions` structure internally.
+2. **Default-deny `NetworkPolicy`** in every namespace. Workload modules (`app-instance`, `caddy`, `object-storage/s2`) render their own allow-rules inline as `kubernetes_network_policy_v1` next to the Deployment they protect.
+3. **Shared `security_context` / selector outputs** — `pod_security_context`, `container_security_context`, `rfc1918_except`, `node_cidr`, `coredns_selector`. The `coredns_selector` output uses the shorthand form `{ namespace = "kube-system", k8s_app_in = ["coredns", "kube-dns"] }`; consumers expand it into the verbose K8s `namespace_selector` + pod `match_expressions` structure inline.
 
-**Apply order.** `module.baseline` must apply before any workload module in the same project (namespace must exist before any workload or NetworkPolicy in it). In `envs/cluster/` the baseline also creates the `traefik` and `cert-manager` namespaces; in `envs/prod/` and `envs/staging/` it creates the app namespace.
+**Apply order.** `module.baseline` must apply before any workload module in the same project (namespace must exist before any workload or NetworkPolicy in it). In `envs/cluster/` the baseline creates the `caddy` namespace; in `envs/prod/` and `envs/staging/` it creates the app namespace.
 
 **Two-phase PSA rollout.** The `psa_mode` variable switches the enforcement label:
 
@@ -145,7 +142,7 @@ then run `tofu -chdir=infrastructure/envs/cluster apply` to upgrade the Helm rel
 
 Both phases are one `tofu apply` each; the label change is a namespace-metadata update (no pod restart). For steady-state operation leave `psa_mode = "enforce"`.
 
-**Traefik ServiceAccount token.** Per SECURITY.md §5 R-I11, Traefik pods keep their SA token mounted (`serviceAccount.automountServiceAccountToken = true` in the Helm values) because the controller watches `Ingress` / `IngressRoute` / `Middleware` CRDs via the K8s API. All other workloads (`app`, `s2`) set `automount_service_account_token = false` on the pod spec.
+**ServiceAccount tokens.** Caddy is a pure reverse-proxy — it does not watch any K8s API resources, so its ServiceAccount has `automount_service_account_token = false`. The same is true for `app` and `s2`. No workload mounts a SA token.
 
 ### URLs
 
@@ -179,7 +176,7 @@ pnpm tsx scripts/prune-legacy-storage.ts
 Idempotent: re-running on an already-pruned backend reports `0 key(s)` for
 each prefix.
 
-Both served via Let's Encrypt TLS managed by cert-manager; Certificate resources live in each app project's namespace and are rendered by the routes-chart.
+Both served via Let's Encrypt TLS issued and renewed by Caddy's built-in ACME client. The cert and ACME account live on Caddy's `/data` PVC in the `caddy` namespace.
 
 ### Staging demo upload token rotation
 

@@ -108,12 +108,12 @@ Per-workflow serialization guarantees one-at-a-time handler execution per workfl
 
 - **IaC**: OpenTofu (HCL) with modular architecture
 - **Local dev**: kind (Kubernetes IN Docker) cluster via `tehcyx/kind` provider
-- **Reverse proxy**: Traefik deployed via Helm with IngressRoute CRDs (TLS termination + routing only; no forward-auth)
+- **Reverse proxy**: Caddy as raw `kubernetes_manifest` resources (Deployment + Service + ConfigMap + PVC). One Caddy per cluster with a multi-site Caddyfile; built-in HTTP-01 ACME for prod/staging, `tls internal` for the local kind stack. No Helm, no Ingress CRDs, no cert-manager.
 - **Auth**: in-app GitHub OAuth (`packages/runtime/src/auth/*`) — sealed session cookies on `/dashboard`/`/trigger`, Bearer tokens on `/api/*`, unified `AUTH_ALLOW` predicate
 - **Local S3**: S2 (mojatter/s2-server) with filesystem backend for dev persistence
 - **Image build**: Podman build via `terraform_data` local-exec, loaded into kind cluster
 
-Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a per-instance `app-instance` module composing app Deployment, Secrets, NetworkPolicies, and IngressRoutes.
+Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a per-instance `app-instance` module composing app Deployment, Secrets, and inline NetworkPolicies. Cluster-level routing lives in `modules/caddy/`.
 
 Infrastructure lives in `infrastructure/` with `modules/` (shared) and `local/` + `upcloud/` (environment roots).
 

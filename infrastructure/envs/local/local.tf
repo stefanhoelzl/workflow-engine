@@ -10,10 +10,6 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.1"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.8"
@@ -92,19 +88,10 @@ provider "kubernetes" {
   client_key             = module.cluster.client_key
 }
 
-provider "helm" {
-  kubernetes = {
-    host                   = module.cluster.host
-    cluster_ca_certificate = module.cluster.cluster_ca_certificate
-    client_certificate     = module.cluster.client_certificate
-    client_key             = module.cluster.client_key
-  }
-}
-
 module "baseline" {
   source = "../../modules/baseline"
 
-  namespaces = concat(keys(local.instances), ["traefik"])
+  namespaces = concat(keys(local.instances), ["caddy"])
   node_cidr  = "172.18.0.0/16"
 }
 
@@ -115,19 +102,30 @@ module "s2" {
   baseline = module.baseline
 }
 
-module "traefik" {
-  source = "../../modules/traefik"
+module "caddy" {
+  source = "../../modules/caddy"
+
+  namespace = "caddy"
+  sites = [
+    for name, cfg in local.instances : {
+      domain = cfg.domain
+      upstream = {
+        namespace = name
+        name      = "workflow-engine"
+        port      = 8080
+      }
+    }
+  ]
 
   service_type    = "NodePort"
   node_port_https = 30443
+
+  # Empty acme_email triggers `tls internal` in the Caddyfile template —
+  # Caddy uses its built-in CA, browsers surface a self-signed warning.
+  acme_email = ""
+
   baseline        = module.baseline
-}
-
-module "cert_manager" {
-  source = "../../modules/cert-manager"
-
-  enable_acme          = false
-  enable_selfsigned_ca = true
+  namespace_ready = module.baseline.namespaces
 }
 
 module "app_instance" {
@@ -164,16 +162,10 @@ module "app_instance" {
     https_port = each.value.https_port
   }
 
-  tls = {
-    secretName = "${each.key}-workflow-engine-tls"
-  }
-
-  active_issuer_name = module.cert_manager.active_issuer_name
-  cert_manager_ready = module.cert_manager.extras_ready
-  local_deployment   = true
-  baseline           = module.baseline
-  traefik_ready      = module.traefik.helm_release_id
-  namespace_ready    = module.baseline.namespaces
+  caddy_namespace  = "caddy"
+  local_deployment = true
+  baseline         = module.baseline
+  namespace_ready  = module.baseline.namespaces
 }
 
 output "url" {
