@@ -507,8 +507,8 @@ The framework SHALL run vitest workers in parallel (default = one per CPU). With
 The framework SHALL ship the following end-to-end tests, each testing one invariant that cannot be covered by in-process or unit tests:
 
 1. Sealed secret round-trip + log redaction
-2. SIGKILL crash recovery (engine_crashed event after respawn)
-3. Graceful SIGTERM drain
+2. Cold start from DuckLake catalog (committed invocations remain queryable across graceful restart)
+3. Graceful SIGTERM drain (in-flight invocation surfaces as a `trigger.error{kind:"shutdown"}` synthetic terminal in the archive after respawn)
 4. Health endpoint shape
 5. Workflow re-upload + sandbox eviction log line
 6. Multi-backend reconfigure (one workflow registers http + cron)
@@ -525,18 +525,22 @@ The framework SHALL ship the following end-to-end tests, each testing one invari
 17. fetch SSRF guard rejects loopback
 18. sendMail happy path + SMTP password log redaction
 19. Owner/repo scoping (same workflow name under multiple `(owner, repo)` tuples)
+20. wsTrigger protocol adapter
+21. CHECKPOINT survives restart (multiple invocations across DuckLake checkpoint cycles remain queryable after respawn)
+
+The previous "SIGKILL crash recovery (engine_crashed event after respawn)" test is removed. Under `event-store-ducklake`, the per-event WAL is gone and SIGKILL during an in-flight invocation deliberately loses it — there is no `engine_crashed` synthetic terminal to assert on. The graceful-shutdown contract is exercised by the rewritten test #3 (SIGTERM synthesises `trigger.error{kind:"shutdown"}`); the durable round-trip contract is exercised by the new test #2 (cold start from catalog).
 
 #### Scenario: Each test exists
 
-- **WHEN** the suite is fully implemented (all 17 PRs landed)
-- **THEN** all 19 tests SHALL exist under `packages/tests/test/`
+- **WHEN** the suite is fully implemented
+- **THEN** every test in the list SHALL exist under `packages/tests/test/`
 - **AND** each SHALL pass under `pnpm test:e2e`
 
 #### Scenario: Each test is single-feature, E2E-only
 
-- **WHEN** any test is reviewed
-- **THEN** it SHALL test exactly one invariant
-- **AND** that invariant SHALL not be coverable by unit or in-process integration tests
+- **WHEN** a test is added to the suite
+- **THEN** the test SHALL exercise exactly one runtime invariant whose failure mode requires the spawn → upload → fire → archive lifecycle
+- **AND** the assertion SHALL be on the resulting `state.events` (or `state.fetches` / `state.responses`) shape — not on an in-process detail that would be cheaper to unit-test
 
 ### Requirement: WS chain step
 

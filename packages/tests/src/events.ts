@@ -1,132 +1,118 @@
-import { readdir, readFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { DuckDBInstance } from "@duckdb/node-api";
 import type { EventFilter, InvocationEvent } from "./types.js";
 
-// FS polling source-of-truth for invocation events emitted by the spawned
-// child runtime. Mirrors the on-disk layout produced by
-// `packages/runtime/src/event-bus/persistence.ts`:
+// Source-of-truth for events emitted by the spawned child runtime.
 //
-//   <persistencePath>/pending/<id>/<seq>.json   — one per event, in-flight
-//   <persistencePath>/archive/<id>.json         — JSON array of events, terminal
+// The runtime persists invocation events through DuckLake (see
+// `packages/runtime/src/event-store.ts`):
 //
-// We intentionally do not import the runtime helpers here: the framework
-// observes the same on-disk contract as a third-party would, which keeps
-// the e2e layer decoupled from runtime internals.
+//   <persistencePath>/events.duckdb           — DuckLake catalog (DuckDB file)
+//   <persistencePath>/events/main/events/...  — Parquet data files
+//
+// DuckDB takes an exclusive file lock on the catalog while the runtime is
+// alive, so the framework cannot ATTACH the live catalog. Instead the
+// framework reads the immutable Parquet data files via `read_parquet(...)`
+// — no attach, no lock — and relies on the runtime spawning with
+// `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS=1` so every commit flushes its
+// inlined rows to disk-resident Parquet immediately.
+//
+// In-flight events live only in the runtime's in-memory accumulator and
+// are NOT visible to this reader; only terminal-committed invocations
+// appear here. The `archived: false` filter therefore returns no rows.
 
-const PENDING_DIR = "pending";
-const ARCHIVE_DIR = "archive";
+const EVENTS_GLOB_SUFFIX = "events/main/events/**/*.parquet";
 
-async function readPendingEvents(
+interface ParquetReader {
+	close(): void;
+	readEvents(): Promise<InvocationEvent[]>;
+}
+
+async function openParquetReader(
 	persistencePath: string,
-): Promise<InvocationEvent[]> {
-	const root = join(persistencePath, PENDING_DIR);
-	let invocationDirs: string[];
+): Promise<ParquetReader | null> {
+	// At least one Parquet file must exist before read_parquet can resolve
+	// the glob. Stat the events root and bail early if it has not been
+	// created yet (early in the runtime's life, or the test has not fired
+	// any invocation yet).
+	const eventsRoot = join(persistencePath, "events");
 	try {
-		invocationDirs = await readdir(root);
+		await stat(eventsRoot);
 	} catch {
-		return [];
+		return null;
 	}
-	const events: InvocationEvent[] = [];
-	for (const id of invocationDirs) {
-		const idDir = join(root, id);
-		let seqFiles: string[];
-		try {
-			seqFiles = await readdir(idDir);
-		} catch {
-			continue;
-		}
-		for (const file of seqFiles) {
-			if (!file.endsWith(".json")) {
-				continue;
+	const instance = await DuckDBInstance.create();
+	const conn = await instance.connect();
+	const glob = join(persistencePath, EVENTS_GLOB_SUFFIX);
+	return {
+		close() {
+			conn.disconnectSync();
+		},
+		async readEvents(): Promise<InvocationEvent[]> {
+			// DuckLake CHECKPOINTs append new Parquet files without removing
+			// the previously-written ones (snapshot retention). The same
+			// logical (id, seq) row can therefore appear in multiple files;
+			// DISTINCT ON dedupes to the latest copy per primary-key tuple.
+			//
+			// The glob can occasionally hit a Parquet file that is still
+			// being written by the runtime (the write is not atomic from
+			// an external observer's POV). Retry a few times on
+			// "too small to be a Parquet file"; the next poll iteration
+			// gets a complete file.
+			const sql = `SELECT DISTINCT ON (id, seq) * FROM read_parquet('${glob}', union_by_name = true) ORDER BY id, seq`;
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					const reader = await conn.runAndReadAll(sql);
+					return reader.getRowObjects() as unknown as InvocationEvent[];
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					if (msg.includes("No files found that match the pattern")) {
+						return [];
+					}
+					if (attempt < 2 && msg.includes("too small to be a Parquet file")) {
+						await new Promise((r) => setTimeout(r, 50));
+						continue;
+					}
+					throw err;
+				}
 			}
-			const path = join(idDir, file);
-			let raw: string;
-			try {
-				raw = await readFile(path, "utf8");
-			} catch {
-				continue;
-			}
-			try {
-				events.push(JSON.parse(raw) as InvocationEvent);
-			} catch {
-				// Partial write or malformed; skip — the next poll picks up
-				// the completed file.
-			}
-		}
-	}
-	return events;
+			return [];
+		},
+	};
 }
 
 async function readArchivedEvents(
 	persistencePath: string,
 ): Promise<InvocationEvent[]> {
-	const root = join(persistencePath, ARCHIVE_DIR);
-	let archiveFiles: string[];
-	try {
-		archiveFiles = await readdir(root);
-	} catch {
+	const reader = await openParquetReader(persistencePath);
+	if (!reader) {
 		return [];
 	}
-	const events: InvocationEvent[] = [];
-	for (const file of archiveFiles) {
-		if (!file.endsWith(".json")) {
-			continue;
-		}
-		const path = join(root, file);
-		let raw: string;
-		try {
-			raw = await readFile(path, "utf8");
-		} catch {
-			continue;
-		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			continue;
-		}
-		if (!Array.isArray(parsed)) {
-			continue;
-		}
-		for (const event of parsed) {
-			events.push(event as InvocationEvent);
-		}
+	try {
+		return await reader.readEvents();
+	} finally {
+		reader.close();
 	}
-	return events;
 }
 
 interface ScanOptions {
 	archived?: boolean;
 }
 
-async function scanEvents(
+function scanEvents(
 	persistencePath: string,
 	opts: ScanOptions = {},
 ): Promise<InvocationEvent[]> {
-	if (opts.archived === true) {
-		return readArchivedEvents(persistencePath);
-	}
 	if (opts.archived === false) {
-		return readPendingEvents(persistencePath);
+		// Pre-DuckLake the framework polled `pending/{id}/{seq}.json` files for
+		// in-flight events. Under the new architecture those events live only in
+		// the runtime's in-memory accumulator and are not externally observable.
+		// Tests that previously synced on `archived: false` must use an
+		// alternative signal (logs, HTTP response, manualTrigger return value).
+		return Promise.resolve([]);
 	}
-	const [pending, archived] = await Promise.all([
-		readPendingEvents(persistencePath),
-		readArchivedEvents(persistencePath),
-	]);
-	// Persistence's archive flow is `writePending → writeArchive →
-	// removePrefix(pending)`. During the window between writeArchive and
-	// removePrefix completing, the same `(id, seq)` event lives in both
-	// directories. Dedup by `(id, seq)` so the test layer sees an event
-	// exactly once. Archive wins because it's the post-terminal authoritative
-	// view; pending is transient.
-	const byKey = new Map<string, InvocationEvent>();
-	for (const event of pending) {
-		byKey.set(`${event.id}:${String(event.seq)}`, event);
-	}
-	for (const event of archived) {
-		byKey.set(`${event.id}:${String(event.seq)}`, event);
-	}
-	return [...byKey.values()];
+	return readArchivedEvents(persistencePath);
 }
 
 const TRIGGER_KINDS = new Set<string>([
@@ -166,9 +152,8 @@ function matchesFilter(
 			return false;
 		}
 	}
-	// `filter.label` is part of the frozen surface for PR 6+; PR 3 has no
-	// label-bearing chain steps yet, so treat any caller-supplied label as a
-	// no-op. PR 6 adds the label index that this branch will read.
+	// `filter.label` is part of the frozen surface; the label index lives in
+	// the scenario state, not the event.
 	return true;
 }
 

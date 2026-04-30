@@ -2,6 +2,32 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **DuckLake-backed event store (2026-05-01).** **BREAKING (operator).** The per-event `pending/{id}/{seq}.json` durability layer and per-invocation `archive/{id}.json` rollups are removed. Invocation events now live in a [DuckLake](https://ducklake.select/) lakehouse: a single DuckDB catalog file at `<persistence>/events.duckdb` plus partitioned Parquet data files at `<persistence>/events/main/events/owner=<owner>/repo=<repo>/...parquet`. EventStore opens the catalog read-write at boot; cold start is constant-time regardless of historical event count.
+
+    **Pre-deploy steps (mandatory, per environment):**
+    1. **Wipe legacy persistence layout.** The new code does not read or migrate the old `pending/` / `archive/` / per-(owner,repo) prefixes. Drain in-flight invocations (graceful shutdown) on the running runtime, then:
+       - **Filesystem backend** (`PERSISTENCE_PATH`): `rm -rf "$PERSISTENCE_PATH"/{archive,pending}`
+       - **S3 backend** (`PERSISTENCE_S3_BUCKET`): `aws s3 rm "s3://$PERSISTENCE_S3_BUCKET/archive/" --recursive` and the same for `pending/`
+       - The `workflows/` prefix is preserved by the new code; do NOT delete it (workflow tarballs remain).
+    2. **Enable bucket versioning** on the prod S3 bucket (cheap, S3-native). Provides a rollback target if the catalog file ever gets corrupted by an external process. UpCloud Object Storage exposes versioning under bucket settings.
+    3. **Upgrade the K8s manifest.** Module change in `infrastructure/modules/app-instance/workloads.tf` adds `strategy.type = "Recreate"` and `terminationGracePeriodSeconds = 90` to the app Deployment (replicas = 1 unchanged). Both are correctness-load-bearing for the DuckLake catalog round-trip — see SECURITY.md and the in-file comment.
+
+    **New `EVENT_STORE_*` env vars** (all optional with conservative defaults):
+    - `EVENT_STORE_CHECKPOINT_INTERVAL_MS` (default `3_600_000` = 1 h)
+    - `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS` (default `100_000`)
+    - `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES` (default `10_485_760` = 10 MiB)
+    - `EVENT_STORE_COMMIT_MAX_RETRIES` (default `5`)
+    - `EVENT_STORE_COMMIT_BACKOFF_MS` (default `500`, exponential)
+    - `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` (default `60_000`, must stay below `terminationGracePeriodSeconds`)
+
+    **New durability profile.** SIGKILL, OOM, force-delete, kernel panic, or any unclean process death loses every invocation that has not yet reached a terminal event — the in-flight accumulator lives in RAM only. SIGTERM still drains gracefully: the runtime synthesises `trigger.error{kind:"shutdown"}` for any in-flight invocation that does not naturally complete inside the grace period and commits each before exit. Sustained S3 outages can also silently lose invocations whose terminal commit retries are exhausted — surfaced via `event-store.commit-dropped` log lines (operator-grep-able). Both are deliberate trade-offs documented in SECURITY.md.
+
+    **Single-writer contract.** The DuckLake catalog round-trip uses an unconditional PUT (S2 and UpCloud Object Storage do not implement `If-Match`). Two concurrent writers will silently corrupt the catalog. The K8s manifest enforces `replicas: 1` + `strategy: Recreate`; do NOT override either, and do NOT attach an HPA or PodDisruptionBudget tolerating > 1 replica.
+
+    **Deploy gap.** Every rolling deploy now incurs a brief write-availability gap (~60–90 s) while Pod-old drains and Pod-new boots. Webhook senders that retry on 5xx (GitHub, Stripe, Linear, etc.) absorb the gap transparently. Cron firings during the gap are missed (same behaviour as today's single-replica restart).
+
+    **Code surface deleted.** `event-bus/`, `recovery.ts`, `scripts/prune-legacy-storage.ts` are gone — out-of-tree consumers that imported `BusConsumer`, `EventBus`, `createEventBus`, `createPersistence`, `createLoggingConsumer`, or `recover()` must migrate to `EventStore.record(event)` (or remove the dependency entirely; the bus abstraction is gone). Tenants do NOT need to rebuild — the `@workflow-engine/sdk` surface is unchanged.
+
 - **Guest→host boundary opacity / Callable envelope contract (2026-04-30).** **BREAKING (host plugin contract — type-checker-detectable; not workflow-author-visible).** Closes finding F-3 (a hostile workflow author could deterministically force `kind:"crash"` worker terminations and `worker exited with code N` run rejections by deferring a throw past handler return — `setTimeout(() => { throw }, 0)` plus any async wait reproduces it 100%; the deferred throw rode `pluginRequest`'s rethrow chain into Node's `unhandledRejection` escalation and killed the worker thread). New `Callable` contract: `(...args) => Promise<CallableResult>` where `CallableResult = { ok: true, value: GuestValue } | { ok: false, error: GuestThrownError }` instead of `Promise<GuestValue>` that rejected on guest throw. Guest-originated throws now surface as resolved envelopes; engine-side errors (`CallableDisposedError`, host `marshalArg` failures, vm-disposed mid-call) continue to reject (fail-loud signal preserved). Each envelope carries a non-enumerable `Symbol.for("@workflow-engine/sandbox#callableResult")` brand attached via `Object.defineProperty` for `pluginRequest`'s auto-unwrap discrimination (clone-clean: not in `JSON.stringify`, `Object.keys`, or `structuredClone` outputs). `pluginRequest` (`packages/sandbox/src/plugin.ts`) gains an envelope-aware resolve handler that emits the expected `prefix.response` / `prefix.error` close and resolves the outer promise with the envelope itself — never rethrows on envelope-error (that would re-create the F-3 escape route). Companion R-13 in SECURITY.md §2 paired with R-12 under boundary-opacity framing. Workflow-author surface: zero change. `setTimeout(() => { throw })` from workflow code now (a) does not kill the run, (b) emits a `system.error` row in the dashboard naming the timer's frame. **In-tree migrations (mandatory, mechanical):**
   1. **Pattern 1 — fire-and-forget under `ctx.request`** (timers' `fire()` site): no source change. The `pluginRequest` auto-unwrap handles the envelope transparently — the discarded outer promise resolves cleanly instead of rejecting.
   2. **Pattern 2 — explicit await** (`__sdk.dispatchAction` in `packages/sdk/src/sdk-support/index.ts`): inspect the envelope and rethrow the live `GuestThrownError` for the bridge-closure rule to pass through:

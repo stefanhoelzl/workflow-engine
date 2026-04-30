@@ -1,12 +1,10 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { UserContext } from "../../auth/user-context.js";
-import {
-	createEventStore,
-	type EventStore,
-} from "../../event-bus/event-store.js";
+import type { EventStore } from "../../event-store.js";
+import { createRealEventStoreForTest } from "../../test-utils/event-store.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { dashboardMiddleware } from "./middleware.js";
 
@@ -26,7 +24,6 @@ const emptyRegistry: WorkflowRegistry = {
 
 const DETAILS_OK_RE = /<details[^>]*id="inv-evt_ok"/;
 const DETAILS_ERR_RE = /<details[^>]*id="inv-evt_err"/;
-const DETAILS_PENDING_RE = /<details[^>]*id="inv-evt_pending"/;
 
 function event(
 	overrides: Partial<InvocationEvent> & Pick<InvocationEvent, "kind">,
@@ -78,13 +75,31 @@ const AUTH_HEADERS = {};
 
 describe("dashboard middleware — root (unfiltered flat list)", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders a flat invocation list for every scope the user has access to", async () => {
-		await store.handle(event({ kind: "trigger.request", seq: 0 }));
+		// Per `event-store-ducklake`, only terminal-committed invocations appear
+		// in the dashboard. Inject a complete request+response pair.
+		await store.record(event({ kind: "trigger.request", seq: 0 }));
+		await store.record(
+			event({
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				output: { status: 200 },
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
+			}),
+		);
 		const app = await mount(store);
 		const res = await app.request("/dashboard", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
@@ -98,9 +113,15 @@ describe("dashboard middleware — root (unfiltered flat list)", () => {
 
 describe("dashboard middleware — scoped flat list", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders an empty state when there are no invocations", async () => {
@@ -113,20 +134,14 @@ describe("dashboard middleware — scoped flat list", () => {
 		expect(html).toContain("No invocations yet");
 	});
 
-	it("renders a card with status=pending for an invocation with no terminal event", async () => {
-		await store.handle(event({ kind: "trigger.request", seq: 0 }));
-		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
-			headers: AUTH_HEADERS,
-		});
-		const html = await res.text();
-		expect(html).toContain("on-push");
-		expect(html).toContain("pending");
-	});
+	// "pending" status is no longer queryable: per event-store-ducklake,
+	// in-flight invocations live only in the in-memory accumulator until a
+	// terminal commit, so they never reach the dashboard. The previous
+	// "renders a pending pill" test exercised a removed feature.
 
 	it("derives status=succeeded from trigger.response", async () => {
-		await store.handle(event({ kind: "trigger.request", seq: 0 }));
-		await store.handle(
+		await store.record(event({ kind: "trigger.request", seq: 0 }));
+		await store.record(
 			event({
 				kind: "trigger.response",
 				seq: 1,
@@ -145,8 +160,8 @@ describe("dashboard middleware — scoped flat list", () => {
 	});
 
 	it("derives status=failed from trigger.error", async () => {
-		await store.handle(event({ kind: "trigger.request", seq: 0 }));
-		await store.handle(
+		await store.record(event({ kind: "trigger.request", seq: 0 }));
+		await store.record(
 			event({
 				kind: "trigger.error",
 				seq: 1,
@@ -165,9 +180,14 @@ describe("dashboard middleware — scoped flat list", () => {
 	});
 
 	it("orders by at desc", async () => {
+		// Inject 3 complete invocations (request + response). Only terminal-
+		// committed invocations appear in the dashboard. Sequential awaits
+		// are intentional — DuckLake commits run on a single connection and
+		// parallelising them via Promise.all would still serialize at the
+		// connection-lock layer, with extra context-switching overhead.
 		await Promise.all(
-			[0, 1, 2].map((i) =>
-				store.handle(
+			[0, 1, 2].map(async (i) => {
+				await store.record(
 					event({
 						id: `evt_${i}`,
 						kind: "trigger.request",
@@ -175,8 +195,20 @@ describe("dashboard middleware — scoped flat list", () => {
 						at: `2026-04-16T10:00:0${i}.000Z`,
 						name: `tr_${i}`,
 					}),
-				),
-			),
+				);
+				await store.record(
+					event({
+						id: `evt_${i}`,
+						kind: "trigger.response",
+						seq: 1,
+						ref: 0,
+						output: { status: 200 },
+						at: `2026-04-16T10:00:0${i}.500Z`,
+						ts: i * 1000,
+						name: `tr_${i}`,
+					}),
+				);
+			}),
 		);
 		const app = await mount(store);
 		const res = await app.request("/dashboard/t0/r0", {
@@ -187,10 +219,10 @@ describe("dashboard middleware — scoped flat list", () => {
 	});
 
 	it("succeeded row is expandable with HTMX lazy-load attributes", async () => {
-		await store.handle(
+		await store.record(
 			event({ id: "evt_ok", kind: "trigger.request", seq: 0, name: "t_ok" }),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_ok",
 				kind: "trigger.response",
@@ -216,10 +248,10 @@ describe("dashboard middleware — scoped flat list", () => {
 	});
 
 	it("failed row is expandable with the same HTMX attributes", async () => {
-		await store.handle(
+		await store.record(
 			event({ id: "evt_err", kind: "trigger.request", seq: 0, name: "t_err" }),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_err",
 				kind: "trigger.error",
@@ -241,37 +273,25 @@ describe("dashboard middleware — scoped flat list", () => {
 		);
 	});
 
-	it("pending row has no expand affordance (no details, no hx-get flamegraph)", async () => {
-		await store.handle(
-			event({
-				id: "evt_pending",
-				kind: "trigger.request",
-				seq: 0,
-				name: "t_p",
-			}),
-		);
-		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
-			headers: AUTH_HEADERS,
-		});
-		const html = await res.text();
-		expect(html).not.toMatch(DETAILS_PENDING_RE);
-		expect(html).not.toContain(
-			"/dashboard/t0/r0/invocations/evt_pending/flamegraph",
-		);
-		expect(html).toContain('id="inv-evt_pending"');
-	});
+	// "pending row has no expand affordance" — removed alongside the pending
+	// pill: in-flight invocations are no longer queryable from the dashboard.
 });
 
 describe("dashboard middleware — single-leaf trigger.exception invocations", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders a synthetic failed row with setup-failed glyph for a lone trigger.exception", async () => {
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_setup",
 				kind: "trigger.exception",
@@ -309,7 +329,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 	it("emits no synthetic row when the failure category has no input.trigger", async () => {
 		// Defensive — should not happen via executor.fail, but guards the
 		// query against malformed/legacy events.
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_no_trigger",
 				kind: "trigger.exception",
@@ -330,7 +350,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 	});
 
 	it("filters synthetic rows when a per-trigger URL is requested", async () => {
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_setup_a",
 				kind: "trigger.exception",
@@ -342,7 +362,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 				error: { message: "x" },
 			}),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_setup_b",
 				kind: "trigger.exception",
@@ -366,13 +386,19 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 
 describe("dashboard middleware — single-leaf trigger.rejection invocations", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders a synthetic failed row with rejected glyph + summary tooltip", async () => {
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_reject",
 				kind: "trigger.rejection",
@@ -409,13 +435,19 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 
 describe("dashboard middleware — single-leaf system.upload invocations", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders an uploaded row with upload-arrow glyph and dispatch chip", async () => {
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_upload",
 				kind: "system.upload",
@@ -459,18 +491,24 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 
 describe("dashboard middleware — sandbox-exhaustion pill", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("renders a CPU pill on a failed invocation associated with system.exhaustion", async () => {
 		// trigger.request → trigger.error pair plus a leading
 		// system.exhaustion event sharing the same id.
-		await store.handle(
+		await store.record(
 			event({ id: "evt_cpu", kind: "trigger.request", seq: 0, ref: null }),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_cpu",
 				kind: "system.exhaustion",
@@ -480,7 +518,7 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 				input: { budget: 60_000, observed: 60_002 },
 			}),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_cpu",
 				kind: "trigger.error",
@@ -502,10 +540,10 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 	});
 
 	it("does not render an exhaustion pill on a plain handler-throw failure", async () => {
-		await store.handle(
+		await store.record(
 			event({ id: "evt_throw", kind: "trigger.request", seq: 0, ref: null }),
 		);
-		await store.handle(
+		await store.record(
 			event({
 				id: "evt_throw",
 				kind: "trigger.error",
@@ -524,10 +562,10 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 	});
 
 	it("does not render an exhaustion pill on a succeeded invocation", async () => {
-		await store.handle(
+		await store.record(
 			event({ id: "evt_ok", kind: "trigger.request", seq: 0, ref: null }),
 		);
-		await store.handle(
+		await store.record(
 			event({ id: "evt_ok", kind: "trigger.response", seq: 1, ref: 0 }),
 		);
 		const app = await mount(store);
@@ -541,9 +579,15 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 
 describe("dashboard middleware — auth scoping", () => {
 	let store: EventStore;
+	let disposeStore: () => Promise<void>;
 
 	beforeEach(async () => {
-		store = await createEventStore();
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
 	});
 
 	it("returns 404 for an owner the user is not a member of", async () => {

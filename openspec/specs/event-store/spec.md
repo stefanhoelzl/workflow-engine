@@ -4,238 +4,237 @@
 
 Provide an in-memory DuckDB-based invocation index that implements BusConsumer, enabling SQL queries over invocation lifecycle records for the dashboard.
 ## Requirements
-### Requirement: EventStore implements BusConsumer
+### Requirement: EventStore is the sole consumer of invocation lifecycle events
 
-The EventStore SHALL implement the `BusConsumer` interface. It SHALL be created via a factory function `createEventStore(options?: { logger? }): EventStore` that eagerly creates an in-memory DuckDB instance, runs DDL, and returns an object with `name`, `strict`, `handle()`, a `query(scopes)` method, and a `ping()` method.
+The runtime SHALL host a single `EventStore` component that owns durable storage of invocation events and serves all queries over them. There SHALL NOT be an event bus, a separate persistence consumer, a recovery scan path, or a logging consumer in the runtime; their responsibilities collapse into the executor (lifecycle logging) and the EventStore (durable archive + queries).
 
-The EventStore SHALL declare `name === "event-store"` and `strict === false`. Per the event-bus contract (see `event-bus/spec.md § Requirement: EventBus interface`), best-effort consumer failures are logged as `bus.consumer-failed` and the bus continues to subsequent consumers — the runtime is not terminated. The durability boundary is owned by the persistence consumer, not by the in-memory index; lost EventStore inserts can be reconstructed by reading the archive on next boot.
+EventStore SHALL be created via `createEventStore({ backend, logger, config })`, where `backend` is a `StorageBackend` whose `locator()` provides the concrete connection used to configure DuckLake, `logger` is the runtime logger, and `config` carries the `EVENT_STORE_*` settings. The factory SHALL return a Promise that resolves once the DuckLake catalog has been opened (downloaded for the S3 backend, or attached locally for the FS backend).
 
-#### Scenario: Factory creates EventStore
+#### Scenario: Factory opens the catalog and resolves ready
 
-- **WHEN** `createEventStore()` is called
-- **THEN** the returned object implements `BusConsumer` (`name`, `strict`, `handle`)
-- **AND** exposes a `query(scopes: ReadonlyArray<{owner: string, repo: string}>)` method (returns a scope-bound read-only `SelectQueryBuilder`)
-- **AND** exposes a `ping(): Promise<void>` method
-- **AND** the in-memory DuckDB instance is ready for queries
+- **WHEN** `createEventStore({ backend, logger, config })` is awaited against an empty backend
+- **THEN** the returned object exposes `record`, `query`, `hasUploadEvent`, `ping`, `dispose`
+- **AND** the DuckLake catalog file `<root>/events.duckdb` has been created or attached
+- **AND** the connection is ready to accept `record` and `query` calls
 
-#### Scenario: EventStore declares best-effort tier
+#### Scenario: Factory opens an existing catalog without scanning per-invocation files
 
-- **GIVEN** an EventStore instance returned from `createEventStore()`
-- **THEN** its `name` SHALL equal `"event-store"`
-- **AND** its `strict` SHALL equal `false`
-### Requirement: DuckDB in-memory storage
+- **GIVEN** an existing `<root>/events.duckdb` containing a million archived invocations
+- **WHEN** `createEventStore` is awaited
+- **THEN** the factory SHALL NOT enumerate, list, or read per-invocation archive files
+- **AND** the factory SHALL resolve in time bounded by the catalog file fetch / open, not by historical event count
 
-The EventStore SHALL use DuckDB in `:memory:` mode via `@duckdb/node-api`. The database instance SHALL be created eagerly in the factory function. No explicit close/destroy is required.
+### Requirement: DuckLake-backed durable archive
 
-#### Scenario: Database is in-memory
+EventStore SHALL persist invocation events using DuckLake v1.0 as the storage format. The catalog SHALL be a DuckDB file at `<root>/events.duckdb`. Data files SHALL be Parquet files partitioned by `(owner, repo)` under `<root>/events/main/events/owner=<owner>/repo=<repo>/` (DuckLake nests under `<schema>/<table>` beneath the configured `DATA_PATH`; `main` is the default schema and `events` is the table name). EventStore SHALL configure DuckLake by translating the `StorageBackend.locator()` result into the appropriate `ATTACH 'ducklake:…'` and (for the S3 backend) `CREATE SECRET (TYPE S3, …)` SQL.
 
-- **GIVEN** a newly created EventStore
-- **WHEN** the process exits
-- **THEN** all indexed data is lost (expected --- rebuilt from persistence on next startup)
+The events table SHALL have columns: `id` (text), `seq` (integer), `kind` (text), `ref` (integer, nullable), `at` (TIMESTAMPTZ), `ts` (BIGINT, monotonic µs), `owner` (text NOT NULL), `repo` (text NOT NULL), `workflow` (text), `workflowSha` (text), `name` (text), `input` (JSON, nullable), `output` (JSON, nullable), `error` (JSON, nullable), `meta` (JSON, nullable).
 
-### Requirement: EventStore indexes invocation events
+The events table SHALL NOT declare a `PRIMARY KEY` or `UNIQUE` constraint — DuckLake does not support either. Idempotency is enforced at the application layer: each terminal commit is one DuckLake transaction inserting all rows for an invocation atomically, and the in-memory accumulator entry is evicted only after a successful commit. Retries only occur when the commit's Promise rejects, so a successful-but-acknowledged-as-failed commit (the only window in which a duplicate could appear) requires a network failure between DuckLake's commit and the client receiving the success — a narrow, ambiguous edge case that the runtime accepts (the `(id, seq)` tuple uniquely identifies events, and dashboard queries deduplicate-on-display if needed).
 
-The EventStore SHALL implement `BusConsumer` and SHALL maintain a DuckDB in-memory table named `events` that indexes individual `InvocationEvent` records, not per-invocation lifecycle rows. Each call to `handle(event)` SHALL append (or, on primary-key collision, update) one row per `InvocationEvent` received.
+#### Scenario: Catalog and data files use the events prefix
 
-The `events` table schema SHALL include columns: `id` (text), `seq` (integer), `kind` (text), `ref` (integer, nullable), `at` (TIMESTAMPTZ), `ts` (BIGINT, monotonic µs), `owner` (text, NOT NULL), `repo` (text, NOT NULL), `workflow` (text), `workflowSha` (text), `name` (text), `input` (JSON, nullable), `output` (JSON, nullable), `error` (JSON, nullable), `meta` (JSON, nullable). Primary key SHALL be `(id, seq)`. The table SHALL have an index on `(owner, repo)` to accelerate scope-filtered queries.
+- **GIVEN** an FS backend with `PERSISTENCE_PATH=/var/lib/wfe`
+- **WHEN** EventStore commits an invocation under `(owner: "acme", repo: "foo")` and a `CHECKPOINT` has flushed inlined rows to Parquet
+- **THEN** the catalog SHALL exist at `/var/lib/wfe/events.duckdb`
+- **AND** at least one Parquet file SHALL exist under `/var/lib/wfe/events/main/events/owner=acme/repo=foo/`
 
-The `meta` column SHALL be kind-agnostic in name but its population SHALL be kind-specific: it carries `{ dispatch: { source, user? } }` for `trigger.request` rows only and SHALL be `NULL` for all other kinds.
+#### Scenario: S3 backend translates locator into DuckLake SECRET
 
-The EventStore SHALL NOT convert event timestamps during insert; `at` values are written through as-is, and `ts` values are written through as integer microseconds. `input`, `output`, `error`, and `meta` SHALL be serialized to JSON strings on insert when present; absent fields SHALL be stored as SQL `NULL`. The `owner` and `repo` columns SHALL be written through unchanged from the `InvocationEvent.owner` and `InvocationEvent.repo` fields.
+- **GIVEN** an S3 backend whose `locator()` returns `{ kind: "s3", bucket: "wfe", endpoint: "s2.local:9000", region: "auto", accessKeyId, secretAccessKey, urlStyle: "path", useSsl: true }`
+- **WHEN** EventStore initialises
+- **THEN** DuckLake SHALL be configured with `ATTACH 'ducklake:s3://wfe/events.duckdb'` and the matching `DATA_PATH 's3://wfe/events/'`
+- **AND** a `CREATE SECRET (TYPE S3, KEY_ID, SECRET, REGION, ENDPOINT, URL_STYLE, USE_SSL)` SQL statement SHALL have run with the locator's values
+- **AND** secret values SHALL be revealed via `Secret.reveal()` only at the SQL composition site
 
-The archive loader that bootstraps the EventStore from persistence at startup SHALL NOT tolerate archived events missing the `owner` or `repo` fields. Archives produced by prior runtime versions are wiped as part of this change's deploy-time migration; any row lacking these fields indicates a corrupt archive and SHALL cause the archive loader to log and skip the row without inserting it.
+### Requirement: record() accumulates events and commits per terminal invocation
 
-Cross-invocation ordering for the dashboard list is derived by the consuming code from `trigger.request` rows joined with terminal `trigger.response`/`trigger.error` rows.
+EventStore SHALL expose `record(event: InvocationEvent): Promise<void>`. Each call SHALL append the event to an in-memory accumulator keyed by `event.id`. On terminal events (`event.kind === "trigger.response"` or `event.kind === "trigger.error"`), `record` SHALL commit the full accumulated event list for that id as a single DuckLake transaction (`INSERT INTO events VALUES …` for every event), then evict the accumulator entry.
 
-#### Scenario: Single event inserts a row keyed by (id, seq)
+Non-terminal events SHALL NOT trigger any storage I/O. There SHALL NOT be per-event durability; in-flight events live only in RAM.
 
-- **GIVEN** an EventStore with no rows
-- **WHEN** `handle({ kind: "trigger.request", id: "evt_a", seq: 0, ref: null, at: "2026-04-17T10:00:00.000Z", ts: 0, owner: "acme", repo: "foo", workflow: "w", workflowSha: "sha", name: "webhook", input: {...} })` is called
-- **THEN** a row SHALL be inserted with `id: "evt_a"`, `seq: 0`, `kind: "trigger.request"`, `ref: null`, `at = "2026-04-17T10:00:00.000Z"`, `ts = 0`, `owner = "acme"`, `repo = "foo"`
-- **AND** the `meta` column for that row SHALL be `NULL`
+`record()` SHALL resolve once the commit has either succeeded or been dropped per the retry policy (see "Bounded retry then drop"). It SHALL NOT throw on commit failure under any condition the retry policy can handle.
 
-#### Scenario: Multiple events per invocation all persist
+#### Scenario: Non-terminal events accumulate without I/O
 
-- **GIVEN** an EventStore with no rows
-- **WHEN** three `InvocationEvent` records for the same `id: "evt_a"` with `seq: 0, 1, 2` are each passed to `handle()`
-- **THEN** the `events` table SHALL contain three rows, one per event, all sharing `id = "evt_a"`
-- **AND** each row's `seq` SHALL match its source event
+- **GIVEN** an EventStore with an empty accumulator
+- **WHEN** `record({ kind: "action.request", id: "evt_a", seq: 1, … })` is called
+- **THEN** the accumulator entry for `evt_a` SHALL contain that event
+- **AND** no DuckLake write SHALL have occurred
 
-#### Scenario: Re-inserting the same (id, seq) does not duplicate or crash
+#### Scenario: Terminal event commits the entire accumulated list atomically
 
-- **GIVEN** an `events` table already containing a row for `(id: "evt_a", seq: 0)`
-- **WHEN** `handle()` is called again with an event carrying the same `(id, seq)`
-- **THEN** the `handle()` call SHALL resolve without throwing
-- **AND** the table SHALL NOT contain more than one row for `(id: "evt_a", seq: 0)`
+- **GIVEN** an EventStore whose accumulator for `evt_a` holds events with seqs 0, 1, 2
+- **WHEN** `record({ kind: "trigger.response", id: "evt_a", seq: 3, … })` is called and the commit succeeds
+- **THEN** the events table SHALL contain exactly four rows for id `evt_a` (seqs 0, 1, 2, 3)
+- **AND** the accumulator entry for `evt_a` SHALL be removed
+- **AND** an `event-store.commit-ok { id: "evt_a", durationMs, etag }` log line SHALL have been emitted
 
-#### Scenario: Archive loader skips rows missing owner or repo
+#### Scenario: trigger.error terminal commits identically
 
-- **GIVEN** an `archive/` containing an event record missing `owner` or `repo` (corrupted file)
-- **WHEN** `createEventStore({ persistence })` bootstraps and awaits `initialized`
-- **THEN** the archive loader SHALL log a warning naming the missing field
-- **AND** SHALL NOT insert the malformed row
-- **AND** SHALL continue loading other valid archive records
+- **GIVEN** an EventStore whose accumulator for `evt_a` holds events with seqs 0, 1
+- **WHEN** `record({ kind: "trigger.error", id: "evt_a", seq: 2, error: { … } })` is called and the commit succeeds
+- **THEN** the events table SHALL contain three rows for `evt_a`
+- **AND** the accumulator entry SHALL be removed
 
-#### Scenario: trigger.request events persist meta.dispatch
+### Requirement: Bounded retry then drop on commit failure
 
-- **GIVEN** an EventStore with no rows
-- **WHEN** `handle({ kind: "trigger.request", id: "evt_a", seq: 0, ..., meta: { dispatch: { source: "manual", user: { login: "jane", mail: "jane@example.com" } } } })` is called
-- **THEN** a row SHALL be inserted with `meta` containing the JSON-serialized `{ "dispatch": { "source": "manual", "user": { "login": "jane", "mail": "jane@example.com" } } }`
+When a DuckLake commit fails (S3 transient error, catalog write error), EventStore SHALL retry with exponential backoff. The maximum number of attempts is `EVENT_STORE_COMMIT_MAX_RETRIES` (default 5). The base backoff between attempts is `EVENT_STORE_COMMIT_BACKOFF_MS` (default 500 ms), doubling each attempt up to a sensible cap. On each retry attempt, EventStore SHALL log `event-store.commit-retry { id, owner, repo, attempt, error }`.
 
-#### Scenario: Non-trigger events persist with NULL meta
+If all retries are exhausted, EventStore SHALL log `event-store.commit-dropped { id, owner, repo, attempts, error }`, evict the accumulator entry for that id, and continue. The `record()` Promise SHALL resolve normally — the runtime SHALL NOT exit on commit-drop. The dropped invocation SHALL NOT appear in subsequent `query()` results.
 
-- **GIVEN** an EventStore with no rows
-- **WHEN** `handle({ kind: "action.request", id: "evt_a", seq: 1, ..., input: {...} })` is called with no `meta` field
-- **THEN** a row SHALL be inserted with `meta = NULL`
+#### Scenario: Successful retry after transient failure
 
-#### Scenario: Archive loader tolerates legacy events without meta
+- **GIVEN** EventStore is committing a terminal for `evt_a`
+- **AND** the first commit attempt fails with a transient network error
+- **AND** the second attempt succeeds
+- **THEN** `record()` SHALL resolve normally
+- **AND** one `event-store.commit-retry { id: "evt_a", attempt: 1 }` log line SHALL have been emitted
+- **AND** one `event-store.commit-ok` log line SHALL have been emitted
+- **AND** the events table SHALL contain rows for `evt_a`
 
-- **GIVEN** an `archive/` containing invocations persisted before this change (no `meta` field on any event)
-- **WHEN** `createEventStore({ persistence: { backend } })` bootstraps and awaits `initialized`
-- **THEN** the `events` table SHALL contain one row per archived event
-- **AND** every loaded row's `meta` column SHALL be `NULL`
-- **AND** no exception SHALL be thrown during bootstrap
+#### Scenario: Drop after retry exhaustion
 
-### Requirement: EventStore bootstraps from persistence at init
+- **GIVEN** EventStore is committing a terminal for `evt_a` with `EVENT_STORE_COMMIT_MAX_RETRIES=2`
+- **AND** every commit attempt fails
+- **WHEN** `record()` is awaited
+- **THEN** `record()` SHALL resolve without throwing
+- **AND** an `event-store.commit-dropped { id: "evt_a", attempts: 2, error }` log line SHALL have been emitted
+- **AND** the accumulator entry for `evt_a` SHALL be cleared
+- **AND** subsequent `query()` calls SHALL NOT return any rows for `evt_a`
+- **AND** the runtime process SHALL still be running
 
-The EventStore consumer factory SHALL accept an optional `persistence: { backend: StorageBackend }` option (the `StorageBackend` itself, wrapped in a struct for future extensibility — NOT the persistence consumer). When supplied, the factory SHALL eagerly populate its `events` table at construction by invoking the module-level `scanArchive(backend)` helper from `persistence.ts` and inserting one row per archived `InvocationEvent`. The factory function SHALL be async (or expose an `initialized` promise that callers can await) so the dashboard list can render only after the bootstrap completes.
+### Requirement: SIGTERM drain commits in-flight invocations
 
-The wrapping struct exists so the signature can grow additional persistence-related knobs (logger, prefix override, etc.) without a breaking change. It is NOT a reference to the `Persistence` BusConsumer — EventStore and Persistence are independent bus consumers and neither holds a reference to the other.
+On SIGTERM, EventStore SHALL drain in-flight invocations within `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` (default 60 000 ms, MUST be less than the K8s `terminationGracePeriodSeconds`). For each invocation in the accumulator, EventStore SHALL synthesise a terminal `trigger.error { reason: "shutdown" }` event with the next seq number, append it to the accumulator, and commit. After all accumulator entries are drained or the timeout elapses, EventStore SHALL call `dispose()` to close the DuckLake connection and resolve.
 
-#### Scenario: Index populated from archive at init
+If the timeout elapses before all invocations are drained, the remaining in-flight invocations are lost (same outcome as SIGKILL for those entries). EventStore SHALL log `event-store.sigterm-drain-timeout { remaining }` in that case.
 
-- **GIVEN** `archive/` containing 5 invocations, each with N events (for a total of M event records)
-- **WHEN** `createEventStore({ persistence: { backend } })` is called and its `initialized` promise resolves
-- **THEN** the `events` table SHALL contain `M` rows
-- **AND** each row's `(id, seq)` pair SHALL match an event record found in the archive
+#### Scenario: Graceful drain commits each in-flight as trigger.error{shutdown}
 
-### Requirement: Query latest invocations
+- **GIVEN** EventStore's accumulator holds non-terminal events for `evt_a` and `evt_b`
+- **WHEN** SIGTERM is delivered and the drain runs to completion within the timeout
+- **THEN** the events table SHALL contain a `trigger.error { reason: "shutdown" }` terminal row for both `evt_a` and `evt_b`
+- **AND** the accumulator SHALL be empty
+- **AND** the DuckLake connection SHALL be closed
 
-The EventStore SHALL expose a `query(scopes: ReadonlyArray<{owner: string, repo: string}>)` method that returns a Kysely-style read-only `SelectQueryBuilder` scoped to the `events` table AND pre-bound with a `WHERE (owner, repo) IN ((?, ?), ...)` clause derived from the supplied scopes. Consumers derive the cross-invocation dashboard list by querying `trigger.request` rows for the requested scopes with the appropriate ordering and then joining terminal events for status/duration. Cross-invocation ordering SHALL use the `at` column with `id` as tiebreak.
+#### Scenario: Drain timeout logs and drops the remaining
 
-The `scopes` argument SHALL be required and SHALL NOT be empty; an empty scopes array SHALL cause `query` to throw a precondition error (no read is permitted without at least one scope). There SHALL be no API for issuing an unscoped read of the `events` table from outside the EventStore module.
+- **GIVEN** EventStore's accumulator holds 1000 entries
+- **AND** `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` is 100 ms (insufficient)
+- **WHEN** SIGTERM triggers the drain
+- **THEN** as many entries as the timeout permits SHALL be committed
+- **AND** an `event-store.sigterm-drain-timeout { remaining }` log line SHALL have been emitted naming the unflushed count
 
-The EventStore SHALL NOT validate that scopes belong to a particular user; scope resolution is a caller responsibility (see the middleware layer in the `dashboard-list-view` and `trigger-ui` specs). The EventStore treats the supplied scopes as an allow-list and MUST NOT return any row outside it.
+### Requirement: SIGKILL loses in-flight invocations
 
-#### Scenario: Query latest trigger.request rows for a single scope
+SIGKILL, OOM, force-delete, kernel panic, or any unclean process death SHALL cause all events held only in the in-memory accumulator to be lost. There SHALL NOT be a per-event WAL, an `orphans/` spill prefix, or any other on-disk record of in-flight events. Cold start of a fresh process SHALL NOT attempt to recover such invocations.
 
-- **GIVEN** an EventStore with events for multiple invocations across scopes `{owner: "acme", repo: "foo"}` and `{owner: "acme", repo: "bar"}`
-- **WHEN** `eventStore.query([{owner: "acme", repo: "foo"}]).where('kind', '=', 'trigger.request').selectAll().orderBy('at', 'desc').orderBy('id', 'desc').limit(50).execute()` is called
-- **THEN** the EventStore SHALL return at most 50 `trigger.request` rows
-- **AND** every returned row SHALL have `owner = "acme"` AND `repo = "foo"`
-- **AND** no row from `repo = "bar"` SHALL appear
-- **AND** the rows SHALL be ordered by `at` descending, tiebroken by `id` descending
+#### Scenario: Process dies mid-invocation
 
-#### Scenario: Query across multiple scopes returns union
+- **GIVEN** EventStore's accumulator holds events for `evt_a` whose terminal has not yet been committed
+- **WHEN** the process is terminated by SIGKILL
+- **AND** a fresh process starts against the same backend
+- **THEN** `query()` SHALL NOT return any rows for `evt_a`
+- **AND** no recovery scan, replay, or synthetic terminal SHALL be attempted
 
-- **GIVEN** an EventStore with events for `(acme, foo)`, `(acme, bar)`, and `(alice, utils)`
-- **WHEN** `eventStore.query([{owner: "acme", repo: "foo"}, {owner: "acme", repo: "bar"}]).selectAll().execute()` is called
-- **THEN** the EventStore SHALL return rows from both `(acme, foo)` and `(acme, bar)`
-- **AND** NO row from `(alice, utils)` SHALL appear
+### Requirement: Background CHECKPOINT compacts the catalog and data files
 
-#### Scenario: Empty scopes array rejected
+EventStore SHALL run DuckLake's `CHECKPOINT` operation in the background according to the configured triggers. Triggers (logical OR):
 
-- **WHEN** `eventStore.query([])` is called
-- **THEN** the method SHALL throw a precondition error
-- **AND** no SQL query SHALL be executed
+- `EVENT_STORE_CHECKPOINT_INTERVAL_MS` elapsed since the last successful checkpoint (default 3 600 000 = 1 h),
+- inlined-row count exceeds `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS` (default 100 000),
+- catalog file size exceeds `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES` (default 10 485 760 = 10 MiB).
 
-#### Scenario: Query events by invocation id is scope-filtered
+`CHECKPOINT` SHALL flush inlined rows to Parquet, merge small Parquets, apply deletion vectors, and update the catalog snapshot. EventStore SHALL expire snapshots on every checkpoint (no time-travel retention). EventStore SHALL log `event-store.checkpoint-run { durationMs, catalogBytesBefore, catalogBytesAfter, inlinedRowsFlushed, filesCompacted }` on success and `event-store.checkpoint-skip { reason: "no-work" }` when no work is required.
 
-- **GIVEN** an EventStore with events for invocation `evt_abc` at seqs 0..N owned by scope `(acme, foo)`, and unrelated events owned by scope `(evil-corp, phish)` (including, hypothetically, a row sharing the same id)
-- **WHEN** `eventStore.query([{owner: "acme", repo: "foo"}]).where('id', '=', 'evt_abc').orderBy('seq', 'asc').execute()` is called
-- **THEN** the EventStore SHALL return exactly the `N+1` events for `evt_abc` belonging to scope `(acme, foo)`
-- **AND** no row from any other scope SHALL appear, regardless of id
-### Requirement: handle() inserts event row (non-fatal)
+`CHECKPOINT` SHALL run on the same DuckDB connection that owns writes, off the commit hot path. It SHALL NOT block `record()` calls beyond DuckDB's normal connection-level serialisation.
 
-`handle(event)` SHALL INSERT a row into the `events` table for every `InvocationEvent` received. The operation SHALL be wrapped in a try/catch — errors SHALL be logged but NOT rethrown, so the bus pipeline continues.
+#### Scenario: Timer-driven checkpoint runs once interval elapses
 
-#### Scenario: Insert failure does not crash pipeline
+- **GIVEN** EventStore configured with `EVENT_STORE_CHECKPOINT_INTERVAL_MS=1000` and no other thresholds tripping
+- **AND** at least one commit has occurred since the last checkpoint
+- **WHEN** 1100 ms have elapsed since the last checkpoint
+- **THEN** EventStore SHALL run `CHECKPOINT`
+- **AND** an `event-store.checkpoint-run` log line SHALL have been emitted
 
-- **GIVEN** an EventStore whose DuckDB instance has an internal error
-- **WHEN** `handle(event)` is called
-- **THEN** the error is logged via the injected logger
-- **AND** `handle()` resolves without throwing
+#### Scenario: Threshold-driven checkpoint after enough inlined rows
 
-### Requirement: query property exposes read-only SelectQueryBuilder
+- **GIVEN** EventStore configured with `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS=100`
+- **WHEN** the inlined-row count crosses 100
+- **THEN** EventStore SHALL trigger `CHECKPOINT` without waiting for the interval timer
 
-The `query(scopes)` method SHALL return a Kysely `SelectQueryBuilder` pre-scoped to the `events` table AND pre-bound with the scope allow-list clause. Consumers chain `.where()`, `.select()`, `.groupBy()`, `.execute()`, etc. The returned builder SHALL NOT expose insert, update, or delete capabilities.
+#### Scenario: Skip checkpoint when there is no work
 
-Additional `.where()` predicates added by the caller SHALL be additive (Kysely AND-combines them); the scope binding cannot be removed by the caller.
+- **GIVEN** EventStore has not committed any new event since the last checkpoint
+- **WHEN** the interval timer fires
+- **THEN** EventStore SHALL log `event-store.checkpoint-skip { reason: "no-work" }`
+- **AND** SHALL NOT run a no-op `CHECKPOINT`
 
-#### Scenario: Query by workflow within a scope
+### Requirement: query exposes a scope-bound Kysely SelectQueryBuilder
 
-- **GIVEN** an EventStore with invocations for workflows "foo" and "bar" in `(acme, foo)`, plus invocations for workflow "foo" in `(other, repo)`
-- **WHEN** `eventStore.query([{owner: "acme", repo: "foo"}]).where('workflow', '=', 'foo').selectAll().execute()` is called
-- **THEN** only the `(acme, foo)` invocations for workflow "foo" are returned
+EventStore SHALL expose `query(scopes: readonly Scope[]): SelectQueryBuilder<Database, "events", object>` where `Scope = { owner: string; repo: string }`. The returned builder SHALL be pre-filtered to rows whose `(owner, repo)` is in the supplied allow-list. An empty `scopes` argument SHALL throw — empty allow-lists must never compile to a tautological `WHERE 1=0` or `WHERE 1=1` and silently leak or hide data.
 
-#### Scenario: Aggregation query within a scope
+The query path SHALL execute against the DuckLake-attached events table. Partition pruning on `(owner, repo)` SHALL bound scan cost to the relevant Parquet files.
 
-- **GIVEN** an EventStore with 3 invocations for "foo" and 2 for "bar" in `(acme, foo)`, plus 5 invocations in `(other, repo)`
-- **WHEN** a GROUP BY query with `eb.fn.count('id')` is executed via `eventStore.query([{owner: "acme", repo: "foo"}])`
-- **THEN** results show foo=3, bar=2 (no contribution from `(other, repo)`)
-### Requirement: Module re-exports Kysely utilities
+#### Scenario: Single-scope query returns only that owner/repo's rows
 
-The `event-bus/event-store.ts` module SHALL re-export `sql` from `kysely` and any types consumers need for building queries. Consumers SHALL NOT need to import from `kysely` directly.
+- **GIVEN** EventStore contains rows for `(acme, foo)` and `(acme, bar)`
+- **WHEN** a caller invokes `query([{ owner: "acme", repo: "foo" }]).execute()`
+- **THEN** the result SHALL contain only the `(acme, foo)` rows
 
-#### Scenario: Consumer imports sql from event-store
+#### Scenario: Empty scope list throws
 
-- **WHEN** a consumer imports `{ sql }` from the event-store module
-- **THEN** the `sql` tagged template is available for raw SQL expressions
+- **WHEN** a caller invokes `query([])`
+- **THEN** the call SHALL throw an Error
+- **AND** the message SHALL mention that scopes must be a non-empty (owner, repo) allow-list
 
-### Requirement: EventStore module exports
+### Requirement: hasUploadEvent gates duplicate workflow uploads
 
-The `event-bus/event-store.ts` module SHALL export:
-- `createEventStore` factory function
-- `EventStore` type
-- `sql` (re-exported from kysely)
-- Kysely types needed by consumers for query building
+EventStore SHALL expose `hasUploadEvent(owner: string, repo: string, workflow: string, workflowSha: string): Promise<boolean>` returning true iff a `system.upload` event already exists for the exact `(owner, repo, workflow, workflowSha)` tuple. This method bypasses the scope allow-list contract that `query()` enforces because the upload handler authorises `(owner, repo)` via `requireOwnerMember()`. Other callers MUST NOT use this method to fetch event data.
 
-#### Scenario: All exports available
+#### Scenario: Returns true for an existing upload
 
-- **WHEN** a consumer imports from the event-store module
-- **THEN** `createEventStore`, `EventStore`, and `sql` are available
+- **GIVEN** EventStore has a row with `kind: "system.upload"`, `owner: "acme"`, `repo: "foo"`, `workflow: "main"`, `workflowSha: "sha1"`
+- **WHEN** `hasUploadEvent("acme", "foo", "main", "sha1")` resolves
+- **THEN** the result SHALL be `true`
 
-### Requirement: Liveness ping
+#### Scenario: Returns false for an unseen sha
 
-The EventStore SHALL expose a `ping(): Promise<void>` method that issues a `SELECT 1` round-trip against the underlying DuckDB connection. The method SHALL resolve on success and SHALL reject (propagating the underlying error) on connection or query failure. `ping()` SHALL NOT require a tenant argument; it does not read from the `events` table.
+- **WHEN** `hasUploadEvent("acme", "foo", "main", "sha-never-uploaded")` resolves
+- **THEN** the result SHALL be `false`
 
-#### Scenario: ping resolves on a healthy store
+### Requirement: ping verifies the DuckLake connection
 
-- **GIVEN** an EventStore whose DuckDB instance is responsive
-- **WHEN** `eventStore.ping()` is called
-- **THEN** the returned promise SHALL resolve
+EventStore SHALL expose `ping(): Promise<void>` that runs `SELECT 1` against the DuckDB connection holding the DuckLake catalog. `ping()` SHALL resolve on success and reject on failure. The readiness endpoint (`/readyz`) consumes this to determine whether the runtime is serving.
 
-#### Scenario: ping rejects on a failed store
+#### Scenario: Ping succeeds when the connection is healthy
 
-- **GIVEN** an EventStore whose DuckDB instance has an internal error
-- **WHEN** `eventStore.ping()` is called
-- **THEN** the returned promise SHALL reject with the underlying error
+- **WHEN** `ping()` is awaited on a healthy EventStore
+- **THEN** it SHALL resolve with no value
 
-### Requirement: Security context
+#### Scenario: Ping rejects when the connection is broken
 
-The implementation SHALL conform to the owner/repo isolation invariant documented at `/SECURITY.md §1 "Owner/repo isolation invariants"` (I-T2, renamed). The `EventStore.query(scopes)` API is the load-bearing enforcement point for this invariant on invocation-event reads: the required `scopes` argument is pre-bound into a `WHERE (owner, repo) IN (...)` clause on the returned Kysely `SelectQueryBuilder`, and no unscoped read API is exposed. This makes scope-omission structurally impossible — a caller cannot construct a read against the `events` table without supplying at least one `(owner, repo)` scope at the call site.
+- **GIVEN** the DuckDB connection has been closed
+- **WHEN** `ping()` is awaited
+- **THEN** it SHALL reject with the underlying connection error
 
-Because `query` accepts a caller-supplied allow-list rather than a single identifier, the invariant has one additional clause: **every caller of `query` MUST resolve the scope list from a trusted source** (the authenticated user's owner-membership intersected with registered `(owner, repo)` bundles). Passing a user-supplied path parameter directly into `scopes` is a defect. The runtime SHALL provide a single helper (e.g. `resolveQueryScopes(user, constraint?)`) that middleware uses to produce scope lists; call sites SHALL route through this helper and SHALL NOT construct scope lists from untrusted input.
+### Requirement: Single-writer is a deployment contract
 
-Changes to this capability that introduce a new read path against the `events` table (including new public methods on `EventStore`, new utilities that accept a `Kysely` instance, or re-exports that would allow a consumer to build a query bypassing `query(scopes)`), or that weaken the pre-binding behaviour of `query(scopes)`, MUST update `/SECURITY.md §1` in the same change proposal.
+EventStore SHALL NOT implement runtime split-brain fencing. The catalog round-trip uses an unconditional PUT, because S2 (local development) and UpCloud Object Storage (production) do not implement `If-Match` conditional PUT. Single-writer correctness depends on the Kubernetes Deployment manifest enforcing `replicas: 1` with `strategy: Recreate` (see the `infrastructure` capability). Operating with two concurrent writers SHALL silently corrupt the catalog. This regression is documented in `SECURITY.md` and `docs/upgrades.md`.
 
-#### Scenario: Change introduces a new read path
+#### Scenario: Catalog PUT does not include If-Match
 
-- **GIVEN** a change proposal that adds a new method, re-export, or utility that allows consumers to read from the `events` table
-- **WHEN** the change is proposed
-- **THEN** the proposal SHALL demonstrate that the new read path is scope-bound at its API surface (the `scopes` argument is required and the scopes cannot be removed by the caller)
-- **AND** the proposal SHALL update `/SECURITY.md §1 "Owner/repo isolation invariants"` to reference the new read path
+- **WHEN** EventStore commits a terminal and PUTs the catalog file to S3
+- **THEN** the request SHALL NOT include an `If-Match` header
+- **AND** the response ETag SHALL be logged as part of `event-store.commit-ok` for ops visibility only — never used as a guard
 
-#### Scenario: Change is orthogonal to the invariant
+### Requirement: Module exports
 
-- **GIVEN** a change proposal that modifies this capability
-- **WHEN** the change does not introduce a new read path and does not alter the `query(scopes)` pre-binding
-- **THEN** no update to `/SECURITY.md §1` is required
-- **AND** the proposal SHALL note that owner/repo-isolation alignment was checked
+The runtime SHALL export `createEventStore`, the `EventStore` interface, the Kysely `Database` type for the events table, the `Scope` type, and re-export `sql` from `kysely` so consumers do not import `kysely` directly. The module path SHALL be `packages/runtime/src/event-store.ts` (no longer under `event-bus/`, which has been removed).
 
-#### Scenario: Middleware routes scope resolution through the helper
+#### Scenario: Consumers import from the canonical path
 
-- **GIVEN** a dashboard handler that needs to query events for the current user
-- **WHEN** the handler builds a scope list
-- **THEN** it SHALL call `resolveQueryScopes(user)` (or an equivalent trusted helper)
-- **AND** SHALL NOT construct `{owner, repo}` entries from request path parameters or query-string input
+- **WHEN** `auth/scopes.ts` imports `EventStore`
+- **THEN** the import SHALL resolve from `../event-store.js` (relative)
+

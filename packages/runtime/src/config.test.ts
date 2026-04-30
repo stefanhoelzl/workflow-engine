@@ -219,6 +219,55 @@ describe("createConfig", () => {
 		expect(serialized).not.toContain(STUB_SK_B64);
 		expect(serialized).toContain("[redacted]");
 	});
+
+	it("EVENT_STORE_* defaults apply when env vars are unset", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.eventStoreCheckpointIntervalMs).toBe(3_600_000);
+		expect(config.eventStoreCheckpointMaxInlinedRows).toBe(100_000);
+		expect(config.eventStoreCheckpointMaxCatalogBytes).toBe(10_485_760);
+		expect(config.eventStoreCommitMaxRetries).toBe(5);
+		expect(config.eventStoreCommitBackoffMs).toBe(500);
+		expect(config.eventStoreSigtermFlushTimeoutMs).toBe(60_000);
+	});
+
+	it("EVENT_STORE_* env values override defaults", () => {
+		const config = createConfig({
+			...REQUIRED,
+			EVENT_STORE_CHECKPOINT_INTERVAL_MS: "300000",
+			EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS: "1",
+			EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES: "1048576",
+			EVENT_STORE_COMMIT_MAX_RETRIES: "2",
+			EVENT_STORE_COMMIT_BACKOFF_MS: "100",
+			EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS: "5000",
+		});
+		expect(config.eventStoreCheckpointIntervalMs).toBe(300_000);
+		expect(config.eventStoreCheckpointMaxInlinedRows).toBe(1);
+		expect(config.eventStoreCheckpointMaxCatalogBytes).toBe(1_048_576);
+		expect(config.eventStoreCommitMaxRetries).toBe(2);
+		expect(config.eventStoreCommitBackoffMs).toBe(100);
+		expect(config.eventStoreSigtermFlushTimeoutMs).toBe(5000);
+	});
+
+	it("EVENT_STORE_* rejects non-numeric values", () => {
+		expect(() =>
+			createConfig({
+				...REQUIRED,
+				EVENT_STORE_COMMIT_MAX_RETRIES: "not-a-number",
+			}),
+		).toThrow();
+	});
+
+	it("EVENT_STORE_* error names the offending field", () => {
+		try {
+			createConfig({
+				...REQUIRED,
+				EVENT_STORE_CHECKPOINT_INTERVAL_MS: "abc",
+			});
+			throw new Error("expected throw");
+		} catch (err) {
+			expect(String(err)).toContain("EVENT_STORE_CHECKPOINT_INTERVAL_MS");
+		}
+	});
 });
 
 describe("createSecret", () => {

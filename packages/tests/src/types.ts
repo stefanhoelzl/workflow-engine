@@ -96,6 +96,15 @@ interface LogLine {
 	[key: string]: unknown;
 }
 
+// Declarative filter for `.waitForLog`. `msg` is exact-match on the
+// runtime's structured `msg` field; other entries are exact-match on
+// the corresponding top-level field (e.g. `{ trigger: "slow" }` matches
+// log lines whose `trigger` property equals `"slow"`).
+interface LogFilter {
+	readonly msg?: string;
+	readonly [key: string]: unknown;
+}
+
 // Persistence-dir event entries, polled by `.waitForEvent` (PR 3+). PR 1
 // only stubs the array as empty.
 interface InvocationEvent {
@@ -188,6 +197,7 @@ interface Scenario {
 		callback: (state: ScenarioState) => void | Promise<void>,
 		opts?: { hardCap?: number },
 	): Scenario;
+	waitForLog(filter: LogFilter, opts?: { hardCap?: number }): Scenario;
 	sigterm(opts?: SignalOpts): Scenario;
 	sigkill(opts?: SignalOpts): Scenario;
 	browser(callback: (ctx: BrowserContext) => Promise<void>): Scenario;
@@ -210,6 +220,7 @@ export type {
 	HttpResponse,
 	InvocationArchive,
 	InvocationEvent,
+	LogFilter,
 	LogLine,
 	MailCapture,
 	ManualOpts,

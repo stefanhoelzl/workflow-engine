@@ -809,12 +809,12 @@ function createWorkflowRegistry(
 		if (!backend) {
 			return { ok: true };
 		}
-		// Write directly to the canonical key. `StorageBackend.writeBytes` is
+		// Write directly to the canonical key. `StorageBackend.write` is
 		// contractually atomic (FS: tmp+rename; S3: PutObject), so no staging
 		// key is needed. See openspec/specs/storage-backend/spec.md.
 		const key = `workflows/${owner}/${repo}.tar.gz`;
 		try {
-			await backend.writeBytes(key, bytes);
+			await backend.write(key, bytes);
 			return { ok: true };
 		} catch (err) {
 			return {
@@ -947,7 +947,7 @@ function createWorkflowRegistry(
 		repo: string,
 	): Promise<void> {
 		try {
-			const bytes = await storageBackend.readBytes(key);
+			const bytes = await storageBackend.read(key);
 			const files = await extractOwnerTarGz(bytes);
 			const result = await registerOwner(owner, repo, files);
 			if (!result.ok) {

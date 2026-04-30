@@ -8,29 +8,18 @@ import type {
 } from "@workflow-engine/core";
 import type { Sandbox } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
-import { createEventBus, type EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
 import type { Logger } from "../logger.js";
 import type { SandboxStore } from "../sandbox-store.js";
+import { createTestEventStore } from "../test-utils/event-store.js";
+import { createTestLogger } from "../test-utils/logger.js";
 import { withZodSchemas } from "../triggers/test-descriptors.js";
 import { createExecutor } from "./index.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
 const EVT_ID_RE = /^evt_/;
 
-function makeLogger(): Logger {
-	return {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-		trace: vi.fn(),
-		child: vi.fn(),
-	} as unknown as Logger;
-}
-
-// Logger is only needed to construct event buses in tests; the executor itself
-// no longer takes a logger (the bus owns the fatal-exit log line).
-const testLogger: Logger = makeLogger();
+const testLogger: Logger = createTestLogger();
 
 function makeManifest(name: string, sha = "0".repeat(64)): WorkflowManifest {
 	return {
@@ -107,13 +96,14 @@ describe("executor", () => {
 		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 
@@ -171,13 +161,14 @@ describe("executor", () => {
 		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 		const wf = makeManifest("wf");
@@ -219,7 +210,8 @@ describe("executor", () => {
 			onRun: async () => ({ status: 202, body: { ok: true } }),
 		});
 		const executor = createExecutor({
-			bus: createEventBus([], { logger: testLogger }),
+			eventStore: createTestEventStore(),
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 		const result = await executor.invoke(
@@ -248,7 +240,8 @@ describe("executor", () => {
 			isActive: false,
 		};
 		const executor = createExecutor({
-			bus: createEventBus([], { logger: testLogger }),
+			eventStore: createTestEventStore(),
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 		const result = await executor.invoke(
@@ -283,7 +276,8 @@ describe("executor", () => {
 			},
 		});
 		const executor = createExecutor({
-			bus: createEventBus([], { logger: testLogger }),
+			eventStore: createTestEventStore(),
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 		const wf = makeManifest("wf");
@@ -309,13 +303,14 @@ describe("executor", () => {
 		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 
@@ -377,13 +372,14 @@ describe("executor", () => {
 		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 
@@ -425,14 +421,18 @@ describe("executor", () => {
 describe("executor.fail (trigger.exception emission)", () => {
 	function setup() {
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const sandbox = makeSandbox();
 		const store = makeStore(sandbox);
-		const executor = createExecutor({ bus, sandboxStore: store });
+		const executor = createExecutor({
+			eventStore,
+			logger: testLogger,
+			sandboxStore: store,
+		});
 		return { executor, sandbox, store, seen };
 	}
 
@@ -558,9 +558,10 @@ describe("executor: per-sandbox state consolidation", () => {
 				.mockResolvedValueOnce(sandboxB),
 			dispose: vi.fn<SandboxStore["dispose"]>().mockResolvedValue(undefined),
 		};
-		const bus: EventBus = { emit: vi.fn().mockResolvedValue(undefined) };
+		const eventStore = createTestEventStore();
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: store,
 		});
 		const workflow = makeManifest("w");
@@ -612,13 +613,14 @@ describe("executor: per-sandbox state consolidation", () => {
 			},
 		});
 		const seen: InvocationEvent[] = [];
-		const bus: EventBus = {
-			emit: async (e) => {
+		const eventStore = createTestEventStore({
+			onRecord: (e) => {
 				seen.push(e);
 			},
-		};
+		});
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 		await executor.invoke(
@@ -658,14 +660,18 @@ describe("executor: per-sandbox state consolidation", () => {
 		const capture = { eventCallbacks: [] as ((e: SandboxEvent) => void)[] };
 		const sandbox = makeSandbox({ capture });
 		const runSpy = sandbox.run as ReturnType<typeof vi.fn>;
-		// Stub bus.emit to never resolve, mirroring what the real bus does
-		// when a strict consumer throws (it awaits systemShutdown which never
-		// resolves).
-		const bus: EventBus = {
-			emit: vi.fn().mockReturnValue(new Promise(() => {})),
+		// Stub EventStore.record to never resolve, mirroring what happens when
+		// the durability commit hangs (e.g. a hung S3 PUT). The executor's
+		// emitTail awaits each record() before returning, so a non-resolving
+		// record() must keep invoke() parked.
+		const recordSpy = vi.fn().mockReturnValue(new Promise(() => {}));
+		const eventStore: EventStore = {
+			...createTestEventStore(),
+			record: recordSpy as unknown as EventStore["record"],
 		};
 		const executor = createExecutor({
-			bus,
+			eventStore,
+			logger: testLogger,
 			sandboxStore: makeStore(sandbox),
 		});
 
@@ -697,6 +703,6 @@ describe("executor: per-sandbox state consolidation", () => {
 			new Promise<"timer">((resolve) => setTimeout(() => resolve("timer"), 30)),
 		]);
 		expect(settled).toBe("timer");
-		expect(bus.emit).toHaveBeenCalled();
+		expect(recordSpy).toHaveBeenCalled();
 	});
 });

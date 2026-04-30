@@ -1,33 +1,16 @@
-import {
-	mkdir,
-	readdir,
-	readFile,
-	rename,
-	rm,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
-import { join } from "node:path";
-import type { StorageBackend } from "./index.js";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import type { StorageBackend, StorageLocator } from "./index.js";
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups all FS storage operations
 function createFsStorage(root: string): StorageBackend {
+	const absoluteRoot = resolve(root);
 	return {
 		async init() {
-			await mkdir(root, { recursive: true });
+			await mkdir(absoluteRoot, { recursive: true });
 		},
 
 		async write(path, data) {
-			const fullPath = join(root, path);
-			const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
-			await mkdir(dir, { recursive: true });
-			const tmp = `${fullPath}.tmp`;
-			await writeFile(tmp, data, "utf-8");
-			await rename(tmp, fullPath);
-		},
-
-		async writeBytes(path, data) {
-			const fullPath = join(root, path);
+			const fullPath = join(absoluteRoot, path);
 			const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
 			await mkdir(dir, { recursive: true });
 			const tmp = `${fullPath}.tmp`;
@@ -36,16 +19,12 @@ function createFsStorage(root: string): StorageBackend {
 		},
 
 		async read(path) {
-			return await readFile(join(root, path), "utf-8");
-		},
-
-		async readBytes(path) {
-			const buf = await readFile(join(root, path));
+			const buf = await readFile(join(absoluteRoot, path));
 			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 		},
 
 		async *list(prefix) {
-			const dir = join(root, prefix);
+			const dir = join(absoluteRoot, prefix);
 			let entries: import("node:fs").Dirent[];
 			try {
 				entries = await readdir(dir, { recursive: true, withFileTypes: true });
@@ -64,19 +43,8 @@ function createFsStorage(root: string): StorageBackend {
 			}
 		},
 
-		async remove(path) {
-			await unlink(join(root, path));
-		},
-
-		async removePrefix(prefix) {
-			await rm(join(root, prefix), { recursive: true, force: true });
-		},
-
-		async move(from, to) {
-			const toFull = join(root, to);
-			const toDir = toFull.slice(0, toFull.lastIndexOf("/"));
-			await mkdir(toDir, { recursive: true });
-			await rename(join(root, from), toFull);
+		locator(): StorageLocator {
+			return { kind: "fs", root: absoluteRoot };
 		},
 	};
 }

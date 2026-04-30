@@ -4,7 +4,7 @@ import type {
 	InvocationEventError,
 	WorkflowManifest,
 } from "@workflow-engine/core";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
 import type { TriggerDescriptor } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ function assertHostFailKind(kind: EventKind): asserts kind is HostFailKind {
 
 // biome-ignore lint/complexity/useMaxParams: identity bag is the same shape executor.invoke takes — flattening avoids an allocation per failure
 async function emitTriggerException(
-	bus: EventBus,
+	eventStore: EventStore,
 	owner: string,
 	repo: string,
 	workflow: WorkflowManifest,
@@ -92,7 +92,7 @@ async function emitTriggerException(
 				}
 			: {}),
 	};
-	await bus.emit(event);
+	await eventStore.record(event);
 }
 
 export type { HostFailKind, TriggerExceptionParams };

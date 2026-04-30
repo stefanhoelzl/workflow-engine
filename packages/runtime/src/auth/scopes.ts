@@ -1,4 +1,4 @@
-import type { Scope } from "../event-bus/event-store.js";
+import type { Scope } from "../event-store.js";
 import type { WorkflowRegistry } from "../workflow-registry.js";
 import { ownerSet, validateOwner, validateRepo } from "./owner.js";
 import type { UserContext } from "./user-context.js";

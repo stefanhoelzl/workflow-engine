@@ -13,6 +13,7 @@ export type {
 	HttpResponse,
 	InvocationArchive,
 	InvocationEvent,
+	LogFilter,
 	LogLine,
 	MailCapture,
 	ManualOpts,

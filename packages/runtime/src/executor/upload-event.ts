@@ -4,7 +4,7 @@ import type {
 	InvocationEvent,
 	WorkflowManifest,
 } from "@workflow-engine/core";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
 
 // ---------------------------------------------------------------------------
 // system.upload emission primitive (executor-internal)
@@ -46,7 +46,7 @@ function assertSystemUploadKind(
 }
 
 async function emitSystemUpload(
-	bus: EventBus,
+	eventStore: EventStore,
 	params: SystemUploadParams,
 ): Promise<void> {
 	const kind: EventKind = "system.upload";
@@ -70,7 +70,7 @@ async function emitSystemUpload(
 		input: params.snapshot,
 		meta: { dispatch },
 	};
-	await bus.emit(event);
+	await eventStore.record(event);
 }
 
 export type { SystemUploadParams };

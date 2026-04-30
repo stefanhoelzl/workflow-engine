@@ -1,14 +1,13 @@
 import { constants } from "node:http2";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { EventStore } from "./event-bus/event-store.js";
+import type { EventStore } from "./event-store.js";
 import {
 	type CheckResult,
 	type HealthDeps,
 	type HealthResponse,
 	healthMiddleware,
 } from "./health.js";
-import type { StorageBackend } from "./storage/index.js";
 
 const CONTENT_TYPE = "application/health+json";
 
@@ -16,26 +15,12 @@ function stubEventStore(overrides?: Partial<EventStore>): EventStore {
 	return {
 		query: vi.fn(),
 		ping: vi.fn().mockResolvedValue(undefined),
-		handle: vi.fn(),
+		record: vi.fn(),
+		hasUploadEvent: vi.fn().mockResolvedValue(false),
 		with: vi.fn(),
+		drainAndClose: vi.fn().mockResolvedValue(undefined),
 		...overrides,
 	} as unknown as EventStore;
-}
-
-function stubStorageBackend(): StorageBackend {
-	return {
-		init: vi.fn().mockResolvedValue(undefined),
-		write: vi.fn().mockResolvedValue(undefined),
-		writeBytes: vi.fn().mockResolvedValue(undefined),
-		read: vi.fn().mockResolvedValue("2026-01-01T00:00:00.000Z"),
-		readBytes: vi.fn().mockResolvedValue(new Uint8Array(0)),
-		list: vi.fn().mockImplementation(async function* () {
-			// empty iterator
-		}),
-		remove: vi.fn().mockResolvedValue(undefined),
-		removePrefix: vi.fn().mockResolvedValue(undefined),
-		move: vi.fn().mockResolvedValue(undefined),
-	};
 }
 
 function createApp(deps: HealthDeps): Hono {
@@ -48,7 +33,6 @@ function createApp(deps: HealthDeps): Hono {
 function defaultDeps(overrides?: Partial<HealthDeps>): HealthDeps {
 	return {
 		eventStore: stubEventStore(),
-		storageBackend: undefined,
 		baseUrl: undefined,
 		gitSha: "dev",
 		...overrides,
@@ -97,60 +81,6 @@ describe("GET /healthz", () => {
 		expect(check.componentType).toBe("datastore");
 		expect(check.observedUnit).toBe("ms");
 		expect(typeof check.observedValue).toBe("number");
-	});
-
-	it("persistence check without backend returns 503 with no backend configured", async () => {
-		const app = createApp(defaultDeps({ storageBackend: undefined }));
-
-		const res = await app.request("/healthz?persistence=true", {
-			method: "GET",
-		});
-
-		expect(res.status).toBe(constants.HTTP_STATUS_SERVICE_UNAVAILABLE);
-		const body = (await res.json()) as HealthResponse;
-		expect(body.status).toBe("fail");
-
-		for (const key of [
-			"persistence:write",
-			"persistence:read",
-			"persistence:list",
-		]) {
-			const check = body.checks?.[key]?.[0] as CheckResult;
-			expect(check.status).toBe("fail");
-			expect(check.output).toBe("no backend configured");
-		}
-	});
-
-	it("persistence check with backend runs write/read/list and returns pass", async () => {
-		const backend = stubStorageBackend();
-		const app = createApp(defaultDeps({ storageBackend: backend }));
-
-		const res = await app.request("/healthz?persistence=true", {
-			method: "GET",
-		});
-
-		expect(res.status).toBe(constants.HTTP_STATUS_OK);
-		const body = (await res.json()) as HealthResponse;
-		expect(body.status).toBe("pass");
-
-		for (const key of [
-			"persistence:write",
-			"persistence:read",
-			"persistence:list",
-		]) {
-			const check = body.checks?.[key]?.[0] as CheckResult;
-			expect(check.status).toBe("pass");
-			expect(check.componentType).toBe("datastore");
-			expect(check.observedUnit).toBe("ms");
-			expect(typeof check.observedValue).toBe("number");
-		}
-
-		expect(backend.write).toHaveBeenCalledWith(
-			".healthz/sentinel",
-			expect.any(String),
-		);
-		expect(backend.read).toHaveBeenCalledWith(".healthz/sentinel");
-		expect(backend.list).toHaveBeenCalledWith("pending/");
 	});
 
 	it("webhooks check without BASE_URL returns 503", async () => {
@@ -219,7 +149,6 @@ describe("GET /readyz", () => {
 		const app = createApp(
 			defaultDeps({
 				eventStore: stubEventStore(),
-				storageBackend: stubStorageBackend(),
 				baseUrl: "http://localhost:8080",
 			}),
 		);
@@ -231,9 +160,6 @@ describe("GET /readyz", () => {
 		expect(body.status).toBe("pass");
 		expect(body.checks).toBeDefined();
 		expect(body.checks?.eventstore?.[0]?.status).toBe("pass");
-		expect(body.checks?.["persistence:write"]?.[0]?.status).toBe("pass");
-		expect(body.checks?.["persistence:read"]?.[0]?.status).toBe("pass");
-		expect(body.checks?.["persistence:list"]?.[0]?.status).toBe("pass");
 		expect(body.checks?.webhooks?.[0]?.status).toBe("pass");
 		expect(body.checks?.domain?.[0]?.status).toBe("pass");
 
@@ -244,7 +170,6 @@ describe("GET /readyz", () => {
 		const app = createApp(
 			defaultDeps({
 				eventStore: stubEventStore(),
-				storageBackend: undefined,
 				baseUrl: undefined,
 			}),
 		);
@@ -257,16 +182,6 @@ describe("GET /readyz", () => {
 
 		// eventstore should pass
 		expect(body.checks?.eventstore?.[0]?.status).toBe("pass");
-
-		// persistence checks should fail
-		for (const key of [
-			"persistence:write",
-			"persistence:read",
-			"persistence:list",
-		]) {
-			expect(body.checks?.[key]?.[0]?.status).toBe("fail");
-			expect(body.checks?.[key]?.[0]?.output).toBe("no backend configured");
-		}
 
 		// webhooks and domain should fail
 		expect(body.checks?.webhooks?.[0]?.status).toBe("fail");

@@ -5,10 +5,9 @@ import { pack as tarPack } from "tar-stream";
 import { describe, expect, it, vi } from "vitest";
 import { buildRegistry } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
-import { createEventStore } from "../event-bus/event-store.js";
-import { createEventBus } from "../event-bus/index.js";
 import type { Executor } from "../executor/index.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
+import { createRealEventStoreForTest } from "../test-utils/event-store.js";
 import type { TriggerSource } from "../triggers/source.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
@@ -141,19 +140,18 @@ async function mountWithBackends(backends: readonly TriggerSource[]) {
 		backends,
 		keyStore: stubKeyStore,
 	});
-	const eventStore = await createEventStore();
-	const bus = createEventBus([eventStore], { logger });
+	const handle = await createRealEventStoreForTest();
+	const eventStore = handle.store;
 	const middleware = apiMiddleware({
 		authRegistry,
 		registry,
 		logger,
 		keyStore: stubKeyStore,
-		bus,
 		eventStore,
 	});
 	const app = new Hono();
 	app.all(middleware.match, middleware.handler);
-	return { app, bus, eventStore };
+	return { app, eventStore, dispose: handle.dispose };
 }
 
 const AUTH_HEADERS: Record<string, string> = {
@@ -363,7 +361,9 @@ describe("POST /api/workflows/:owner/:repo — system.upload emission", () => {
 	}
 
 	async function listUploads(
-		eventStore: Awaited<ReturnType<typeof createEventStore>>,
+		eventStore: Awaited<
+			ReturnType<typeof createRealEventStoreForTest>
+		>["store"],
 	): Promise<
 		Array<{
 			workflow: string;
@@ -532,7 +532,7 @@ describe("POST /api/workflows/:owner/:repo — system.upload emission", () => {
 		// Second "boot" — fresh stack, but seed the eventStore with the
 		// prior upload row before mounting the upload handler.
 		const second = await mountWithBackends([stubBackend("http", "ok")]);
-		await second.eventStore.handle({
+		await second.eventStore.record({
 			id: "evt_seedseedseed",
 			seq: 0,
 			ref: 0,

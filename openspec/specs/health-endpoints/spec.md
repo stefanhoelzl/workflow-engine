@@ -103,42 +103,6 @@ The check SHALL NOT depend on the contents of the `events` table or on any tenan
 - **WHEN** the eventstore check runs
 - **THEN** it SHALL return `"status":"fail"` with the error message in `"output"`
 
-### Requirement: Persistence write deep check
-The persistence:write check SHALL write a sentinel file to `.healthz/sentinel` on the storage backend. It SHALL report `componentType: "datastore"` and the write duration in milliseconds. If no storage backend is configured, it SHALL report `"status":"fail"` with `"output":"no backend configured"`.
-
-#### Scenario: Persistence write succeeds
-- **GIVEN** a storage backend is configured and responsive
-- **WHEN** the persistence:write check runs
-- **THEN** it SHALL write to `.healthz/sentinel` and return `"status":"pass"` with write duration
-
-#### Scenario: No storage backend configured
-- **WHEN** the persistence:write check runs without a configured backend
-- **THEN** it SHALL return `"status":"fail"` with `"output":"no backend configured"`
-
-### Requirement: Persistence read deep check
-The persistence:read check SHALL read the `.healthz/sentinel` file from the storage backend. It SHALL report `componentType: "datastore"` and the read duration in milliseconds. If no storage backend is configured, it SHALL report `"status":"fail"` with `"output":"no backend configured"`.
-
-#### Scenario: Persistence read succeeds
-- **GIVEN** a storage backend is configured and `.healthz/sentinel` exists
-- **WHEN** the persistence:read check runs
-- **THEN** it SHALL read `.healthz/sentinel` and return `"status":"pass"` with read duration
-
-#### Scenario: No storage backend configured
-- **WHEN** the persistence:read check runs without a configured backend
-- **THEN** it SHALL return `"status":"fail"` with `"output":"no backend configured"`
-
-### Requirement: Persistence list deep check
-The persistence:list check SHALL call `list("pending/")` on the storage backend and consume the async iterator. It SHALL report `componentType: "datastore"` and the list duration in milliseconds. If no storage backend is configured, it SHALL report `"status":"fail"` with `"output":"no backend configured"`.
-
-#### Scenario: Persistence list succeeds
-- **GIVEN** a storage backend is configured
-- **WHEN** the persistence:list check runs
-- **THEN** it SHALL list `pending/` and return `"status":"pass"` with list duration
-
-#### Scenario: No storage backend configured
-- **WHEN** the persistence:list check runs without a configured backend
-- **THEN** it SHALL return `"status":"fail"` with `"output":"no backend configured"`
-
 ### Requirement: Webhooks deep check
 The webhooks check SHALL fetch `BASE_URL + "/webhooks/"` and verify the response status is `204`. It SHALL report `componentType: "component"` and the response duration in milliseconds. If `BASE_URL` is not configured, it SHALL report `"status":"fail"` with `"output":"BASE_URL not configured"`.
 

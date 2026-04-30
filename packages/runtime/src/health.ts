@@ -1,8 +1,7 @@
 import { constants } from "node:http2";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { EventStore } from "./event-bus/event-store.js";
-import type { StorageBackend } from "./storage/index.js";
+import type { EventStore } from "./event-store.js";
 import type { Middleware } from "./triggers/http.js";
 
 const CONTENT_TYPE = "application/health+json";
@@ -28,7 +27,6 @@ interface HealthResponse {
 
 interface HealthDeps {
 	eventStore: EventStore;
-	storageBackend: StorageBackend | undefined;
 	baseUrl: string | undefined;
 	gitSha: string;
 }
@@ -84,61 +82,6 @@ async function checkEventstore(
 			],
 		};
 	}
-}
-
-async function checkPersistence(
-	deps: HealthDeps,
-	timeoutMs: number,
-): Promise<Record<string, CheckResult[]>> {
-	if (!deps.storageBackend) {
-		const msg = "no backend configured";
-		return {
-			"persistence:write": [fail("datastore", msg)],
-			"persistence:read": [fail("datastore", msg)],
-			"persistence:list": [fail("datastore", msg)],
-		};
-	}
-
-	const checks: Record<string, CheckResult[]> = {};
-	const backend = deps.storageBackend;
-	const sentinel = ".healthz/sentinel";
-	const content = new Date().toISOString();
-
-	try {
-		const { durationMs } = await timed(
-			() => backend.write(sentinel, content),
-			timeoutMs,
-		);
-		checks["persistence:write"] = [pass("datastore", durationMs)];
-	} catch (err) {
-		checks["persistence:write"] = [
-			fail("datastore", err instanceof Error ? err.message : String(err)),
-		];
-	}
-
-	try {
-		const { durationMs } = await timed(() => backend.read(sentinel), timeoutMs);
-		checks["persistence:read"] = [pass("datastore", durationMs)];
-	} catch (err) {
-		checks["persistence:read"] = [
-			fail("datastore", err instanceof Error ? err.message : String(err)),
-		];
-	}
-
-	try {
-		const { durationMs } = await timed(async () => {
-			for await (const _entry of backend.list("pending/")) {
-				// consume the iterator
-			}
-		}, timeoutMs);
-		checks["persistence:list"] = [pass("datastore", durationMs)];
-	} catch (err) {
-		checks["persistence:list"] = [
-			fail("datastore", err instanceof Error ? err.message : String(err)),
-		];
-	}
-
-	return checks;
 }
 
 async function checkWebhooks(
@@ -224,7 +167,6 @@ type CheckFn = (
 
 const CHECK_MAP: Record<string, CheckFn> = {
 	eventstore: checkEventstore,
-	persistence: checkPersistence,
 	domain: checkDomain,
 	webhooks: checkWebhooks,
 };

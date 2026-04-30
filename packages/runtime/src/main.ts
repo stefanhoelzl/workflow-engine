@@ -8,18 +8,10 @@ import {
 import { authMiddleware, loginPageMiddleware } from "./auth/routes.js";
 import { sessionMiddleware } from "./auth/session-mw.js";
 import { createConfig } from "./config.js";
-import { createEventStore } from "./event-bus/event-store.js";
-import type { BusConsumer, EventBus } from "./event-bus/index.js";
-import { createEventBus } from "./event-bus/index.js";
-import { createLoggingConsumer } from "./event-bus/logging-consumer.js";
-import {
-	createPersistence,
-	type PersistenceConsumer,
-} from "./event-bus/persistence.js";
+import { createEventStore } from "./event-store.js";
 import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
-import { recover } from "./recovery.js";
 import { createSandboxStore } from "./sandbox-store.js";
 import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
@@ -42,14 +34,20 @@ import { createWorkflowRegistry } from "./workflow-registry.js";
 
 function createStorageBackend(
 	config: ReturnType<typeof createConfig>,
-	logger: ReturnType<typeof createLogger>,
+	_logger: ReturnType<typeof createLogger>,
 ): StorageBackend | undefined {
 	if (config.persistenceS3Bucket) {
+		const accessKeyId = config.persistenceS3AccessKeyId;
+		const secretAccessKey = config.persistenceS3SecretAccessKey;
+		if (!(accessKeyId && secretAccessKey)) {
+			throw new Error(
+				"PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY are required when PERSISTENCE_S3_BUCKET is set",
+			);
+		}
 		return createS3Storage({
 			bucket: config.persistenceS3Bucket,
-			accessKeyId: config.persistenceS3AccessKeyId?.reveal() ?? "",
-			secretAccessKey: config.persistenceS3SecretAccessKey?.reveal() ?? "",
-			logger,
+			accessKeyId,
+			secretAccessKey,
 			...(config.persistenceS3Endpoint
 				? { endpoint: config.persistenceS3Endpoint }
 				: {}),
@@ -61,16 +59,6 @@ function createStorageBackend(
 	if (config.persistencePath) {
 		return createFsStorage(config.persistencePath);
 	}
-}
-
-function initPersistence(
-	backend: StorageBackend | undefined,
-	logger: ReturnType<typeof createLogger>,
-): PersistenceConsumer | undefined {
-	if (!backend) {
-		return;
-	}
-	return createPersistence(backend, { logger });
 }
 
 function logRegistry(
@@ -127,22 +115,24 @@ async function init() {
 		await storageBackend.init();
 	}
 
-	// 2. Init event bus + consumers. EventStore bootstraps from archive at
-	//    consumer init; await `initialized` before proceeding.
-	const eventStore = await createEventStore({
-		logger: runtimeLogger,
-		...(storageBackend ? { persistence: { backend: storageBackend } } : {}),
-	});
-	await eventStore.initialized;
-	const persistence = initPersistence(storageBackend, runtimeLogger);
-	const logging = createLoggingConsumer(eventLogger);
-	const consumers: BusConsumer[] = [];
-	if (persistence) {
-		consumers.push(persistence);
+	// 2. Init EventStore. Opens the DuckLake catalog (downloaded for S3, opened
+	//    locally for FS). Constant-time boot regardless of archived event count.
+	if (!storageBackend) {
+		throw new Error(
+			"persistence backend is required: set PERSISTENCE_PATH or PERSISTENCE_S3_*",
+		);
 	}
-	consumers.push(eventStore, logging);
-	const eventBus: EventBus = createEventBus(consumers, {
+	const eventStore = await createEventStore({
+		backend: storageBackend,
 		logger: runtimeLogger,
+		config: {
+			checkpointIntervalMs: config.eventStoreCheckpointIntervalMs,
+			checkpointMaxInlinedRows: config.eventStoreCheckpointMaxInlinedRows,
+			checkpointMaxCatalogBytes: config.eventStoreCheckpointMaxCatalogBytes,
+			commitMaxRetries: config.eventStoreCommitMaxRetries,
+			commitBackoffMs: config.eventStoreCommitBackoffMs,
+			sigtermFlushTimeoutMs: config.eventStoreSigtermFlushTimeoutMs,
+		},
 	});
 
 	// Deprecation warning for removed filesystem-bootstrap env vars.
@@ -175,10 +165,11 @@ async function init() {
 	});
 
 	// 5. Create the executor (serializes per-(owner, sha) invocations;
-	//    resolves sandboxes via the store; emits trigger.* events through
-	//    the bus).
+	//    resolves sandboxes via the store; records trigger.* events directly
+	//    against EventStore and emits invocation.* lifecycle log lines).
 	const executor = createExecutor({
-		bus: eventBus,
+		eventStore,
+		logger: eventLogger,
 		sandboxStore,
 	});
 
@@ -221,13 +212,8 @@ async function init() {
 	}
 	runtimeLogger.info("workflows.loaded", { count: registry.size });
 
-	// 8. Sweep crashed pending invocations before binding the HTTP port.
-	if (storageBackend) {
-		await recover(
-			{ backend: storageBackend, eventStore, logger: runtimeLogger },
-			eventBus,
-		);
-	}
+	// 8. (No recovery scan in the new model — `pending/` is gone, in-flight
+	//    invocations live in RAM, SIGKILL deliberately loses them.)
 
 	// Auth wiring. sessionMw gates `/dashboard/*` and `/trigger/*`;
 	// loginPageMiddleware renders the login card; authMiddleware mounts
@@ -261,7 +247,6 @@ async function init() {
 		httpLogger,
 		healthMiddleware({
 			eventStore,
-			storageBackend,
 			baseUrl: config.baseUrl,
 			gitSha: config.gitSha,
 		}),
@@ -275,7 +260,6 @@ async function init() {
 			registry,
 			logger: runtimeLogger,
 			keyStore,
-			bus: eventBus,
 			eventStore,
 		}),
 	);
@@ -285,6 +269,7 @@ async function init() {
 		async stop() {
 			await Promise.allSettled(triggerBackends.map((s) => s.stop()));
 			await sandboxStore.dispose();
+			await eventStore.drainAndClose();
 		},
 	};
 

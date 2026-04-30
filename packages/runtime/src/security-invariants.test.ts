@@ -4,18 +4,9 @@
 
 import type { SandboxEvent, WorkflowManifest } from "@workflow-engine/core";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Logger } from "./logger.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
-
-function makeLogger(): Logger {
-	return {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-	} as unknown as Logger;
-}
+import { createTestLogger as makeLogger } from "./test-utils/logger.js";
 
 const WORKFLOW: WorkflowManifest = {
 	name: "demo",
