@@ -132,18 +132,19 @@ type EventKind =
 interface InvocationEventError {
 	message: string;
 	// Optional: real Errors usually carry a stack, but synthetic terminals
-	// (worker-death close synthesis in `RunSequencer.finish`, recovery's
-	// `engine_crashed` synthetic terminal) have no JS stack to capture.
+	// (worker-death close synthesis in `RunSequencer.finish`, EventStore's
+	// SIGTERM-drain `shutdown` synthetic) have no JS stack to capture.
 	// Omitting beats emitting a meaningless `""`.
 	stack?: string;
 	issues?: unknown;
 	/**
-	 * Recovery stamps `kind: "engine_crashed"` onto the synthetic `trigger.error`
-	 * it emits for invocations whose pending events were found on disk at
-	 * startup but never reached a terminal. See `recovery/spec.md` for the
-	 * full shape and semantics.
+	 * Synthetic-terminal kind emitted by the runtime when an invocation
+	 * cannot complete naturally. `"shutdown"` is stamped by EventStore's
+	 * SIGTERM drain on each in-flight invocation so the dashboard sees
+	 * them rather than losing them silently. See `event-store/spec.md`
+	 * § "SIGTERM drain".
 	 */
-	kind?: "engine_crashed";
+	kind?: "shutdown";
 }
 
 /**

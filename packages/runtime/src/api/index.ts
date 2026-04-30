@@ -1,8 +1,7 @@
 import { Hono } from "hono";
 import { requireOwnerMember } from "../auth/owner-mw.js";
 import type { ProviderRegistry } from "../auth/providers/index.js";
-import type { EventStore } from "../event-bus/event-store.js";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
 import type { Logger } from "../logger.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
 import { createNotFoundHandler } from "../services/content-negotiation.js";
@@ -31,7 +30,6 @@ interface ApiOptions {
 	authRegistry: ProviderRegistry;
 	logger: Logger;
 	keyStore: SecretsKeyStore;
-	bus: EventBus;
 	eventStore: EventStore;
 }
 
@@ -51,7 +49,6 @@ function apiMiddleware(options: ApiOptions): Middleware {
 			registry: options.registry,
 			logger: options.logger,
 			keyStore: options.keyStore,
-			bus: options.bus,
 			eventStore: options.eventStore,
 		}),
 	);

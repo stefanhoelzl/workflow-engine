@@ -6,10 +6,9 @@ import {
 	type ProviderRegistry,
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
-import { createEventStore } from "../event-bus/event-store.js";
-import { createEventBus } from "../event-bus/index.js";
 import type { Executor } from "../executor/index.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
+import { createRealEventStoreForTest } from "../test-utils/event-store.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -61,14 +60,12 @@ async function mountApi(opts: MountOpts) {
 		executor: stubExecutor,
 		keyStore: stubKeyStore,
 	});
-	const eventStore = await createEventStore();
-	const bus = createEventBus([eventStore], { logger });
+	const eventStore = (await createRealEventStoreForTest()).store;
 	const middleware = apiMiddleware({
 		authRegistry,
 		registry,
 		logger,
 		keyStore: stubKeyStore,
-		bus,
 		eventStore,
 	});
 	const app = new Hono();

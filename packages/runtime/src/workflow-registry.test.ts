@@ -467,7 +467,7 @@ describe("workflow registry: persistence and recovery", () => {
 
 		const files = ownerFiles();
 		const tarballBytes = await packOwnerBundle(files);
-		await backend.writeBytes("workflows/acme/demo.tar.gz", tarballBytes);
+		await backend.write("workflows/acme/demo.tar.gz", tarballBytes);
 
 		registry = createWorkflowRegistry({
 			logger,
@@ -488,15 +488,18 @@ describe("workflow registry: persistence and recovery", () => {
 
 		const validFiles = ownerFiles();
 		const validBytes = await packOwnerBundle(validFiles);
-		await backend.writeBytes("workflows/acme/demo.tar.gz", validBytes);
-		await backend.writeBytes(
+		await backend.write("workflows/acme/demo.tar.gz", validBytes);
+		await backend.write(
 			"workflows/acme/broken.tar.gz",
 			new Uint8Array([1, 2, 3]),
 		);
 		// Stray non-tarball key — must be ignored.
-		await backend.write("workflows/acme/readme.txt", "noop");
+		await backend.write(
+			"workflows/acme/readme.txt",
+			new TextEncoder().encode("noop"),
+		);
 		// Legacy depth-1 key — must be logged and skipped, not loaded.
-		await backend.writeBytes("workflows/legacy-owner.tar.gz", validBytes);
+		await backend.write("workflows/legacy-owner.tar.gz", validBytes);
 
 		registry = createWorkflowRegistry({
 			logger,

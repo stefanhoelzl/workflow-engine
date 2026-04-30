@@ -2,8 +2,7 @@ import { constants } from "node:http2";
 import { ManifestSchema } from "@workflow-engine/core";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { EventStore } from "../event-bus/event-store.js";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
 import { emitSystemUpload } from "../executor/upload-event.js";
 import type { Logger } from "../logger.js";
 import {
@@ -60,7 +59,6 @@ interface UploadDeps {
 	readonly registry: WorkflowRegistry;
 	readonly logger: Logger;
 	readonly keyStore: SecretsKeyStore;
-	readonly bus: EventBus;
 	readonly eventStore: EventStore;
 }
 
@@ -165,7 +163,7 @@ async function emitUploadEvents(
 			continue;
 		}
 		try {
-			await emitSystemUpload(deps.bus, {
+			await emitSystemUpload(deps.eventStore, {
 				owner,
 				repo,
 				workflow: wf,
@@ -173,10 +171,10 @@ async function emitUploadEvents(
 				user: { login: user.login, mail: user.mail },
 			});
 		} catch (err) {
-			// Best-effort: an emission failure on a strict consumer already
-			// crashed the process via the bus's runtime.fatal path; this catch
-			// only fires for rare non-strict-consumer errors. Log and continue
-			// with the rest of the bundle.
+			// Best-effort: EventStore.record handles its own retry-then-drop
+			// policy, so this catch only fires for true programmer errors
+			// (record after dispose). Log and continue with the rest of the
+			// bundle.
 			deps.logger.error("upload.system-upload-emit-failed", {
 				owner,
 				repo,

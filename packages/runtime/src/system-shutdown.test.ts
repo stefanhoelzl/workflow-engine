@@ -1,17 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Logger } from "./logger.js";
 import { setExitFnForTests, systemShutdown } from "./system-shutdown.js";
-
-function makeLogger(): Logger {
-	return {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-		trace: vi.fn(),
-		child: vi.fn(),
-	} as unknown as Logger;
-}
+import { createTestLogger as makeLogger } from "./test-utils/logger.js";
 
 describe("systemShutdown", () => {
 	let exitSpy: ReturnType<typeof vi.fn<() => void>>;

@@ -93,7 +93,22 @@ function describe(
 				child = null;
 			}
 			if (spec) {
-				await rm(spec.persistencePath, { recursive: true, force: true });
+				// `fs.rm({recursive: true})` occasionally hits ENOTEMPTY when
+				// the runtime's last DuckLake CHECKPOINT raced with shutdown
+				// and left fresh Parquet files appearing during the recursive
+				// walk. Retry a few times before surfacing the error.
+				const path = spec.persistencePath;
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					try {
+						await rm(path, { recursive: true, force: true });
+						break;
+					} catch (err) {
+						if (attempt === 4) {
+							throw err;
+						}
+						await new Promise((r) => setTimeout(r, 50));
+					}
+				}
 				spec = null;
 			}
 		});

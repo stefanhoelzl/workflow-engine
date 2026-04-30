@@ -3,7 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
+import { createTestEventStore } from "../test-utils/event-store.js";
 import { withZodSchemas } from "../triggers/test-descriptors.js";
 import { emitTriggerException } from "./exception.js";
 import type { HttpTriggerDescriptor } from "./types.js";
@@ -35,19 +36,19 @@ function makeDescriptor(): HttpTriggerDescriptor {
 	});
 }
 
-function makeBus(seen: InvocationEvent[]): EventBus {
-	return {
-		emit: async (e) => {
+function makeStore(seen: InvocationEvent[]): EventStore {
+	return createTestEventStore({
+		onRecord: (e: InvocationEvent) => {
 			seen.push(e);
 		},
-	};
+	});
 }
 
 describe("emitTriggerException", () => {
 	it("defaults to kind = 'trigger.exception' when params.kind is omitted (back-compat)", async () => {
 		const seen: InvocationEvent[] = [];
 		await emitTriggerException(
-			makeBus(seen),
+			makeStore(seen),
 			"o",
 			"r",
 			makeManifest(),
@@ -63,7 +64,7 @@ describe("emitTriggerException", () => {
 	it("preserves the legacy `details` payload shape (regression guard)", async () => {
 		const seen: InvocationEvent[] = [];
 		await emitTriggerException(
-			makeBus(seen),
+			makeStore(seen),
 			"o",
 			"r",
 			makeManifest(),
@@ -85,7 +86,7 @@ describe("emitTriggerException", () => {
 	it("emits kind = 'trigger.rejection' when params.kind is set, with no error and no body", async () => {
 		const seen: InvocationEvent[] = [];
 		await emitTriggerException(
-			makeBus(seen),
+			makeStore(seen),
 			"o",
 			"r",
 			makeManifest(),
@@ -125,7 +126,7 @@ describe("emitTriggerException", () => {
 		const seen: InvocationEvent[] = [];
 		await expect(
 			emitTriggerException(
-				makeBus(seen),
+				makeStore(seen),
 				"o",
 				"r",
 				makeManifest(),

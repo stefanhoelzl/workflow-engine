@@ -11,8 +11,8 @@
 	"dependencies": {
 		"@alpinejs/csp": "3.15.11",
 		"@aws-sdk/client-s3": "^3.1026.0",
-		"@duckdb/node-api": "1.5.1-r.1",
-		"@duckdb/node-bindings": "1.5.1-r.1",
+		"@duckdb/node-api": "1.5.2-r.1",
+		"@duckdb/node-bindings": "1.5.2-r.1",
 		"@hono/node-server": "^1.19.12",
 		"@oorabona/kysely-duckdb": "^0.5.1",
 		"@workflow-engine/core": "workspace:*",

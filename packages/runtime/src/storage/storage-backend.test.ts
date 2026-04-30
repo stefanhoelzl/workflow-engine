@@ -11,6 +11,7 @@ import {
 	expect,
 	it,
 } from "vitest";
+import { createSecret } from "../config.js";
 import { createFsStorage } from "./fs.js";
 import type { StorageBackend } from "./index.js";
 import { createS3Storage } from "./s3.js";
@@ -37,143 +38,73 @@ function storageBackendTests(
 			await cleanup();
 		});
 
-		it("write and read roundtrip", async () => {
-			await backend.write("dir/file.json", '{"id":"evt_1"}');
-			const data = await backend.read("dir/file.json");
-			expect(data).toBe('{"id":"evt_1"}');
-		});
-
-		it("writeBytes and readBytes roundtrip arbitrary binary data", async () => {
+		it("write and read roundtrip arbitrary binary data", async () => {
 			const payload = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe]);
-			await backend.writeBytes("dir/bundle.tar.gz", payload);
-			const data = await backend.readBytes("dir/bundle.tar.gz");
+			await backend.write("dir/bundle.tar.gz", payload);
+			const data = await backend.read("dir/bundle.tar.gz");
 			expect(Array.from(data)).toEqual(Array.from(payload));
 		});
 
-		it("writeBytes overwrites existing key", async () => {
-			await backend.writeBytes("dir/bundle.tar.gz", new Uint8Array([1, 2, 3]));
-			await backend.writeBytes("dir/bundle.tar.gz", new Uint8Array([9, 8]));
-			const data = await backend.readBytes("dir/bundle.tar.gz");
+		it("write overwrites existing key", async () => {
+			await backend.write("dir/bundle.tar.gz", new Uint8Array([1, 2, 3]));
+			await backend.write("dir/bundle.tar.gz", new Uint8Array([9, 8]));
+			const data = await backend.read("dir/bundle.tar.gz");
 			expect(Array.from(data)).toEqual([9, 8]);
 		});
 
 		it("list yields matching paths", async () => {
-			await backend.write("pending/a.json", "a");
-			await backend.write("pending/b.json", "b");
-			await backend.write("archive/c.json", "c");
-
-			const results: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				results.push(path);
-			}
-
-			expect(results).toContain("pending/a.json");
-			expect(results).toContain("pending/b.json");
-			expect(results).not.toContain("archive/c.json");
-		});
-
-		it("list yields sorted paths", async () => {
-			await backend.write("pending/c.json", "c");
-			await backend.write("pending/a.json", "a");
-			await backend.write("pending/b.json", "b");
-
-			const results: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				results.push(path);
-			}
-
-			expect(results).toEqual([
-				"pending/a.json",
-				"pending/b.json",
-				"pending/c.json",
-			]);
-		});
-
-		it("list returns nothing for empty prefix", async () => {
-			const results: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				results.push(path);
-			}
-			expect(results).toEqual([]);
-		});
-
-		it("move relocates a file", async () => {
-			await backend.write("pending/a.json", "content");
-			await backend.move("pending/a.json", "archive/a.json");
-
-			const data = await backend.read("archive/a.json");
-			expect(data).toBe("content");
-
-			const pending: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				pending.push(path);
-			}
-			expect(pending).not.toContain("pending/a.json");
-		});
-
-		it("remove deletes a file", async () => {
-			await backend.write("pending/a.json", "content");
-			await backend.remove("pending/a.json");
-
-			const results: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				results.push(path);
-			}
-			expect(results).not.toContain("pending/a.json");
-		});
-
-		it("list yields paths recursively", async () => {
-			await backend.write("workflows/foo/manifest.json", "{}");
-			await backend.write("workflows/foo/actions/handle.js", "code");
-			await backend.write("pending/evt_a/000000.json", "evt");
+			await backend.write("workflows/a.tar.gz", new Uint8Array([1]));
+			await backend.write("workflows/b.tar.gz", new Uint8Array([2]));
+			await backend.write("events.duckdb", new Uint8Array([3]));
 
 			const results: string[] = [];
 			for await (const path of backend.list("workflows/")) {
 				results.push(path);
 			}
 
-			expect(results).toContain("workflows/foo/manifest.json");
-			expect(results).toContain("workflows/foo/actions/handle.js");
-			expect(results).not.toContain("pending/evt_a/000000.json");
+			expect(results).toContain("workflows/a.tar.gz");
+			expect(results).toContain("workflows/b.tar.gz");
+			expect(results).not.toContain("events.duckdb");
 		});
 
-		it("write overwrites existing file", async () => {
-			await backend.write("pending/a.json", "old");
-			await backend.write("pending/a.json", "new");
-			const data = await backend.read("pending/a.json");
-			expect(data).toBe("new");
-		});
+		it("list yields sorted paths", async () => {
+			await backend.write("workflows/c.tar.gz", new Uint8Array([1]));
+			await backend.write("workflows/a.tar.gz", new Uint8Array([2]));
+			await backend.write("workflows/b.tar.gz", new Uint8Array([3]));
 
-		it("removePrefix removes all nested files under the prefix", async () => {
-			await backend.write("pending/evt_a/000000.json", "a0");
-			await backend.write("pending/evt_a/000001.json", "a1");
-			await backend.write("pending/evt_a/000002.json", "a2");
-			await backend.write("pending/evt_b/000000.json", "b0");
-
-			await backend.removePrefix("pending/evt_a/");
-
-			const remaining: string[] = [];
-			for await (const path of backend.list("pending/")) {
-				remaining.push(path);
+			const results: string[] = [];
+			for await (const path of backend.list("workflows/")) {
+				results.push(path);
 			}
-			expect(remaining).toEqual(["pending/evt_b/000000.json"]);
+
+			expect(results).toEqual([
+				"workflows/a.tar.gz",
+				"workflows/b.tar.gz",
+				"workflows/c.tar.gz",
+			]);
 		});
 
-		it("removePrefix is idempotent on missing prefix", async () => {
-			await expect(
-				backend.removePrefix("pending/evt_nonexistent/"),
-			).resolves.toBeUndefined();
+		it("list returns nothing for empty prefix", async () => {
+			const results: string[] = [];
+			for await (const path of backend.list("workflows/")) {
+				results.push(path);
+			}
+			expect(results).toEqual([]);
 		});
 
-		it("removePrefix does not affect keys outside the prefix", async () => {
-			await backend.write("pending/evt_a/0.json", "a0");
-			await backend.write("archive/evt_a.json", "arch");
-			await backend.write("pending_other.json", "keep");
+		it("list yields paths recursively", async () => {
+			await backend.write("workflows/foo/bar.tar.gz", new Uint8Array([1]));
+			await backend.write("workflows/foo/baz.tar.gz", new Uint8Array([2]));
+			await backend.write("events.duckdb", new Uint8Array([3]));
 
-			await backend.removePrefix("pending/evt_a/");
+			const results: string[] = [];
+			for await (const path of backend.list("workflows/")) {
+				results.push(path);
+			}
 
-			expect(await backend.read("archive/evt_a.json")).toBe("arch");
-			expect(await backend.read("pending_other.json")).toBe("keep");
+			expect(results).toContain("workflows/foo/bar.tar.gz");
+			expect(results).toContain("workflows/foo/baz.tar.gz");
+			expect(results).not.toContain("events.duckdb");
 		});
 	});
 }
@@ -188,9 +119,10 @@ storageBackendTests("fs", async () => {
 	};
 });
 
-// Run against S3 backend (s3rver)
+// Run against S3 backend (s3rver) — each test uses a fresh per-test bucket dir
 let s3Server: { close(): Promise<void> } | undefined;
 let s3Port = 0;
+const s3Dir = join(tmpdir(), `s3rver-${crypto.randomUUID()}`);
 
 const require = createRequire(import.meta.url);
 const createS3rver = require("s3rver") as new (opts: {
@@ -199,8 +131,6 @@ const createS3rver = require("s3rver") as new (opts: {
 	silent: boolean;
 	configureBuckets: { name: string }[];
 }) => { run(): Promise<{ port: number }>; close(): Promise<void> };
-
-const s3Dir = join(tmpdir(), `s3rver-${crypto.randomUUID()}`);
 
 beforeAll(async () => {
 	await mkdir(s3Dir, { recursive: true });
@@ -221,33 +151,76 @@ afterAll(async () => {
 });
 
 storageBackendTests("s3", async () => {
-	const s3Cleanup = createS3Storage({
-		bucket: "test-bucket",
-		accessKeyId: "S3RVER",
-		secretAccessKey: "S3RVER",
-		endpoint: `http://localhost:${s3Port}`,
-		region: "us-east-1",
-	});
-
+	const bucketDir = join(s3Dir, "test-bucket");
 	return {
 		backend: createS3Storage({
 			bucket: "test-bucket",
-			accessKeyId: "S3RVER",
-			secretAccessKey: "S3RVER",
+			accessKeyId: createSecret("S3RVER"),
+			secretAccessKey: createSecret("S3RVER"),
 			endpoint: `http://localhost:${s3Port}`,
 			region: "us-east-1",
 		}),
+		// Wipe the s3rver-managed bucket directory directly. Avoids reintroducing a
+		// `remove` method on the StorageBackend interface just for test cleanup.
 		cleanup: async () => {
-			const keys: string[] = [];
-			for await (const key of s3Cleanup.list("")) {
-				keys.push(key);
-			}
-			for (const key of keys) {
-				// biome-ignore lint/performance/noAwaitInLoops: sequential cleanup
-				await s3Cleanup.remove(key);
-			}
+			await rm(bucketDir, { recursive: true, force: true });
+			await mkdir(bucketDir, { recursive: true });
 		},
 	};
 });
 
-export { storageBackendTests };
+describe("StorageBackend.locator", () => {
+	it("fs backend returns absolute root", async () => {
+		const dir = join(tmpdir(), `locator-fs-${crypto.randomUUID()}`);
+		await mkdir(dir, { recursive: true });
+		try {
+			const backend = createFsStorage(dir);
+			const locator = backend.locator();
+			expect(locator.kind).toBe("fs");
+			if (locator.kind === "fs") {
+				expect(locator.root).toBe(dir);
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("s3 backend returns bucket and Secret-wrapped credentials", () => {
+		const accessKeyId = createSecret("ak");
+		const secretAccessKey = createSecret("sk");
+		const backend = createS3Storage({
+			bucket: "wfe",
+			accessKeyId,
+			secretAccessKey,
+			endpoint: "http://s2.local:9000",
+			region: "auto",
+		});
+		const locator = backend.locator();
+		expect(locator.kind).toBe("s3");
+		if (locator.kind === "s3") {
+			expect(locator.bucket).toBe("wfe");
+			expect(locator.endpoint).toBe("http://s2.local:9000");
+			expect(locator.region).toBe("auto");
+			expect(locator.urlStyle).toBe("path");
+			expect(locator.useSsl).toBe(false);
+			expect(locator.accessKeyId.reveal()).toBe("ak");
+			expect(locator.secretAccessKey.reveal()).toBe("sk");
+		}
+	});
+
+	it("s3 backend defaults to virtual urlStyle and AWS endpoint when no endpoint is set", () => {
+		const backend = createS3Storage({
+			bucket: "wfe",
+			accessKeyId: createSecret("ak"),
+			secretAccessKey: createSecret("sk"),
+			region: "eu-fra-1",
+		});
+		const locator = backend.locator();
+		expect(locator.kind).toBe("s3");
+		if (locator.kind === "s3") {
+			expect(locator.urlStyle).toBe("virtual");
+			expect(locator.endpoint).toBe("s3.eu-fra-1.amazonaws.com");
+			expect(locator.useSsl).toBe(true);
+		}
+	});
+});

@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { ownerSet } from "../../auth/owner.js";
 import { requireOwnerMember } from "../../auth/owner-mw.js";
 import { resolveQueryScopes } from "../../auth/scopes.js";
-import type { EventStore, Scope } from "../../event-bus/event-store.js";
+import type { EventStore, Scope } from "../../event-store.js";
 import type { Logger } from "../../logger.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";

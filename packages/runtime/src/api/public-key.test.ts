@@ -9,10 +9,9 @@ import {
 	type ProviderRegistry,
 } from "../auth/providers/index.js";
 import { localProviderFactory } from "../auth/providers/local.js";
-import { createEventStore } from "../event-bus/event-store.js";
-import { createEventBus } from "../event-bus/index.js";
 import type { Executor } from "../executor/index.js";
 import { createKeyStore, readyCrypto } from "../secrets/index.js";
+import { createRealEventStoreForTest } from "../test-utils/event-store.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -60,14 +59,12 @@ describe("GET /api/workflows/:owner/public-key", () => {
 			executor: stubExecutor,
 			keyStore,
 		});
-		const eventStore = await createEventStore();
-		const bus = createEventBus([eventStore], { logger });
+		const eventStore = (await createRealEventStoreForTest()).store;
 		const middleware = apiMiddleware({
 			authRegistry: openAuthRegistry(),
 			registry,
 			logger,
 			keyStore,
-			bus,
 			eventStore,
 		});
 		const app = new Hono();

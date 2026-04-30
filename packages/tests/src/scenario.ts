@@ -756,6 +756,19 @@ function createScenario(): Scenario & ScenarioInternals {
 			);
 			return scenario;
 		},
+		waitForLog(filter, opts) {
+			steps.push(async (_state, ctx) => {
+				await ctx.getChild().logStream.waitFor((line) => {
+					for (const [key, expected] of Object.entries(filter)) {
+						if ((line as Record<string, unknown>)[key] !== expected) {
+							return false;
+						}
+					}
+					return true;
+				}, opts ?? {});
+			});
+			return scenario;
+		},
 		sigterm(opts?: SignalOpts) {
 			const fixed = opts ?? {};
 			steps.push((state, ctx) => runSigterm(state, ctx, fixed));

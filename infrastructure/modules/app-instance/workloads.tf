@@ -43,11 +43,27 @@ resource "kubernetes_deployment_v1" "app" {
   }
 
   spec {
-    # Load-bearing: the in-memory JWE sealing password is not shared across
-    # replicas. See SECURITY.md §5 and packages/runtime/src/auth/key.ts.
-    # Raising this requires migrating the password to a shared mechanism
-    # in the same change.
+    # Load-bearing: replicas = 1 + Recreate strategy together guarantee no
+    # two pods of this Deployment exist simultaneously, which is required
+    # for two distinct invariants:
+    #
+    # 1. The in-memory JWE sealing password (auth) is not shared across
+    #    replicas. See SECURITY.md §5 and packages/runtime/src/auth/key.ts.
+    # 2. The DuckLake event-store catalog is round-tripped through the
+    #    storage backend with an unconditional PUT (S2 and UpCloud Object
+    #    Storage do not implement If-Match conditional writes). Two
+    #    concurrent writers would silently corrupt the catalog. See
+    #    `openspec/specs/event-store/spec.md` § "Single-writer is a
+    #    deployment contract" and `packages/runtime/src/event-store.ts`.
+    #
+    # Raising replicas above 1, switching strategy.type to RollingUpdate,
+    # or attaching an HPA / PDB tolerating > 1 replica requires migrating
+    # both the cookie-sealing password and the DuckLake catalog to multi-
+    # writer-capable mechanisms in the same change.
     replicas = 1
+    strategy {
+      type = "Recreate"
+    }
     selector { match_labels = local.app_labels }
 
     template {
@@ -66,6 +82,11 @@ resource "kubernetes_deployment_v1" "app" {
 
       spec {
         automount_service_account_token = false
+
+        # Covers EventStore's SIGTERM drain budget
+        # (EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS default 60s) plus margin
+        # for the catalog PUT(s) that flush in-flight invocations.
+        termination_grace_period_seconds = 90
 
         security_context {
           run_as_non_root        = local.pod_sc.run_as_non_root

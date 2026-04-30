@@ -4,12 +4,14 @@ import type {
 	WorkflowManifest,
 } from "@workflow-engine/core";
 import type { Sandbox } from "@workflow-engine/sandbox";
-import type { EventBus } from "../event-bus/index.js";
+import type { EventStore } from "../event-store.js";
+import type { Logger } from "../logger.js";
 import type { SandboxStore } from "../sandbox-store.js";
 import {
 	emitTriggerException,
 	type TriggerExceptionParams,
 } from "./exception.js";
+import { logInvocationLifecycle } from "./log-lifecycle.js";
 import { createRunQueue, type RunQueue } from "./run-queue.js";
 import type { InvokeResult, TriggerDescriptor } from "./types.js";
 
@@ -44,7 +46,8 @@ interface InvokeOptions {
 // failure (HTTP 500 for the HTTP source; log-and-drop for cron; ...).
 
 interface ExecutorOptions {
-	readonly bus: EventBus;
+	readonly eventStore: EventStore;
+	readonly logger: Logger;
 	readonly sandboxStore: SandboxStore;
 }
 
@@ -103,7 +106,7 @@ interface SandboxState {
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups per-sandbox state, onEvent wiring, sequential emit tail, and invocation dispatch
 function createExecutor(options: ExecutorOptions): Executor {
-	const { bus, sandboxStore } = options;
+	const { eventStore, logger, sandboxStore } = options;
 	// All per-sandbox executor state lives in a single WeakMap entry whose
 	// lifetime equals the sandbox's. When `sandboxStore` evicts a sandbox
 	// and the reference goes out of scope, GC reclaims the entry — no
@@ -121,8 +124,8 @@ function createExecutor(options: ExecutorOptions): Executor {
 			const meta = state.activeMeta;
 			if (!meta) {
 				// Event arrived outside any invocation (should not happen — the
-				// sandbox's buildEvent gates on runActive). Drop rather than emit
-				// unstamped event into the bus.
+				// sandbox's buildEvent gates on runActive). Drop rather than record
+				// unstamped event.
 				return;
 			}
 			const widened: InvocationEvent = {
@@ -140,14 +143,25 @@ function createExecutor(options: ExecutorOptions): Executor {
 					? { meta: { dispatch: meta.dispatch } }
 					: {}),
 			};
-			// The bus owns the strict-consumer fatal-exit contract: if a
-			// strict consumer (persistence) throws, bus.emit logs runtime.fatal
-			// and schedules process.exit(1) and never resolves. The chain
-			// therefore parks forever and runInvocationWith's await of
-			// state.emitTail also parks — no further work runs on the doomed
-			// process. Best-effort consumer failures are logged inside the bus
-			// and the chain advances normally.
-			state.emitTail = state.emitTail.then(() => bus.emit(widened));
+			// EventStore.record() owns its own retry-then-drop policy and never
+			// throws on transient backend failure (see event-store/spec.md). It
+			// only rejects on a programmer error (e.g. record after dispose),
+			// which we log defensively. Lifecycle log emission happens after
+			// record() resolves so a logged "invocation.completed" implies the
+			// commit either succeeded or was logged-and-dropped.
+			state.emitTail = state.emitTail.then(async () => {
+				try {
+					await eventStore.record(widened);
+				} catch (err) {
+					logger.error("executor.event-store-record-failed", {
+						id: widened.id,
+						seq: widened.seq,
+						kind: widened.kind,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+				logInvocationLifecycle(widened, logger);
+			});
 		});
 		state.wired = true;
 		sandboxState.set(sb, state);
@@ -237,7 +251,7 @@ function createExecutor(options: ExecutorOptions): Executor {
 			// pre-dispatch failure has nothing to run. Stamping happens in
 			// the emitTriggerException primitive (the R-8 chokepoint).
 			await emitTriggerException(
-				bus,
+				eventStore,
 				owner,
 				repo,
 				workflow,
