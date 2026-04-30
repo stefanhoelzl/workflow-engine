@@ -78,18 +78,9 @@ variable "network" {
   description = "Network configuration"
 }
 
-variable "tls" {
-  type = object({
-    secretName = string
-  })
-  default     = null
-  description = "TLS configuration. When set, the routes-chart IngressRoute includes a tls block."
-}
-
-variable "active_issuer_name" {
+variable "caddy_namespace" {
   type        = string
-  default     = null
-  description = "Name of the cert-manager ClusterIssuer used to sign the app's leaf Certificate. When set together with tls, the routes-chart renders a Certificate resource in the app's namespace."
+  description = "Namespace where the cluster's Caddy ingress runs. Used by the app NetworkPolicy to authorize cross-namespace ingress on :8080."
 }
 
 variable "local_deployment" {
@@ -122,17 +113,6 @@ variable "baseline" {
     })
   })
   description = "Baseline security constants and contexts from the baseline module"
-}
-
-variable "traefik_ready" {
-  type        = string
-  description = "Traefik helm_release_id — used as depends_on token"
-}
-
-variable "cert_manager_ready" {
-  type        = string
-  default     = ""
-  description = "cert-manager readiness token (typically `module.cert_manager.extras_ready`). Used as a depends_on gate for the routes helm_release so the Certificate manifest is not submitted before the cert-manager validating webhook is accepting connections. Only load-bearing for co-applied envs (e.g. local); in split-project envs the cluster apply completes before apps start."
 }
 
 variable "image_ready" {

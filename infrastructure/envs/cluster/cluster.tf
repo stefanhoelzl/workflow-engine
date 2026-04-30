@@ -10,21 +10,16 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.1"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.8"
     }
-    http = {
-      source  = "hashicorp/http"
-      version = "~> 3.5"
-    }
     local = {
       source  = "hashicorp/local"
       version = "~> 2.5"
+    }
+    restapi = {
+      source = "Mastercard/restapi"
     }
   }
 
@@ -68,11 +63,38 @@ variable "upcloud_token" {
 
 variable "acme_email" {
   type        = string
-  description = "Email for Let's Encrypt certificate notifications"
+  description = "Email for Let's Encrypt certificate notifications (passed through to Caddy's ACME client)"
+}
+
+variable "sites" {
+  type = list(object({
+    domain    = string
+    namespace = string
+  }))
+  description = "Per-env routing entries Caddy serves. One per app env (prod, staging, ...). The cluster project gains explicit knowledge of routed envs in exchange for a single shared LB; adding a new env requires editing this tfvar and re-applying the cluster project."
+}
+
+variable "dns_zone" {
+  type        = string
+  description = "Dynu zone that hosts every site's CNAME (e.g. workflow-engine.webredirect.org). Each site.domain MUST equal this zone (apex CNAME) or be a one-level subdomain of it."
+}
+
+variable "dynu_api_key" {
+  type        = string
+  sensitive   = true
+  description = "Dynu DNS API key. The cluster project owns CNAMEs for every site so DNS exists before Caddy boots and ACME succeeds on first try (avoiding the 9-min retry-backoff on each cluster reapply)."
 }
 
 provider "upcloud" {
   token = var.upcloud_token
+}
+
+provider "restapi" {
+  uri = "https://api.dynu.com/v2"
+  headers = {
+    API-Key = var.dynu_api_key
+  }
+  create_returns_object = true
 }
 
 module "cluster" {
@@ -88,24 +110,27 @@ provider "kubernetes" {
   client_key             = module.cluster.client_key
 }
 
-provider "helm" {
-  kubernetes = {
-    host                   = module.cluster.host
-    cluster_ca_certificate = module.cluster.cluster_ca_certificate
-    client_certificate     = module.cluster.client_certificate
-    client_key             = module.cluster.client_key
-  }
-}
-
 module "baseline" {
   source = "../../modules/baseline"
 
-  namespaces = ["traefik"]
+  namespaces = ["caddy"]
   node_cidr  = module.cluster.node_cidr
 }
 
-module "traefik" {
-  source = "../../modules/traefik"
+module "caddy" {
+  source = "../../modules/caddy"
+
+  namespace = "caddy"
+  sites = [
+    for s in var.sites : {
+      domain = s.domain
+      upstream = {
+        namespace = s.namespace
+        name      = "workflow-engine"
+        port      = 8080
+      }
+    }
+  ]
 
   service_type = "LoadBalancer"
   service_annotations = {
@@ -116,34 +141,39 @@ module "traefik" {
       ]
     })
   }
-  wait     = true
-  baseline = module.baseline
+
+  acme_email = var.acme_email
+
+  baseline        = module.baseline
+  namespace_ready = module.baseline.namespaces
 }
 
-module "cert_manager" {
-  source = "../../modules/cert-manager"
-
-  enable_acme          = true
-  enable_selfsigned_ca = false
-  acme_email           = var.acme_email
-}
-
-# --- Load balancer lookup ---
-
-data "http" "traefik_lb" {
-  url = "https://api.upcloud.com/1.3/load-balancer"
-  request_headers = {
-    Authorization = "Bearer ${var.upcloud_token}"
-    Accept        = "application/json"
-    X-Tf-Dep      = sha256(module.traefik.helm_release_id)
+# DNS records for every site. Owned by the cluster project so the CNAMEs exist
+# before Caddy starts attempting ACME — without this, Caddy boots, fails ACME
+# on NXDOMAIN, then waits ~9 minutes before retrying. After this change, the
+# apply order in cluster.tf guarantees the records exist by the time Caddy
+# reaches its first issuance attempt (Caddy module's namespace_ready dep is
+# orthogonal to DNS — but DNS is created in parallel and reliably present
+# within the same apply seconds).
+locals {
+  # Derive the Dynu node_name from each site's domain. Apex CNAME = "";
+  # one-level subdomain prefix otherwise.
+  dns_records = {
+    for site in var.sites : site.domain => {
+      node_name = (
+        site.domain == var.dns_zone
+        ? ""
+        : trimsuffix(site.domain, ".${var.dns_zone}")
+      )
+    }
   }
 }
 
-locals {
-  traefik_lb_hostname = one([
-    for lb in jsondecode(data.http.traefik_lb.response_body) : lb.dns_name
-    if anytrue([
-      for lbl in lb.labels : lbl.key == "ccm_cluster_id" && lbl.value == module.cluster.cluster_id
-    ])
-  ])
+module "dns" {
+  source   = "../../modules/dns/dynu"
+  for_each = local.dns_records
+
+  zone            = var.dns_zone
+  node_name       = each.value.node_name
+  target_hostname = module.caddy.lb_hostname
 }

@@ -22,13 +22,14 @@ The dev root configuration SHALL require OpenTofu version `>= 1.11`.
 
 ### Requirement: Provider version constraints
 
-The dev root SHALL declare required providers with version constraints: `tehcyx/kind ~> 0.11`, `hashicorp/kubernetes ~> 3.0`, `hashicorp/helm ~> 3.1`, `hashicorp/random ~> 3.8`, `hashicorp/null ~> 3.2`.
+The dev root SHALL declare required providers with version constraints: `tehcyx/kind ~> 0.11`, `hashicorp/kubernetes ~> 3.0`, `hashicorp/random ~> 3.8`, `hashicorp/null ~> 3.2`. The `hashicorp/helm` provider SHALL NOT be declared (no Helm releases exist post-migration).
 
 #### Scenario: Provider versions pinned
 
 - **WHEN** `tofu init` is run
 - **THEN** providers SHALL be installed within the declared version constraints
 - **AND** exact versions SHALL be recorded in `.terraform.lock.hcl`
+- **AND** `hashicorp/helm` SHALL NOT appear in `.terraform.lock.hcl`
 
 ### Requirement: Local state backend
 
@@ -41,7 +42,9 @@ The dev root SHALL use `backend "local" {}`. The state file SHALL be gitignored.
 
 ### Requirement: Module wiring
 
-The local root (`envs/local/local.tf`) SHALL instantiate the following modules: `kubernetes/kind`, `image/build`, `object-storage/s2`, `baseline`, `cert-manager`, `traefik`, and `app-instance`. The kubernetes and helm providers SHALL be configured from the cluster module's credential outputs. The traefik module SHALL receive service configuration. The app-instance module SHALL receive baseline, traefik readiness, and per-instance config.
+The local root (`envs/local/local.tf`) SHALL instantiate the following modules: `kubernetes/kind`, `image/build`, `object-storage/s2`, `baseline`, `caddy`, and `app-instance`. The kubernetes provider SHALL be configured from the cluster module's credential outputs. The `caddy` module SHALL receive the local domain, the local upstream Service reference, `service_type=NodePort` (with host-port mapping into the kind container), and a flag selecting `tls internal` for ACME. The `app-instance` module SHALL receive baseline, caddy readiness, and per-instance config.
+
+The local root SHALL NOT instantiate `modules/traefik/` (deleted), `modules/cert-manager/` (deleted), or `modules/netpol/` (deleted; NP rendered inline in callers).
 
 Local stack SHALL NOT include an oauth2-proxy workload — that sidecar was removed by `replace-oauth2-proxy` and replaced by in-app OAuth (see the `auth` capability). Authentication is end-to-end in-app; no sidecar proxies forward-auth.
 
@@ -52,9 +55,8 @@ Local stack SHALL NOT include an oauth2-proxy workload — that sidecar was remo
 - **AND** the app image SHALL be built and loaded
 - **AND** workload namespaces SHALL be created with PSA labels
 - **AND** S2 SHALL be deployed in the `persistence` namespace and the app in its namespace
-- **AND** the Traefik Helm release SHALL be deployed in `ns/traefik`
-- **AND** cert-manager SHALL be deployed in `ns/cert-manager` with a selfsigned CA ClusterIssuer
-- **AND** per-instance routes Helm releases SHALL be deployed
+- **AND** Caddy SHALL be deployed in `ns/caddy` (or co-located in the app namespace; module-decided) with `Service.type=NodePort` and `tls internal`
+- **AND** no Traefik, cert-manager, or routes-chart Helm release SHALL be deployed
 
 ### Requirement: Non-secret variables in terraform.tfvars
 
@@ -425,43 +427,6 @@ The module SHALL create a `kubernetes_service_v1` exposing the app on port 8080.
 - **WHEN** a request is sent to the app service on port 8080
 - **THEN** it SHALL be routed to the app container on port 8080
 
-### Requirement: Traefik Helm release
-
-The routing module SHALL create a `helm_release` installing the `traefik/traefik` chart version `39.0.7`. The Helm release SHALL use `traefik_helm_sets` for environment-specific Helm `set` values, `traefik_extra_objects` for CRD objects deployed via the chart's `extraObjects` feature, and an optional `wait` variable (bool, default `false`) controlling whether Helm waits for all resources to be ready.
-
-The Helm release SHALL NOT declare any `experimental.plugins` or `experimental.localPlugins` entry, SHALL NOT mount any init container for plugin extraction, SHALL NOT create a ConfigMap carrying a plugin tarball as `binary_data`, and SHALL NOT mount a `plugins-local` or `plugin-src` volume. The module's `error_page_5xx_html` input variable SHALL be removed. Rendering of 5xx HTML bodies is performed inside the app, not inside Traefik.
-
-#### Scenario: Traefik installed via Helm with parameterized config
-- **WHEN** `tofu apply` completes
-- **THEN** Traefik SHALL be running in the cluster
-- **AND** the Helm `set` values SHALL match the provided `traefik_helm_sets`
-- **AND** the Helm `extraObjects` SHALL contain the provided `traefik_extra_objects`
-
-#### Scenario: Wait disabled (default)
-- **WHEN** `tofu apply` is run with `wait` not set
-- **THEN** Helm SHALL not wait for resources to be ready before marking the release as successful
-
-#### Scenario: Wait enabled
-- **WHEN** `tofu apply` is run with `wait = true`
-- **THEN** Helm SHALL wait for all pods to be ready and LoadBalancer services to receive an external IP before marking the release as successful
-
-#### Scenario: Web entrypoint enabled internally
-- **WHEN** the Traefik pod is running
-- **THEN** the web entrypoint SHALL listen on port 80 inside the pod
-- **AND** the Traefik K8s Service SHALL include port 80
-- **AND** no NodePort SHALL be mapped to port 80
-
-#### Scenario: No plugin scaffolding on the Traefik pod
-- **WHEN** the Traefik pod is inspected
-- **THEN** it SHALL have no init container
-- **AND** it SHALL have no `plugins-local` `emptyDir` volume mount
-- **AND** it SHALL have no `plugin-src` ConfigMap volume mount
-- **AND** the rendered Helm values SHALL contain no `experimental.plugins` or `experimental.localPlugins` entries
-
-#### Scenario: Module input contract
-- **WHEN** the `modules/traefik/` module's input variables are inspected
-- **THEN** there SHALL be no variable named `error_page_5xx_html`
-
 ### Requirement: App workload network allow-rules
 
 The app pod SHALL be protected by a `NetworkPolicy` that denies all inbound traffic except from Traefik pods on TCP 8080, and denies all outbound traffic except to:
@@ -483,58 +448,6 @@ The NetworkPolicy SHALL NOT allow inbound from any oauth2-proxy pod — that sid
 - **GIVEN** a request reaching the app from a Traefik pod via Traefik's IngressRoute
 - **WHEN** the app receives the request
 - **THEN** the NetworkPolicy SHALL permit the connection
-
-### Requirement: Traefik workload network allow-rules
-
-The Traefik pod SHALL be protected by a `NetworkPolicy` that allows inbound LoadBalancer traffic on :80 and :443 and allows outbound to:
-
-- The app pod on TCP 8080 (the sole upstream).
-- ACME HTTP-01 solver pods on TCP 8089 (during certificate issuance) — expressed as egress to pods matching the label `acme.cert-manager.io/http01-solver=true` across all namespaces.
-- CoreDNS on TCP/UDP 53.
-
-Traefik SHALL NOT perform forward-auth to any oauth2-proxy sidecar (that sidecar was removed by `replace-oauth2-proxy`); authentication is entirely in-app on the app pod. The NetworkPolicy SHALL therefore NOT allow outbound to any `oauth2-proxy` pod-selector.
-
-#### Scenario: Traefik forwards to app, not to a proxy
-
-- **GIVEN** a request reaching Traefik on :443
-- **WHEN** Traefik's IngressRoute resolves to the app service
-- **THEN** Traefik SHALL open a connection directly to the app pod on :8080
-- **AND** no forward-auth hop to any intermediate proxy SHALL occur
-
-### Requirement: IngressRoute for routing
-
-The routes-chart Helm release's `extraObjects` SHALL include exactly one `IngressRoute` CRD on the `websecure` entrypoint: a single catch-all rule matching `Host(var.domain) && PathPrefix('/')` that routes to the app service on the app port, with no attached Middleware references, and carrying TLS via `tls.secretName = var.tlsSecretName`. All URL dispatch — `/dashboard`, `/trigger`, `/auth`, `/login`, `/static`, `/webhooks`, `/api`, `/livez`, `/`, and the unknown-path fallback — is performed by the app's Hono router. The routes-chart SHALL NOT define any `Middleware` CRD named `not-found`, `server-error`, `inline-error`, or `redirect-root`, and SHALL NOT define any IngressRoute that references those middlewares or the `traefik_inline_response` plugin. The routes-chart SHALL continue to define the `redirect-to-https` `Middleware` and the `web`-entrypoint IngressRoute that applies it — HTTP→HTTPS redirection remains at Traefik because TLS terminates there.
-
-#### Scenario: Single catch-all routes all prefixes to the app
-- **WHEN** a request arrives at `https://<domain>/dashboard` with any trailing path
-- **THEN** the catch-all IngressRoute SHALL match
-- **AND** the request SHALL be routed to `app_service:app_port`
-- **AND** no Middleware SHALL be applied
-
-#### Scenario: Webhook prefix routes through the catch-all
-- **WHEN** a POST to `https://<domain>/webhooks/<tenant>/<workflow>/<trigger>` arrives
-- **THEN** the catch-all IngressRoute SHALL match
-- **AND** the request SHALL reach the app on `:8080`
-
-#### Scenario: API prefix routes through the catch-all
-- **WHEN** a request to `https://<domain>/api/workflows/<tenant>` arrives
-- **THEN** the catch-all IngressRoute SHALL match
-- **AND** the request SHALL reach the app on `:8080` with no Traefik-level auth middleware interposed
-
-#### Scenario: Unknown path reaches the app
-- **WHEN** a request to `https://<domain>/absolutely-nothing` arrives
-- **THEN** the catch-all IngressRoute SHALL match
-- **AND** the app's global `notFound` handler SHALL produce the response (content-negotiated per `http-server` spec)
-
-#### Scenario: HTTP-to-HTTPS redirect preserved on web entrypoint
-- **WHEN** a request arrives at `http://<domain>/anything` on the `web` entrypoint
-- **THEN** the `redirect-to-https` Middleware SHALL fire
-- **AND** the client SHALL receive a `301` redirect to the `https://` equivalent
-
-#### Scenario: No deleted middlewares remain in the rendered chart
-- **WHEN** the rendered `routes-chart` Kubernetes manifests are inspected
-- **THEN** no resource of kind `Middleware` SHALL be named `not-found`, `server-error`, `inline-error`, or `redirect-root`
-- **AND** no resource of kind `IngressRoute` SHALL be named `error-pages`
 
 ### Requirement: Persistence project
 
@@ -589,20 +502,20 @@ The CI workflow SHALL run `tofu init -backend=false && tofu validate` for `infra
 Workloads SHALL be deployed in dedicated namespaces, not `default`:
 
 - App instances: namespace = instance name (`prod` in the prod project, `staging` in the staging project, `workflow-engine` for local)
-- Traefik: namespace `traefik` (created by the cluster project's baseline call)
-- cert-manager: namespace `cert-manager` (created by the cert-manager Helm chart)
+- Caddy: namespace `caddy` in cluster + workload envs (created by the cluster project's baseline call); for the local stack, Caddy MAY be co-located in the app namespace.
 
-Each app namespace SHALL be created by its own app project's baseline call — not by the cluster project.
+Each app namespace SHALL be created by its own app project's baseline call — not by the cluster project. The Caddy namespace SHALL be created by the cluster project's baseline call. There SHALL NOT be a `traefik` or `cert-manager` namespace post-migration.
 
 #### Scenario: Default namespace is empty in production
 
 - **WHEN** `tofu apply` completes across all prod projects
 - **THEN** no application workloads SHALL be running in the `default` namespace
 
-#### Scenario: Traefik in dedicated namespace
+#### Scenario: Caddy in dedicated namespace
 
 - **WHEN** the cluster project's apply completes
-- **THEN** the Traefik Helm release SHALL be deployed in namespace `traefik`
+- **THEN** the Caddy Deployment SHALL be deployed in namespace `caddy`
+- **AND** no namespaces named `traefik` or `cert-manager` SHALL exist
 
 #### Scenario: App namespaces created by app projects
 
@@ -617,52 +530,6 @@ All workloads SHALL use `app.kubernetes.io/name` (service identity) and `app.kub
 
 - **WHEN** the workflow-engine Deployment is inspected in namespace `prod`
 - **THEN** its labels SHALL include `app.kubernetes.io/name=workflow-engine` and `app.kubernetes.io/instance=prod`
-
-### Requirement: Traefik inline-response plugin source committed to repo
-
-The Traefik inline-response plugin tarball SHALL be committed to the repository at `modules/traefik/plugin/plugin-<version>.tar.gz`. The ConfigMap SHALL read the tarball via `filebase64()`. The plugin version SHALL be declared in a `locals` block.
-
-Version bumps SHALL be performed by downloading the new tarball, committing it, and updating `local.plugin_version`. No runtime fetch, no `data.external`, no `.plugin-cache/` directory, no `terraform_data` with `ignore_changes`.
-
-#### Scenario: Plugin loaded from committed file
-
-- **WHEN** `tofu apply` runs
-- **THEN** the ConfigMap `binary_data` SHALL contain the tarball read via `filebase64()` from the committed file
-- **AND** no runtime HTTPS request SHALL be made for plugin loading
-- **AND** no bash, curl, or base64 commands SHALL be executed
-
-#### Scenario: Plugin version bump
-
-- **WHEN** `local.plugin_version` is updated and a new tarball file is committed
-- **THEN** `tofu plan` SHALL show a ConfigMap update with the new binary content
-- **AND** the old tarball file SHALL be removed from the repository
-
-#### Scenario: Works on any platform
-
-- **WHEN** `tofu apply` runs on Linux, macOS, or Windows
-- **THEN** `filebase64()` SHALL read the committed tarball without platform-specific dependencies
-
-### Requirement: Routes delivered via per-instance Helm chart
-
-Each app-instance SHALL deliver its IngressRoutes and Middlewares via a `helm_release` pointing at a co-located local chart (`modules/app-instance/routes-chart/`). The chart SHALL template route definitions using `{{ .Values }}` for domain, service names, ports, and TLS configuration.
-
-#### Scenario: Route edits do not restart Traefik
-
-- **WHEN** an IngressRoute path or middleware is modified in the routes-chart
-- **THEN** `tofu apply` SHALL update the routes `helm_release` only
-- **AND** the Traefik `helm_release` SHALL show no changes
-
-#### Scenario: Multiple instances have independent routes
-
-- **WHEN** two app-instances are deployed (prod and staging)
-- **THEN** each SHALL have its own routes `helm_release` with distinct name and values
-- **AND** modifying staging routes SHALL not affect the prod routes release
-
-#### Scenario: Single apply from scratch works
-
-- **WHEN** `tofu apply` is run on a clean state creating the cluster, Traefik, and app-instances
-- **THEN** the routes Helm chart SHALL install successfully after Traefik registers its CRDs
-- **AND** no plan-time CRD access SHALL be required
 
 ### Requirement: DNS module extraction
 
@@ -679,23 +546,17 @@ The Dynu DNS CNAME record management SHALL be extracted to `modules/dns/dynu/`. 
 - **THEN** a new `modules/dns/<provider>/` module can be created with the same interface
 - **AND** the env root swaps the module source without other changes
 
-### Requirement: Error page template as file
-
-The 5xx error page HTML SHALL be stored as `infrastructure/templates/error-5xx.html` (not as an inline HCL heredoc). The traefik module SHALL accept it as a `error_page_5xx_html` variable. Env roots SHALL read it via `file()`.
-
-#### Scenario: Template read from file
-
-- **WHEN** `tofu apply` runs
-- **THEN** the Traefik inline-response middleware SHALL serve the HTML content read from `templates/error-5xx.html`
-
 ### Requirement: Deployment depends on NetworkPolicy
 
-Every `kubernetes_deployment_v1` SHALL declare `depends_on` on its corresponding NetworkPolicy (via the netpol factory module) and on the baseline module. This ensures the NP allow-rules are in place before the pod starts, preventing DNS-blocked-at-boot races on CNIs that enforce NetworkPolicy asynchronously.
+Every `kubernetes_deployment_v1` SHALL declare `depends_on` on its inline NetworkPolicy and on the baseline module. This ensures the NP allow-rules are in place before the pod starts, preventing DNS-blocked-at-boot races on CNIs that enforce NetworkPolicy asynchronously.
+
+The dependency SHALL be expressed as `depends_on = [kubernetes_network_policy_v1.<name>, module.baseline]` (no factory-module reference, since `modules/netpol/` is deleted).
 
 #### Scenario: NP exists before pod starts
 
 - **WHEN** `tofu apply` runs on a clean state
-- **THEN** the app's NetworkPolicy SHALL be created before the app Deployment
+- **THEN** the app's inline NetworkPolicy SHALL be created before the app Deployment
+- **AND** the Caddy inline NetworkPolicy SHALL be created before the Caddy Deployment
 - **AND** the baseline default-deny NetworkPolicy SHALL be created before any workload Deployment
 
 ### Requirement: Security context
@@ -788,17 +649,16 @@ The Kubernetes Secret holding the client secret SHALL be created by this module 
 
 ### Requirement: Cluster project composition root
 
-`infrastructure/envs/cluster/` SHALL be an OpenTofu project that wires: `modules/kubernetes/upcloud`, `modules/baseline` (with `namespaces = ["traefik"]`), `modules/traefik`, `modules/cert-manager` (with `enable_acme = true`), and the Traefik LB hostname lookup via `data "http"`. It SHALL NOT instantiate `modules/app-instance`, `modules/dns/dynu`, or leaf `kubernetes_manifest.certificate` resources. It SHALL use an S3 backend with key `cluster`.
+`infrastructure/envs/cluster/` SHALL be an OpenTofu project that wires: `modules/kubernetes/upcloud`, `modules/baseline` (with `namespaces = ["caddy"]`), `modules/caddy` (with `service_type = "LoadBalancer"`, the UpCloud LB annotation, and HTTP-01 ACME enabled), and the LB hostname lookup via the `upcloud` provider data source. It SHALL NOT instantiate `modules/app-instance/`, `modules/dns/dynu/`, `modules/traefik/` (deleted), or `modules/cert-manager/` (deleted), and SHALL NOT declare a `helm` provider. It SHALL use an S3 backend with key `cluster`.
 
 #### Scenario: Cluster apply provisions cluster-scoped infrastructure
 
 - **WHEN** `tofu apply` is run in `infrastructure/envs/cluster/`
 - **THEN** a K8s cluster SHALL be created on UpCloud
-- **AND** the `traefik` namespace SHALL be created with the PSA restricted label
-- **AND** the Traefik Helm release SHALL be deployed with a LoadBalancer service
-- **AND** cert-manager SHALL be deployed
-- **AND** the `letsencrypt-prod` ClusterIssuer SHALL exist
-- **AND** no app workloads, app namespaces, or Dynu DNS records SHALL be created
+- **AND** the `caddy` namespace SHALL be created with the PSA restricted label
+- **AND** the Caddy Deployment SHALL be running with a LoadBalancer Service carrying the UpCloud LB annotation
+- **AND** Caddy SHALL have obtained a Let's Encrypt certificate via HTTP-01 (assuming the cluster's LB hostname is reachable from the public internet — verified out-of-band by the operator)
+- **AND** no Traefik Helm release, cert-manager Helm release, ClusterIssuer, or app workloads SHALL be present
 
 #### Scenario: Cluster is env-agnostic
 
@@ -811,17 +671,20 @@ The Kubernetes Secret holding the client secret SHALL be created by this module 
 The cluster project SHALL export the following non-sensitive outputs for downstream app projects:
 
 - `cluster_id`: UpCloud Kubernetes cluster UUID
-- `lb_hostname`: Traefik LoadBalancer DNS name (from the UpCloud LB API lookup)
-- `active_issuer_name`: name of the active cert-manager ClusterIssuer
+- `lb_hostname`: Caddy LoadBalancer DNS name (from the `upcloud` provider data source)
 - `node_cidr`: pass-through from `module.cluster.node_cidr`
-- `baseline`: object bundling `rfc1918_except`, `coredns_selector`, `pod_security_context`, `container_security_context`
+- `caddy_namespace`: name of the namespace where Caddy is deployed (default `"caddy"`), used by app projects to authorize ingress in the inline app NetworkPolicy
+- `baseline`: object bundling `pod_security_context` and `container_security_context` for downstream consumption
+
+The cluster project SHALL NOT export `active_issuer_name` (no cert-manager). It SHALL NOT export `rfc1918_except` or `coredns_selector` directly on the `baseline` output if no remaining consumer reads them; otherwise these MAY be retained pending app-instance inline NP consumption.
 
 No sensitive value (kubeconfig, private keys, API tokens) SHALL appear in cluster project outputs.
 
 #### Scenario: Apps can read cluster outputs
 
 - **WHEN** an app project declares `data "terraform_remote_state" "cluster"` pointing at state key `cluster`
-- **THEN** it SHALL be able to read `cluster_id`, `lb_hostname`, `active_issuer_name`, `node_cidr`, and `baseline`
+- **THEN** it SHALL be able to read `cluster_id`, `lb_hostname`, `node_cidr`, `caddy_namespace`, and `baseline`
+- **AND** it SHALL NOT receive `active_issuer_name` (does not exist post-migration)
 
 #### Scenario: No sensitive values cross project boundaries
 
@@ -845,17 +708,16 @@ Each app project (`envs/prod/`, `envs/staging/`) SHALL declare an `ephemeral "up
 
 ### Requirement: App project composition root
 
-Each app project (`envs/prod/`, `envs/staging/`) SHALL wire: `data "terraform_remote_state" "cluster"`, an `ephemeral "upcloud_kubernetes_cluster"` block, `modules/baseline` (with its own `namespaces = [var.namespace]`), a `kubernetes_manifest` Certificate, a `kubernetes_network_policy_v1` for the acme-solver ingress, `modules/app-instance`, and `modules/dns/dynu`. It SHALL use an S3 backend with key `prod` or `staging` respectively.
+Each app project (`envs/prod/`, `envs/staging/`) SHALL wire: `data "terraform_remote_state" "cluster"`, an `ephemeral "upcloud_kubernetes_cluster"` block, `modules/baseline` (with its own `namespaces = [var.namespace]`), `modules/app-instance/`, and `modules/dns/dynu/`. It SHALL use an S3 backend with key `prod` or `staging` respectively. It SHALL NOT declare a `helm` provider. It SHALL NOT instantiate or reference any `Certificate` resource, any `acme-solver` NetworkPolicy, or any `IngressRoute`/`Middleware` CRD (none exist post-migration; routing is owned by the cluster-scoped Caddy module).
 
 #### Scenario: Prod apply deploys app in prod namespace
 
 - **WHEN** `tofu apply` is run in `envs/prod/`
 - **THEN** the `prod` namespace SHALL be created with the PSA restricted label
-- **AND** a default-deny NetworkPolicy SHALL be created in the `prod` namespace
-- **AND** a Certificate resource SHALL be created in the `prod` namespace referencing the `letsencrypt-prod` ClusterIssuer
-- **AND** the acme-solver ingress NetworkPolicy SHALL exist in the `prod` namespace
-- **AND** the app Deployment, Service, and IngressRoute SHALL be deployed in `prod`
-- **AND** a Dynu CNAME record SHALL point the prod domain at the cluster LB hostname
+- **AND** a default-deny NetworkPolicy SHALL be created in the `prod` namespace (owned by `pod-security-baseline`)
+- **AND** the app Deployment, Service, and inline app NetworkPolicy SHALL be deployed in `prod`
+- **AND** no `Certificate` resource, no `IngressRoute`, and no `acme-solver` NetworkPolicy SHALL be created
+- **AND** a Dynu CNAME record SHALL point the prod domain at the cluster's Caddy LB hostname
 
 #### Scenario: Staging apply deploys app in staging namespace with own bucket
 
@@ -914,40 +776,6 @@ The staging project SHALL instantiate `modules/object-storage/upcloud/` directly
 - **THEN** the staging bucket and its contents SHALL be deleted
 - **AND** the prod bucket in the persistence project SHALL remain intact
 
-### Requirement: cert-manager module scope reduction
-
-`modules/cert-manager/` SHALL NOT accept `certificate_requests` as an input. It SHALL NOT emit any leaf `Certificate` resources. It SHALL NOT create any `kubernetes_network_policy_v1.acme_solver_ingress` resources. It SHALL retain the `helm_release "cert_manager_extras"` wrapper to work around plan-time CRD discovery, but its chart values SHALL render only cluster-scoped issuer objects — the ACME `letsencrypt-prod` ClusterIssuer when `enable_acme` is true, or the selfsigned bootstrap → CA → CA-issuer chain when `enable_selfsigned_ca` is true. The module SHALL output `active_issuer_name`.
-
-#### Scenario: Module emits only chart and issuers
-
-- **WHEN** `tofu plan` is inspected in a fresh cluster project with `enable_acme = true`
-- **THEN** the cert-manager module's managed resources SHALL include: the cert-manager `helm_release`, and the `helm_release "cert_manager_extras"` whose values render exactly one ClusterIssuer (`letsencrypt-prod`)
-- **AND** no leaf Certificate, acme-solver NetworkPolicy SHALL be managed by the module
-
-#### Scenario: Selfsigned bootstrap chain for local env
-
-- **WHEN** the cert-manager module is applied with `enable_selfsigned_ca = true`
-- **THEN** the extras-chart SHALL render the selfsigned bootstrap ClusterIssuer, the selfsigned CA Certificate, and the selfsigned CA ClusterIssuer
-- **AND** the module SHALL output `active_issuer_name = "selfsigned-ca"`
-
-### Requirement: app-instance module creates Certificate and solver NetworkPolicy
-
-`modules/app-instance/` SHALL accept `active_issuer_name` as an input and pass it to the existing `helm_release "routes"` as a chart value (alongside `tlsSecretName`). The chart (`modules/app-instance/routes-chart/`) SHALL render a `cert-manager.io/v1` `Certificate` resource when both values are set, with `spec.dnsNames = [<domain value>]`, `spec.secretName = <tlsSecretName>`, and `spec.issuerRef = { name = <certIssuerName>, kind = "ClusterIssuer", group = "cert-manager.io" }`. Delivering the Certificate via the chart avoids plan-time CRD discovery.
-
-Additionally, `modules/app-instance/` SHALL create a plain `kubernetes_network_policy_v1` in `var.namespace` selecting pods with label `acme.cert-manager.io/http01-solver = "true"` and allowing ingress from Traefik on TCP/8089. This is a core-API resource (not a CRD) and does not require Helm delivery.
-
-#### Scenario: Routes-chart emits Certificate when inputs are set
-
-- **WHEN** `tofu apply` is run in an app project with `active_issuer_name` set and `tls.secretName` set
-- **THEN** the routes helm_release SHALL render a `Certificate` resource in the app's namespace
-- **AND** cert-manager SHALL issue a TLS secret within 90 seconds (assuming port 80 reachability)
-
-#### Scenario: App-instance emits solver NetworkPolicy
-
-- **WHEN** `tofu apply` is run in an app project
-- **THEN** a NetworkPolicy `allow-ingress-to-acme-solver` SHALL exist in the app's namespace
-- **AND** it SHALL permit ingress from Traefik pods to acme-solver pods on TCP/8089
-
 ### Requirement: DNS ownership per app project
 
 Each app project SHALL instantiate `modules/dns/dynu/` with its own domain and `target_hostname = data.terraform_remote_state.cluster.outputs.lb_hostname`. The cluster project SHALL NOT instantiate `modules/dns/dynu/`.
@@ -993,14 +821,17 @@ No project SHALL use the retired state key `upcloud`.
 Each project SHALL declare its `required_providers`:
 
 - persistence: `UpCloudLtd/upcloud ~> 5.0`
-- cluster: `UpCloudLtd/upcloud ~> 5.0`, `hashicorp/kubernetes ~> 3.0`, `hashicorp/helm ~> 3.1`, `hashicorp/random ~> 3.8`, `Mastercard/restapi`, `hashicorp/http ~> 3.5`, `hashicorp/local ~> 2.5`
-- prod: `UpCloudLtd/upcloud ~> 5.0`, `hashicorp/kubernetes ~> 3.0`, `hashicorp/helm ~> 3.1`, `Mastercard/restapi`
+- cluster: `UpCloudLtd/upcloud ~> 5.0`, `hashicorp/kubernetes ~> 3.0`, `hashicorp/random ~> 3.8`, `hashicorp/local ~> 2.5`
+- prod: `UpCloudLtd/upcloud ~> 5.0`, `hashicorp/kubernetes ~> 3.0`, `Mastercard/restapi`
 - staging: same as prod
+
+The `hashicorp/helm` and `hashicorp/http` providers SHALL NOT be declared by any project (no Helm releases exist; LB hostname lookup uses the `upcloud` provider).
 
 #### Scenario: Tofu init resolves providers per project
 
 - **WHEN** `tofu init` is run in any project
 - **THEN** only that project's declared providers SHALL be downloaded into its `.terraform/` directory
+- **AND** `hashicorp/helm` and `hashicorp/http` SHALL NOT be downloaded
 
 ### Requirement: Per-project variables and tfvars
 
@@ -1283,4 +1114,177 @@ Losing staging or local state SHALL NOT require cross-environment coordination; 
 - **WHEN** a pod starts
 - **THEN** `printenv SECRETS_PRIVATE_KEYS` inside the pod SHALL yield the non-empty CSV from the Secret
 - **AND** no other new env vars SHALL be added by this change
+
+### Requirement: Caddy module renders Deployment + Service + ConfigMap + PVC
+
+The `modules/caddy/` OpenTofu module SHALL render the cluster ingress as raw `kubernetes_manifest` resources (no Helm chart). The module SHALL declare:
+
+- A `kubernetes_deployment_v1` running the upstream `caddy` container image (pinned to a specific tag), with a single replica, mounting the ConfigMap as `/etc/caddy/Caddyfile` and the cert-storage PVC as `/data`.
+- A `kubernetes_service_v1` of type configurable via input (default `LoadBalancer`; `NodePort` for the local kind stack), exposing TCP `:80` and `:443` and selecting the Caddy pod by `app.kubernetes.io/name=caddy`. When `LoadBalancer`, the Service SHALL carry the `service.beta.kubernetes.io/upcloud-load-balancer-config` annotation declaring `web` and `websecure` frontends in `tcp` mode (matching the legacy Traefik LB configuration so the UpCloud LB hostname is reusable).
+- A `kubernetes_config_map_v1` carrying a single `Caddyfile` key whose content is `{$DOMAIN} { reverse_proxy {$UPSTREAM} }` plus `admin off` at the global level. Domain and upstream are injected via container `env` from module variables.
+- A `kubernetes_persistent_volume_claim_v1` (10Gi default, configurable) bound at `/data` for ACME account, certificates, and OCSP staples.
+- A `kubernetes_service_account_v1` with no `automountServiceAccountToken`.
+
+The Deployment's pod-level `securityContext` SHALL set `runAsNonRoot=true`, `runAsUser=65532`, `runAsGroup=65532`, `fsGroup=65532`, `fsGroupChangePolicy=OnRootMismatch`, `seccompProfile={type: RuntimeDefault}`. The container-level `securityContext` SHALL set `allowPrivilegeEscalation=false`, `readOnlyRootFilesystem=true`, `capabilities.drop=[ALL]`. Writable paths (`/config`, `/var/log`) SHALL be backed by `emptyDir` volumes.
+
+#### Scenario: Caddy Deployment is rendered without Helm
+
+- **WHEN** `tofu plan` is run on a project that calls `modules/caddy/`
+- **THEN** the planned resources SHALL include `kubernetes_deployment_v1`, `kubernetes_service_v1`, `kubernetes_config_map_v1`, `kubernetes_persistent_volume_claim_v1`, and `kubernetes_service_account_v1` for Caddy
+- **AND** no `helm_release` resource SHALL be present in the plan for Caddy
+
+#### Scenario: LoadBalancer Service carries the UpCloud annotation
+
+- **WHEN** the Caddy module is instantiated with the default Service type for the cluster env
+- **THEN** the rendered Service SHALL be `type=LoadBalancer`
+- **AND** it SHALL carry the annotation `service.beta.kubernetes.io/upcloud-load-balancer-config` whose JSON value declares `frontends=[{name=web,mode=tcp},{name=websecure,mode=tcp}]`
+
+#### Scenario: PSA-restricted compatibility
+
+- **WHEN** the Caddy pod is created in a namespace labeled `pod-security.kubernetes.io/enforce=restricted`
+- **THEN** the pod SHALL be admitted (security context conforms to the `restricted` profile)
+- **AND** `runAsNonRoot=true` and `seccompProfile=RuntimeDefault` SHALL be present on the pod
+- **AND** `capabilities.drop=[ALL]` SHALL be present on the container
+
+#### Scenario: Caddy admin endpoint disabled
+
+- **WHEN** the rendered ConfigMap is inspected
+- **THEN** the Caddyfile SHALL contain a global `admin off` directive
+- **AND** no Service port SHALL expose the Caddy admin API (default `:2019`)
+
+### Requirement: Caddy serves TLS via HTTP-01 ACME for the configured domain
+
+Caddy SHALL serve HTTPS on the configured `$DOMAIN` using an automatically-issued Let's Encrypt certificate via the HTTP-01 challenge. The ACME account email SHALL be configured via the `acme_email` Caddyfile directive (sourced from the existing `acme_email` Tofu variable consumed today by cert-manager). The certificate, ACME account, and OCSP staple SHALL be persisted on the `/data` PVC.
+
+Caddy SHALL automatically redirect HTTP traffic on `:80` to HTTPS on `:443` for the configured host (Caddy default behavior). HTTP-01 challenge requests on `:80` SHALL be served before the redirect rule fires (Caddy default behavior).
+
+**Local deviation:** in the local kind stack, the Caddyfile SHALL use the `tls internal` directive (Caddy's internal CA) instead of an ACME issuer. Browsers SHALL surface a self-signed warning on `https://localhost:<port>`; this is accepted for local dev. No `:80` exposure to the public internet is implied locally.
+
+#### Scenario: Production cert is issued via Let's Encrypt
+
+- **WHEN** the cluster project is applied with `acme_email` set and the prod domain CNAME points at the Caddy LoadBalancer hostname
+- **THEN** Caddy SHALL obtain a publicly-trusted certificate within the LE retry budget
+- **AND** `kubectl logs deploy/caddy -n caddy` SHALL contain a `certificate obtained successfully` log line
+- **AND** the certificate SHALL be persisted to the `/data` PVC
+
+#### Scenario: HTTP request redirects to HTTPS
+
+- **WHEN** an unauthenticated client sends `GET http://<domain>/anything`
+- **THEN** the response SHALL be `301` (or `308`) with `Location: https://<domain>/anything`
+
+#### Scenario: HTTP-01 challenge precedes redirect
+
+- **WHEN** an ACME server requests `GET http://<domain>/.well-known/acme-challenge/<token>` during issuance
+- **THEN** Caddy SHALL serve the challenge response with `200 OK` (no redirect)
+
+#### Scenario: Local stack uses tls internal
+
+- **WHEN** the local kind stack is applied
+- **THEN** the rendered Caddyfile SHALL contain a `tls internal` directive for the configured local domain
+- **AND** browsers SHALL surface a self-signed warning when visiting `https://<local-domain>:<https_port>`
+- **AND** no ACME account SHALL be created for the local stack
+
+### Requirement: Caddy reverse-proxies all paths to the app Service
+
+The Caddyfile SHALL contain exactly one site block matching the configured `$DOMAIN`, with a single `reverse_proxy` directive pointing at the app Service ClusterIP on `:8080`. No path-based routing rules, no middleware-equivalent directives (rewrite, header manipulation), and no auth directives SHALL be present. All URL dispatch (`/dashboard`, `/trigger`, `/auth`, `/login`, `/static`, `/webhooks`, `/api`, `/livez`, `/`, the unknown-path fallback) is performed by the app's Hono router. Security headers (CSP, HSTS, Permissions-Policy, X-Frame-Options, etc.) are set by the app's `secure-headers.ts` middleware; Caddy SHALL NOT add or modify response headers.
+
+#### Scenario: Single catch-all routes all prefixes to the app
+
+- **WHEN** a request arrives at `https://<domain>/dashboard` with any trailing path
+- **THEN** Caddy SHALL forward the request to `<app-service>:8080`
+
+#### Scenario: Webhook prefix routes through the catch-all
+
+- **WHEN** a `POST` to `https://<domain>/webhooks/<tenant>/<workflow>/<trigger>` arrives
+- **THEN** Caddy SHALL forward the request unchanged to `<app-service>:8080`
+
+#### Scenario: API prefix routes through the catch-all
+
+- **WHEN** a request to `https://<domain>/api/workflows/<tenant>` arrives
+- **THEN** Caddy SHALL forward the request to `<app-service>:8080`
+- **AND** no auth check SHALL be performed by Caddy
+
+#### Scenario: Unknown path reaches the app
+
+- **WHEN** a request to `https://<domain>/absolutely-nothing` arrives
+- **THEN** Caddy SHALL forward the request to `<app-service>:8080`
+- **AND** the app's Hono `notFound` handler SHALL produce the response
+
+### Requirement: Caddy network policy
+
+Caddy's pod SHALL be protected by an inline `kubernetes_network_policy_v1` rendered inside `modules/caddy/`. The policy SHALL allow:
+
+- Ingress on TCP `:80` and `:443` from the LoadBalancer source CIDRs (UpCloud LB health-check + traffic source) and from the node CIDR (kubelet probes).
+- Egress to the app pod's Service in workload namespaces (`prod`, `staging`, or `workflow-engine` for local) on TCP `:8080`.
+- Egress to CoreDNS on TCP/UDP `:53`.
+- Egress to the public internet on TCP `:80` (HTTP-01 challenge inbound is handled by ingress; outbound `:80` is for Caddy's ACME client to reach Let's Encrypt API endpoints which are HTTPS, but ACME directories may use HTTP redirects), TCP `:443` (LE API), with the same RFC1918+link-local `except` list applied today to the app pod.
+
+The policy SHALL NOT allow forward-auth to any oauth2-proxy pod (no such workload exists). Authentication is end-to-end in the app.
+
+#### Scenario: LB traffic permitted to Caddy
+
+- **WHEN** a client request reaches the cluster via the UpCloud LB on `:443`
+- **THEN** the NetworkPolicy SHALL permit the connection to the Caddy pod
+
+#### Scenario: Caddy egress to app permitted
+
+- **WHEN** Caddy reverse-proxies a request to `<app-service>:8080`
+- **THEN** the NetworkPolicy SHALL permit the egress from Caddy to the app pod
+
+#### Scenario: Caddy egress to LE permitted
+
+- **WHEN** Caddy initiates an ACME directory fetch to a Let's Encrypt endpoint on `:443`
+- **THEN** the NetworkPolicy SHALL permit the egress (matched by the `0.0.0.0/0` except RFC1918 rule)
+
+### Requirement: App pod NetworkPolicy contract
+
+The app pod SHALL be protected by a `kubernetes_network_policy_v1` rendered inline inside `modules/app-instance/` (no factory module). The policy SHALL deny all inbound and outbound traffic by default (relying on the per-namespace default-deny from `pod-security-baseline` + this allowlist as defence-in-depth) except:
+
+- Ingress from pods in the Caddy namespace (`caddy` in cluster + workload envs; `workflow-engine` namespace in local where Caddy is co-located) on TCP `:8080`.
+- Ingress from the node CIDR on TCP `:8080` (kubelet liveness/readiness probes).
+- Egress to CoreDNS on TCP/UDP `:53`.
+- Egress to the public internet (TCP/UDP `0.0.0.0/0`) except RFC1918 + link-local CIDRs (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fe80::/10`, `fd00::/8`). This permits UpCloud Object Storage access (S3 API on `:443`), GitHub API access (`api.github.com:443`), and outbound `fetch()` from sandboxed workflows.
+
+**Local deviation:** the policy SHALL additionally allow egress to the in-cluster S2 (local-S3) Service on TCP `:9000`. This rule is conditional on the `local_deployment` input variable to `modules/app-instance/` and is omitted in the cluster, prod, and staging envs.
+
+The policy SHALL NOT allow forward-auth ingress from any oauth2-proxy pod (no such workload exists). The policy SHALL NOT name `traefik` as an ingress source (no such workload exists post-migration).
+
+The NetworkPolicy is load-bearing as defence-in-depth per `SECURITY.md §5 R-I1`.
+
+#### Scenario: Non-Caddy inbound rejected
+
+- **WHEN** any pod outside the Caddy namespace attempts to connect to the app on `:8080`
+- **THEN** the connection SHALL be refused by the NetworkPolicy
+
+#### Scenario: Caddy inbound permitted
+
+- **GIVEN** a request arriving at the app from the Caddy pod via Caddy's `reverse_proxy`
+- **WHEN** the app receives the connection on `:8080`
+- **THEN** the NetworkPolicy SHALL permit it
+
+#### Scenario: Kubelet probes permitted
+
+- **WHEN** the kubelet on the node sends a liveness or readiness probe to the app on `:8080`
+- **THEN** the NetworkPolicy SHALL permit the connection (matched by the node-CIDR rule)
+
+#### Scenario: Local deployment permits S2 egress
+
+- **WHEN** `modules/app-instance/` is instantiated with `local_deployment=true`
+- **THEN** the rendered NetworkPolicy SHALL include an egress rule to pods labeled `app.kubernetes.io/name=s2` on TCP `:9000`
+
+#### Scenario: Production deployment omits S2 egress
+
+- **WHEN** `modules/app-instance/` is instantiated with `local_deployment=false` (prod or staging)
+- **THEN** the rendered NetworkPolicy SHALL NOT include any egress rule referencing S2
+
+### Requirement: LB hostname discovered via the upcloud provider data source
+
+The cluster project SHALL discover the Caddy LoadBalancer's UpCloud hostname using the `upcloud` provider's load-balancer data source, keyed by the `ccm_cluster_id` label that the UpCloud CCM applies to LBs created by the cluster's K8s service controller. The project SHALL NOT use `data "http"` against `https://api.upcloud.com/1.3/load-balancer`, SHALL NOT call `jsondecode()` to parse load-balancer JSON, and SHALL NOT depend on the `hashicorp/http` provider for this purpose.
+
+#### Scenario: lb_hostname output sourced from upcloud provider
+
+- **WHEN** the cluster project is applied
+- **THEN** the `lb_hostname` output SHALL be sourced from the `upcloud` provider's load-balancer data source
+- **AND** no `data "http"` block referencing `api.upcloud.com` SHALL be present in the cluster project
+- **AND** no `jsondecode` of LB JSON SHALL be present
 

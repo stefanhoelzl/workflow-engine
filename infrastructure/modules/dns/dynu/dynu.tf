@@ -22,19 +22,9 @@ variable "target_hostname" {
   description = "The CNAME target (e.g. a load balancer DNS name)"
 }
 
-variable "api_key" {
-  type        = string
-  sensitive   = true
-  description = "Dynu DNS API key"
-}
-
-provider "restapi" {
-  uri = "https://api.dynu.com/v2"
-  headers = {
-    API-Key = var.api_key
-  }
-  create_returns_object = true
-}
+# The restapi provider is configured by the caller (root) so that this module
+# can be invoked with `for_each`. The Dynu API key flows through the caller's
+# provider block, not through this module's variables.
 
 data "restapi_object" "zone" {
   path         = "/dns"

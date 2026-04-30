@@ -47,8 +47,8 @@ sections must append (§7 and onward), not renumber.
                                 │
                                 ▼
                      ┌──────────────────────┐
-                     │   Traefik Ingress    │  TLS termination
-                     │   (websecure :443)   │
+                     │     Caddy Ingress    │  TLS termination
+                     │      (HTTPS :443)    │  HTTP-01 ACME (LE)
                      └──────────┬───────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
@@ -106,7 +106,7 @@ sections must append (§7 and onward), not renumber.
 | 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox({source, plugins}).run(handlerName, payload)` | Isolation, not auth | §2 |
 | 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/<owner>/<workflow>/<trigger>` | None — payload-schema validation only | §3 |
 | 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/login`, `/auth/*`, `/api/*` | In-app OAuth (sealed session cookie) for UI; Bearer (GitHub) for API. Both gated by `AUTH_ALLOW`. `/login` is the provider-agnostic sign-in page; `/auth/github/*` is the GitHub-specific handshake. | §4 |
-| 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Traefik | K8s RBAC, pod network | §5 |
+| 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Caddy ingress | K8s RBAC, pod network | §5 |
 
 **Trust-level semantics** (applies across the whole document):
 
@@ -1183,8 +1183,8 @@ surfaced into the handler payload — the workflow sees only `{data}`.
 - **Payload scope reaches the sandbox only as the handler's `payload`
   argument** — a JSON snapshot. Any downstream code that consumes the
   payload runs in the sandbox with no host APIs (see §2).
-- **TLS termination at Traefik** (HTTPS only on the websecure
-  entrypoint).
+- **TLS termination at Caddy** (HTTPS only on `:443`; `:80` serves the
+  HTTP-01 ACME challenge and redirects all other paths to HTTPS).
 - **Closed URL vocabulary.** The three URL segments
   (`<owner>/<workflow>/<trigger-name>`) are all regex-constrained identifiers
   set at workflow build time (the trigger name IS the export identifier,
@@ -1236,7 +1236,7 @@ surfaced into the handler payload — the workflow sees only `{data}`.
 |----|-----|--------|--------|
 | R-W1 | **No signature verification** on incoming payloads (HMAC, GitHub signature, Stripe signature, etc.) | W4 unmitigated | v1 limitation; add per-integration |
 | R-W2 | ~~No payload size limit~~ — Mitigated by a global 10 MiB Hono `bodyLimit` in `createApp` (`packages/runtime/src/services/server.ts`). A owner tarball is additionally bounded to 10 MiB decompressed inside `extractOwnerTarGz` (`packages/runtime/src/workflow-registry.ts`). | W2 mitigated | Resolved |
-| R-W3 | **No rate limiting** at the application or Traefik level | W3, W7 unmitigated | v1 limitation |
+| R-W3 | **No rate limiting** at the application or ingress (Caddy) level | W3, W7 unmitigated | v1 limitation |
 | R-W4 | ~~All request headers are forwarded verbatim~~ — Mitigated by the typed-headers contract (2026-04-26): `payload.headers` exposes only header keys declared in the trigger's `request.headers` zod schema; undeclared keys are stripped silently before the handler runs and never reach the event store. Default when no schema is declared is the empty object `{}`. Authors who need a specific header opt in by declaring it in the schema (`request: { headers: z.object({ "x-hub-signature-256": z.string() }) }`); auth-bearing headers (`authorization`, `cookie`) are not forwarded unless explicitly declared, which tightens the `never log Authorization` invariant from logger-level redaction to schema-level filtering. | W5 mitigated by per-trigger schema | Resolved |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |
 
@@ -1306,7 +1306,7 @@ schema-violating payload still returns 422.
 - Webhook middleware + registry: `packages/runtime/src/triggers/http.ts`
 - Payload validation entry + body-shape normalization: `packages/runtime/src/workflow-registry.ts`
 - Executor (post-validation invocation path): `packages/runtime/src/executor/`
-- Traefik routing: `infrastructure/modules/workflow-engine/modules/routing/routing.tf`
+- Caddy ingress (Caddyfile + Deployment): `infrastructure/modules/caddy/`
 - OpenSpec spec: `openspec/specs/triggers/spec.md`
 - OpenSpec spec: `openspec/specs/http-trigger/spec.md`
 - OpenSpec spec: `openspec/specs/payload-validation/spec.md`
@@ -1528,9 +1528,9 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
   `X-Auth-Provider` header and then delegates `Authorization` /
   credential parsing to the selected provider's `resolveApiIdentity`;
   `sessionMiddleware` reads only the `session` cookie. Forged
-  `X-Auth-Request-*` headers have no handler to trust them. The
-  Traefik `strip-auth-headers` middleware is therefore removed — no
-  upstream produces those headers, and no downstream consumes them.
+  `X-Auth-Request-*` headers have no handler to trust them. No
+  ingress-side strip-headers middleware exists — no upstream
+  produces those headers, and no downstream consumes them.
 - **Startup-logged registered providers.** The runtime emits a log
   record at init listing the registered provider ids and the per-provider
   entry counts (not the entries themselves). When `LOCAL_DEPLOYMENT=1`
@@ -1540,7 +1540,7 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 - **POST-only logout.** `POST /auth/logout` clears the session cookie
   and 302s to `/`. Any other method returns 405 — prevents cross-site
   logout CSRF via `<img src>` / `<a>` / navigation.
-- **TLS termination at Traefik.** Session cookies, Bearer tokens, and
+- **TLS termination at Caddy.** Session cookies, Bearer tokens, and
   the GitHub access token stored inside the sealed cookie are not in
   cleartext on the wire.
 - **Scope-list query API (A14).** `EventStore.query(scopes)` accepts a
@@ -1755,26 +1755,25 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 | Component | Exposure | Port | Namespace | Who can reach it |
 |---|---|---|---|---|
-| Traefik Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `traefik` | Internet |
-| Traefik Ingress (HTTP) | Public (LB → 80) | 80 | `traefik` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` to cert-manager's HTTP-01 solver |
-| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Traefik (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/readyz`, `/healthz`, plus the OAuth handshake |
+| Caddy Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `caddy` | Internet |
+| Caddy Ingress (HTTP) | Public (LB → 80) | 80 | `caddy` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` for Caddy's built-in HTTP-01 solver |
+| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Caddy (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/readyz`, `/healthz`, plus the OAuth handshake |
 | S2 (S3-compatible storage) | In-cluster Service | 9000 | `default` (local only) | App pod (NP-enforced) |
-| cert-manager controllers | In-cluster Service (webhook) | 9402 | `cert-manager` | kube-apiserver (admission webhooks) |
 | DuckDB | Process-local | — | — | App process only (in-memory) |
 | GitHub API | External egress | 443 | — | App pod (auth validation) |
-| Let's Encrypt ACME (egress) | External egress | 443 | — | cert-manager (prod only, issuance + renewal) |
+| Let's Encrypt ACME (egress) | External egress | 443 | — | Caddy pod (prod only, issuance + renewal) |
 
 ### Threats
 
 | ID | Threat | Category |
 |----|--------|----------|
 | I1 | K8s Secret is leaked via logs, etcd snapshots, or a pod with broad RBAC read | Information disclosure |
-| I2 | A compromised pod reaches the app pod's `:8080` directly, bypassing Traefik | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — the oauth2-proxy sidecar that used to produce those headers was removed; see §4 A13) |
+| I2 | A compromised pod reaches the app pod's `:8080` directly, bypassing Caddy | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — the oauth2-proxy sidecar that used to produce those headers was removed; see §4 A13) |
 | I3 | A compromised pod or action (via SSRF, §2) reaches cloud metadata endpoints (e.g. `169.254.169.254`) or internal admin APIs | Information disclosure / EoP |
 | I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as a privileged user | EoP |
 | I5 | No resource limits → a runaway action or memory leak crashes the node, not just the pod | DoS |
 | I6 | OAuth2 client secret or S3 credentials committed to a `.tfvars` file checked into git | Information disclosure |
-| I7 | Traefik accepts weak TLS ciphers or outdated TLS versions | Tampering / eavesdropping |
+| I7 | Caddy accepts weak TLS ciphers or outdated TLS versions | Tampering / eavesdropping |
 | I8 | Self-signed dev cert used in production by mistake | Spoofing |
 | I9 | S3 bucket policy permits unintended readers (production deployment) | Information disclosure |
 | I10 | Events stored to S3 / filesystem in plaintext, containing secrets that leaked via action env vars | Information disclosure |
@@ -1783,10 +1782,9 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 ### Mitigations (current)
 
 - **Namespace isolation** — each app-instance runs in a dedicated
-  namespace (e.g. `prod`, `staging`). Traefik runs in `ns/traefik`.
-  cert-manager in `ns/cert-manager`. The `default` namespace is empty
-  (except S2 in local dev). Cross-namespace access is controlled by
-  NetworkPolicy `namespaceSelector` rules.
+  namespace (e.g. `prod`, `staging`). Caddy runs in `ns/caddy`. The
+  `default` namespace is empty (except S2 in local dev). Cross-namespace
+  access is controlled by NetworkPolicy `namespaceSelector` rules.
 - **PodSecurity admission `restricted`** — workload namespaces carry
   the `pod-security.kubernetes.io/enforce=restricted` label (initially
   `warn` during rollout). Non-compliant pods are rejected at admission.
@@ -1797,7 +1795,7 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   `capabilities.drop=["ALL"]`. Writable paths use `emptyDir` mounts.
   (`infrastructure/modules/app-instance/workloads.tf`;
   `infrastructure/modules/object-storage/s2/s2.tf`;
-  `infrastructure/modules/traefik/traefik.tf` Helm values)
+  `infrastructure/modules/caddy/caddy.tf`)
 - **Secrets in K8s Secret objects** — the GitHub OAuth App client
   secret (`GITHUB_OAUTH_CLIENT_SECRET`) and S3 credentials are stored
   as Kubernetes Secrets and injected via `envFrom.secretRef`. None are
@@ -1813,17 +1811,20 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
   userspace. Numeric UID for PodSecurity admission static validation.
   (`infrastructure/Dockerfile`)
 - **Internal-only services** — S2 and the app's business-logic port
-  are not published via NodePort; only Traefik is.
-- **TLS at Traefik** — public traffic is HTTPS-only via the `websecure`
-  entrypoint. Port 80 serves only cert-manager ACME HTTP-01 challenges
-  and a catch-all 301 redirect to HTTPS; no app traffic flows on
+  are not published via NodePort; only Caddy is.
+- **TLS at Caddy** — public traffic is HTTPS-only on `:443`. Port 80
+  serves only Caddy's HTTP-01 ACME challenge and a catch-all 301
+  redirect to HTTPS (Caddy default behavior); no app traffic flows on
   plaintext.
-- **cert-manager-managed TLS** — production TLS certificates are issued
-  by Let's Encrypt via the `letsencrypt-prod` ClusterIssuer (HTTP-01
-  challenge, `ingressClassName: traefik`) and stored as K8s Secrets.
-  Local uses a cluster-internal self-signed CA chain
-  (`selfsigned-bootstrap` → `selfsigned-ca`). Chart version is pinned
-  in `infrastructure/modules/cert-manager/cert-manager.tf`.
+- **Caddy-managed TLS** — production TLS certificates are issued by
+  Let's Encrypt via Caddy's built-in ACME client (HTTP-01 challenge)
+  and stored on a `PVC` mounted at `/data` in the Caddy pod. The cert
+  PVC persists across pod restarts; loss triggers re-issuance within
+  LE rate limits. The local kind stack uses Caddy's `tls internal`
+  directive (an in-process self-signed CA), which is why browsers
+  surface a self-signed warning on `https://localhost:<port>` — this
+  is expected and accepted.
+  (`infrastructure/modules/caddy/`)
 - **Build-time image versioning** — S2 uses a pinned minor tag
   (`0.4.1`); the app image is built from source.
 - **`automountServiceAccountToken: false` on all app workloads** —
@@ -1848,16 +1849,16 @@ cluster; see `openspec/specs/infrastructure/spec.md`.
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules: app ingress restricted to Traefik (+ node CIDR for probes); Traefik ingress restricted to `0.0.0.0/0:80,443` + node CIDR; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
+| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules rendered inline next to each Deployment: app ingress restricted to the Caddy namespace on `:8080` (+ node CIDR for probes); Caddy ingress restricted to node CIDR on `:80,443`; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
 | R-I2 | ~~App pod has no `securityContext`~~ — **Resolved**: all workloads now set explicit securityContext (runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation=false, capabilities.drop=[ALL]), enforced by PodSecurity admission `restricted` at namespace level. | I4 | **Resolved** |
 | R-I3 | **No resource `requests` / `limits`** on the app or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
 | R-I4 | ~~S2 container has no user specified~~ — **Resolved**: S2 now runs as UID 65532 with full securityContext. Data writes use emptyDir at `/data`. | I4 | **Resolved** |
-| R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: cert-manager codified in `infrastructure/modules/cert-manager/`; prod uses Let's Encrypt (HTTP-01), local uses a cluster-internal self-signed CA chain. Chart version is pinned. | I7, I8 | Resolved |
-| R-I10 | **cert-manager has cluster-wide RBAC** — creates/manages Secrets cluster-wide and reconciles ClusterIssuer/Certificate resources. Compromise of the cert-manager controller pod grants broad Secret read/write. | I1, EoP | Accepted — standard upstream Helm-chart RBAC; chart version pinned; runs in `cert-manager` namespace. Revisit if narrower scope becomes available. |
+| R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: TLS issuance is owned by Caddy in `infrastructure/modules/caddy/`. Prod uses Let's Encrypt via Caddy's built-in HTTP-01 ACME client; local uses Caddy's `tls internal` directive (in-process self-signed CA). The Caddy image tag is pinned in `modules/caddy/variables.tf`. | I7, I8 | Resolved |
+| R-I10 | ~~cert-manager has cluster-wide RBAC~~ — **Resolved**: cert-manager removed by `simplify-cluster-stack`. Caddy obtains certs via its built-in ACME client and stores them on its own PVC; no controller has cluster-wide Secret RBAC. | I1, EoP | Resolved |
 | R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
 | R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
 | R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of the sandbox `fetch` plugin (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4 (`hardenedFetch` structural default). | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
-| R-I11 | **Traefik's SA token remains mounted** because the controller watches `Ingress` / `IngressRoute` via the K8s API. The Helm chart's ClusterRole has not been audited for least privilege; it may grant verbs/resources wider than ingress watching requires. | I11 partial | **Follow-up: audit Traefik chart RBAC scope** |
+| R-I11 | ~~Traefik's SA token remains mounted~~ — **Resolved**: Traefik removed by `simplify-cluster-stack`. Caddy is a pure reverse-proxy and does not watch K8s API resources; its ServiceAccount sets `automount_service_account_token = false`. No workload mounts a SA token. | I11 | Resolved |
 | R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
 | R-I13 | **App Deployment is locked to `replicas = 1`** because the auth subsystem's session-cookie sealing password lives in memory (`packages/runtime/src/auth/key.ts`) and is not shared across pods. A second replica would sign cookies with a different password, causing deterministic decryption failures whenever a request lands on the pod that did not seal the cookie. Raising replicas above 1 requires first migrating the password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted |
 
@@ -1867,8 +1868,9 @@ When deploying to the production UpCloud K8s target, treat the
 following as **must-have** before exposing to real traffic:
 
 1. **NetworkPolicy** — DONE. Namespace-wide default-deny plus per-workload
-   allow-rules: Traefik → app:8080, app → Internet (RFC1918 + IMDS
-   blocked) + CoreDNS, Traefik → Internet + CoreDNS. Resolves R-I1 and
+   allow-rules rendered inline next to each Deployment: Caddy → app:8080,
+   app → Internet (RFC1918 + IMDS blocked) + CoreDNS, Caddy → Internet
+   (LE ACME) + CoreDNS. Resolves R-I1 and
    the infrastructure half of R-I9 / §2 R-S4. Note: auth runs in-process;
    the app reaches `github.com` + `api.github.com` through the
    `egress_internet` egress rule for the OAuth handshake and for
@@ -1880,9 +1882,10 @@ following as **must-have** before exposing to real traffic:
    `restricted` at namespace level. Resolves R-I2.
 3. **Resource requests / limits** — at minimum `cpu` and `memory`
    limits on every pod, sized from observed usage. Resolves R-I3.
-4. **Real TLS** — cert-manager with the `letsencrypt-prod` ClusterIssuer
-   and HTTP-01 challenge is wired in (`infrastructure/envs/upcloud/cluster/upcloud.tf`,
-   `infrastructure/modules/cert-manager/`). Resolves R-I5 and I8.
+4. **Real TLS** — Caddy's built-in HTTP-01 ACME client issues and renews
+   Let's Encrypt certs directly (`infrastructure/modules/caddy/`,
+   `infrastructure/envs/cluster/cluster.tf`). Cert + ACME account live on
+   Caddy's `/data` PVC. Resolves R-I5 and I8.
 5. **Egress policy** — NetworkPolicy half DONE (see item 1). Private-range
    filtering inside the sandbox `fetch` plugin's structural `hardenedFetch`
    default (§2 R-S4) now closes the app-layer half — internal SSRF (S5)
@@ -1901,8 +1904,9 @@ following as **must-have** before exposing to real traffic:
 1. **NEVER commit a `.tfvars` file containing real secrets.** Use the
    `.example` pattern; put the real file in `.gitignore`.
 2. **NEVER add a new public NodePort, Ingress, or Route** without
-   explicit review. The public surface is currently exactly Traefik
-   on 443; widening it requires §3 / §4 treatment.
+   explicit review. The public surface is currently exactly Caddy
+   on `:443` (and `:80` for HTTP-01 ACME + redirect); widening it
+   requires §3 / §4 treatment.
 3. **NEVER hardcode a secret** in Terraform, Kubernetes manifests,
    Helm values, or container images. Secret values (credentials, keys,
    tokens) come from K8s Secrets injected via `envFrom.secretRef`.
@@ -2016,9 +2020,8 @@ Additional main-thread secrets rules on top of the K8s-centric rules above:
 - App-instance NetworkPolicies: `infrastructure/modules/app-instance/netpol.tf`
 - Persistence-side keypair: `infrastructure/envs/persistence/secrets.tf`
 - Staging / local keypair: `infrastructure/envs/staging/secrets.tf`, `infrastructure/envs/local/secrets.tf`
-- Traefik: `infrastructure/modules/traefik/traefik.tf`
+- Caddy ingress: `infrastructure/modules/caddy/`
 - Baseline (namespaces, PSA, default-deny): `infrastructure/modules/baseline/baseline.tf`
-- NetworkPolicy factory: `infrastructure/modules/netpol/main.tf`
 - S2 storage: `infrastructure/modules/object-storage/s2/s2.tf`
 - Dockerfile: `infrastructure/Dockerfile`
 - OpenSpec spec: `openspec/specs/infrastructure/spec.md`

@@ -1,5 +1,0 @@
-apiVersion: v2
-name: cert-manager-extras
-version: 0.1.0
-description: cert-manager custom resources (ClusterIssuers, CA cert, leaf certs). Installed after cert-manager itself so CRD kinds resolve at render time.
-type: application

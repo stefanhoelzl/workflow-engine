@@ -4,10 +4,6 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.1"
-    }
   }
 }
 
@@ -37,7 +33,7 @@ resource "terraform_data" "image_ready" {
 }
 
 resource "kubernetes_deployment_v1" "app" {
-  depends_on       = [module.app_netpol, terraform_data.image_ready]
+  depends_on       = [kubernetes_network_policy_v1.app, terraform_data.image_ready]
   wait_for_rollout = false
 
   metadata {

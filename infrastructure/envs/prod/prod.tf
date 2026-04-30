@@ -10,13 +10,6 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.1"
-    }
-    restapi = {
-      source = "Mastercard/restapi"
-    }
   }
 
   backend "s3" {
@@ -60,12 +53,6 @@ variable "upcloud_token" {
   type        = string
   sensitive   = true
   description = "UpCloud API token (K8s read scope — used by the ephemeral block to re-fetch kubeconfig)"
-}
-
-variable "dynu_api_key" {
-  type        = string
-  sensitive   = true
-  description = "Dynu DNS API key"
 }
 
 variable "github_oauth_client_id" {
@@ -137,15 +124,6 @@ provider "kubernetes" {
   client_key             = ephemeral.upcloud_kubernetes_cluster.this.client_key
 }
 
-provider "helm" {
-  kubernetes = {
-    host                   = ephemeral.upcloud_kubernetes_cluster.this.host
-    cluster_ca_certificate = ephemeral.upcloud_kubernetes_cluster.this.cluster_ca_certificate
-    client_certificate     = ephemeral.upcloud_kubernetes_cluster.this.client_certificate
-    client_key             = ephemeral.upcloud_kubernetes_cluster.this.client_key
-  }
-}
-
 module "baseline" {
   source = "../../modules/baseline"
 
@@ -183,11 +161,7 @@ module "app" {
     https_port = 443
   }
 
-  tls = {
-    secretName = "prod-workflow-engine-tls"
-  }
-
-  active_issuer_name = data.terraform_remote_state.cluster.outputs.active_issuer_name
+  caddy_namespace = data.terraform_remote_state.cluster.outputs.caddy_namespace
 
   baseline = {
     rfc1918_except             = data.terraform_remote_state.cluster.outputs.baseline.rfc1918_except
@@ -196,16 +170,7 @@ module "app" {
     pod_security_context       = data.terraform_remote_state.cluster.outputs.baseline.pod_security_context
     container_security_context = data.terraform_remote_state.cluster.outputs.baseline.container_security_context
   }
-  traefik_ready   = "cluster-applied"
   namespace_ready = module.baseline.namespaces
-}
-
-module "dns" {
-  source = "../../modules/dns/dynu"
-
-  zone            = var.domain
-  target_hostname = data.terraform_remote_state.cluster.outputs.lb_hostname
-  api_key         = var.dynu_api_key
 }
 
 output "url" {

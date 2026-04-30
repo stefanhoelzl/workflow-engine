@@ -1,5 +1,0 @@
-apiVersion: v2
-name: app-instance-routes
-description: Traefik IngressRoutes and Middlewares for a workflow-engine app-instance
-type: application
-version: 0.1.0

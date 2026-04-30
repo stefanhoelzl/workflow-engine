@@ -10,13 +10,6 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.1"
-    }
-    restapi = {
-      source = "Mastercard/restapi"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -64,12 +57,6 @@ variable "upcloud_token" {
   type        = string
   sensitive   = true
   description = "UpCloud API token (K8s read + Object Storage scopes)"
-}
-
-variable "dynu_api_key" {
-  type        = string
-  sensitive   = true
-  description = "Dynu DNS API key"
 }
 
 variable "github_oauth_client_id" {
@@ -142,15 +129,6 @@ provider "kubernetes" {
   client_key             = ephemeral.upcloud_kubernetes_cluster.this.client_key
 }
 
-provider "helm" {
-  kubernetes = {
-    host                   = ephemeral.upcloud_kubernetes_cluster.this.host
-    cluster_ca_certificate = ephemeral.upcloud_kubernetes_cluster.this.cluster_ca_certificate
-    client_certificate     = ephemeral.upcloud_kubernetes_cluster.this.client_certificate
-    client_key             = ephemeral.upcloud_kubernetes_cluster.this.client_key
-  }
-}
-
 module "bucket" {
   source = "../../modules/object-storage/upcloud"
 
@@ -196,11 +174,7 @@ module "app" {
     https_port = 443
   }
 
-  tls = {
-    secretName = "staging-workflow-engine-tls"
-  }
-
-  active_issuer_name = data.terraform_remote_state.cluster.outputs.active_issuer_name
+  caddy_namespace = data.terraform_remote_state.cluster.outputs.caddy_namespace
 
   baseline = {
     rfc1918_except             = data.terraform_remote_state.cluster.outputs.baseline.rfc1918_except
@@ -209,26 +183,7 @@ module "app" {
     pod_security_context       = data.terraform_remote_state.cluster.outputs.baseline.pod_security_context
     container_security_context = data.terraform_remote_state.cluster.outputs.baseline.container_security_context
   }
-  traefik_ready   = "cluster-applied"
   namespace_ready = module.baseline.namespaces
-}
-
-locals {
-  # Split FQDN into (zone, node_name) so the Dynu module creates a subdomain
-  # record under the parent zone. Example: "staging.workflow-engine.webredirect.org"
-  # → zone="workflow-engine.webredirect.org", node_name="staging".
-  domain_parts = split(".", var.domain)
-  dns_zone     = join(".", slice(local.domain_parts, 1, length(local.domain_parts)))
-  dns_node     = local.domain_parts[0]
-}
-
-module "dns" {
-  source = "../../modules/dns/dynu"
-
-  zone            = local.dns_zone
-  node_name       = local.dns_node
-  target_hostname = data.terraform_remote_state.cluster.outputs.lb_hostname
-  api_key         = var.dynu_api_key
 }
 
 output "url" {
