@@ -224,49 +224,73 @@ descriptor).
   pre-plugin-architecture events because the runtime stamps metadata
   post-hoc.
 
-### Boot sequence (phases 0-5)
+### Boot sequence
 
-Every `create()` runs deterministically through:
+Every `create()` runs deterministically through the phases below
+(matching `packages/sandbox/src/worker.ts:245-263`):
 
-0. Module load + WASM instantiation. Each plugin descriptor's
-   `workerSource` is dynamic-imported from a `data:` URI to resolve the
-   host-side `worker` function.
-1. `plugin.worker(ctx, deps, config)` for each plugin in topo order;
-   returns a `PluginSetup` (exports, guestFunctions, wasiHooks,
-   lifecycle hooks).
-2. Phase-2 evaluation of each plugin descriptor's `guestSource` IIFE
-   (produced at build time by the `?sandbox-plugin` transform from the
-   plugin file's optional `guest()` export). The IIFE captures private
-   descriptors into closures and installs guest-facing globals (e.g.
-   `globalThis.fetch`, `globalThis.console`). Descriptors without
-   `guestSource` are skipped.
-3. **Private-binding auto-deletion.** The sandbox iterates every
-   registered `GuestFunctionDescription` and `delete globalThis[name]` for
-   every entry with `public !== true`. This is structural enforcement,
-   not review discipline.
-4. Phase-4: user source evaluation (the owner bundle IIFE).
-5. Ready. Subsequent `run()` calls invoke exports.
+- **Phase 0** — module load. `worker.ts` imports are processed at module
+  evaluation time; plugin descriptor modules resolve in Phase 1a.
+- **Phase 1** — WASM instantiation (`QuickJS.create`). Bridge + RPC
+  setup, polyfill bundle eval, stack-size cap applied via the wasm
+  export `qjs_set_max_stack_size`.
+- **Phase 1a** — `plugin.worker(ctx, deps, config)` for each plugin
+  descriptor in topological order. Each plugin's `workerSource` is
+  dynamic-imported from a `data:` URI. Returns a `PluginSetup`
+  (exports, guestFunctions, wasiHooks, lifecycle hooks).
+- **Phase 1b** — install WASI hooks collected during Phase 1a.
+  `installWasiHooks` enforces hook-slot collision (one plugin per slot).
+- **Phase 1c** — install each plugin's guest-function descriptors on
+  `globalThis` so Phase 2 plugin source eval can capture private
+  descriptors into closures (`const x = globalThis.__x; delete
+  globalThis.__x;`).
+- **Phase 2** — plugin source eval (each plugin's `guestSource` IIFE,
+  in topological order). The IIFE captures private descriptors and
+  installs guest-facing globals (e.g. `globalThis.fetch`,
+  `globalThis.console`).
+- **Phase 3** — private-binding auto-deletion. The sandbox iterates
+  every registered `GuestFunctionDescription` and `delete
+  globalThis[name]` for every entry with `public !== true`. Structural
+  enforcement, not review discipline.
+- **Phase 4** — user source evaluation (the workflow bundle IIFE,
+  which writes to `globalThis.__wfe_exports__`).
+
+Immediately after Phase 4, the sandbox calls `vm.snapshot()` and every
+subsequent `handleRun` restores from this snapshot — so the
+post-Phase-4 globals surface is what every run starts from.
 
 Failures in any phase dispose the bridge, post `init-error`, and
 `process.exit(0)`.
 
 ### Globals surface (post-init guest-visible)
 
-The surface below is contributed by the v1 plugin catalog. Adding a new
-global requires adding or extending a plugin AND extending the list here.
+The surface below is contributed by the v1 plugin catalog AND by the
+workflow IIFE bundle. Adding a new global requires adding or extending
+a plugin (or the bundle) AND extending the list here AND extending the
+inline const arrays in `packages/runtime/src/globals-surface.test.ts`.
+See R-14 below — the enumeration test fails on additions or removals.
 
-- From `web-platform`: `console.*` (via console plugin), `self` (identity
-  shim with EventTarget), `navigator` (frozen `{userAgent}`),
-  `reportError`, `queueMicrotask`, `EventTarget`, `Event`, `ErrorEvent`,
-  `AbortController`, `AbortSignal`, `URLPattern`, `CompressionStream`,
-  `DecompressionStream`, `scheduler`, `TaskController`, `TaskSignal`,
-  `TaskPriorityChangeEvent`, `Observable`, `Subscriber`,
-  `EventTarget.prototype.when`, the WHATWG Streams family, IndexedDB
-  family, User Timing Level 3 entries, `structuredClone` override,
-  `URL.prototype.searchParams` accessor (live two-way bound
-  URLSearchParams; patches the WASM-ext URL constructor via a
-  construct-trap Proxy), and the fetch interfaces (`Blob`, `File`,
-  `FormData`, `Request`, `Response`).
+- From `web-platform`: `self` (identity shim with EventTarget),
+  `navigator` (frozen `{userAgent}`), `reportError`, `EventTarget`,
+  `Event`, `ErrorEvent`, `CustomEvent`, `addEventListener`,
+  `removeEventListener`, `dispatchEvent` (top-level proxies that mirror
+  `self`'s EventTarget methods), `AbortController`, `AbortSignal`,
+  `URLPattern`, `CompressionStream`, `DecompressionStream`, `scheduler`,
+  `TaskController`, `TaskPriorityChangeEvent`, `Observable`,
+  `Subscriber`, `EventTarget.prototype.when`, the WHATWG Streams family
+  (`ReadableStream` + 4 Reader/Controller variants, `WritableStream` +
+  2 Controller/Writer variants, `TransformStream` + Controller,
+  `ByteLengthQueuingStrategy`, `CountQueuingStrategy`,
+  `TextDecoderStream`, `TextEncoderStream`), IndexedDB family
+  (`indexedDB`, `IDBCursor`, `IDBCursorWithValue`, `IDBDatabase`,
+  `IDBFactory`, `IDBIndex`, `IDBKeyRange`, `IDBObjectStore`,
+  `IDBOpenDBRequest`, `IDBRequest`, `IDBTransaction`,
+  `IDBVersionChangeEvent`), User Timing Level 3 entries
+  (`PerformanceEntry`, `PerformanceMark`, `PerformanceMeasure`),
+  `structuredClone` override, `URL.prototype.searchParams` accessor
+  (live two-way bound URLSearchParams; patches the WASM-ext URL
+  constructor via a construct-trap Proxy), and the fetch interfaces
+  (`Blob`, `File`, `FormData`, `Request`, `Response`).
   Pinned polyfills: `event-target-shim@^6`, `urlpattern-polyfill@10.0.0`,
   `fflate@^0.8.2`, `web-streams-polyfill@^4.2.0`, `fetch-blob@^4.0.0`,
   `formdata-polyfill@^4.0.10`, `@ungap/structured-clone@^1.3.0`,
@@ -280,14 +304,21 @@ global requires adding or extending a plugin AND extending the list here.
   `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`),
   `Promise.withResolvers`, `Object.groupBy`, `Map.groupBy`,
   `Array.fromAsync`, and `ArrayBuffer.prototype.transfer` /
-  `transferToFixedLength` / `resize`. The aggregate `core-js/stable`
-  is intentionally **not** imported: it would replace the more
+  `transferToFixedLength` / `resize`. core-js also installs
+  `__core-js_shared__` on `globalThis` as its private cross-module
+  shared store (its public surface is the prototype methods above; the
+  shared store is incidental but enumerable, so it is part of the
+  globals surface). The aggregate `core-js/stable` is intentionally
+  **not** imported: it would replace the more
   conformant WASM-ext `URL` / `URLSearchParams` / `DOMException` and
   the existing `urlpattern-polyfill` / `@ungap/structured-clone` /
   `event-target.ts` shims with less-conformant pure-JS variants
   (regresses ~98 WPT subtests, including surrogate handling). No host
   bridges, no Node surface; lives entirely in linear memory. Version
   bump requires a §2 re-audit PR.
+- From `console`: `console` (object with `log`/`info`/`warn`/`error`/
+  `debug` leaf-event emitters via the console plugin's `$console/*`
+  private descriptors).
 - From `fetch`: `globalThis.fetch` (WHATWG shape around the private
   dispatcher `$fetch/do`). Default implementation closes over
   `hardenedFetch` (see R-4 below).
@@ -296,19 +327,54 @@ global requires adding or extending a plugin AND extending the list here.
 - From `sdk-support`: `__sdk` — locked via
   `Object.defineProperty(globalThis, "__sdk", {writable: false,
   configurable: false})` wrapping an `Object.freeze`d inner
-  `{dispatchAction}` object. This is the sole `__`-prefixed global that
-  remains on `globalThis` post-init. The underlying
-  `__sdkDispatchAction` private descriptor is captured by the plugin's
-  IIFE and auto-deleted in phase 3.
+  `{dispatchAction}` object. The underlying `__sdkDispatchAction`
+  private descriptor is captured by the plugin's IIFE and auto-deleted
+  in phase 3.
+- **From system-bridge plugins** (locked outer + frozen inner — see
+  "Adding a system-bridge plugin" below for the canonical pattern):
+  - From `sql` (sandbox-stdlib): `__sql` — locked outer, frozen inner
+    `{execute}`. Backed by the private `$sql/do` descriptor captured
+    by the plugin's IIFE and phase-3-deleted.
+  - From `mail` (sandbox-stdlib): `__mail` — locked outer, frozen
+    inner `{send}`. Backed by the private `$mail/send` descriptor
+    captured by the plugin's IIFE and phase-3-deleted.
+- From `secrets` (runtime/plugins/secrets.ts):
+  - `workflow` — locked outer, frozen inner `{name, env}` (env values
+    are strings, frozen shallowly). Populated by the plugin's Phase-2
+    IIFE from the runtime-supplied `__secretsConfig` private
+    descriptor. Author-facing access is via the SDK's
+    `defineWorkflow({env}).env(...)` callable, but the binding is
+    reachable directly on `globalThis`.
+  - `$secrets` — locked outer, frozen inner `{addSecret(value)}`. The
+    inner is a closure over the private `$secrets/addSecret`
+    descriptor (phase-3-deleted), wired to the runtime's secret
+    scrubber so any plaintext computed inside a handler is redacted
+    from emitted events.
+- **From the workflow IIFE bundle** (Phase 4): `__wfe_exports__` — the
+  fixed namespace constant exported as `IIFE_NAMESPACE` from
+  `@workflow-engine/core/constants`. The vite-plugin emits the
+  workflow as `format: "iife"` assigning exports onto
+  `globalThis.__wfe_exports__`; the sandbox reads handler exports from
+  this object via `vm.global.getProp(IIFE_NAMESPACE)`. The descriptor
+  is currently **writable** and **configurable** (the IIFE writes via
+  ordinary property assignment, and no plugin locks it). Tracked as a
+  separate finding (sister F-4) for descriptor locking; until then,
+  guests CAN mutate `__wfe_exports__` between handler invocations,
+  but exports are read once per run by the host so the practical
+  blast radius is bounded to the same run (see threat S15 below).
 - **WASM extension globals** (contributed by quickjs-wasi extensions
   loaded at VM creation): `URL`, `URLSearchParams`, `TextEncoder`,
   `TextDecoder`, `atob`, `btoa`, `structuredClone`, `Headers`, `crypto`
-  (including `crypto.subtle.*` with a JS Promise shim), `performance`,
-  `DOMException`. These live inside WASM linear memory; they are not
-  host bridges and consume no host capability.
+  (including `crypto.subtle.*` with a JS Promise shim, plus the
+  `Crypto`, `CryptoKey`, `SubtleCrypto` constructor identities),
+  `performance`, `DOMException`, `queueMicrotask`. These live inside
+  WASM linear memory; they are not host bridges and consume no host
+  capability.
 
 No other globals are present. `process`, `require`, `fs`, and Node APIs
-are absent.
+are absent. The exact post-init globals delta over the engine + ES
+baseline is enforced by `packages/runtime/src/globals-surface.test.ts`
+(see R-14).
 
 ### WASI override inventory
 
@@ -373,6 +439,7 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
 | S12 | A private descriptor fails to auto-delete in phase 3 (descriptor marked `public: true` by mistake, or phase-3 iteration is skipped) and becomes reachable from guest code | Elevation of privilege (audit-log forging / bridge access) |
 | S13 | A plugin retains worker-side long-lived state (timers Map, pending `Callable`s, in-flight fetch handles) that is not captured by the per-run VM snapshot+restore — failing to clean up on `onRunFinished` leaks state across runs or fires callbacks after the run closed. Guest-visible state is structurally reset by snapshot-restore; S13 now covers only the host-side residue. | Tampering (cross-run state) / DoS |
 | S14 | A plugin emits events with hand-crafted `seq`/`ref`/`ts` values (via direct `bridge.*` mutation) that desync the event stream | Tampering (audit-log integrity) |
+| S15 | Guest code mutates a locked guest-visible global (`__sdk`, `__sql`, `__mail`, `$secrets`, `workflow`) to swap a dispatcher, alter a frozen view, or replace exports between runs. Mitigation: locked-outer + frozen-inner descriptor pattern uniformly applied at install time (parallels S11 for `__sdk`). For the lone unlocked surface `__wfe_exports__`, guests CAN rewrite it today; impact is bounded to the same run because the host reads exports once per `run()` (sister finding F-4 tracks descriptor locking). | Tampering (audit-log integrity / surface integrity) |
 
 ### Mitigations (current)
 
@@ -859,6 +926,22 @@ plugin, and every change that adds a guest-visible surface.
     ending the worker before R-4 can run. See `openspec/specs/
     sandbox/spec.md` "Guest→host boundary opacity (Callable envelope
     contract)" and "pluginRequest auto-unwraps Callable envelopes".
+14. **R-14 Globals are enumerated.** Every own property of `globalThis`
+    present after the post-init snapshot — minus the ES standard
+    library and the quickjs-wasi engine baseline — MUST appear in the
+    "Globals surface (post-init guest-visible)" list above. The
+    enumeration test in
+    `packages/runtime/src/globals-surface.test.ts` MUST pass under the
+    production plugin descriptor set returned by
+    `buildPluginDescriptors` in
+    `packages/runtime/src/sandbox-store.ts`. A change that adds,
+    renames, or removes a guest-visible global on `globalThis`
+    (whether installed by a plugin's Phase-2 IIFE, by the workflow
+    IIFE namespace, or by any future mechanism) MUST update both this
+    section AND the inline const arrays in the test in the same
+    change. The audit posture is mechanical, not by-eye: the test
+    asserts an exact-set equality on the *delta* between a
+    NOOP_PLUGINS baseline boot and the production-plugin boot.
 
 Additional standing rules that predate the plugin rewrite:
 

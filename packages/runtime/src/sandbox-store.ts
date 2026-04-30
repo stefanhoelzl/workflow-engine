@@ -291,4 +291,4 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 }
 
 export type { SandboxStore, SandboxStoreOptions };
-export { createSandboxStore };
+export { buildPluginDescriptors, createSandboxStore };
