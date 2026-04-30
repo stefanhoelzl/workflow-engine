@@ -4,7 +4,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"build": "node ../packages/sdk/dist/cli/cli.js build"
+		"build": "WEBHOOK_TOKEN=${WEBHOOK_TOKEN:-build-time-placeholder} IMAP_USER=${IMAP_USER:-build-time-placeholder} IMAP_PASSWORD=${IMAP_PASSWORD:-build-time-placeholder} node ../packages/sdk/dist/cli/cli.js build"
 	},
 	"dependencies": {
 		"@workflow-engine/sdk": "workspace:*"
