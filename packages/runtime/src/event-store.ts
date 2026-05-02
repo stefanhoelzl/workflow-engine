@@ -1,14 +1,13 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDbDialect } from "@oorabona/kysely-duckdb";
 import type { InvocationEvent } from "@workflow-engine/core";
 import { CompiledQuery, Kysely, type SelectQueryBuilder } from "kysely";
 import type { Logger } from "./logger.js";
-import type { StorageBackend, StorageLocator } from "./storage/index.js";
 
 // ---------------------------------------------------------------------------
-// EventStore — DuckLake-backed durable archive + Kysely query surface
+// EventStore — plain DuckDB on disk + Kysely query surface
 // ---------------------------------------------------------------------------
 
 interface EventsTable {
@@ -34,16 +33,13 @@ interface Database {
 }
 
 interface EventStoreConfig {
-	checkpointIntervalMs: number;
-	checkpointMaxInlinedRows: number;
-	checkpointMaxCatalogBytes: number;
 	commitMaxRetries: number;
 	commitBackoffMs: number;
 	sigtermFlushTimeoutMs: number;
 }
 
 interface EventStoreOptions {
-	backend: StorageBackend;
+	persistenceRoot: string;
 	logger: Logger;
 	config: EventStoreConfig;
 }
@@ -80,7 +76,7 @@ interface EventStore {
 }
 
 const CREATE_TABLE_DDL = `
-CREATE TABLE IF NOT EXISTS event_store.events (
+CREATE TABLE IF NOT EXISTS events (
 	id TEXT NOT NULL,
 	seq INTEGER NOT NULL,
 	kind TEXT NOT NULL,
@@ -95,13 +91,12 @@ CREATE TABLE IF NOT EXISTS event_store.events (
 	input JSON,
 	output JSON,
 	error JSON,
-	meta JSON
+	meta JSON,
+	PRIMARY KEY (id, seq)
 )`;
 
-const SET_PARTITIONED_DDL =
-	"ALTER TABLE event_store.events SET PARTITIONED BY (owner, repo)";
-
-const URL_SCHEME_RE = /^https?:\/\//;
+const CREATE_OWNER_REPO_INDEX_DDL =
+	"CREATE INDEX IF NOT EXISTS events_owner_repo_idx ON events (owner, repo)";
 
 // Kinds that close out an invocation. trigger.response and trigger.error are
 // the natural pair to a trigger.request; trigger.exception and trigger.rejection
@@ -119,6 +114,14 @@ const TERMINAL_KINDS = new Set([
 
 function isTerminal(kind: string): boolean {
 	return TERMINAL_KINDS.has(kind);
+}
+
+// DuckDB surfaces PK violations as "Constraint Error: Duplicate key … violates primary key constraint".
+const PK_VIOLATION_RE = /constraint|primary key|duplicate key/i;
+
+function isPrimaryKeyViolation(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return PK_VIOLATION_RE.test(message);
 }
 
 function eventToRow(event: InvocationEvent): EventsTable {
@@ -139,61 +142,6 @@ function eventToRow(event: InvocationEvent): EventsTable {
 		error: event.error === undefined ? null : JSON.stringify(event.error),
 		meta: event.meta === undefined ? null : JSON.stringify(event.meta),
 	};
-}
-
-function quoteSqlString(value: string): string {
-	return `'${value.replace(/'/g, "''")}'`;
-}
-
-function composeAttachSql(locator: StorageLocator): {
-	prelude: string[];
-	attach: string;
-	catalogPath: string;
-} {
-	if (locator.kind === "fs") {
-		const catalog = join(locator.root, "events.duckdb");
-		const dataPath = join(locator.root, "events");
-		return {
-			prelude: [],
-			attach: `ATTACH ${quoteSqlString(`ducklake:${catalog}`)} AS event_store (DATA_PATH ${quoteSqlString(dataPath)})`,
-			catalogPath: catalog,
-		};
-	}
-	const scheme = locator.useSsl ? "https" : "http";
-	const endpointHostPort = locator.endpoint.replace(URL_SCHEME_RE, "");
-	const catalogUri = `s3://${locator.bucket}/events.duckdb`;
-	const dataPath = `s3://${locator.bucket}/events/`;
-	const prelude = [
-		"CREATE OR REPLACE SECRET event_store_s3 (",
-		"  TYPE S3,",
-		`  KEY_ID ${quoteSqlString(locator.accessKeyId.reveal())},`,
-		`  SECRET ${quoteSqlString(locator.secretAccessKey.reveal())},`,
-		`  REGION ${quoteSqlString(locator.region)},`,
-		`  ENDPOINT ${quoteSqlString(endpointHostPort)},`,
-		`  URL_STYLE ${quoteSqlString(locator.urlStyle)},`,
-		`  USE_SSL ${locator.useSsl ? "true" : "false"},`,
-		`  SCOPE ${quoteSqlString(`s3://${locator.bucket}`)}`,
-		")",
-	];
-	return {
-		prelude: [`-- using ${scheme} endpoint`, prelude.join("\n")],
-		attach: `ATTACH ${quoteSqlString(`ducklake:${catalogUri}`)} AS event_store (DATA_PATH ${quoteSqlString(dataPath)})`,
-		catalogPath: catalogUri,
-	};
-}
-
-async function getCatalogBytes(catalogPath: string): Promise<number> {
-	if (!catalogPath.startsWith("/")) {
-		// S3 URI — we don't have a cheap stat for the remote catalog. Return -1
-		// to disable the size threshold for S3 (timer-driven CHECKPOINT still works).
-		return -1;
-	}
-	try {
-		const s = await stat(catalogPath);
-		return s.size;
-	} catch {
-		return 0;
-	}
 }
 
 function createCteChain(
@@ -219,62 +167,31 @@ interface PendingInvocation {
 	events: InvocationEvent[];
 }
 
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DuckLake setup, accumulator, commit/retry/checkpoint loops, and the public surface that all share the connection — splitting would leak the connection as module state
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DB setup, accumulator, commit/retry loops, and the public surface that all share the connection — splitting would leak the connection as module state
 async function createEventStore(
 	options: EventStoreOptions,
 ): Promise<EventStore> {
-	const { backend, logger, config } = options;
-	const locator = backend.locator();
+	const { persistenceRoot, logger, config } = options;
+	const absoluteRoot = resolve(persistenceRoot);
+	await mkdir(absoluteRoot, { recursive: true });
+	const dbPath = join(absoluteRoot, "events.duckdb");
 
-	const instance = await DuckDBInstance.create();
+	const instance = await DuckDBInstance.create(dbPath);
 	const conn = await instance.connect();
 
 	async function exec(sql: string): Promise<void> {
 		await conn.run(sql);
 	}
 
-	await exec("INSTALL ducklake;");
-	await exec("LOAD ducklake;");
-	if (locator.kind === "s3") {
-		await exec("INSTALL httpfs;");
-		await exec("LOAD httpfs;");
-	}
-
-	const { prelude, attach, catalogPath } = composeAttachSql(locator);
-	for (const stmt of prelude) {
-		if (stmt.startsWith("--")) {
-			continue;
-		}
-		// biome-ignore lint/performance/noAwaitInLoops: prelude statements must execute in order
-		await exec(stmt);
-	}
-	await exec(attach);
-	await exec("USE event_store;");
 	await exec(CREATE_TABLE_DDL);
-	try {
-		await exec(SET_PARTITIONED_DDL);
-	} catch (err) {
-		// Idempotent: ALTER ... SET PARTITIONED BY may fail if already partitioned
-		// the same way on subsequent boots. Log and continue.
-		logger.debug("event-store.partition-already-set", {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+	await exec(CREATE_OWNER_REPO_INDEX_DDL);
 
-	// `event_store` is the DuckLake-attached database name. Kysely connections
-	// opened by the dialect default to the unattached `memory` database where
-	// the events table does not exist. `withSchema("event_store")` scopes every
-	// generated query — `selectFrom("events")`, `insertInto("events")`, `with()`
-	// — to `"event_store"."events"`, which DuckDB resolves to the DuckLake
-	// table regardless of the current connection's USE state.
 	const rawDb = new Kysely<Database>({
 		dialect: new DuckDbDialect({ database: instance }),
 	});
-	const db = rawDb.withSchema("event_store");
+	const db = rawDb;
 
 	const accumulator = new Map<string, PendingInvocation>();
-	let nextCheckpointAt = Date.now() + config.checkpointIntervalMs;
-	let inlinedRowsApprox = 0;
 	let stopped = false;
 
 	function appendToAccumulator(event: InvocationEvent): void {
@@ -297,7 +214,7 @@ async function createEventStore(
 		return config.commitBackoffMs * 2 ** attempt;
 	}
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: retry-then-drop is the spec; loop body groups try/catch + structured-log + backoff
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: retry-then-drop is the spec; loop body groups try/catch + structured-log + backoff + PK fast-fail
 	async function commitWithRetry(
 		id: string,
 		owner: string,
@@ -316,10 +233,19 @@ async function createEventStore(
 					rows: events.length,
 					duration,
 				});
-				inlinedRowsApprox += events.length;
 				return true;
 			} catch (err) {
 				lastError = err;
+				if (isPrimaryKeyViolation(err)) {
+					logger.error("event-store.commit-dropped", {
+						id,
+						owner,
+						repo,
+						reason: "primary-key-violation",
+						error: err instanceof Error ? err.message : String(err),
+					});
+					return false;
+				}
 				if (attempt < config.commitMaxRetries) {
 					logger.warn("event-store.commit-retry", {
 						id,
@@ -360,67 +286,6 @@ async function createEventStore(
 		await commitWithRetry(id, first.owner, first.repo, entry.events);
 	}
 
-	function describeTrigger(
-		sizeTrip: boolean,
-		inlineTrip: boolean,
-	): "size" | "inlined-rows" | "interval" {
-		if (sizeTrip) {
-			return "size";
-		}
-		if (inlineTrip) {
-			return "inlined-rows";
-		}
-		return "interval";
-	}
-
-	async function maybeCheckpoint(): Promise<void> {
-		const now = Date.now();
-		const catalogBytes = await getCatalogBytes(catalogPath);
-		const sizeTrip =
-			catalogBytes >= 0 && catalogBytes > config.checkpointMaxCatalogBytes;
-		const inlineTrip = inlinedRowsApprox > config.checkpointMaxInlinedRows;
-		const timeTrip = now >= nextCheckpointAt;
-		if (!(sizeTrip || inlineTrip || timeTrip)) {
-			return;
-		}
-		if (inlinedRowsApprox === 0 && !sizeTrip) {
-			logger.debug("event-store.checkpoint-skip", { reason: "no-work" });
-			nextCheckpointAt = now + config.checkpointIntervalMs;
-			return;
-		}
-		const start = Date.now();
-		try {
-			await exec("CHECKPOINT;");
-			const after = await getCatalogBytes(catalogPath);
-			logger.info("event-store.checkpoint-run", {
-				durationMs: Date.now() - start,
-				catalogBytesBefore: catalogBytes,
-				catalogBytesAfter: after,
-				inlinedRowsFlushedApprox: inlinedRowsApprox,
-				trigger: describeTrigger(sizeTrip, inlineTrip),
-			});
-			inlinedRowsApprox = 0;
-			nextCheckpointAt = now + config.checkpointIntervalMs;
-		} catch (err) {
-			logger.error("event-store.checkpoint-failed", {
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	}
-
-	const checkpointTimer = setInterval(
-		() => {
-			maybeCheckpoint().catch((err) => {
-				logger.error("event-store.checkpoint-tick-failed", {
-					error: err instanceof Error ? err.message : String(err),
-				});
-			});
-		},
-		// biome-ignore lint/style/noMagicNumbers: timer cadence — at most 1/4 of the configured interval, with a 1s floor so the timer is responsive enough for short-interval test configs without busy-looping
-		Math.max(1000, Math.floor(config.checkpointIntervalMs / 4)),
-	);
-	checkpointTimer.unref();
-
 	return {
 		async record(event: InvocationEvent): Promise<void> {
 			if (stopped) {
@@ -434,7 +299,6 @@ async function createEventStore(
 			appendToAccumulator(event);
 			if (isTerminal(event.kind)) {
 				await commitInvocation(event.id);
-				await maybeCheckpoint();
 			}
 		},
 
@@ -488,7 +352,6 @@ async function createEventStore(
 
 		async drainAndClose(): Promise<void> {
 			stopped = true;
-			clearInterval(checkpointTimer);
 			const deadline = Date.now() + config.sigtermFlushTimeoutMs;
 			for (const [id, entry] of accumulator) {
 				if (Date.now() >= deadline) {
@@ -522,15 +385,8 @@ async function createEventStore(
 					},
 				};
 				entry.events.push(synthetic);
-				// biome-ignore lint/performance/noAwaitInLoops: drain serially so the catalog write set stays bounded
+				// biome-ignore lint/performance/noAwaitInLoops: drain serially so the write set stays bounded
 				await commitInvocation(id);
-			}
-			try {
-				await exec("CHECKPOINT;");
-			} catch (err) {
-				logger.warn("event-store.checkpoint-on-shutdown-failed", {
-					error: err instanceof Error ? err.message : String(err),
-				});
 			}
 			await db.destroy();
 		},

@@ -11,7 +11,6 @@ import {
 	type EventStore,
 	type Scope,
 } from "../event-store.js";
-import { createFsStorage } from "../storage/fs.js";
 import { createTestLogger } from "./logger.js";
 
 // Test helper: a minimal `EventStore` whose `record` captures every event in
@@ -71,21 +70,16 @@ interface RealEventStoreHandle {
 	dispose: () => Promise<void>;
 }
 
-// Boots a real EventStore against a temp FS directory. The DuckLake catalog
-// and data files live under that directory; on dispose, the directory is
-// removed. Suitable for integration-style tests that need real Kysely queries
-// against the events table.
+// Boots a real EventStore against a temp FS directory. The DuckDB database
+// file lives under that directory; on dispose, the directory is removed.
+// Suitable for integration-style tests that need real Kysely queries against
+// the events table.
 async function createRealEventStoreForTest(): Promise<RealEventStoreHandle> {
 	const dir = await mkdtemp(join(tmpdir(), "event-store-test-"));
-	const backend = createFsStorage(dir);
-	await backend.init();
 	const store = await createEventStore({
-		backend,
+		persistenceRoot: dir,
 		logger: createTestLogger(),
 		config: {
-			checkpointIntervalMs: 3_600_000,
-			checkpointMaxInlinedRows: 1_000_000,
-			checkpointMaxCatalogBytes: 1_073_741_824,
 			commitMaxRetries: 0,
 			commitBackoffMs: 0,
 			sigtermFlushTimeoutMs: 5000,

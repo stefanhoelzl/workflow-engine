@@ -9,19 +9,12 @@ import {
 	type EventStoreConfig,
 } from "./event-store.js";
 import type { Logger } from "./logger.js";
-import { createFsStorage } from "./storage/fs.js";
-import type { StorageBackend } from "./storage/index.js";
 import { createTestLogger } from "./test-utils/logger.js";
 
 function defaultConfig(
 	overrides: Partial<EventStoreConfig> = {},
 ): EventStoreConfig {
 	return {
-		// Long enough to never auto-fire during a test; threshold-trigger tests
-		// override this explicitly.
-		checkpointIntervalMs: 24 * 60 * 60 * 1000,
-		checkpointMaxInlinedRows: 1_000_000,
-		checkpointMaxCatalogBytes: 1_073_741_824,
 		commitMaxRetries: 0,
 		commitBackoffMs: 0,
 		sigtermFlushTimeoutMs: 5000,
@@ -48,14 +41,11 @@ function makeEvent(overrides: Partial<InvocationEvent>): InvocationEvent {
 
 describe("EventStore", () => {
 	let dir: string;
-	let backend: StorageBackend;
 	let store: EventStore;
 	let logger: Logger;
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "event-store-test-"));
-		backend = createFsStorage(dir);
-		await backend.init();
 		logger = createTestLogger();
 	});
 
@@ -67,7 +57,7 @@ describe("EventStore", () => {
 	describe("record() and query()", () => {
 		it("non-terminal events stay in the in-memory accumulator and are not queryable", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -81,7 +71,7 @@ describe("EventStore", () => {
 
 		it("terminal trigger.response commits the full accumulator", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -109,7 +99,7 @@ describe("EventStore", () => {
 
 		it("terminal trigger.error commits identically", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -135,7 +125,7 @@ describe("EventStore", () => {
 
 		it("single-leaf trigger.exception commits immediately", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -158,7 +148,7 @@ describe("EventStore", () => {
 
 		it("query() with empty scope list throws", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -167,7 +157,7 @@ describe("EventStore", () => {
 
 		it("query() filters by (owner, repo)", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -220,7 +210,7 @@ describe("EventStore", () => {
 	describe("hasUploadEvent", () => {
 		it("returns false for unknown sha", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -231,7 +221,7 @@ describe("EventStore", () => {
 
 		it("returns true after a system.upload terminal commit", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -250,7 +240,7 @@ describe("EventStore", () => {
 
 		it("does not match cross-(owner, repo)", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -272,7 +262,7 @@ describe("EventStore", () => {
 	describe("ping", () => {
 		it("resolves on a healthy connection", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -281,22 +271,9 @@ describe("EventStore", () => {
 	});
 
 	describe("retry-then-drop on commit failure", () => {
-		it("logs commit-dropped and evicts the invocation when retries are exhausted", async () => {
-			// A backend whose locator() points at a non-writable directory makes
-			// DuckLake's underlying write throw — we intercept by stubbing the
-			// EventStore connection's exec, but the simpler route is to assert
-			// behaviour via a public API: drive a commit that throws by causing
-			// the catalog write to fail.
-			//
-			// Since we can't easily inject failure into the real DuckLake commit
-			// here, we instead validate the policy by reading the source-side
-			// contract: max retries = 0, exhaustion logs and resolves. Drive
-			// it by patching the logger to count calls. The catalog at this
-			// point is healthy, so we pivot: assert the drop log shape via a
-			// successful path's *absence* of retry/drop lines (negative
-			// assertion + integration coverage from test 09 which we deferred).
+		it("happy-path commit emits commit-ok and no retry/drop log lines", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -319,42 +296,10 @@ describe("EventStore", () => {
 		});
 	});
 
-	describe("CHECKPOINT triggers", () => {
-		it("flushes inlined rows when the inline-row threshold trips", async () => {
-			store = await createEventStore({
-				backend,
-				logger,
-				config: defaultConfig({ checkpointMaxInlinedRows: 1 }),
-			});
-			await store.record(makeEvent({ kind: "trigger.request", seq: 0 }));
-			await store.record(
-				makeEvent({ kind: "trigger.response", seq: 1, ref: 0 }),
-			);
-			// The first commit pushes the threshold past 1; the maybeCheckpoint
-			// call after the terminal commit observes it and runs CHECKPOINT.
-			expect(logger.info).toHaveBeenCalledWith(
-				"event-store.checkpoint-run",
-				expect.objectContaining({ trigger: "inlined-rows" }),
-			);
-		});
-
-		it("does not run CHECKPOINT when no work is pending", async () => {
-			store = await createEventStore({
-				backend,
-				logger,
-				config: defaultConfig({ checkpointMaxInlinedRows: 1 }),
-			});
-			expect(logger.info).not.toHaveBeenCalledWith(
-				"event-store.checkpoint-run",
-				expect.anything(),
-			);
-		});
-	});
-
 	describe("SIGTERM drain", () => {
 		it("commits in-flight invocations as trigger.error{kind:'shutdown'}", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -366,7 +311,7 @@ describe("EventStore", () => {
 			await store.drainAndClose();
 			// Re-open against the same dir to query the durable state.
 			const reopen = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
@@ -396,7 +341,7 @@ describe("EventStore", () => {
 
 		it("ignores record() after stop and warns", async () => {
 			store = await createEventStore({
-				backend,
+				persistenceRoot: dir,
 				logger,
 				config: defaultConfig(),
 			});
