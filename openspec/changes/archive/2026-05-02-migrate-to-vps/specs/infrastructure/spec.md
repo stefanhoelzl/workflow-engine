@@ -1,11 +1,89 @@
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- Local Stack (infrastructure/local/)                    -->
-<!-- ═══════════════════════════════════════════════════════ -->
+## REMOVED Requirements
 
-## Purpose
+The following requirements describe the previous K8s-shaped infrastructure (UpCloud Managed Kubernetes + Caddy as raw `kubernetes_manifest` + UpCloud Object Storage + four-project tofu layout + kind for local dev). They are removed wholesale and replaced by the ADDED requirements below, which describe the new single-VPS shape (Scaleway VPS + Podman + Quadlet + local-disk persistence + single flat tofu project).
 
-Reusable Terraform modules for the local (kind) and production (UpCloud) stacks.
-## Requirements
+A single shared **Reason / Migration** applies to every removed requirement in this section:
+
+- **Reason**: The infrastructure capability's implementation moves from UpCloud K8s + S3 to Scaleway VPS + Podman + Quadlet + local disk. Per the proposal, the capability identity ("production deployment shape") is unchanged; only the implementation changes.
+- **Migration**: See the ADDED Requirements section in this delta. The K8s/S3-shaped resources are torn down by the operator post-cutover; there is no rollback. Throwaway data — the existing event store on UpCloud Object Storage is not migrated.
+
+### Requirement: OpenTofu version constraint
+### Requirement: Provider version constraints
+### Requirement: Local state backend
+### Requirement: Module wiring
+### Requirement: Non-secret variables in terraform.tfvars
+### Requirement: Secret variables in local.secrets.auto.tfvars
+### Requirement: URL output
+### Requirement: Lock file committed
+### Requirement: Gitignore
+### Requirement: Kind cluster resource
+### Requirement: Image loading into kind cluster
+### Requirement: Cluster credential outputs
+### Requirement: Cluster name output
+### Requirement: UpCloud Kubernetes cluster
+### Requirement: Kubernetes version
+### Requirement: Kubernetes node group
+### Requirement: Ephemeral credential outputs
+### Requirement: Kubernetes module output contract
+### Requirement: Idempotent image build
+### Requirement: Image name output
+### Requirement: S2 Deployment
+### Requirement: S2 Service
+### Requirement: S2 health probe
+### Requirement: S3 output contract
+### Requirement: UpCloud S3 output contract
+### Requirement: UpCloud S3 bucket creation
+### Requirement: Scoped service user
+### Requirement: Access key generation
+### Requirement: App Deployment
+### Requirement: App S3 environment variables
+### Requirement: App S3 Secret
+### Requirement: App health probes
+### Requirement: App Service
+### Requirement: App workload network allow-rules
+### Requirement: Persistence project
+### Requirement: S3 configuration from remote state
+### Requirement: CI validates all OpenTofu projects
+### Requirement: Namespace isolation
+### Requirement: Standardized labels
+### Requirement: DNS module extraction
+### Requirement: Deployment depends on NetworkPolicy
+### Requirement: Security context
+### Requirement: App module accepts auth_allow input
+### Requirement: App module accepts GitHub OAuth App credentials
+### Requirement: Cluster module exposes node CIDR
+### Requirement: Cluster project composition root
+### Requirement: Cluster project outputs
+### Requirement: Apps re-fetch kubeconfig via ephemeral block
+### Requirement: App project composition root
+### Requirement: Prod image identity via digest
+### Requirement: Staging image identity via digest
+### Requirement: Staging bucket inside staging project
+### Requirement: DNS ownership per app project
+### Requirement: State key layout
+### Requirement: Per-project provider versions
+### Requirement: Per-project variables and tfvars
+### Requirement: Per-env URL outputs
+### Requirement: Drift guard via plan-infra.yml
+### Requirement: Helm-rendered-object drift blind spot
+### Requirement: auth_allow sourced from GitHub repo variables
+### Requirement: Release branch powers automated prod deploys
+### Requirement: Staging auto-deploys on push to main
+### Requirement: cert-manager Helm chart CRD upgrade caveat
+### Requirement: Cert readiness verification
+### Requirement: Persistence project generates secrets keypair list
+### Requirement: Prod project reads persistence output and creates K8s Secret
+### Requirement: Staging and local projects generate own keypairs
+### Requirement: App pod env_from references app-secrets-key
+### Requirement: Caddy module renders Deployment + Service + ConfigMap + PVC
+### Requirement: Caddy serves TLS via HTTP-01 ACME for the configured domain
+### Requirement: Caddy reverse-proxies all paths to the app Service
+### Requirement: Caddy network policy
+### Requirement: App pod NetworkPolicy contract
+### Requirement: LB hostname discovered via the upcloud provider data source
+
+## ADDED Requirements
+
 ### Requirement: Single flat tofu project at infrastructure/
 
 The repository SHALL contain exactly one OpenTofu project at `infrastructure/` with no `envs/<name>/` subdirectories. The project owns the Scaleway VPS, both app Quadlet units, the Caddy unit, the Caddyfile, the Dynu CNAMEs for prod and staging, and the Scaleway Object Storage bucket reference for state. All operations run as `tofu -chdir=infrastructure {init|plan|apply}`.
@@ -238,4 +316,3 @@ The `infrastructure/envs/local/` directory, the `kind` provider usage, the `pnpm
 
 - **WHEN** the repo is grep'd for `kind` provider, `pnpm local:up`, or `infrastructure/envs/local`
 - **THEN** no occurrence SHALL remain
-

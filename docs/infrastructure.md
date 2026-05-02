@@ -1,203 +1,202 @@
 # Infrastructure
 
-Prod/staging deployment runbook. Local-dev instructions live in `CLAUDE.md` under `## Infrastructure (OpenTofu + kind)`.
+Production runbook for the single-VPS deployment. Local-dev instructions live in `CLAUDE.md` (`pnpm dev` is the only local mode).
 
-## Authentication architecture
+## Topology
 
-Authentication is entirely in-app. The `oauth2-proxy` sidecar and Traefik forward-auth chain were removed by the `replace-oauth2-proxy` change. Caddy (the current ingress) performs no authentication, authorization, or forward-auth gating — it is a pure TLS + reverse-proxy gateway. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (UI: `/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (API: `/api/*`) in-process. See `openspec/specs/auth/spec.md` for the full auth contract and `SECURITY.md §4` for the threat model.
+One Scaleway VPS (Debian 12) hosts both prod and staging. Three rootless Podman + systemd Quadlet units:
 
-## Production (OpenTofu + UpCloud)
+- `caddy.service` — TLS-terminating reverse proxy. Binds `0.0.0.0:80` and `0.0.0.0:443`. Let's Encrypt certs via the built-in HTTP-01 ACME client; state on the host bind mount `/srv/caddy/data`.
+- `wfe-prod.service` — image `ghcr.io/stefanhoelzl/workflow-engine:release`. Binds `127.0.0.1:8081 → :8080`. Persistence at `/srv/wfe/prod`.
+- `wfe-staging.service` — image `ghcr.io/stefanhoelzl/workflow-engine:main`. Binds `127.0.0.1:8082 → :8080`. Persistence at `/srv/wfe/staging`.
 
-Prerequisites: OpenTofu >= 1.11, UpCloud account, Dynu DNS domain, two GitHub OAuth Apps (prod + staging).
+URLs:
 
-Four OpenTofu projects under `infrastructure/envs/`:
+- Prod: <https://workflow-engine.webredirect.org>
+- Staging: <https://staging.workflow-engine.webredirect.org>
 
-| Dir           | State key     | Owns                                                                 |
-| ------------- | ------------- | -------------------------------------------------------------------- |
-| `persistence/` | `persistence` | Prod app S3 bucket + scoped user (in a pre-created OS instance)      |
-| `cluster/`    | `cluster`     | K8s cluster, Caddy (ingress + LB) with built-in HTTP-01 ACME         |
-| `prod/`       | `prod`        | Prod namespace, app, Dynu CNAME; reads persistence S3                |
-| `staging/`    | `staging`     | Staging namespace, own bucket, app, Dynu CNAME                       |
+DNS: Dynu A records owned by tofu, point at the VPS public IP (`scaleway_instance_ip` — stable across instance stop/start).
 
-The S3 bucket is accessed by the runtime through the `StorageBackend` interface (`init`, `read`/`write`, `readBytes`/`writeBytes`, `list`, `remove`, `removePrefix`, `move`). Tenant bundles live under `workflows/<tenant>.tar.gz`; invocation events live under `events/pending/` and `events/archive/`. Both FS-backed (local dev) and S3-backed implementations exist; atomicity is provided per-write (FS: tmp+rename; S3: PutObject). The authoritative contract — including the FS-vs-S3 selection logic via `PERSISTENCE_PATH` / `PERSISTENCE_S3_*` env vars — is in `openspec/specs/storage-backend/spec.md`.
+## Authentication
 
-State credentials via `AWS_*` (S3 backend requirement); secrets via `TF_VAR_*`. Each project declares only the vars it uses.
+Caddy is a pure TLS terminator + reverse proxy. It performs no authentication, no forward-auth, no header injection. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (`/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (`/api/*`) in-process. See `openspec/specs/auth/spec.md` and `SECURITY.md §4`.
 
-### Per-project credentials
+## Tofu layout
 
-Shared across all projects:
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — S3 state backend (scoped to `tofu-state` bucket only)
-- `TF_VAR_state_passphrase` — client-side state encryption (pbkdf2 + AES-GCM)
-
-| Project       | `TF_VAR_upcloud_token` scope              | Other required vars                                                                |
-| ------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `persistence/` | Object Storage                           | — (non-secret tfvars: `service_uuid`, `service_endpoint`, `bucket_name`)           |
-| `cluster/`    | K8s + networking (for LB lookup)         | `TF_VAR_acme_email` (or set via tfvar); no user-facing secrets                     |
-| `prod/`       | K8s read (ephemeral block re-fetch)      | `TF_VAR_dynu_api_key`, `TF_VAR_github_oauth_client_id`, `TF_VAR_github_oauth_client_secret`, `TF_VAR_auth_allow` (from GH variable `AUTH_ALLOW_PROD`), plus `image_digest` supplied at apply time |
-| `staging/`    | K8s read + Object Storage (own bucket)   | same as prod but `TF_VAR_auth_allow` sourced from GH variable `AUTH_ALLOW_STAGING`, plus `image_digest` supplied at apply time |
-
-Non-secret tfvars committed in each project's `terraform.tfvars`:
-- `cluster/`: `acme_email`, `sites` (list of `{domain, namespace}` per env served by the cluster's Caddy)
-- `prod/`: `domain`
-- `staging/`: `domain`, `service_uuid`, `service_endpoint`, `bucket_name`
-
-Adding a new app env requires editing `cluster/terraform.tfvars` `sites` to include the new domain/namespace pair and re-applying the cluster project before applying the new env. The cluster project owns the cluster-wide Caddyfile; per-env routing is declared at this seam.
-
-The `auth_allow` input for prod and staging is sourced from the `AUTH_ALLOW_PROD` / `AUTH_ALLOW_STAGING` GitHub repo variables (not secrets — the allowlist is not confidential) and passed to `tofu` via `TF_VAR_auth_allow` in the deploy workflows. `envs/local/terraform.tfvars` still carries `auth_allow` inline.
-
-K8s cluster config (`zone`, `kubernetes_version`, `node_plan`, `node_cidr`) is hardcoded as locals in `infrastructure/modules/kubernetes/upcloud/upcloud.tf`.
-
-### Apply order (one-time)
-
-1. `tofu -chdir=infrastructure/envs/persistence apply` — prod bucket + scoped user
-2. `tofu -chdir=infrastructure/envs/cluster apply` — cluster, Caddy ingress + LoadBalancer (~12-17 min). Caddy obtains the LE cert via HTTP-01 once Dynu CNAMEs from step 3/4 land.
-3. `tofu -chdir=infrastructure/envs/prod apply` — prod namespace, app, DNS
-4. Bootstrap staging: trigger the `Deploy staging` GHA workflow via `workflow_dispatch` to capture a digest, then locally run `tofu -chdir=infrastructure/envs/staging apply -var image_digest=sha256:...`
-
-### Subsequent deploys
-
-- **Prod** (CI-driven with approval gate): every push to the long-lived `release` branch triggers `.github/workflows/deploy-prod.yml`. Two-job split: (1) `plan` builds + pushes `ghcr.io/<repo>:release`, captures the digest, and renders `tofu plan` into the run's Summary; (2) `apply` declares `environment: production`, pauses for required-reviewer approval, then runs `tofu apply -var image_digest=<digest>` on `envs/prod/`, fetches kubeconfig via `upctl`, and blocks on `kubectl wait` for the prod Certificate. Cherry-pick workflow: `git cherry-pick <sha>` onto a local `release` checkout, `git push origin release`, approve the pending run in the Actions tab. Required repo secrets: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `GH_APP_CLIENT_ID_PROD`, `GH_APP_CLIENT_SECRET_PROD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. Rollback: `git revert <bad-sha>` on `release`, then `git push origin release` → workflow rebuilds prior code and redeploys. The `release` branch is protected against force-push and deletion.
-- **Staging** (CI-driven): every push to `main` triggers `.github/workflows/deploy-staging.yml`, which builds + pushes `ghcr.io/<repo>:main`, captures the digest from `docker/build-push-action`, and runs `tofu apply` on `envs/staging/` with the digest. Required repo secrets: `TF_VAR_STATE_PASSPHRASE`, `TF_VAR_UPCLOUD_TOKEN`, `TF_VAR_DYNU_API_KEY`, `GH_APP_CLIENT_ID_STAGING`, `GH_APP_CLIENT_SECRET_STAGING`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. The pre-merge `plan (staging)` check (see "Pre-merge plan gate" below) catches type/state regressions before they can reach this workflow.
-
-### Pre-merge plan gate
-
-`.github/workflows/plan-infra.yml` plans every `envs/` project on every PR to `main`. Four required status checks block merge:
-
-| Project       | Check name           | `changes-allowed` | Semantics                                                             |
-| ------------- | -------------------- | ----------------- | --------------------------------------------------------------------- |
-| `cluster/`    | `plan (cluster)`     | `false`           | Operator-applied. Must plan **clean** — any pending change fails.      |
-| `persistence/` | `plan (persistence)` | `false`           | Operator-applied. Must plan **clean** — any pending change fails.      |
-| `staging/`    | `plan (staging)`     | `true`            | CI-applied on merge. Plan must **succeed**; changes are expected.      |
-| `prod/`       | `plan (prod)`        | `true`            | CI-applied on `release` push. Plan must **succeed**; changes expected. |
-
-All four use `tofu plan -detailed-exitcode`:
-
-- `changes-allowed: false` — exit 0 passes, exit 1 or 2 fails. A dirty plan means the base layer has not been applied yet; merging would publish a Terraform spec that disagrees with remote state.
-- `changes-allowed: true` — exit 0 and 2 pass, exit 1 fails. Staging/prod planning against the consumed `terraform_remote_state.cluster` / `.persistence` would have caught PR #144: a base-layer output-shape change without a preceding base-layer apply produces exit 1 at plan time (type-constraint rejection of the stale remote-state value).
-
-Staging and prod plans pass `-var image_digest=sha256:0000...` (dummy digest). `tofu plan` does not validate against the container registry; the digest is only interpolated into the Deployment spec string, so the dummy is sufficient for shape/state checking. The real digest is produced by `docker-build` at apply time.
-
-**Apply-first-then-PR flow** (required when a PR changes `cluster/` or `persistence/`):
-
-1. `git pull --rebase origin main` — **required** before `tofu apply`. Applying from a stale branch can silently revert another operator's in-flight apply (UpCloud state lockfile serialises simultaneous applies, not stale-branch ones).
-2. Edit the `.tf` file locally.
-3. `tofu -chdir=infrastructure/envs/<project> apply` — state is updated; remote state now carries the new output shape.
-4. Commit the same `.tf` edits, push the branch, open (or re-push) a PR.
-5. `plan (cluster)` / `plan (persistence)` now report **empty plans → green**. `plan (staging)` / `plan (prod)` re-read the new remote-state outputs and type-check against them → green → merge.
-
-Required env vars for local apply: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (scoped to `tofu-state` bucket), `TF_VAR_state_passphrase`, `TF_VAR_upcloud_token`. `cluster/` additionally needs `TF_VAR_acme_email` (or the value from `terraform.tfvars`).
-
-**Known gap.** `tofu plan` detects drift only in Terraform-managed fields. Every cluster resource is now declared as a raw `kubernetes_manifest` (no Helm) so drift detection covers all rendered objects: Deployments, Services, ConfigMaps, NetworkPolicies, PVCs. Raw `kubectl edit` on a Terraform-managed object still produces visible drift on the next plan.
-
-**Escape hatch when the gate is broken.** The `main` ruleset has `bypass_actors: []` — no per-PR admin bypass. If the gate wedges:
-
-- **Credential failures** (`TF_VAR_UPCLOUD_TOKEN` expired, `AWS_*` rotated): `gh secret set <NAME>` directly. No merge needed; the next PR push re-runs the workflow with the new secret.
-- **Workflow file regression** (bug in `plan-infra.yml` itself): `gh api --method PUT repos/stefanhoelzl/workflow-engine/rulesets/<main-ruleset-id>` with `"enforcement": "disabled"`, merge the fix, then `PUT` again with `"enforcement": "active"`. While disabled the ruleset bypasses *all* main's rules (deletion, force-push, required reviews, required checks) — flip it back promptly. Get the id with `gh api repos/stefanhoelzl/workflow-engine/rulesets`.
-
-**Onboarding a new project.** Append an `include:` entry to `.github/workflows/plan-infra.yml`'s matrix with the right `changes-allowed` flag (`false` for operator-applied, `true` for CI-applied) and add `plan (<new-project>)` to the `main` ruleset's `required_status_checks` via `gh api`. If the new project declares an `image_digest` variable, extend the `plan_args` conditional that injects the dummy digest.
-
-### Storage backend selection
-
-The runtime chooses its `StorageBackend` from two mutually-exclusive env vars:
-
-- `PERSISTENCE_PATH` — filesystem backend rooted at the given directory. Used by local dev and by tests. Also hosts tenant workflow bundles at `workflows/<tenant>.tar.gz` under the same root.
-- `PERSISTENCE_S3_BUCKET` — S3 backend pointing at the named bucket. Used in staging and production.
-
-Setting both is a configuration error — `createConfig` SHALL reject the runtime start with a clear message. Setting neither SHALL also fail; every deployment declares exactly one.
-
-When `PERSISTENCE_S3_BUCKET` is set, the runtime reads S3 credentials from the standard AWS SDK chain: `PERSISTENCE_S3_ENDPOINT`, `PERSISTENCE_S3_REGION`, `PERSISTENCE_S3_ACCESS_KEY_ID`, and `PERSISTENCE_S3_SECRET_ACCESS_KEY`. These arrive in the pod via `envFrom.secretRef` pointing at the `app-persistence` K8s Secret, which is populated by the `envs/prod/` (and `envs/staging/`) project from the `TF_VAR_upcloud_token`-scoped Object Storage user created by `envs/persistence/`. The app pod therefore never sees long-lived root credentials — only the scoped user's access key pair, restricted to the single bucket.
-
-Storage key layout: event records live under `events/pending/` and `events/archive/` prefixes; workflow bundles live under `workflows/<tenant>.tar.gz`. Both backends implement the same `StorageBackend` interface (byte-level read/write + JSON record helpers), so switching from filesystem to S3 requires no application-code change beyond the env-var swap.
-
-### Cert readiness check
-
-Caddy obtains and renews certs via HTTP-01 ACME without any Certificate CRD. The cluster project's `tofu apply` returns once Caddy's Deployment is rolled out, but the cert is not yet served — issuance happens asynchronously over ~30-90 s after the LB hostname is reachable from the public internet (which requires Dynu CNAMEs from prod/staging applies). To verify:
+Single flat project at `infrastructure/`:
 
 ```
-curl -I https://workflow-engine.webredirect.org
-curl -I https://staging.workflow-engine.webredirect.org
-kubectl logs deploy/caddy -n caddy | grep "certificate obtained"
+infrastructure/
+  Dockerfile          # app image (built by GHA, not by tofu)
+  main.tf             # backend, providers, server, IP, security group
+  variables.tf
+  cloud-init.yaml     # bootstraps deploy user, podman, sshd, ufw, fail2ban, sysctls
+  caddy.tf            # Caddy quadlet + Caddyfile
+  apps.tf             # wfe-prod + wfe-staging quadlets + env-file delivery
+  dns.tf              # Dynu A records
+  outputs.tf
+  files/              # Quadlet + Caddyfile templates
 ```
 
-A `200` with a publicly-trusted certificate means ACME succeeded. A `200` with Caddy's internal CA means ACME has not yet completed (or HTTP-01 is failing); check the logs and ensure DNS + port 80 are reachable. Caddy retries on its own backoff schedule (default: every 9 min for the first hour, exponential thereafter).
-
-### Caddy upgrades
-
-Bump `var.image_tag` in `infrastructure/modules/caddy/variables.tf` (or override via the cluster project) and re-apply. The Deployment rolls; the cert PVC persists across pod restarts, so no re-issuance happens. Major-version bumps should be deliberate — review the Caddy changelog for breaking Caddyfile-syntax changes.
-
-### Pod-security baseline
-
-`modules/baseline/` owns three cluster-wide security controls consumed by every workload module:
-
-1. **Namespace creation with PodSecurity Admission (PSA) labels.** Each namespace in `var.namespaces` is created with `pod-security.kubernetes.io/<var.psa_mode>=restricted`. The mode is `enforce` by default; during a cluster bootstrap or major workload change it should be flipped to `warn` first.
-2. **Default-deny `NetworkPolicy`** in every namespace. Workload modules (`app-instance`, `caddy`, `object-storage/s2`) render their own allow-rules inline as `kubernetes_network_policy_v1` next to the Deployment they protect.
-3. **Shared `security_context` / selector outputs** — `pod_security_context`, `container_security_context`, `rfc1918_except`, `node_cidr`, `coredns_selector`. The `coredns_selector` output uses the shorthand form `{ namespace = "kube-system", k8s_app_in = ["coredns", "kube-dns"] }`; consumers expand it into the verbose K8s `namespace_selector` + pod `match_expressions` structure inline.
-
-**Apply order.** `module.baseline` must apply before any workload module in the same project (namespace must exist before any workload or NetworkPolicy in it). In `envs/cluster/` the baseline creates the `caddy` namespace; in `envs/prod/` and `envs/staging/` it creates the app namespace.
-
-**Two-phase PSA rollout.** The `psa_mode` variable switches the enforcement label:
-
-- **Phase 1 — `psa_mode = "warn"`.** Applies `pod-security.kubernetes.io/warn=restricted`. Non-compliant pods emit a warning at admission but are still created. Use this when introducing new workloads (or upgrading a chart that may have changed its pod spec). Run `tofu apply` and inspect `kubectl get events` / `tofu apply` output for PodSecurity warnings; resolve every one before proceeding.
-- **Phase 2 — `psa_mode = "enforce"` (default).** Applies `pod-security.kubernetes.io/enforce=restricted`. Non-compliant pods are rejected at admission. Only flip to enforce after phase 1 has produced zero warnings against the target workload set.
-
-Both phases are one `tofu apply` each; the label change is a namespace-metadata update (no pod restart). For steady-state operation leave `psa_mode = "enforce"`.
-
-**ServiceAccount tokens.** Caddy is a pure reverse-proxy — it does not watch any K8s API resources, so its ServiceAccount has `automount_service_account_token = false`. The same is true for `app` and `s2`. No workload mounts a SA token.
-
-### URLs
-
-- Prod: `https://workflow-engine.webredirect.org`
-- Staging: `https://staging.workflow-engine.webredirect.org`
-
-### One-shot deploy steps
-
-**`scripts/prune-legacy-storage.ts` — (owner, repo) split cleanup.** Required
-before the first deploy of the `add-per-repo-workflows` change (see
-`openspec/changes/add-per-repo-workflows/proposal.md` §9). Wipes
-`workflows/`, `archive/`, and `pending/` prefixes on the configured
-persistence backend; the new schema keys bundles by `(owner, repo)` and
-gives events mandatory `owner` / `repo` columns, so legacy single-owner
-records would fail to decode on startup.
-
-Run against each environment's backend before rolling out the new image:
+Run from the repo root:
 
 ```
-# staging: point at staging's S3
-STORAGE_ENDPOINT=<staging-endpoint> STORAGE_BUCKET=<staging-bucket> \
-STORAGE_ACCESS_KEY_ID=... STORAGE_SECRET_ACCESS_KEY=... \
-pnpm tsx scripts/prune-legacy-storage.ts
-
-# prod: point at prod's S3
-STORAGE_ENDPOINT=<prod-endpoint> STORAGE_BUCKET=<prod-bucket> \
-STORAGE_ACCESS_KEY_ID=... STORAGE_SECRET_ACCESS_KEY=... \
-pnpm tsx scripts/prune-legacy-storage.ts
+tofu -chdir=infrastructure init
+tofu -chdir=infrastructure plan
+tofu -chdir=infrastructure apply
 ```
 
-Idempotent: re-running on an already-pruned backend reports `0 key(s)` for
-each prefix.
+State backend: Scaleway Object Storage (S3-compatible). Client-side encrypted via `TF_VAR_state_passphrase` (pbkdf2 + AES-GCM).
 
-Both served via Let's Encrypt TLS issued and renewed by Caddy's built-in ACME client. The cert and ACME account live on Caddy's `/data` PVC in the `caddy` namespace.
+## Deploys (no tofu involved)
 
-### Staging demo upload token rotation
+`deploy-staging.yml` runs on push to `main`:
+1. Build + push `ghcr.io/stefanhoelzl/workflow-engine:main` (with `--build-arg GIT_SHA=${{ github.sha }}`).
+2. Poll `https://staging.workflow-engine.webredirect.org/readyz` until `version.gitSha === ${{ github.sha }}`. Auto-update timer fires every 1 min.
+3. Run `wfe upload` for the demo workflows.
 
-`.github/workflows/deploy-staging.yml` uploads `workflows/src/demo.ts` to the staging runtime after each `tofu apply`. The upload authenticates as `github:user:stefanhoelzl` using a fine-grained Personal Access Token stored in the repository secret `GH_UPLOAD_TOKEN`.
+`deploy-prod.yml` runs on push to `release`, gated by `environment: production` (required reviewer):
+1. Build + push `ghcr.io/stefanhoelzl/workflow-engine:release`.
+2. Poll `/readyz` for SHA convergence.
 
-- **Token owner:** `stefanhoelzl` (must match an entry in the `AUTH_ALLOW_STAGING` GitHub Actions variable — currently `github:user:stefanhoelzl`).
-- **Required scopes:** none. `GET /user` (the only endpoint the workflow-engine's github auth provider calls) works with any authenticated token.
-- **Expiry:** fine-grained PATs expire at most 1 year after issue. Note the expiry date when creating the token.
-- **Symptom of expiry:** `deploy-staging` fails at the `Upload workflows bundle` step with a `401 Unauthorized` from `/api/workflows/stefanhoelzl/workflow-engine`. The job is marked red; the freshly-deployed runtime is otherwise healthy.
-- **Rotation:**
-  1. Create a new fine-grained PAT on `github.com/settings/tokens?type=beta` under the `stefanhoelzl` account. Repository access: `stefanhoelzl/workflow-engine` only. No scopes beyond the default.
-  2. Update the repository secret: `Settings → Secrets and variables → Actions → GH_UPLOAD_TOKEN`.
-  3. Re-run the failed `deploy-staging` run (or push a no-op commit to `main`) to verify the new token works.
-  4. Revoke the old PAT.
+The `release` branch is protected (no force-push, no delete). Promote to prod with `git cherry-pick <sha> && git push origin release`.
 
-### Single-replica invariant (do not raise `replicas` above 1)
+The VPS's `podman-auto-update.timer` (1-min interval) does the actual rotation: it queries the registry HEAD for the configured tag, compares the manifest digest to the running container, and `systemctl restart`s the unit on diff.
 
-The app Deployment for both prod and staging MUST be kept at `replicas = 1`. The auth capability seals the session cookie with a password generated in-memory at pod start (`packages/runtime/src/auth/key.ts`); the password is not shared across pods. A second replica would sign cookies with a different password and requests that land on the pod that did not seal the cookie would fail to decrypt it, producing deterministic re-login loops.
+**Rollback.** `git revert <bad-sha>` on the affected branch → CI rebuilds and re-pushes the same tag → box auto-updates within ~1 min. There is no rollback strategy for *infra* changes (cutover is one-way) — for app bugs, the revert path is fast.
 
-Raising the replica count requires migrating the sealing password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. Until that migration lands, operators MUST NOT scale the Deployment manually or add an HPA.
+## Apply infra (operator-driven)
 
-References:
-- `SECURITY.md` §5 R-I13 ("App Deployment is locked to `replicas = 1`…") and §4 A15 (attack-path record).
-- `openspec/specs/auth/spec.md` "Single-replica invariant" requirement.
+`apply-infra.yml` runs only on `workflow_dispatch`. Operator triggers it via the GitHub Actions UI. The workflow:
+
+1. Renders per-env env files at `/tmp/wfe-secrets/<env>.env` on the runner from GHA secrets (`GH_OAUTH_CLIENT_ID_PROD`, `GH_OAUTH_CLIENT_SECRET_PROD`, `AUTH_ALLOW_PROD`, etc.) via `umask 077` heredoc.
+2. Runs `tofu init && tofu apply` against `infrastructure/`.
+3. Always cleans up `/tmp/wfe-secrets/`.
+
+Tofu's `null_resource.wfe_env_file` uses `provisioner "file"` with `source = "/tmp/wfe-secrets/<env>.env"`. The bytes are read at apply time and streamed over SSH; only the file's md5 hash and the path string land in state. No plaintext secret ever enters tofu state.
+
+**When to run apply-infra.** Any PR touching `infrastructure/`. The pre-merge `plan (vps)` gate fails if the plan is non-empty, so the operator runs `apply-infra` from the feature branch *before* requesting review.
+
+## Pre-merge plan gate
+
+`.github/workflows/plan-infra.yml` runs on every PR to `main`. Single job named `plan (vps)`:
+
+- Renders dummy empty env files at `/tmp/wfe-secrets/{prod,staging}.env` so `filemd5(...)` triggers can evaluate.
+- `tofu init && tofu plan -detailed-exitcode -lock=false -no-color`.
+- Pipes the plan into `$GITHUB_STEP_SUMMARY`.
+- Exit 0 = pass; 1 (error) or 2 (changes pending) = fail.
+
+The repo ruleset on `main` requires `plan (vps)` to pass. There is no per-PR bypass; if the gate is broken, an admin temporarily disables the ruleset via `gh api PUT`, merges the fix, and re-enables.
+
+## Required GitHub Actions secrets and variables
+
+Secrets:
+
+- `TF_VAR_state_passphrase` — client-side state encryption
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — Scaleway Object Storage credentials for the S3 backend
+- `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID`, `SCW_DEFAULT_ORGANIZATION_ID` — Scaleway provider credentials
+- `TF_VAR_dynu_api_key` — Dynu API key for DNS records
+- `TF_VAR_acme_email` — Let's Encrypt account email
+- `TF_VAR_deploy_ssh_public_key`, `TF_VAR_deploy_ssh_private_key` — keypair for the `deploy` user
+- `GH_OAUTH_CLIENT_ID_PROD`, `GH_OAUTH_CLIENT_SECRET_PROD` — prod GitHub OAuth App
+- `GH_OAUTH_CLIENT_ID_STAGING`, `GH_OAUTH_CLIENT_SECRET_STAGING` — staging GitHub OAuth App
+- `GH_UPLOAD_TOKEN` — fine-grained PAT for `wfe upload` (staging only)
+
+Variables:
+
+- `AUTH_ALLOW_PROD`, `AUTH_ALLOW_STAGING` — `AUTH_ALLOW` value per env
+
+## SSH access
+
+```
+ssh -p 2222 deploy@<vps-ip>
+```
+
+The `deploy` user is the only SSH-able account. Root login is disabled. Password auth is disabled. `fail2ban` bans the IP after 5 failed auths in 10 min.
+
+Once on the box:
+
+- Inspect logs: `journalctl -u wfe-prod -u wfe-staging -u caddy --since "1 hour ago"`
+- Check unit status: `systemctl status wfe-prod wfe-staging caddy`
+- Check auto-update: `journalctl -u podman-auto-update.service` and `systemctl list-timers podman-auto-update.timer`
+- Force a deploy now: `sudo systemctl start podman-auto-update.service`
+- Inspect Caddy ACME state: `ls -la /srv/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/`
+- Inspect persistence: `ls /srv/wfe/{prod,staging}/`
+
+The `deploy` user has NOPASSWD sudo only for `systemctl <verb> <unit>.service` on the wfe / caddy / podman-auto-update units, and `systemctl daemon-reload`. Anything broader requires the root password.
+
+## Secret rotation
+
+GitHub OAuth client secret (or any other env-file value):
+
+1. Update the GHA secret in repo settings.
+2. Re-run `apply-infra` (workflow_dispatch).
+3. The `null_resource.wfe_env_file` `filemd5` trigger detects the change; tofu re-runs the file + remote-exec provisioners; the affected unit restarts.
+
+SSH deploy key:
+
+1. Generate a new keypair locally.
+2. Update `TF_VAR_DEPLOY_SSH_PUBLIC_KEY` and `TF_VAR_DEPLOY_SSH_PRIVATE_KEY` GHA secrets together.
+3. Re-run `apply-infra`. Cloud-init re-runs the deploy-user authorized_keys write; the new key takes effect immediately.
+4. Old key is invalidated as soon as the new authorized_keys file lands.
+
+## Caddy upgrades
+
+Bump `var.caddy_image` in `infrastructure/variables.tf` (or override via tfvars) to the new tag. Re-run `apply-infra`. The `caddy.service` unit is restarted; ACME state on `/srv/caddy/data` survives (it's a host bind mount). Major-version bumps: review the Caddy changelog for breaking Caddyfile-syntax changes first.
+
+## Failure modes
+
+**Auto-update timer stuck.**
+
+Check `journalctl -u podman-auto-update.service`. Common causes:
+- Image tag not yet visible on ghcr.io (race with `docker push`).
+- ghcr.io rate-limiting (anonymous IP-scoped). Wait or retry.
+- Container failing to start after pull (env file missing, port collision). Check `journalctl -u wfe-prod`.
+
+Force a manual pull + restart:
+```
+sudo systemctl start podman-auto-update.service
+```
+
+**Caddy can't obtain a cert.**
+
+```
+journalctl -u caddy -f | grep -E 'certificate|acme|err'
+```
+
+Common causes:
+- Dynu CNAME not yet propagated → `dig` from an external resolver.
+- Port 80 firewall rule missing → `sudo ufw status`.
+- LE rate-limit hit (5 failed challenges/hour per domain) → wait 1 hour.
+
+Caddy retries on its own backoff (default: every 9 min for the first hour, exponential thereafter).
+
+**App OOM.**
+
+Check: `journalctl -u wfe-prod -u wfe-staging | grep -i oom`.
+
+Per-Quadlet `MemoryMax=350M` (per app on STARDUST1-S) keeps each app's blast radius contained to its own unit. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
+1. Inspect the workload — sandbox worker leak? Action with unbounded buffer?
+2. Bump `MemoryMax=` in `infrastructure/files/wfe.container.tmpl` and re-apply.
+3. If both apps need more, upgrade the VPS commercial type (`var.instance_type`) and re-apply (instance is recreated).
+
+**`/readyz` reports old `gitSha` after deploy.**
+
+The auto-update timer hasn't ticked yet. Wait up to 60 s. If still stale after 5 min:
+- Check the timer is enabled: `systemctl is-enabled podman-auto-update.timer`.
+- Check the last run: `journalctl -u podman-auto-update.service --since "10 min ago"`.
+- Force a pull: `sudo systemctl start podman-auto-update.service`.
+
+## Risks (carry these in your head)
+
+- **No backups.** `/srv/wfe/<env>` and `/srv/caddy/data` have no off-box copy. A VPS-loss event is total data loss until users re-upload bundles via `wfe upload`. Top-priority follow-up.
+- **No rollback for infra.** Cutover is one-way; fix-forward is the only mode. App rollback (`git revert` + auto-update) is the fast path for app bugs.
+- **Single VPS, single region.** Hardware failure causes downtime until manual re-provision.
+- **Host kernel is the only isolation boundary** between prod and staging. Mitigated by `unattended-upgrades`.
+
+## References
+
+- `openspec/specs/infrastructure/spec.md`
+- `openspec/specs/host-security-baseline/spec.md`
+- `openspec/specs/ci-workflow/spec.md`
+- `SECURITY.md §5`

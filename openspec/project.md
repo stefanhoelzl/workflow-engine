@@ -28,7 +28,7 @@ A lightweight workflow automation service for service wiring. Users author workf
 - **Workflow-scoped isolation**: One QuickJS context per loaded workflow; reused across `invoke()` calls. Action handlers run inside the sandbox via the SDK-returned wrapper — the host bridge is reached once per action call for input validation + audit only; handler dispatch is in-sandbox (no nested `sandbox.run()`). Cross-workflow isolation is preserved by per-workflow sandbox instances.
 - **Controlled host API**: Handler signatures are `(input)` for actions and `(payload)` for triggers — no `ctx` parameter. Workflow-level env is declared on `defineWorkflow({env})` and referenced via the imported `workflow.env` record (module-scoped, frozen at load time). Cross-action calls compile to `__sdk.dispatchAction(name, input, handler)` through the sdk-support plugin, which routes host-side `validateAction`/`validateActionOutput` via the host-call-action plugin's Ajv validators. Global `fetch()` is installed by the sandbox-stdlib web-platform plugin atop the fetch plugin's hardenedFetch default. No direct fs, net, process, or `require` access.
 - **Per-workflow serialization**: Each workflow has a runQueue that serializes trigger invocations (one invocation at a time per workflow). Cross-workflow invocations run in parallel.
-- **DuckLake-backed durable archive**: invocation events live in a DuckLake catalog (`<root>/events.duckdb`) plus partitioned Parquet data files (`<root>/events/main/events/owner=…/repo=…/`). EventStore buffers in-flight events in an in-memory accumulator and commits the full event list as one DuckLake transaction on terminal kinds (`trigger.response`, `trigger.error`, plus single-leaf kinds `trigger.exception` / `trigger.rejection` / `system.upload`). SIGKILL deliberately loses in-flight invocations (no per-event WAL); SIGTERM drains gracefully via synthetic `trigger.error{kind:"shutdown"}` terminals. Single-writer is a deployment contract enforced by `replicas: 1` + `Recreate` strategy in K8s.
+- **DuckLake-backed durable archive**: invocation events live in a DuckLake catalog (`<root>/events.duckdb`) plus partitioned Parquet data files (`<root>/events/main/events/owner=…/repo=…/`). EventStore buffers in-flight events in an in-memory accumulator and commits the full event list as one DuckLake transaction on terminal kinds (`trigger.response`, `trigger.error`, plus single-leaf kinds `trigger.exception` / `trigger.rejection` / `system.upload`). SIGKILL deliberately loses in-flight invocations (no per-event WAL); SIGTERM drains gracefully via synthetic `trigger.error{kind:"shutdown"}` terminals. Single-writer is a deployment contract enforced structurally by running exactly one Quadlet unit per env (no orchestrator can spawn a second).
 - **Interface-first**: Storage is abstracted behind `StorageBackend` (FS and S3 implementations) with a typed `locator()` accessor that EventStore consumes to configure DuckLake's `ATTACH` and `CREATE SECRET` SQL. New backends are added by implementing the five-method interface; new consumers of invocation events do not exist by design — the executor calls EventStore directly.
 
 ## Project Conventions
@@ -106,16 +106,15 @@ Per-workflow serialization guarantees one-at-a-time handler execution per workfl
 
 ## Infrastructure
 
-- **IaC**: OpenTofu (HCL) with modular architecture
-- **Local dev**: kind (Kubernetes IN Docker) cluster via `tehcyx/kind` provider
-- **Reverse proxy**: Caddy as raw `kubernetes_manifest` resources (Deployment + Service + ConfigMap + PVC). One Caddy per cluster with a multi-site Caddyfile; built-in HTTP-01 ACME for prod/staging, `tls internal` for the local kind stack. No Helm, no Ingress CRDs, no cert-manager.
+- **IaC**: OpenTofu (HCL), single flat project at `infrastructure/` (no subdirs, no modules, no per-env state)
+- **Production target**: one Scaleway VPS (Debian 12) running rootless Podman + systemd Quadlet. Three units: `caddy`, `wfe-prod`, `wfe-staging`
+- **State backend**: Scaleway Object Storage (S3-compatible), client-side encrypted with `state_passphrase`
+- **Local dev**: `pnpm dev` only — no kind, no podman-compose, no local cluster. The runtime boots and hot-reloads `workflows/src/demo*.ts` directly
+- **Reverse proxy**: Caddy as a Quadlet container with a tofu-rendered Caddyfile (one site block per env). Built-in HTTP-01 ACME against Let's Encrypt; ACME state on the host bind mount `/srv/caddy/data`. No K8s manifests, no Helm, no cert-manager
 - **Auth**: in-app GitHub OAuth (`packages/runtime/src/auth/*`) — sealed session cookies on `/dashboard`/`/trigger`, Bearer tokens on `/api/*`, unified `AUTH_ALLOW` predicate
-- **Local S3**: S2 (mojatter/s2-server) with filesystem backend for dev persistence
-- **Image build**: Podman build via `terraform_data` local-exec, loaded into kind cluster
-
-Module structure follows a strategy pattern — swappable implementations per capability (`kubernetes/kind`, `image/local`, `s3/s2`) with consistent output contracts, and a per-instance `app-instance` module composing app Deployment, Secrets, and inline NetworkPolicies. Cluster-level routing lives in `modules/caddy/`.
-
-Infrastructure lives in `infrastructure/` with `modules/` (shared) and `local/` + `upcloud/` (environment roots).
+- **Persistence**: local-disk filesystem under `/srv/wfe/<env>` — `PERSISTENCE_PATH` set by Quadlet `Environment=`. The `StorageBackend` S3 implementation still exists but is unused in this deployment
+- **Image build + delivery**: GitHub Actions builds + pushes `ghcr.io/stefanhoelzl/workflow-engine:{release,main}`; the VPS's `podman-auto-update.timer` (1-min interval, label-driven) pulls and restarts. No tofu in the deploy path
+- **Apply path**: operator-driven `apply-infra` workflow (`workflow_dispatch`) renders per-env env files locally on the runner and tofu's `null_resource` + `file` provisioner with `source =` ships them; secret bytes never enter tofu state
 
 ## Monorepo Structure
 

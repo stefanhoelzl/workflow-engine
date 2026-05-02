@@ -1,0 +1,48 @@
+name: Deploy image
+description: Log in to ghcr, build + push the runtime image, then poll the target URL's /readyz until version.gitSha matches.
+inputs:
+  tag:
+    description: Image tag to push (e.g. `release` or `main`).
+    required: true
+  url:
+    description: Target URL whose /readyz endpoint reports the running gitSha. The VPS's podman-auto-update.timer rotates within ~1 min of push.
+    required: true
+  github_token:
+    description: GITHUB_TOKEN with `packages: write` scope, for ghcr auth.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
+    - uses: ./.github/actions/docker-build
+      with:
+        push: "true"
+        tags: ghcr.io/${{ github.repository }}:${{ inputs.tag }}
+        git_sha: ${{ github.sha }}
+
+    # podman-auto-update.timer fires every 1 minute on the VPS; bridge the
+    # asynchronous gap by polling /readyz until the new image is actually
+    # serving. 60 attempts × 5 s = 5-minute upper bound.
+    - name: Wait for /readyz to report the just-built sha
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        EXPECTED_SHA: ${{ github.sha }}
+      run: |
+        set -e
+        for attempt in $(seq 1 60); do
+          got=$(curl -fsS "$URL/readyz" 2>/dev/null | jq -r '.version.gitSha // ""' || true)
+          if [[ "$got" == "$EXPECTED_SHA" ]]; then
+            echo "rollout converged: gitSha=$got"
+            exit 0
+          fi
+          echo "attempt $attempt: gitSha=$got expected=$EXPECTED_SHA"
+          sleep 5
+        done
+        echo "::error::/readyz never reported expected sha; last gitSha=$got"
+        exit 1

@@ -5,3 +5,6 @@ dist/
 scripts/.dev-imap-cert/
 packages/tests/.cache/
 .claude/scheduled_tasks.lock
+infrastructure/.terraform/
+infrastructure/*.tfstate*
+infrastructure/*.auto.tfvars

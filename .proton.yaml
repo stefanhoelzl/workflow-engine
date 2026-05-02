@@ -1,2 +1,2 @@
 workflow_engine:
-  GITHUB_TOKEN: github/token
+  GH_UPLOAD_TOKEN: github/token

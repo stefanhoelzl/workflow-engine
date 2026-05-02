@@ -1,0 +1,34 @@
+[Unit]
+Description=workflow-engine ${env_name}
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=${image_ref}
+# Tag-based auto-update — podman-auto-update.timer polls the registry and
+# restarts this unit when the manifest digest at the configured tag changes.
+Label=io.containers.autoupdate=registry
+PublishPort=127.0.0.1:${host_port}:8080
+# `:U` makes Podman chown the source dir to match the container's UID
+# (65532 per the Dockerfile) at start time. Without it, the container
+# process can't write to a host dir owned by `deploy`.
+Volume=${data_dir}:/data:Z,U
+# Non-secret config: passed as systemd `Environment=` so each value goes
+# through Quadlet → podman as a separate `--env KEY=VALUE` flag. Avoids
+# `--env-file` parser quirks (Podman's env-file reader mis-splits values
+# with commas — e.g. AUTH_ALLOW ends up as one giant entry).
+Environment=PERSISTENCE_PATH=/data
+Environment=PORT=8080
+Environment=AUTH_PROVIDER=github
+Environment=BASE_URL=${base_url}
+Environment=AUTH_ALLOW=${auth_allow}
+# Secrets only — env file is two lines now.
+EnvironmentFile=/etc/wfe/${env_name}.env
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+MemoryMax=${memory_max}
+
+[Install]
+WantedBy=multi-user.target default.target

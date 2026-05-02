@@ -1,81 +1,21 @@
-## Purpose
+## REMOVED Requirements
 
-GitHub Actions workflows that validate pull requests and deploy staging on push to `main`.
-## Requirements
-### Requirement: PR validation workflow
-The system SHALL provide a GitHub Actions workflow at `.github/workflows/ci.yml` that runs on every pull request.
+A single shared **Reason / Migration** applies to every removed requirement in this section unless otherwise noted:
 
-#### Scenario: PR opened or updated
-- **WHEN** a pull request is opened, synchronized, or reopened
-- **THEN** the workflow SHALL run lint, type check, test, and build steps in sequence
+- **Reason**: The deploy seam moves from "tofu apply pins a digest" to "tag-based `podman-auto-update.timer`". Tofu is no longer in the per-deploy path. Per-deploy CI shrinks to `docker build && docker push`. The four-job pre-merge plan-gate matrix collapses to a single job because there is one tofu project.
+- **Migration**: See ADDED Requirements below for the new shape.
 
-### Requirement: Lint step
-The workflow SHALL run `pnpm lint` to validate code with Biome.
+### Requirement: Staging tofu apply step
+### Requirement: Staging deploy serialization
+### Requirement: First staging deploy bootstrap
+### Requirement: Prod tofu plan rendered to job summary
+### Requirement: Prod tofu apply step
+### Requirement: Prod post-apply certificate readiness check
+### Requirement: Prod deploy serialization
+### Requirement: First prod deploy migration bootstrap
+### Requirement: Infra plan gate secret wiring
 
-#### Scenario: Lint passes
-- **WHEN** all source files conform to Biome lint rules
-- **THEN** the step SHALL succeed and proceed to the next step
-
-#### Scenario: Lint fails
-- **WHEN** any source file violates Biome lint rules
-- **THEN** the step SHALL fail and the workflow SHALL report failure
-
-### Requirement: Type check step
-The workflow SHALL run `pnpm check` to validate TypeScript types.
-
-#### Scenario: Type check passes
-- **WHEN** all TypeScript files pass strict type checking
-- **THEN** the step SHALL succeed and proceed to the next step
-
-#### Scenario: Type check fails
-- **WHEN** any TypeScript type error exists
-- **THEN** the step SHALL fail and the workflow SHALL report failure
-
-### Requirement: Test step
-The workflow SHALL run `pnpm test` to execute the test suite via Vitest.
-
-#### Scenario: Tests pass
-- **WHEN** all tests pass
-- **THEN** the step SHALL succeed and proceed to the next step
-
-#### Scenario: Tests fail
-- **WHEN** any test fails
-- **THEN** the step SHALL fail and the workflow SHALL report failure
-
-### Requirement: Build step
-The workflow SHALL run `pnpm build` to produce the production build via Vite. `pnpm build` is aliased to `pnpm -r build`, which SHALL include the `workflows` workspace's bundle build (`wfe build`). A failure to build `workflows/src/demo.ts` or any SDK surface it exercises SHALL fail the PR validation workflow.
-
-#### Scenario: Build succeeds
-- **WHEN** every workspace's build (including the `workflows` bundle build) completes without errors
-- **THEN** the step SHALL succeed and the workflow SHALL report success
-
-#### Scenario: Build fails
-- **WHEN** any workspace's build fails (including a regression that breaks `workflows/src/demo.ts`)
-- **THEN** the step SHALL fail and the workflow SHALL report failure
-
-#### Scenario: Workflow bundle build is covered
-- **GIVEN** `workflows/package.json` declares `"build": "wfe build"`
-- **WHEN** the CI build step runs `pnpm build`
-- **THEN** the `workflows` bundle build SHALL be invoked as part of the recursive workspace build
-- **AND** a broken demo.ts SHALL cause the step to exit non-zero
-
-### Requirement: pnpm store caching
-The workflow SHALL cache the pnpm store across runs using `actions/setup-node` with pnpm caching enabled.
-
-#### Scenario: Cache hit
-- **WHEN** the pnpm lockfile has not changed since the last run
-- **THEN** the pnpm store SHALL be restored from cache, reducing install time
-
-#### Scenario: Cache miss
-- **WHEN** the pnpm lockfile has changed
-- **THEN** the pnpm store SHALL be populated from a fresh install and saved to cache
-
-### Requirement: Node.js version
-The workflow SHALL use Node.js 24.
-
-#### Scenario: Node.js setup
-- **WHEN** the workflow runs
-- **THEN** Node.js 24 SHALL be installed via `actions/setup-node`
+## MODIFIED Requirements
 
 ### Requirement: Staging deploy workflow
 
@@ -178,26 +118,6 @@ The GitHub repository SHALL define exactly the secrets required by the prod depl
 
 - **WHEN** a reviewer has not approved the `production` environment gate
 - **THEN** every step SHALL remain pending (subject to GitHub's default 30-day timeout)
-
-### Requirement: Release branch protection
-
-The `release` branch SHALL have branch protection configured to disallow force-pushes and deletion. Direct pushes (including cherry-picks) SHALL remain allowed.
-
-#### Scenario: Force-push rejected
-
-- **WHEN** any contributor attempts `git push --force origin release`
-- **THEN** GitHub SHALL reject the push
-
-#### Scenario: Deletion rejected
-
-- **WHEN** any contributor attempts to delete the `release` branch
-- **THEN** GitHub SHALL reject the deletion
-
-#### Scenario: Cherry-pick push accepted
-
-- **WHEN** a contributor runs `git cherry-pick <sha> && git push origin release` with a fast-forward or new-commit push
-- **THEN** GitHub SHALL accept the push
-- **AND** the prod deploy workflow SHALL trigger
 
 ### Requirement: Infra plan gate workflow trigger
 
@@ -334,23 +254,7 @@ The workflow SHALL NOT invoke `kubectl`, `upctl`, or any K8s-shaped readiness pr
 - **THEN** the step SHALL NOT exit
 - **AND** SHALL continue polling until either `gitSha === <github.sha>` or the budget is exhausted
 
-### Requirement: Staging demo upload auth secret
-
-The repository SHALL define a secret named `GH_UPLOAD_TOKEN` holding a fine-grained GitHub Personal Access Token whose authenticated identity (`GET /user.login`) is `stefanhoelzl`. The token SHALL NOT require any GitHub-side scopes beyond what `GET /user` permits by default. The secret SHALL be referenced only by `deploy-staging.yml` and SHALL NOT be referenced by `deploy-prod.yml` or any PR-triggered workflow.
-
-`AUTH_ALLOW_STAGING` (the GitHub Actions variable passed as `TF_VAR_auth_allow`) SHALL continue to include `github:user:stefanhoelzl` so that the token's identity is permitted by the staging runtime's ACL.
-
-#### Scenario: Secret referenced by staging deploy only
-
-- **WHEN** inspecting `.github/workflows/*.yml`
-- **THEN** exactly one workflow (`deploy-staging.yml`) SHALL reference `secrets.GH_UPLOAD_TOKEN`
-
-#### Scenario: Token identity is permitted by staging ACL
-
-- **GIVEN** the upload step authenticates with `GH_UPLOAD_TOKEN`
-- **WHEN** the staging runtime resolves the user via its github auth provider
-- **THEN** the user's `login` SHALL be `stefanhoelzl`
-- **AND** `isMember(user, owner="stefanhoelzl")` SHALL return true
+## ADDED Requirements
 
 ### Requirement: deploy-image composite action
 
@@ -361,4 +265,3 @@ The repository SHALL provide a composite GitHub Action at `.github/actions/deplo
 - **WHEN** `.github/workflows/{deploy-prod,deploy-staging}.yml` are inspected
 - **THEN** each contains exactly one `uses: ./.github/actions/deploy-image` step
 - **AND** that step is the only place the build / push / readyz-poll logic lives
-

@@ -1,0 +1,10 @@
+{
+	email ${acme_email}
+}
+
+%{ for site in sites ~}
+${site.domain} {
+	reverse_proxy ${site.upstream}
+}
+
+%{ endfor ~}

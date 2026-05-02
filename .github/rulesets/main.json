@@ -35,10 +35,7 @@
 					{ "context": "docker-build" },
 					{ "context": "wpt" },
 					{ "context": "e2e" },
-					{ "context": "plan (cluster, false)" },
-					{ "context": "plan (persistence, false)" },
-					{ "context": "plan (staging, true)" },
-					{ "context": "plan (prod, true)" }
+					{ "context": "plan-infra" }
 				]
 			}
 		}
