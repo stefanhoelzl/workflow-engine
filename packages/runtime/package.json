@@ -10,7 +10,6 @@
 	},
 	"dependencies": {
 		"@alpinejs/csp": "3.15.11",
-		"@aws-sdk/client-s3": "^3.1026.0",
 		"@duckdb/node-api": "1.5.2-r.1",
 		"@duckdb/node-bindings": "1.5.2-r.1",
 		"@hono/node-server": "^1.19.12",
@@ -37,7 +36,6 @@
 		"@types/tar-stream": "^3.1.4",
 		"@types/ws": "^8.5.13",
 		"linkedom": "^0.18.12",
-		"s3rver": "^3.7.1",
 		"vite": "^8.0.8",
 		"vite-node": "^6.0.0"
 	}

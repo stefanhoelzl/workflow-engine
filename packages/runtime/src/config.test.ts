@@ -6,7 +6,10 @@ import { createConfig, createSecret } from "./config.js";
 // createConfig does NOT decode or validate shape — that's key-store's concern;
 // the config schema only stores the raw CSV inside a Secret wrapper.
 const STUB_SK_B64 = "A".repeat(44);
-const REQUIRED = { SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}` };
+const REQUIRED = {
+	SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}`,
+	PERSISTENCE_PATH: "/tmp/wfe-test",
+};
 
 describe("createConfig", () => {
 	it("parses valid values", () => {
@@ -149,60 +152,10 @@ describe("createConfig", () => {
 		expect(serialized).toContain("[redacted]");
 	});
 
-	it("parses S3 config fields", () => {
-		const config = createConfig({
-			...REQUIRED,
-			PERSISTENCE_S3_BUCKET: "my-bucket",
-			PERSISTENCE_S3_ACCESS_KEY_ID: "key",
-			PERSISTENCE_S3_SECRET_ACCESS_KEY: "secret",
-			PERSISTENCE_S3_ENDPOINT: "http://minio:9000",
-			PERSISTENCE_S3_REGION: "eu-central-1",
-		});
-		expect(config.persistenceS3Bucket).toBe("my-bucket");
-		expect(config.persistenceS3AccessKeyId?.reveal()).toBe("key");
-		expect(config.persistenceS3SecretAccessKey?.reveal()).toBe("secret");
-		expect(config.persistenceS3Endpoint).toBe("http://minio:9000");
-		expect(config.persistenceS3Region).toBe("eu-central-1");
-	});
-
-	it("redacts S3 credentials when the config is JSON-serialized", () => {
-		const config = createConfig({
-			...REQUIRED,
-			PERSISTENCE_S3_BUCKET: "my-bucket",
-			PERSISTENCE_S3_ACCESS_KEY_ID: "id123",
-			PERSISTENCE_S3_SECRET_ACCESS_KEY: "supersecret",
-		});
-		const serialized = JSON.stringify(config);
-		expect(serialized).not.toContain("id123");
-		expect(serialized).not.toContain("supersecret");
-		expect(serialized).toContain("[redacted]");
-	});
-
-	it("S3 fields are undefined when not provided", () => {
-		const config = createConfig(REQUIRED);
-		expect(config.persistenceS3Bucket).toBeUndefined();
-		expect(config.persistenceS3AccessKeyId).toBeUndefined();
-	});
-
-	it("rejects S3 bucket without credentials", () => {
+	it("rejects missing PERSISTENCE_PATH", () => {
 		expect(() =>
-			createConfig({
-				...REQUIRED,
-				PERSISTENCE_S3_BUCKET: "my-bucket",
-			}),
-		).toThrow(
-			"requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY",
-		);
-	});
-
-	it("rejects both PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET", () => {
-		expect(() =>
-			createConfig({
-				...REQUIRED,
-				PERSISTENCE_PATH: "/data/events",
-				PERSISTENCE_S3_BUCKET: "my-bucket",
-			}),
-		).toThrow("mutually exclusive");
+			createConfig({ SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}` }),
+		).toThrow();
 	});
 
 	it("rejects missing SECRETS_PRIVATE_KEYS", () => {
@@ -222,9 +175,6 @@ describe("createConfig", () => {
 
 	it("EVENT_STORE_* defaults apply when env vars are unset", () => {
 		const config = createConfig(REQUIRED);
-		expect(config.eventStoreCheckpointIntervalMs).toBe(3_600_000);
-		expect(config.eventStoreCheckpointMaxInlinedRows).toBe(100_000);
-		expect(config.eventStoreCheckpointMaxCatalogBytes).toBe(10_485_760);
 		expect(config.eventStoreCommitMaxRetries).toBe(5);
 		expect(config.eventStoreCommitBackoffMs).toBe(500);
 		expect(config.eventStoreSigtermFlushTimeoutMs).toBe(60_000);
@@ -233,16 +183,10 @@ describe("createConfig", () => {
 	it("EVENT_STORE_* env values override defaults", () => {
 		const config = createConfig({
 			...REQUIRED,
-			EVENT_STORE_CHECKPOINT_INTERVAL_MS: "300000",
-			EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS: "1",
-			EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES: "1048576",
 			EVENT_STORE_COMMIT_MAX_RETRIES: "2",
 			EVENT_STORE_COMMIT_BACKOFF_MS: "100",
 			EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS: "5000",
 		});
-		expect(config.eventStoreCheckpointIntervalMs).toBe(300_000);
-		expect(config.eventStoreCheckpointMaxInlinedRows).toBe(1);
-		expect(config.eventStoreCheckpointMaxCatalogBytes).toBe(1_048_576);
 		expect(config.eventStoreCommitMaxRetries).toBe(2);
 		expect(config.eventStoreCommitBackoffMs).toBe(100);
 		expect(config.eventStoreSigtermFlushTimeoutMs).toBe(5000);
@@ -261,11 +205,11 @@ describe("createConfig", () => {
 		try {
 			createConfig({
 				...REQUIRED,
-				EVENT_STORE_CHECKPOINT_INTERVAL_MS: "abc",
+				EVENT_STORE_COMMIT_BACKOFF_MS: "abc",
 			});
 			throw new Error("expected throw");
 		} catch (err) {
-			expect(String(err)).toContain("EVENT_STORE_CHECKPOINT_INTERVAL_MS");
+			expect(String(err)).toContain("EVENT_STORE_COMMIT_BACKOFF_MS");
 		}
 	});
 });

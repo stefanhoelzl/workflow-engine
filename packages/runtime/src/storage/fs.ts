@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { StorageBackend, StorageLocator } from "./index.js";
+import type { StorageBackend } from "./index.js";
 
 function createFsStorage(root: string): StorageBackend {
 	const absoluteRoot = resolve(root);
@@ -41,10 +41,6 @@ function createFsStorage(root: string): StorageBackend {
 			for (const entry of paths) {
 				yield `${prefix}${entry}`;
 			}
-		},
-
-		locator(): StorageLocator {
-			return { kind: "fs", root: absoluteRoot };
 		},
 	};
 }

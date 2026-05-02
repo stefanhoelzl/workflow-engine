@@ -18,8 +18,6 @@ import type { Service } from "./services/index.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
 import { createFsStorage } from "./storage/fs.js";
-import type { StorageBackend } from "./storage/index.js";
-import { createS3Storage } from "./storage/s3.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
@@ -31,35 +29,6 @@ import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
-
-function createStorageBackend(
-	config: ReturnType<typeof createConfig>,
-	_logger: ReturnType<typeof createLogger>,
-): StorageBackend | undefined {
-	if (config.persistenceS3Bucket) {
-		const accessKeyId = config.persistenceS3AccessKeyId;
-		const secretAccessKey = config.persistenceS3SecretAccessKey;
-		if (!(accessKeyId && secretAccessKey)) {
-			throw new Error(
-				"PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY are required when PERSISTENCE_S3_BUCKET is set",
-			);
-		}
-		return createS3Storage({
-			bucket: config.persistenceS3Bucket,
-			accessKeyId,
-			secretAccessKey,
-			...(config.persistenceS3Endpoint
-				? { endpoint: config.persistenceS3Endpoint }
-				: {}),
-			...(config.persistenceS3Region
-				? { region: config.persistenceS3Region }
-				: {}),
-		});
-	}
-	if (config.persistencePath) {
-		return createFsStorage(config.persistencePath);
-	}
-}
 
 function logRegistry(
 	logger: ReturnType<typeof createLogger>,
@@ -109,26 +78,16 @@ async function init() {
 	});
 	logRegistry(runtimeLogger, authRegistry);
 
-	// 1. Init storage backend.
-	const storageBackend = createStorageBackend(config, runtimeLogger);
-	if (storageBackend) {
-		await storageBackend.init();
-	}
+	// 1. Init storage backend (FS, used by WorkflowRegistry for upload bundles).
+	const storageBackend = createFsStorage(config.persistencePath);
+	await storageBackend.init();
 
-	// 2. Init EventStore. Opens the DuckLake catalog (downloaded for S3, opened
-	//    locally for FS). Constant-time boot regardless of archived event count.
-	if (!storageBackend) {
-		throw new Error(
-			"persistence backend is required: set PERSISTENCE_PATH or PERSISTENCE_S3_*",
-		);
-	}
+	// 2. Init EventStore. Opens the DuckDB database file at
+	//    `<persistencePath>/events.duckdb`; constant-time boot.
 	const eventStore = await createEventStore({
-		backend: storageBackend,
+		persistenceRoot: config.persistencePath,
 		logger: runtimeLogger,
 		config: {
-			checkpointIntervalMs: config.eventStoreCheckpointIntervalMs,
-			checkpointMaxInlinedRows: config.eventStoreCheckpointMaxInlinedRows,
-			checkpointMaxCatalogBytes: config.eventStoreCheckpointMaxCatalogBytes,
 			commitMaxRetries: config.eventStoreCommitMaxRetries,
 			commitBackoffMs: config.eventStoreCommitBackoffMs,
 			sigtermFlushTimeoutMs: config.eventStoreSigtermFlushTimeoutMs,
@@ -205,11 +164,9 @@ async function init() {
 		executor,
 		keyStore,
 		backends: triggerBackends,
-		...(storageBackend ? { storageBackend } : {}),
+		storageBackend,
 	});
-	if (storageBackend) {
-		await registry.recover();
-	}
+	await registry.recover();
 	runtimeLogger.info("workflows.loaded", { count: registry.size });
 
 	// 8. (No recovery scan in the new model — `pending/` is gone, in-flight

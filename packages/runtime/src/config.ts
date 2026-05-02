@@ -83,21 +83,7 @@ const schema = z
 			z.string().transform(createSecret),
 		),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_PATH: z.exactOptional(z.string()),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_BUCKET: z.exactOptional(z.string()),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_ACCESS_KEY_ID: z.exactOptional(
-			z.string().transform(createSecret),
-		),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_SECRET_ACCESS_KEY: z.exactOptional(
-			z.string().transform(createSecret),
-		),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_ENDPOINT: z.exactOptional(z.string()),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		PERSISTENCE_S3_REGION: z.exactOptional(z.string()),
+		PERSISTENCE_PATH: z.string(),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		BASE_URL: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -110,20 +96,10 @@ const schema = z
 		// /readyz so deploy CI can wait for the new pod to actually serve.
 		// biome-ignore lint/style/useNamingConvention: env var name
 		APP_GIT_SHA: z.string().default("dev"),
-		// EventStore (DuckLake archive) tuning. Defaults sized for the small-prod
-		// workload (cron + webhooks + manual triggers, single-tenant per deploy).
-		// See `openspec/specs/event-store/spec.md` and `openspec/specs/runtime-config/spec.md`.
-		// biome-ignore lint/style/useNamingConvention: env var name
-		// biome-ignore lint/style/noMagicNumbers: default 1 hour
-		EVENT_STORE_CHECKPOINT_INTERVAL_MS: z.coerce.number().default(3_600_000),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		// biome-ignore lint/style/noMagicNumbers: default inline-row threshold
-		EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS: z.coerce.number().default(100_000),
-		// biome-ignore lint/style/useNamingConvention: env var name
-		EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES: z.coerce
-			.number()
-			// biome-ignore lint/style/noMagicNumbers: default 10 MiB
-			.default(10_485_760),
+		// EventStore tuning. Defaults sized for the small-prod workload (cron +
+		// webhooks + manual triggers, single-tenant per deploy). See
+		// `openspec/specs/event-store/spec.md` and
+		// `openspec/specs/runtime-config/spec.md`.
 		// biome-ignore lint/style/useNamingConvention: env var name
 		// biome-ignore lint/style/noMagicNumbers: default retry budget
 		EVENT_STORE_COMMIT_MAX_RETRIES: z.coerce.number().default(5),
@@ -131,23 +107,9 @@ const schema = z
 		// biome-ignore lint/style/noMagicNumbers: default base backoff
 		EVENT_STORE_COMMIT_BACKOFF_MS: z.coerce.number().default(500),
 		// biome-ignore lint/style/useNamingConvention: env var name
-		// biome-ignore lint/style/noMagicNumbers: default 60 s; must be < terminationGracePeriodSeconds
+		// biome-ignore lint/style/noMagicNumbers: default 60 s; must be < the Quadlet unit's TimeoutStopSec
 		EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS: z.coerce.number().default(60_000),
 	})
-	.refine((env) => !(env.PERSISTENCE_PATH && env.PERSISTENCE_S3_BUCKET), {
-		message:
-			"PERSISTENCE_PATH and PERSISTENCE_S3_BUCKET are mutually exclusive",
-	})
-	.refine(
-		(env) =>
-			env.PERSISTENCE_S3_BUCKET === undefined ||
-			(env.PERSISTENCE_S3_ACCESS_KEY_ID !== undefined &&
-				env.PERSISTENCE_S3_SECRET_ACCESS_KEY !== undefined),
-		{
-			message:
-				"PERSISTENCE_S3_BUCKET requires PERSISTENCE_S3_ACCESS_KEY_ID and PERSISTENCE_S3_SECRET_ACCESS_KEY",
-		},
-	)
 	.transform((env) => ({
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
@@ -162,20 +124,10 @@ const schema = z
 		githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID,
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
 		persistencePath: env.PERSISTENCE_PATH,
-		persistenceS3Bucket: env.PERSISTENCE_S3_BUCKET,
-		persistenceS3AccessKeyId: env.PERSISTENCE_S3_ACCESS_KEY_ID,
-		persistenceS3SecretAccessKey: env.PERSISTENCE_S3_SECRET_ACCESS_KEY,
-		persistenceS3Endpoint: env.PERSISTENCE_S3_ENDPOINT,
-		persistenceS3Region: env.PERSISTENCE_S3_REGION,
 		baseUrl: env.BASE_URL,
 		localDeployment: env.LOCAL_DEPLOYMENT,
 		secretsPrivateKeys: env.SECRETS_PRIVATE_KEYS,
 		gitSha: env.APP_GIT_SHA,
-		eventStoreCheckpointIntervalMs: env.EVENT_STORE_CHECKPOINT_INTERVAL_MS,
-		eventStoreCheckpointMaxInlinedRows:
-			env.EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS,
-		eventStoreCheckpointMaxCatalogBytes:
-			env.EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES,
 		eventStoreCommitMaxRetries: env.EVENT_STORE_COMMIT_MAX_RETRIES,
 		eventStoreCommitBackoffMs: env.EVENT_STORE_COMMIT_BACKOFF_MS,
 		eventStoreSigtermFlushTimeoutMs: env.EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS,

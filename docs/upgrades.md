@@ -2,6 +2,17 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **EventStore: DuckLake → plain DuckDB (2026-05-03).** **BREAKING (operator).** The DuckLake lakehouse is replaced by a plain DuckDB database file at `<PERSISTENCE_PATH>/events.duckdb`. The events table now declares `PRIMARY KEY (id, seq)` and a secondary index on `(owner, repo)`. Three operator-tunable env vars are removed (`EVENT_STORE_CHECKPOINT_INTERVAL_MS`, `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS`, `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES`); WAL/checkpoint is implicit (DuckDB auto-checkpoints when WAL exceeds `wal_autocheckpoint` and folds it on graceful close). Five S3-related env vars (`PERSISTENCE_S3_BUCKET`, `PERSISTENCE_S3_ACCESS_KEY_ID`, `PERSISTENCE_S3_SECRET_ACCESS_KEY`, `PERSISTENCE_S3_ENDPOINT`, `PERSISTENCE_S3_REGION`) are removed; `PERSISTENCE_PATH` is now mandatory.
+
+    **Pre-deploy steps (optional, per environment):**
+    - On the VPS, the previous DuckLake artefacts can be reclaimed: `rm /srv/wfe/<env>/events.duckdb && rm -rf /srv/wfe/<env>/events/`. The new code creates a fresh `events.duckdb` on first boot; opening the legacy DuckLake catalog as a plain DuckDB database fails with a clear error, so leaving the old file in place blocks startup until cleaned up.
+
+    **Behaviour.** `record`, `query`, `hasUploadEvent`, `ping`, `drainAndClose` are unchanged. SIGKILL still loses uncommitted in-flight invocations; SIGTERM still synthesises `trigger.error{kind:"shutdown"}` and commits. PK violations on commit are now logged as `event-store.commit-dropped { reason: "primary-key-violation" }` and not retried (signals a logic bug in pre-eviction; transient errors keep the existing exponential-backoff retry).
+
+    **Failure mode upgrade.** Two concurrent writers no longer silently corrupt the catalog — DuckDB acquires an exclusive file lock on `events.duckdb` and fails the second opener fast. The deployment shape (one Quadlet `wfe-<env>.container` per env on a single VPS) already prevents this from happening in practice.
+
+    **Tenants do NOT need to rebuild or re-upload.** The bundle store (`workflows/<owner>.tar.gz`) is untouched.
+
 - **VPS migration (2026-05-02).** **BREAKING (operator) + DATA LOSS.** The K8s/UpCloud stack is replaced by a single Scaleway VPS running rootless Podman + systemd Quadlet. Both prod and staging move to local-disk persistence (`/srv/wfe/<env>`); the previous UpCloud Object Storage event store is **not migrated** — users re-upload bundles via `wfe upload` after cutover. There is **no rollback strategy**. Deploys decouple from infra: GHA only `docker push`es; the VPS's `podman-auto-update.timer` (1-min interval) rotates running containers. Tofu collapses to a single flat `infrastructure/` project with state on Scaleway Object Storage. Full design captured in `openspec/changes/migrate-to-vps/`. See `docs/infrastructure.md` for the new runbook.
 
 - **DuckLake-backed event store (2026-05-01).** **BREAKING (operator).** The per-event `pending/{id}/{seq}.json` durability layer and per-invocation `archive/{id}.json` rollups are removed. Invocation events now live in a [DuckLake](https://ducklake.select/) lakehouse: a single DuckDB catalog file at `<persistence>/events.duckdb` plus partitioned Parquet data files at `<persistence>/events/main/events/owner=<owner>/repo=<repo>/...parquet`. EventStore opens the catalog read-write at boot; cold start is constant-time regardless of historical event count.
