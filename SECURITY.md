@@ -1306,7 +1306,7 @@ schema-violating payload still returns 422.
 - Webhook middleware + registry: `packages/runtime/src/triggers/http.ts`
 - Payload validation entry + body-shape normalization: `packages/runtime/src/workflow-registry.ts`
 - Executor (post-validation invocation path): `packages/runtime/src/executor/`
-- Caddy ingress (Caddyfile + Deployment): `infrastructure/modules/caddy/`
+- Caddy ingress (Caddyfile + Quadlet): `infrastructure/caddy.tf`, `infrastructure/files/Caddyfile.tmpl`, `infrastructure/files/caddy.container.tmpl`
 - OpenSpec spec: `openspec/specs/triggers/spec.md`
 - OpenSpec spec: `openspec/specs/http-trigger/spec.md`
 - OpenSpec spec: `openspec/specs/payload-validation/spec.md`
@@ -1734,7 +1734,7 @@ HTTP status and server-reported error message only.
 - Config / env (AUTH_ALLOW, OAuth creds, BASE_URL): `packages/runtime/src/config.ts`
 - App wiring (route ordering): `packages/runtime/src/main.ts`
 - Owner predicate: `packages/runtime/src/auth/owner.ts`
-- Routes chart (no auth middlewares): `infrastructure/modules/app-instance/routes-chart/templates/routes.yaml`
+- App route mounting (in-app, no edge auth): `packages/runtime/src/main.ts`
 - OpenSpec spec: `openspec/specs/auth/spec.md` (created by change `replace-oauth2-proxy`)
 - OpenSpec spec: `openspec/specs/runtime-config/spec.md`
 
@@ -1742,238 +1742,124 @@ HTTP status and server-reported error message only.
 
 ### Trust level
 
-**INTERNAL** — components that run inside the Kubernetes cluster, not
-directly exposed to the Internet. "Internal" is **not** a substitute for
-authentication: a compromised pod, a missing NetworkPolicy, or a rogue
-workload can reach everything else in the cluster.
+**INTERNAL** — components that run on the single Scaleway VPS, isolated from the public Internet by the host firewall and by binding only to loopback. "Internal" is **not** a substitute for authentication: a compromised container, a misconfigured firewall rule, or a host kernel exploit can reach everything else on the box.
 
-This section covers the current dev stack and production deployment
-requirements (noted inline). The production target is an UpCloud K8s
-cluster; see `openspec/specs/infrastructure/spec.md`.
+This section describes the production target: a single Scaleway VPS running rootless Podman + systemd Quadlet, with Caddy and two app instances (prod + staging) as long-running units. There is no Kubernetes; there is no shared cluster. See `openspec/specs/infrastructure/spec.md` and `openspec/specs/host-security-baseline/spec.md`.
 
 ### Entry points
 
-| Component | Exposure | Port | Namespace | Who can reach it |
+| Component | Exposure | Port | User | Who can reach it |
 |---|---|---|---|---|
-| Caddy Ingress (HTTPS) | Public (LB → 443, NodePort 30443 → 443 in dev) | 443 | `caddy` | Internet |
-| Caddy Ingress (HTTP) | Public (LB → 80) | 80 | `caddy` | Internet — redirects to HTTPS, plus serves `/.well-known/acme-challenge/*` for Caddy's built-in HTTP-01 solver |
-| App (runtime) | In-cluster Service | 8080 | per-instance (e.g. `prod`) | Caddy (cross-namespace, NP-enforced) — serves `/dashboard`, `/trigger`, `/auth/*`, `/api/*`, `/webhooks/*`, `/static/*`, `/livez`, `/readyz`, `/healthz`, plus the OAuth handshake |
-| S2 (S3-compatible storage) | In-cluster Service | 9000 | `default` (local only) | App pod (NP-enforced) |
-| DuckDB | Process-local | — | — | App process only (in-memory) |
-| GitHub API | External egress | 443 | — | App pod (auth validation) |
-| Let's Encrypt ACME (egress) | External egress | 443 | — | Caddy pod (prod only, issuance + renewal) |
+| Caddy (HTTPS) | Public | 443/tcp | `deploy` (rootless Podman, sysctl-permitted bind) | Internet |
+| Caddy (HTTP) | Public | 80/tcp | `deploy` | Internet — Caddy serves the LE HTTP-01 challenge and 301-redirects everything else to HTTPS |
+| sshd | Public | configurable (default 2222) | system | Internet — keys-only, `AllowUsers deploy`, fail2ban-protected |
+| App `wfe-prod` | Loopback only | `127.0.0.1:8081` → container `:8080` | `deploy` (rootless Podman) | Caddy (loopback) |
+| App `wfe-staging` | Loopback only | `127.0.0.1:8082` → container `:8080` | `deploy` (rootless Podman) | Caddy (loopback) |
+| DuckDB | Process-local | — | — | One app process only (in-memory + on-disk catalog at `/srv/wfe/<env>/`) |
+| GitHub API | External egress | 443 | — | App containers (OAuth handshake + token validation) |
+| ghcr.io | External egress | 443 | — | `podman-auto-update.timer` (registry HEAD + image pull) |
+| Let's Encrypt ACME | External egress | 443 | — | Caddy (issuance + renewal) |
 
 ### Threats
 
 | ID | Threat | Category |
 |----|--------|----------|
-| I1 | K8s Secret is leaked via logs, etcd snapshots, or a pod with broad RBAC read | Information disclosure |
-| I2 | A compromised pod reaches the app pod's `:8080` directly, bypassing Caddy | EoP (note: no code path reads `X-Auth-Request-*`, so forged-header injection is no longer a vector — the oauth2-proxy sidecar that used to produce those headers was removed; see §4 A13) |
-| I3 | A compromised pod or action (via SSRF, §2) reaches cloud metadata endpoints (e.g. `169.254.169.254`) or internal admin APIs | Information disclosure / EoP |
-| I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as a privileged user | EoP |
-| I5 | No resource limits → a runaway action or memory leak crashes the node, not just the pod | DoS |
-| I6 | OAuth2 client secret or S3 credentials committed to a `.tfvars` file checked into git | Information disclosure |
+| I1 | A secret env file is leaked via logs, host backups (none yet — see R-I7), or operator misclick | Information disclosure |
+| I2 | An attacker reaches the app loopback port `:8081` / `:8082` directly, bypassing Caddy (would require host-side compromise — public ports are firewalled; only Caddy binds 80/443) | EoP (note: no code path reads `X-Auth-Request-*`; forged-header injection is not a vector — see §4 A13) |
+| I3 | A compromised container or action (via SSRF, §2) reaches cloud metadata or internal admin APIs | Information disclosure / EoP |
+| I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as the host root user | EoP |
+| I5 | No per-Quadlet resource limits → a runaway app crowds out the other env or Caddy | DoS |
+| I6 | OAuth2 client secret or SSH private key committed to `.tfvars` or rendered into tofu state | Information disclosure |
 | I7 | Caddy accepts weak TLS ciphers or outdated TLS versions | Tampering / eavesdropping |
-| I8 | Self-signed dev cert used in production by mistake | Spoofing |
-| I9 | S3 bucket policy permits unintended readers (production deployment) | Information disclosure |
-| I10 | Events stored to S3 / filesystem in plaintext, containing secrets that leaked via action env vars | Information disclosure |
-| I11 | Default ServiceAccount token auto-mounted into a pod becomes a latent `kube-apiserver` bearer credential. A sandbox escape, RCE, or future RoleBinding to `default` converts it into active cluster access. Amplified by R-I1 (no NetworkPolicy blocks pod → apiserver); the app-layer `hardenedFetch` (§2 R-S4) blocks private-range egress from inside the sandbox but does not affect an out-of-sandbox compromise. | EoP / Information disclosure |
+| I8 | Self-signed dev cert served in production by mistake | Spoofing |
+| I9 | The `deploy` SSH key (held by GitHub Actions) is leaked, granting shell + scoped systemctl on the production VPS | EoP |
+| I10 | Events stored on local disk in plaintext, containing secrets that leaked via action env vars | Information disclosure |
+| I11 | Host kernel exploit escapes the rootless Podman boundary, granting host root and crossing the prod ↔ staging trust line (now enforced only by the kernel, not by namespace isolation) | EoP |
+| I12 | An attacker brute-forces `deploy` over SSH on the non-default port | EoP |
+| I13 | Bad Quadlet content (e.g. `Volume=/:/host`) committed to the repo lands on the box on the next `apply-infra` with no admission-time policy gate | EoP |
 
 ### Mitigations (current)
 
-- **Namespace isolation** — each app-instance runs in a dedicated
-  namespace (e.g. `prod`, `staging`). Caddy runs in `ns/caddy`. The
-  `default` namespace is empty (except S2 in local dev). Cross-namespace
-  access is controlled by NetworkPolicy `namespaceSelector` rules.
-- **PodSecurity admission `restricted`** — workload namespaces carry
-  the `pod-security.kubernetes.io/enforce=restricted` label (initially
-  `warn` during rollout). Non-compliant pods are rejected at admission.
-  (`infrastructure/modules/baseline/baseline.tf`)
-- **Explicit securityContext on all pods** — every workload sets
-  `runAsNonRoot=true`, `runAsUser=65532`, `seccompProfile=RuntimeDefault`,
-  `allowPrivilegeEscalation=false`, `readOnlyRootFilesystem=true`,
-  `capabilities.drop=["ALL"]`. Writable paths use `emptyDir` mounts.
-  (`infrastructure/modules/app-instance/workloads.tf`;
-  `infrastructure/modules/object-storage/s2/s2.tf`;
-  `infrastructure/modules/caddy/caddy.tf`)
-- **Secrets in K8s Secret objects** — the GitHub OAuth App client
-  secret (`GITHUB_OAUTH_CLIENT_SECRET`) and S3 credentials are stored
-  as Kubernetes Secrets and injected via `envFrom.secretRef`. None are
-  baked into images or committed to source. The session-cookie sealing
-  password is intentionally NOT a K8s Secret — it is generated
-  in-memory at pod start (see §4 A15, R-I13).
-  (`infrastructure/modules/app-instance/secrets.tf`;
-  `infrastructure/modules/object-storage/s2/s2.tf`)
-- **Terraform `sensitive = true`** on all secret variables; values are
-  expected in `dev.secrets.auto.tfvars` which is gitignored.
-- **Distroless non-root base image** — the application runs as UID
-  65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal
-  userspace. Numeric UID for PodSecurity admission static validation.
-  (`infrastructure/Dockerfile`)
-- **Internal-only services** — S2 and the app's business-logic port
-  are not published via NodePort; only Caddy is.
-- **TLS at Caddy** — public traffic is HTTPS-only on `:443`. Port 80
-  serves only Caddy's HTTP-01 ACME challenge and a catch-all 301
-  redirect to HTTPS (Caddy default behavior); no app traffic flows on
-  plaintext.
-- **Caddy-managed TLS** — production TLS certificates are issued by
-  Let's Encrypt via Caddy's built-in ACME client (HTTP-01 challenge)
-  and stored on a `PVC` mounted at `/data` in the Caddy pod. The cert
-  PVC persists across pod restarts; loss triggers re-issuance within
-  LE rate limits. The local kind stack uses Caddy's `tls internal`
-  directive (an in-process self-signed CA), which is why browsers
-  surface a self-signed warning on `https://localhost:<port>` — this
-  is expected and accepted.
-  (`infrastructure/modules/caddy/`)
-- **Build-time image versioning** — S2 uses a pinned minor tag
-  (`0.4.1`); the app image is built from source.
-- **`automountServiceAccountToken: false` on all app workloads** —
-  the app pod and S2 pods suppress the projected SA token. Mitigates
-  **I11**.
-  (`infrastructure/modules/app-instance/workloads.tf`;
-  `infrastructure/modules/object-storage/s2/s2.tf`)
-- **`Secret` wrapper for K8s-Secret-sourced config fields** — the
-  runtime config schema wraps S3 credentials (and any future
-  Secret-sourced field) in a `Secret` value. `toJSON`, `toString`, and
-  `util.inspect` all return `"[redacted]"`; `reveal()` is the single
-  exit, called only at the AWS SDK boundary in `main.ts`. Prevents
-  cleartext credentials from reaching pino log sinks. Mitigates **I1**
-  for the S3 credentials specifically.
-  (`packages/runtime/src/config.ts` — `createSecret`)
-- **JSON-serializer `toJSON()` contract**: the `Secret` wrapper
-  depends on the in-use JSON serializer honoring `toJSON()`. Verified
-  for pino (current logger) as of 2026-04-14. Any future change to the
-  log transport must re-verify redaction before merging.
+The full posture is captured in `openspec/specs/host-security-baseline/spec.md`. Highlights:
+
+- **Rootless Podman + per-Quadlet subuid mapping** — every container (Caddy, `wfe-prod`, `wfe-staging`) runs as the unprivileged `deploy` user mapped through its own subuid range (`/etc/subuid`). The `deploy` user is not a member of `wheel`, `sudo`, or `docker`. Mitigates **I4**, partially **I11**.
+- **Host firewall default-deny inbound** — `ufw` configured with `default deny incoming`; only `80/tcp`, `443/tcp`, and the configured non-default SSH port are reachable from the Internet. Mitigates **I2**, **I3**, **I12** (port 22 is closed).
+- **App ports bind only to loopback** — `wfe-prod.container` and `wfe-staging.container` use `PublishPort=127.0.0.1:<port>:8080`. The host firewall would already block external access on those ports, but loopback-only is defence in depth. Mitigates **I2**.
+- **Per-Quadlet `MemoryMax=` ceilings** — each app unit caps at `700M`, Caddy at `128M`. A runaway workload OOM-kills its own unit, not its neighbour. Mitigates **I5**.
+- **Non-default SSH port** — `Port 2222` (configurable). Eliminates ~99 % of drive-by botnet noise; not a security boundary by itself. Mitigates noise component of **I12**.
+- **sshd hardening** — `PermitRootLogin no`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `AllowUsers deploy`, `MaxAuthTries 3`, `LoginGraceTime 20s`. Mitigates **I12**.
+- **`fail2ban` sshd jail** — 5 failed auths in 10 min → 1-hour ban at the firewall. Mitigates residual **I12** after the above.
+- **Scoped NOPASSWD sudo** — `/etc/sudoers.d/deploy` lists each `systemctl <verb> <unit>.service` combination explicitly. No wildcards, no `ALL`. The `deploy` user cannot edit `/etc/`, install packages, or read root-owned files without the root password (which is set, stored in the operator's password manager, used only in genuine emergencies). Mitigates lateral movement after I9.
+- **Secret env file modes** — `/etc/wfe/<env>.env` is `0600` `deploy:deploy`; the parent directory `/etc/wfe/` is `0700` `deploy:deploy`. Quadlet `EnvironmentFile=` reads them at unit-start time. Mitigates **I1** at rest.
+- **Secrets never enter tofu state** — the `null_resource.wfe_env_file` resource uses `provisioner "file"` with `source = "/tmp/wfe-secrets/<env>.env"` (a runner-local path); only the file's md5 hash and the path string land in state. The bytes are streamed over the encrypted SSH channel and written directly to the host filesystem. The secret-rendering step in `apply-infra.yml` writes via `umask 077` heredoc with no `set -x`. Mitigates **I6**.
+- **Public ghcr image** — `workflow-engine` is a public package on ghcr.io; no PAT lives on the VPS. `podman-auto-update` performs anonymous registry HEADs and pulls.
+- **TLS at Caddy** — public traffic is HTTPS-only on `:443`. Port 80 serves only the LE HTTP-01 challenge and a 301 to HTTPS. Mitigates **I7**, **I8**.
+- **Caddy-managed Let's Encrypt** — ACME state persists on the host bind mount `/srv/caddy/data` so cert + account survive container restarts and image upgrades.
+- **Distroless non-root base image** — the application image runs as UID 65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal userspace. (`infrastructure/Dockerfile`)
+- **Image identity baked in at build time** — the Dockerfile takes `ARG GIT_SHA` and exports `ENV APP_GIT_SHA=$GIT_SHA`. `/readyz` returns this value as `version.gitSha`, which the deploy GHA polls until `=== ${{ github.sha }}` to confirm the auto-update timer has rotated to the new image before running `wfe upload`. Mutable `:release`/`:main` tags are made auditable by branch-protected git history (no force-push on `release`).
+- **`Secret` wrapper for env-sourced sensitive fields** — the runtime config schema wraps every secret field in a `Secret` value. `toJSON`, `toString`, and `util.inspect` all return `"[redacted]"`; `reveal()` is the single exit, called only at the boundary that hands cleartext to the receiving client. Mitigates **I1** in the running process. (`packages/runtime/src/config.ts` — `createSecret`)
+- **`tofu apply` is operator-driven, never CI-driven** — `apply-infra` is `workflow_dispatch`-only. No PR merge, push, or schedule can ship a Quadlet edit. A bad Quadlet committed to the repo cannot reach the box without a human running apply. Mitigates **I13**.
+- **Unattended security upgrades** — Debian's `unattended-upgrades` applies CVE patches automatically from the security suite. Reduces window for **I11** (kernel/runtime exploits).
+- **JSON-serializer `toJSON()` contract**: the `Secret` wrapper depends on the in-use JSON serializer honoring `toJSON()`. Verified for pino (current logger). Any future change to the log transport must re-verify redaction before merging.
 
 ### Residual risks
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-I1 | Namespace-wide default-deny `NetworkPolicy` plus per-workload allow-rules rendered inline next to each Deployment: app ingress restricted to the Caddy namespace on `:8080` (+ node CIDR for probes); Caddy ingress restricted to node CIDR on `:80,443`; cross-pod traffic otherwise dropped. | I2, I3 | **Resolved** (production enforcement via Cilium; kindnet silently no-ops locally, accepted) |
-| R-I2 | ~~App pod has no `securityContext`~~ — **Resolved**: all workloads now set explicit securityContext (runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation=false, capabilities.drop=[ALL]), enforced by PodSecurity admission `restricted` at namespace level. | I4 | **Resolved** |
-| R-I3 | **No resource `requests` / `limits`** on the app or S2 pods — a runaway process can starve the whole node. | I5 (amplifies §2 R-S1 / R-S2) | **High priority** |
-| R-I4 | ~~S2 container has no user specified~~ — **Resolved**: S2 now runs as UID 65532 with full securityContext. Data writes use emptyDir at `/data`. | I4 | **Resolved** |
-| R-I5 | ~~TLS cert source not pinned in IaC~~ — **Resolved**: TLS issuance is owned by Caddy in `infrastructure/modules/caddy/`. Prod uses Let's Encrypt via Caddy's built-in HTTP-01 ACME client; local uses Caddy's `tls internal` directive (in-process self-signed CA). The Caddy image tag is pinned in `modules/caddy/variables.tf`. | I7, I8 | Resolved |
-| R-I10 | ~~cert-manager has cluster-wide RBAC~~ — **Resolved**: cert-manager removed by `simplify-cluster-stack`. Caddy obtains certs via its built-in ACME client and stores them on its own PVC; no controller has cluster-wide Secret RBAC. | I1, EoP | Resolved |
-| R-I7 | **No encryption at rest** — the event store and S3 objects are plaintext JSON. Any secret leaked through an action payload (e.g. via emit) is stored in readable form. | I10 | Out of scope for v1; see §2 R-S6 |
-| R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets live in `terraform.tfvars` files on operator workstations. | I6 | Acceptable for small teams; revisit for production |
-| R-I9 | Egress `ipBlock` `0.0.0.0/0` with `except = [10/8, 172.16/12, 192.168/16, 169.254/16]` blocks cluster pod/service CIDRs, the UpCloud node network, and cloud metadata (IMDS `169.254.169.254`). Public Internet egress remains open — public-URL scoping of the sandbox `fetch` plugin (S8 exfiltration, §2 R-S12) is out of scope here and deferred. The internal-range block is now defence-in-depth behind the app-layer control in §2 R-S4 (`hardenedFetch` structural default). | I3 (defence-in-depth under §2 R-S4) | **Resolved** for metadata/RFC1918 (public-URL allowlist deferred under §2 R-S12) |
-| R-I11 | ~~Traefik's SA token remains mounted~~ — **Resolved**: Traefik removed by `simplify-cluster-stack`. Caddy is a pure reverse-proxy and does not watch K8s API resources; its ServiceAccount sets `automount_service_account_token = false`. No workload mounts a SA token. | I11 | Resolved |
-| R-I12 | **AWS SDK error messages** surfaced via `main.service-failed` may contain the S3 access key ID verbatim (e.g. `InvalidAccessKeyId`). The secret key is never echoed by the SDK. Impact: low — the access key ID alone cannot authenticate. | I1 partial | Accepted |
-| R-I13 | **App Deployment is locked to `replicas = 1`** because the auth subsystem's session-cookie sealing password lives in memory (`packages/runtime/src/auth/key.ts`) and is not shared across pods. A second replica would sign cookies with a different password, causing deterministic decryption failures whenever a request lands on the pod that did not seal the cookie. Raising replicas above 1 requires first migrating the password to a shared mechanism (e.g. a K8s Secret generated once with `ignore_changes`, or a KMS-backed KEK) in the same change. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted |
-| R-I14 | **DuckLake catalog corruption on multi-writer override.** The event-store catalog (`<persistence>/events.duckdb`) is round-tripped to the storage backend via an unconditional PUT — neither S2 (local dev) nor UpCloud Object Storage (prod) implements `If-Match` conditional writes, so there is no runtime fence against a second writer. Two pods running concurrently will silently corrupt the catalog (last-PUT-wins, with arbitrary interleaving of locally-mutated copies). The K8s manifest enforces single-writer with `replicas: 1` + `strategy.type: Recreate` + `terminationGracePeriodSeconds: 90` (`infrastructure/modules/app-instance/workloads.tf`); operators MUST NOT raise replicas, switch the strategy to RollingUpdate, or attach an HPA / PDB tolerating > 1 replica. Bucket versioning on the prod object store provides a rollback target if corruption is somehow introduced (e.g. operator error, zombie pod from kubelet failure, manual `kubectl delete --force`). See `event-store/spec.md` § "Single-writer is a deployment contract". | I10, EoP under override | Accepted (deployment contract enforced; bucket versioning gives recovery path) |
-| R-I15 | **Silent invocation loss on sustained storage outage.** When DuckLake commit retries are exhausted (default 5 attempts, ~30 s exponential backoff, configurable via `EVENT_STORE_COMMIT_MAX_RETRIES` / `EVENT_STORE_COMMIT_BACKOFF_MS`), the EventStore logs `event-store.commit-dropped { id, owner, repo, attempts, error }` and evicts the invocation from RAM. The runtime continues serving (does not exit), trading durability for availability under transient backend pressure. Observable via the structured log stream — operators MUST scrape for `event-store.commit-dropped` to detect drops. SIGKILL/OOM/force-delete/kernel-panic during an in-flight invocation also loses everything in the in-memory accumulator (no per-event WAL); SIGTERM still drains gracefully via synthesised `trigger.error{kind:"shutdown"}` terminals. See `event-store/spec.md` § "Bounded retry then drop on commit failure" and `docs/upgrades.md`. | I10 (loss of audit trail) | Accepted (trade-off vs runaway memory + per-event S3 PUT cost; observable via logs) |
+| R-I3 | Per-Quadlet `MemoryMax=` ceilings (700M per app, 128M for Caddy) cap memory use; the host has 2 GB physical RAM. CPU is shared (no `CPUQuota=` set yet — could be added if a noisy-neighbour symptom appears). | I5 | **Resolved** for memory; CPU defence-in-depth deferred |
+| R-I7 | **No encryption at rest.** Event-store and bundle data live on the local Scaleway block volume in plaintext. A snapshot dump or VPS-loss-with-disk-recovery exposes everything. | I10 | Out of scope for v1; see §2 R-S6 |
+| R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets are GitHub Actions secrets piped through tofu's `file` provisioner with `source =` so they never enter state, but they do live in GHA. | I6 | Acceptable; GHA's secret store is the standard pattern |
+| R-I12 | **AWS-SDK-shaped error messages** in unrelated code paths may contain credential identifiers verbatim. Low impact (key ID alone cannot authenticate). | I1 partial | Accepted |
+| R-I13 | **App is structurally single-process per env** because the session-sealing password lives in memory (`packages/runtime/src/auth/key.ts`). Each env has exactly one Quadlet unit; there is no orchestrator that could spawn a second concurrent process. The constraint is now enforced by the deployment shape itself, not by policy. Adding a second concurrent app process for the same env is a structural change requiring a session-key migration. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted (structural) |
+| R-I15 | **Silent invocation loss on sustained storage outage.** When DuckLake commit retries are exhausted (default 5 attempts, ~30 s exponential backoff), the EventStore logs `event-store.commit-dropped` and evicts the invocation from RAM. The runtime continues serving (does not exit), trading durability for availability under transient backend pressure. Observable via the structured log stream. SIGKILL/OOM/kernel-panic during an in-flight invocation also loses everything in the in-memory accumulator (no per-event WAL); SIGTERM still drains gracefully. See `event-store/spec.md` § "Bounded retry then drop on commit failure". | I10 (loss of audit trail) | Accepted |
+| R-I16 | **No backups.** Local-disk persistence at `/srv/wfe/<env>` and Caddy's ACME state at `/srv/caddy/data` have no off-box copy. A VPS-loss event is total data loss for both envs until users re-upload bundles via `wfe upload`. | I-data-loss | **High priority follow-up** — track as a separate change adding restic snapshots to a small bucket |
+| R-I17 | **No rollback strategy.** Cutover is one-way; if `apply-infra` produces a broken state, the only recovery is fix-forward. Mitigated by the apply being operator-driven (no automatic mutation in CI) and by `apply-infra` supporting partial re-runs (Quadlet edit → restart without re-provisioning). | I-availability | Accepted |
+| R-I18 | **Host kernel is the only isolation boundary between prod and staging.** Both run as `deploy`-mapped subuids on the same host; a kernel privilege-escalation CVE crosses the trust line. Mitigated by `unattended-upgrades` keeping the kernel patched. | I11 | Accepted |
+| R-I19 | **`deploy` SSH private key is a high-value GHA secret.** Leak yields shell + scoped systemctl on production. Mitigated by scoped sudo (no broad host edits possible), key rotation on a 90-day cadence (operator runbook), and the absence of an SSH path that allows arbitrary commands. GH OIDC → short-lived SSH cert is a v2 follow-up if the threat model warrants. | I9 | Accepted |
+| R-I20 | **No admission-time policy enforcement** for Quadlet content. A bad commit (e.g. `Volume=/:/host:rw`) cannot ship without a human running `apply-infra`, which is the gate. PR review is the only check between repo and box. | I13 | Accepted (operator gate is the control) |
 
 ### Production deployment notes
 
-When deploying to the production UpCloud K8s target, treat the
-following as **must-have** before exposing to real traffic:
+The current production target is a single Scaleway VPS. Posture summary:
 
-1. **NetworkPolicy** — DONE. Namespace-wide default-deny plus per-workload
-   allow-rules rendered inline next to each Deployment: Caddy → app:8080,
-   app → Internet (RFC1918 + IMDS blocked) + CoreDNS, Caddy → Internet
-   (LE ACME) + CoreDNS. Resolves R-I1 and
-   the infrastructure half of R-I9 / §2 R-S4. Note: auth runs in-process;
-   the app reaches `github.com` + `api.github.com` through the
-   `egress_internet` egress rule for the OAuth handshake and for
-   `/api/*` token validation.
-2. **Pod `securityContext`** — DONE. All workloads set
-   `runAsNonRoot: true`, `runAsUser: 65532`,
-   `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`,
-   `capabilities.drop: ["ALL"]`. Enforced by PodSecurity admission
-   `restricted` at namespace level. Resolves R-I2.
-3. **Resource requests / limits** — at minimum `cpu` and `memory`
-   limits on every pod, sized from observed usage. Resolves R-I3.
-4. **Real TLS** — Caddy's built-in HTTP-01 ACME client issues and renews
-   Let's Encrypt certs directly (`infrastructure/modules/caddy/`,
-   `infrastructure/envs/cluster/cluster.tf`). Cert + ACME account live on
-   Caddy's `/data` PVC. Resolves R-I5 and I8.
-5. **Egress policy** — NetworkPolicy half DONE (see item 1). Private-range
-   filtering inside the sandbox `fetch` plugin's structural `hardenedFetch`
-   default (§2 R-S4) now closes the app-layer half — internal SSRF (S5)
-   is mitigated end-to-end. Public-URL allowlist for exfiltration (S8 /
-   §2 R-S12) remains deferred pending UX design.
-6. **Encrypted event storage** — if UpCloud Object Storage is used,
-   enable server-side encryption. Document the key custody model.
-7. **Secret rotation procedure** — document how to rotate the
-   `GITHUB_OAUTH_CLIENT_SECRET` and the S3 credentials without downtime.
-   The in-memory session-cookie sealing password rotates implicitly on
-   every pod restart; no explicit rotation procedure is needed as long
-   as `replicas = 1` (R-I13).
+1. **Host firewall** — DONE. `ufw` default-deny inbound; only 80/tcp, 443/tcp, and the configured non-default SSH port are open. Resolves the perimeter half of I2 / I3 / I12.
+2. **Rootless Podman + per-Quadlet subuids** — DONE. All workloads run as the `deploy` user mapped through container-private subuid ranges. Mitigates I4 / I11.
+3. **Per-Quadlet resource limits** — DONE for memory (`MemoryMax=` per unit). CPU pinning is deferred — add `CPUQuota=` if a noisy-neighbour symptom appears. Resolves R-I3.
+4. **Real TLS** — DONE. Caddy obtains and renews Let's Encrypt certs via HTTP-01 ACME; state lives on the host bind mount `/srv/caddy/data`. Resolves I7 / I8.
+5. **Sandbox egress** — `hardenedFetch` (§2 R-S4) blocks RFC1918 and metadata egress at the app layer. Internal SSRF (S5) is mitigated end-to-end. Public-URL allowlist for exfiltration (S8 / §2 R-S12) remains deferred.
+6. **Backups** — **NOT YET.** R-I16 is the highest-priority follow-up. Until added, treat the VPS as the sole copy of every event-store row and bundle.
+7. **Secret rotation procedure** — to rotate `GITHUB_OAUTH_CLIENT_SECRET`: update the GHA secret, re-run `apply-infra`. The `null_resource.wfe_env_file` `filemd5` trigger detects the change and the `remote-exec` provisioner restarts the affected unit. The in-memory session-sealing password rotates implicitly on every container restart (which happens on every secret rotation, and on every auto-update tick).
+8. **SSH key rotation** — rotate `TF_VAR_DEPLOY_SSH_PRIVATE_KEY` + `TF_VAR_DEPLOY_SSH_PUBLIC_KEY` together every 90 days (or on suspected compromise). The new key takes effect on the next `apply-infra` (cloud-init re-runs the deploy-user authorized_keys write). Old key is invalidated as soon as the new authorized_keys lands.
 
 ### Rules for AI agents
 
-1. **NEVER commit a `.tfvars` file containing real secrets.** Use the
-   `.example` pattern; put the real file in `.gitignore`.
-2. **NEVER add a new public NodePort, Ingress, or Route** without
-   explicit review. The public surface is currently exactly Caddy
-   on `:443` (and `:80` for HTTP-01 ACME + redirect); widening it
-   requires §3 / §4 treatment.
-3. **NEVER hardcode a secret** in Terraform, Kubernetes manifests,
-   Helm values, or container images. Secret values (credentials, keys,
-   tokens) come from K8s Secrets injected via `envFrom.secretRef`.
-   Non-secret config (allowlists like `AUTH_ALLOW`, log levels, ports,
-   base URLs, `LOCAL_DEPLOYMENT` toggles, S3 bucket names) is injected
-   via plain `env` on the pod spec — it is intentionally visible in
-   pod specs and Kubernetes events for auditability and SHALL NOT be
-   wrapped in a K8s Secret.
-4. **NEVER downgrade to HTTP** for any route. Cookies rely on
-   `COOKIE_SECURE=true`; serving plain HTTP breaks session security.
-5. **When adding a new in-cluster service**, place it on an in-cluster
-   Service only (not NodePort). Document who is allowed to reach it
-   and plan for a NetworkPolicy.
-6. **When adding a new environment variable that holds a secret**,
-   route it through a K8s Secret. The end-to-end chain is:
-   (a) create a K8s `Secret` resource and inject it into the pod spec
-   via `envFrom.secretRef` (NEVER via `env` with literal values and
-   NEVER via Docker build args or image layers — canonical example:
-   `infrastructure/modules/app-instance/secrets.tf`);
-   (b) mark the Terraform variable `sensitive = true`;
-   (c) in the runtime config schema, compose the field's Zod schema
-   with `.transform(createSecret)` so the value on the returned config
-   object is a `Secret`-wrapped type that self-redacts on
-   `JSON.stringify`, `String()`, and `util.inspect` (canonical
-   examples: `GITHUB_OAUTH_CLIENT_SECRET`,
-   `PERSISTENCE_S3_ACCESS_KEY_ID`,
-   `PERSISTENCE_S3_SECRET_ACCESS_KEY` in
-   `packages/runtime/src/config.ts`);
-   (d) reveal only at the boundary that hands the cleartext to the
-   receiving client (e.g. AWS SDK, `buildRegistry`); never log the
-   cleartext. Non-secret config fields that are intentionally visible
-   in pod specs (e.g. `AUTH_ALLOW`, `LOG_LEVEL`, `PORT`, `BASE_URL`,
-   `LOCAL_DEPLOYMENT`, `PERSISTENCE_S3_BUCKET`) SHALL NOT be
-   `Secret`-wrapped and do NOT require `envFrom.secretRef` — they are
-   visible by design for auditability.
-7. **Assume "internal" is not a perimeter.** Any new component must
-   justify its own auth / isolation story, not rely on "it's only
-   cluster-local".
-8. **When adding infrastructure for production deployment**, consult
-   the "Production deployment notes" checklist above.
-9. **When adding a new K8s workload**, set
-   `automountServiceAccountToken: false` at the pod spec. If the
-   workload genuinely needs the K8s API, create a dedicated
-   `ServiceAccount` with the narrowest possible `Role` /
-   `ClusterRole`, justify it in the PR, and add it to this section as
-   a named exception (I11).
-10. **NEVER raise the `workflow-engine` app Deployment replicas above 1**
-    without first migrating the auth sealing password out of in-memory
-    state (see §4 A15, R-I13, and the `auth` capability's
-    "Single-replica invariant" requirement). A change that sets
-    `replicas > 1` without this migration silently breaks the auth
-    subsystem — cookies sealed on one pod fail decryption on another,
-    bouncing users through login on every alternating request.
+1. **NEVER commit a `.tfvars` file containing real secrets.** Use the GHA-secret → `apply-infra` workflow path. If a local `.tfvars` is needed for ad-hoc operator runs, it MUST be `.gitignore`d.
+2. **NEVER open a new inbound port** on the host firewall (`ufw`). The public surface is currently exactly `80`, `443`, and the configured SSH port. Adding a new public port requires §3 / §4 treatment.
+3. **NEVER add an app `PublishPort=` that binds anywhere other than `127.0.0.1`.** App units MUST publish on loopback only; Caddy is the sole `0.0.0.0` listener.
+4. **NEVER use the `file` provisioner with `content =` for secrets.** Use `source = "<runner-local-path>"` so bytes never enter tofu state. The single resource pattern is `null_resource.wfe_env_file` in `infrastructure/apps.tf`. Do not introduce alternatives.
+5. **NEVER use `local_sensitive_file` or `remote-exec` with `inline = ["echo '${secret}' > ..."]`** — both persist secret bytes in state.
+6. **NEVER hardcode a secret** in Terraform, Quadlet templates, or container images. Secret values come from GitHub Actions secrets, render to `/tmp/wfe-secrets/<env>.env` on the runner, copy via the file-provisioner pattern (Rule 4) to `/etc/wfe/<env>.env` (mode 0600), and arrive in the container via `EnvironmentFile=/etc/wfe/<env>.env`. Non-secret config (`AUTH_ALLOW`, `BASE_URL`, `AUTH_PROVIDER`, log levels) is rendered into the same env file but is also acceptable in plain Quadlet `Environment=` lines.
+7. **NEVER downgrade to HTTP** for any route. Cookies rely on `COOKIE_SECURE=true`; serving plain HTTP breaks session security.
+8. **NEVER add or broaden a sudoers rule** for `deploy` beyond the explicit allowlist in `infrastructure/cloud-init.yaml`. No wildcards, no `ALL`. If a new privileged operation is genuinely needed, name the exact `systemctl <verb> <unit>.service` form and justify it in the PR.
+9. **NEVER add a new environment variable that holds a secret without wrapping it in `Secret`.** The end-to-end chain is:
+   (a) add the secret to GHA secrets and reference it in `apply-infra.yml`'s heredoc that renders `/tmp/wfe-secrets/<env>.env`;
+   (b) the `null_resource.wfe_env_file` `filemd5` trigger detects the change automatically (no edit needed there);
+   (c) in the runtime config schema, compose the field's Zod schema with `.transform(createSecret)` so the value self-redacts on `JSON.stringify`, `String()`, and `util.inspect` (canonical examples: `GITHUB_OAUTH_CLIENT_SECRET` in `packages/runtime/src/config.ts`);
+   (d) reveal only at the boundary that hands the cleartext to the receiving client; never log the cleartext.
+10. **Assume "internal" is not a perimeter.** Any new component on the box must justify its own auth / isolation story, not rely on "it's only on the loopback".
+11. **When adding a new long-running workload**, add a Quadlet `.container` template under `infrastructure/files/`, render it from a `null_resource` in the appropriate `.tf` file, set `MemoryMax=` and bind to `127.0.0.1` (unless it's a public-facing ingress). Containers MUST run rootless under the `deploy` user; never set `User=root` or use `--privileged`.
+12. **NEVER raise the per-env app process count above 1** without first migrating the auth sealing password out of in-memory state (see §4 A15, R-I13, and the `auth` capability's "Single-replica invariant" requirement). The constraint is structurally enforced by having one Quadlet unit per env — a change that adds a second concurrent process for the same env (HPA-equivalent, second `wfe-prod-2.container`, etc.) silently breaks auth.
+13. **NEVER read `X-Auth-Request-*`** on any code path (see §4 A13). The forward-auth mechanism that produced those headers does not exist; reading them reintroduces the forged-header class.
 
 ### Workflow secret-key management
 
 Owner-authored workflows may declare sealed env bindings (`env({name, secret: true})` per the `workflow-secrets` change). The server holds an X25519 keypair list in the `SECRETS_PRIVATE_KEYS` env var; the public key is derivable from any secret key via `crypto_scalarmult_base` and is exposed by `GET /api/workflows/:owner/public-key` so the CLI can seal values before upload. Decryption happens twice: once at upload for fail-fast validation, and once per invocation inside the executor to hand plaintexts to the future consumer plugin. Plaintext bytes are `fill(0)`-wiped after use and never logged.
 
-**Key location.**
-- **Prod:** keypair list lives in `envs/persistence/secrets.tf` (same blast radius as the prod S3 bucket — outlives cluster destroys). `envs/prod/` reads it via `terraform_remote_state` and creates the `app-secrets-key` K8s Secret in the prod namespace.
-- **Staging, local:** each generates its own keypair list in-project (`envs/staging/secrets.tf`, `envs/local/secrets.tf`). Losing staging or local state forces re-deployment but not owner re-upload.
+**Key location.** The `SECRETS_PRIVATE_KEYS` value is generated by the operator (e.g. `openssl rand -base64`-style) and stored as a GHA secret per env (`SECRETS_PRIVATE_KEYS_PROD`, `SECRETS_PRIVATE_KEYS_STAGING`). `apply-infra.yml` writes it into the corresponding `/tmp/wfe-secrets/<env>.env` heredoc; tofu's file-provisioner copies it to `/etc/wfe/<env>.env` on the VPS. The bytes never enter tofu state. Rotating the key list rotates the GHA secret + re-runs `apply-infra`.
 
-**Rotation.** Prepend a new id to `var.secret_key_ids`, `tofu apply` persistence (prod) or the env-local secrets file (staging/local), redeploy. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when a owner's bundle references a retired keyId.
+**Rotation.** Prepend a new id to the env's `SECRETS_PRIVATE_KEYS` value (comma-separated keypair list), update the GHA secret, re-run `apply-infra`. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when an owner's bundle references a retired keyId.
 
-**Security property.** The app pod is the only place the secret key material exists. Storage (S3) sees only ciphertexts. Operators with S3/state-bucket access cannot unseal any secret without the K8s-secret-held private key. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
+**Security property.** The app container is the only place the secret key material exists in plaintext. The on-disk persistence (`/srv/wfe/<env>/`) sees only ciphertexts. The `/etc/wfe/<env>.env` file holds the keys at mode 0600 owned by `deploy`. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
 
 ### Trigger-config secret references
 
@@ -2017,16 +1903,16 @@ Additional main-thread secrets rules on top of the K8s-centric rules above:
 
 ### File references
 
-- App deployment: `infrastructure/modules/app-instance/workloads.tf`
-- App-instance secrets: `infrastructure/modules/app-instance/secrets.tf`
-- App-instance NetworkPolicies: `infrastructure/modules/app-instance/netpol.tf`
-- Persistence-side keypair: `infrastructure/envs/persistence/secrets.tf`
-- Staging / local keypair: `infrastructure/envs/staging/secrets.tf`, `infrastructure/envs/local/secrets.tf`
-- Caddy ingress: `infrastructure/modules/caddy/`
-- Baseline (namespaces, PSA, default-deny): `infrastructure/modules/baseline/baseline.tf`
-- S2 storage: `infrastructure/modules/object-storage/s2/s2.tf`
+- Server + IP + firewall: `infrastructure/main.tf`
+- Cloud-init (deploy user, sshd, sudoers, ufw, fail2ban, sysctl, podman-auto-update timer override): `infrastructure/cloud-init.yaml`
+- App Quadlets + env-file delivery: `infrastructure/apps.tf`, `infrastructure/files/wfe.container.tmpl`
+- Caddy Quadlet + Caddyfile: `infrastructure/caddy.tf`, `infrastructure/files/caddy.container.tmpl`, `infrastructure/files/Caddyfile.tmpl`
+- Dynu A records: `infrastructure/dns.tf`
+- Apply workflow (operator): `.github/workflows/apply-infra.yml`
+- Plan gate: `.github/workflows/plan-infra.yml`
+- Build + push (no infra side effects): `.github/workflows/deploy-prod.yml`, `.github/workflows/deploy-staging.yml`
 - Dockerfile: `infrastructure/Dockerfile`
-- OpenSpec spec: `openspec/specs/infrastructure/spec.md`
+- OpenSpec specs: `openspec/specs/infrastructure/spec.md`, `openspec/specs/host-security-baseline/spec.md`
 
 ## §6 HTTP Response Headers
 
@@ -2183,8 +2069,5 @@ capabilities it does not need.
 - Static middleware (serves `/static/*` incl. vendored `alpine.js`,
   `htmx.js`, `jedison.js` from `@alpinejs/csp`):
   `packages/runtime/src/ui/static/middleware.ts`
-- Local deployment gate:
-  `infrastructure/modules/workflow-engine/modules/app/app.tf`
-  (`local_deployment` variable), set to `true` in
-  `infrastructure/local/local.tf`
+- Local-deployment toggle: `LOCAL_DEPLOYMENT=1` env var (set by `pnpm dev` only — never on the VPS deployment)
 - OpenSpec spec: `openspec/specs/http-security/spec.md`

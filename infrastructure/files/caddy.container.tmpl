@@ -1,0 +1,26 @@
+[Unit]
+Description=Caddy (TLS + reverse proxy)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=${caddy_image}
+# Host networking: Caddy shares the host's netns so it can reach the
+# wfe-{prod,staging} apps on 127.0.0.1:{8081,8082}. With bridge networking,
+# 127.0.0.1 inside the container would be the container's loopback (Caddy
+# talking to itself) and the upstream proxy would 502. PublishPort= is
+# unnecessary with Network=host — Caddy binds 80/443 directly on the host.
+Network=host
+Volume=/srv/caddy/data:/data:Z
+Volume=/srv/caddy/config:/config:Z
+Volume=/etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+# Caddy is a pure TLS terminator + reverse proxy. No auth, no forward-auth.
+Label=role=ingress
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+MemoryMax=80M
+
+[Install]
+WantedBy=multi-user.target default.target

@@ -10,74 +10,17 @@ permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: tofu-staging
-  cancel-in-progress: false
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/login-action@v4
+      - uses: ./.github/actions/deploy-image
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: build
-        uses: ./.github/actions/docker-build
-        with:
-          push: "true"
-          tags: ghcr.io/${{ github.repository }}:main
-          git_sha: ${{ github.sha }}
-
-      - uses: opentofu/setup-opentofu@v2
-
-      - id: apply
-        name: Tofu apply staging
-        working-directory: infrastructure/envs/staging
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
-          TF_VAR_upcloud_token: ${{ secrets.TF_VAR_UPCLOUD_TOKEN }}
-          TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
-          TF_VAR_github_oauth_client_id: ${{ secrets.GH_APP_CLIENT_ID_STAGING }}
-          TF_VAR_github_oauth_client_secret: ${{ secrets.GH_APP_CLIENT_SECRET_STAGING }}
-          TF_VAR_auth_allow: ${{ vars.AUTH_ALLOW_STAGING }}
-        run: |
-          tofu init
-          tofu apply -auto-approve -var "image_digest=${{ steps.build.outputs.digest }}"
-
-      - id: url
-        name: Capture staging URL
-        working-directory: infrastructure/envs/staging
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
-        run: |
-          echo "url=$(tofu output -raw url)" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for /readyz to report the just-built sha
-        env:
-          URL: ${{ steps.url.outputs.url }}
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          set -e
-          for attempt in $(seq 1 60); do
-            got=$(curl -fsS "$URL/readyz" 2>/dev/null | jq -r '.version.gitSha // ""' || true)
-            if [[ "$got" == "$EXPECTED_SHA" ]]; then
-              echo "rollout converged: gitSha=$got"
-              exit 0
-            fi
-            echo "attempt $attempt: gitSha=$got expected=$EXPECTED_SHA"
-            sleep 5
-          done
-          echo "::error::/readyz never reported expected sha; last gitSha=$got"
-          exit 1
+          tag: main
+          url: https://staging.workflow-engine.webredirect.org
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-pnpm
 
@@ -93,4 +36,4 @@ jobs:
           WEBHOOK_TOKEN: staging-webhook-token
           IMAP_USER: staging-imap-user
           IMAP_PASSWORD: staging-imap-password
-        run: node ../packages/sdk/dist/cli/cli.js upload --url "${{ steps.url.outputs.url }}"
+        run: node ../packages/sdk/dist/cli/cli.js upload --url https://staging.workflow-engine.webredirect.org

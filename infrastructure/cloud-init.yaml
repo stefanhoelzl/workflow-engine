@@ -1,0 +1,152 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - podman
+  - fail2ban
+  - unattended-upgrades
+  - ufw
+  - curl
+  - ca-certificates
+
+users:
+  - name: deploy
+    shell: /bin/bash
+    lock_passwd: true
+    # adm + systemd-journal grant read access to /var/log/journal so the
+    # operator can `journalctl -u wfe-prod -u wfe-staging -u caddy` without
+    # sudo (which is scoped to systemctl only).
+    groups: [adm, systemd-journal]
+    ssh_authorized_keys:
+      - ${deploy_ssh_public_key}
+
+write_files:
+  # Lower the unprivileged-port floor so rootless Caddy can bind 80/443.
+  - path: /etc/sysctl.d/10-unprivileged-ports.conf
+    content: |
+      net.ipv4.ip_unprivileged_port_start=80
+    permissions: "0644"
+
+  # Allow `deploy` to linger so its user-mode systemd persists across logouts
+  # (rootless Podman with system Quadlet). We use system-mode quadlets here so
+  # this is only relevant if we ever pivot to user-mode.
+  - path: /etc/systemd/system/podman-auto-update.timer.d/override.conf
+    content: |
+      [Timer]
+      OnUnitActiveSec=
+      OnBootSec=
+      OnUnitActiveSec=1min
+      OnBootSec=2min
+    permissions: "0644"
+
+  # Scoped NOPASSWD sudo for the deploy user. No wildcards, no ALL.
+  - path: /etc/sudoers.d/deploy
+    content: |
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start wfe-prod.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl stop wfe-prod.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart wfe-prod.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl status wfe-prod.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start wfe-staging.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl stop wfe-staging.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart wfe-staging.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl status wfe-staging.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start caddy.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl stop caddy.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart caddy.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl status caddy.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start podman-auto-update.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl status podman-auto-update.service
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start podman-auto-update.timer
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl stop podman-auto-update.timer
+      deploy ALL=(root) NOPASSWD: /usr/bin/systemctl status podman-auto-update.timer
+    permissions: "0440"
+    owner: "root:root"
+
+  # sshd hardening. Non-default port, key-only, no root, allow only `deploy`.
+  - path: /etc/ssh/sshd_config.d/10-hardening.conf
+    content: |
+      Port ${ssh_port}
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      AllowUsers deploy
+      MaxAuthTries 3
+      LoginGraceTime 20s
+      PubkeyAuthentication yes
+    permissions: "0644"
+
+  # fail2ban sshd jail tuned for the non-default port.
+  - path: /etc/fail2ban/jail.d/sshd.local
+    content: |
+      [sshd]
+      enabled = true
+      port = ${ssh_port}
+      maxretry = 5
+      findtime = 10m
+      bantime = 1h
+    permissions: "0644"
+
+  # Subuid/subgid range for the deploy user — required for rootless Podman.
+  # cloud-init runs `usermod` only after the user exists, so we use runcmd.
+
+runcmd:
+  # Apply sysctl now (also persisted in /etc/sysctl.d/).
+  - sysctl --system
+
+  # Allocate subuid/subgid range for `deploy` (idempotent — usermod is a no-op
+  # if the range already exists).
+  - usermod --add-subuids 100000-165535 --add-subgids 100000-165535 deploy
+
+  # Firewall: default deny inbound, allow only HTTP, HTTPS, SSH-port.
+  # FORWARD chain must accept so Podman bridge (10.88.0.0/16) container
+  # traffic can egress — without this, containers can't resolve DNS or
+  # reach the internet (Caddy ACME, ghcr.io image pulls, etc.). INPUT
+  # rules still control what reaches the host itself.
+  - sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw default allow routed
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw allow ${ssh_port}/tcp
+  - ufw --force enable
+
+  # Restart sshd to pick up the new Port and hardening directives. Must happen
+  # after ufw allows the new port.
+  - systemctl restart ssh
+
+  # Enable security services.
+  - systemctl enable --now fail2ban.service
+  - systemctl enable --now unattended-upgrades.service
+  - systemctl enable --now podman-auto-update.timer
+  - systemctl daemon-reload
+  - systemctl restart podman-auto-update.timer
+
+  # Pre-create per-env data directories, owned by deploy.
+  - install -d -m 0700 -o deploy -g deploy /etc/wfe
+  - install -d -m 0755 -o deploy -g deploy /srv/wfe
+  - install -d -m 0700 -o deploy -g deploy /srv/wfe/prod
+  - install -d -m 0700 -o deploy -g deploy /srv/wfe/staging
+  - install -d -m 0755 -o deploy -g deploy /srv/caddy
+  - install -d -m 0700 -o deploy -g deploy /srv/caddy/data
+  - install -d -m 0700 -o deploy -g deploy /srv/caddy/config
+
+  # System-wide Quadlet directory + Caddyfile directory. Owned by deploy so
+  # the SSH provisioners can drop files without sudo. Podman reads
+  # /etc/containers/systemd/ as root at boot regardless of dir ownership.
+  - install -d -m 0755 -o deploy -g deploy /etc/containers/systemd
+  - install -d -m 0755 -o deploy -g deploy /etc/caddy
+
+  # 1 GiB swapfile. STARDUST1-S has 1 GB physical RAM; per-Quadlet
+  # MemoryMax caps keep individual workloads bounded, but the swapfile
+  # absorbs transient bursts (Node sandbox spawns, page cache pressure)
+  # without OOM-killing a unit. Idempotent — fallocate is a no-op if the
+  # file is already at the target size.
+  - test -f /swapfile || (fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile)
+  - swapon --show=NAME --noheadings | grep -q '^/swapfile$' || swapon /swapfile
+  - grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab

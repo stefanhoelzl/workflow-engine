@@ -24,33 +24,30 @@ The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke fro
 
 `--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive — see `SECURITY.md` §4 "CLI authentication".
 
-## Infrastructure (OpenTofu + kind)
+## Infrastructure (OpenTofu + Scaleway VPS)
 
-Prerequisites: OpenTofu >= 1.11, Podman
+Prerequisites: OpenTofu >= 1.11.
 
-- `pnpm local:up` — create/update local environment
-- `pnpm local:up:build` — rebuild app image + create/update local environment
-- `pnpm local:destroy` — tear down local environment
+Single flat tofu project at `infrastructure/`. Provisions one Scaleway VPS hosting Caddy + two app instances (prod + staging) as rootless Podman + Quadlet units. Local-disk persistence; no S3 in the running deployment. Tofu state lives on Scaleway Object Storage.
 
-Local stack: kind K8s cluster, Caddy (raw K8s manifests, `tls internal` for local TLS), S2 (local S3), workflow-engine app.
-Accessible at `https://localhost:8443` (self-signed cert from Caddy's internal CA; browser warns because the CA is not in the host trust store).
-
-Secrets: copy `infrastructure/envs/local/local.secrets.auto.tfvars.example` to `local.secrets.auto.tfvars` and fill in OAuth2 credentials.
+There is **no local cluster mode**. `pnpm dev` is the only local mode; agents verify against it. There is no kind, no podman-compose, no `pnpm local:up*`.
 
 Prod/staging runbook: `docs/infrastructure.md`.
 
-**Pre-merge infra plan gate.** Changes under `infrastructure/envs/{cluster,persistence}/` (or modules they consume) MUST be applied locally by the operator before the PR can merge — agents surface this in their summary and do NOT run `tofu apply`. Full flow: `docs/infrastructure.md` "Pre-merge plan gate".
+**Pre-merge infra plan gate.** A single `plan (vps)` job runs on every PR and fails the merge unless the plan is empty. Infra changes are operator-driven via the `apply-infra` `workflow_dispatch` workflow — agents do NOT run `tofu apply`; they surface the need to apply in the PR summary.
+
+**Deploys.** No tofu in the deploy path. `deploy-staging` (push to `main`) and `deploy-prod` (push to `release`, gated by `environment: production`) only build + push the image to ghcr.io. The VPS's `podman-auto-update.timer` (1-min interval) pulls the new tag and restarts the unit. CI polls `/readyz` until `version.gitSha === <pushed sha>` to confirm the rotation before running `wfe upload` (staging only).
 
 ## Definition of Done
 
-- `pnpm validate` must pass. Runs in parallel: `pnpm lint` (Biome), `pnpm check` (TypeScript), `pnpm test` (Vitest unit + integration; **excludes WPT** — run `pnpm test:wpt` separately when touching sandbox-stdlib), and `tofu fmt -check` + `tofu validate` for every infrastructure env.
+- `pnpm validate` must pass. Runs in parallel: `pnpm lint` (Biome), `pnpm check` (TypeScript), `pnpm test` (Vitest unit + integration; **excludes WPT** — run `pnpm test:wpt` separately when touching sandbox-stdlib), and `tofu fmt -check -recursive infrastructure/` + `tofu -chdir=infrastructure validate`.
 - `pnpm test:e2e` — gated separately in CI; spawns a real runtime child per `describe`. Run locally before pushing when changes touch runtime spawn/shutdown, the SDK CLI upload pipeline, persistence layout, plugin host-calls, or authenticated UI routes. See `packages/tests/README.md`.
 
 ## Dev verification
 
-Agents verify most changes against `pnpm dev` (http://localhost:<port>), not the full cluster. `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` and `workflows/src/demo-advanced.ts` under owner `local` (repos `demo` and `demo-advanced`), and hot-reloads on source changes — no kind cluster, no Caddy.
+Agents verify changes against `pnpm dev` (http://localhost:<port>). `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` and `workflows/src/demo-advanced.ts` under owner `local` (repos `demo` and `demo-advanced`), and hot-reloads on source changes.
 
-**Escalate to `pnpm local:up:build` (https://localhost:8443) only when the change touches:** `infrastructure/`, Caddyfile/routing, `secure-headers.ts` (CSP/HSTS/Permissions-Policy), `NetworkPolicy`, or K8s manifests. Agents do NOT run `pnpm local:up:build` themselves; they write a `Cluster smoke (human)` block in `tasks.md` listing the specific probes for a human to run. Local auth (`/login`, the local-user dropdown, session-cookie flows) is NOT a cluster-escalation reason — the in-app local provider renders identically under `pnpm dev`.
+For changes touching `infrastructure/`, Caddyfile/routing, `secure-headers.ts` (CSP/HSTS/Permissions-Policy), or sshd/firewall posture, agents document the verification under `## Cluster smoke (human)` in `tasks.md`. Agents do NOT run `tofu apply`; the operator runs the `apply-infra` workflow.
 
 ### Spawn & readiness
 
