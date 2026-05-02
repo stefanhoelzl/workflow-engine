@@ -8,7 +8,7 @@ inputs:
     description: Target URL whose /readyz endpoint reports the running gitSha. The VPS's podman-auto-update.timer rotates within ~1 min of push.
     required: true
   github_token:
-    description: GITHUB_TOKEN with `packages: write` scope, for ghcr auth.
+    description: "GITHUB_TOKEN with `packages: write` scope, for ghcr auth."
     required: true
 runs:
   using: composite
