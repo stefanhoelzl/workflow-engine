@@ -34,7 +34,7 @@ There is **no local cluster mode**. `pnpm dev` is the only local mode; agents ve
 
 Prod/staging runbook: `docs/infrastructure.md`.
 
-**Pre-merge infra plan gate.** A single `plan (vps)` job runs on every PR and fails the merge unless the plan is empty. Infra changes are operator-driven via the `apply-infra` `workflow_dispatch` workflow — agents do NOT run `tofu apply`; they surface the need to apply in the PR summary.
+**Pre-merge infra plan gate.** A single `plan-infra` job runs on every PR and fails the merge unless the plan is empty. Infra changes are operator-driven via the `apply-infra` `workflow_dispatch` workflow — agents do NOT run `tofu apply`; they surface the need to apply in the PR summary.
 
 **Deploys.** No tofu in the deploy path. `deploy-staging` (push to `main`) and `deploy-prod` (push to `release`, gated by `environment: production`) only build + push the image to ghcr.io. The VPS's `podman-auto-update.timer` (1-min interval) pulls the new tag and restarts the unit. CI polls `/readyz` until `version.gitSha === <pushed sha>` to confirm the rotation before running `wfe upload` (staging only).
 

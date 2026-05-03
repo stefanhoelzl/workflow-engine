@@ -9,6 +9,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: opentofu/setup-opentofu@v2
+        with:
+          # Wrapper swallows tofu's real exit code, masking `tofu fmt -check`
+          # and `tofu validate` failures inside `pnpm validate`.
+          tofu_wrapper: false
       - uses: ./.github/actions/setup-pnpm
 
       - run: pnpm validate
