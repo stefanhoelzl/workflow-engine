@@ -37,8 +37,6 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           TF_VAR_dynu_api_key: ${{ secrets.TF_VAR_DYNU_API_KEY }}
-          TF_VAR_deploy_ssh_public_key: ${{ secrets.TF_VAR_DEPLOY_SSH_PUBLIC_KEY }}
-          TF_VAR_deploy_ssh_private_key: ${{ secrets.TF_VAR_DEPLOY_SSH_PRIVATE_KEY }}
           TF_VAR_gh_oauth_client_id_prod: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_ID_PROD }}
           TF_VAR_gh_oauth_client_secret_prod: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_SECRET_PROD }}
           TF_VAR_gh_oauth_client_id_staging: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_ID_STAGING }}

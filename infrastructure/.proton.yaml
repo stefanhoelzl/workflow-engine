@@ -5,8 +5,6 @@ workflow_engine:
   TF_VAR_dynu_api_key: dynu/api_key
   SCW_ACCESS_KEY: scaleway/access_key
   SCW_SECRET_KEY: scaleway/secret_key
-  TF_VAR_deploy_ssh_private_key: scaleway/ssh_private_key
-  TF_VAR_deploy_ssh_public_key: scaleway/ssh_public_key
   TF_VAR_gh_oauth_client_id_prod: github/workflow_engine_app_client_id
   TF_VAR_gh_oauth_client_secret_prod: github/workflow_engine_app_client_secret
   TF_VAR_gh_oauth_client_id_staging: github/staging_workflow_engine_app_client_id

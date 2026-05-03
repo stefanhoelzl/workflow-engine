@@ -22,4 +22,9 @@ resource "restapi_object" "dns_a_record" {
     ipv4Address = scaleway_instance_ip.vps.address
   })
   id_attribute = "id"
+  # Mastercard restapi provider merges the API response (including
+  # response-only fields like `content`, `statusCode`, `updatedOn`) into
+  # `data` on apply. Without this flag, every subsequent refresh shows
+  # perpetual drift wanting to remove those fields.
+  ignore_server_additions = true
 }
