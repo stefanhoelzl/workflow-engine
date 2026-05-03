@@ -185,7 +185,13 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 			.filter((s): s is string => Boolean(s))
 			.join("/")}`;
 		const cleaned = path === "/" ? "" : path;
-		return <Tabs surface="/trigger" path={cleaned} />;
+		const scope = {
+			...(activeOwner ? { owner: activeOwner } : {}),
+			...(activeRepo ? { repo: activeRepo } : {}),
+			...(activeWorkflow ? { workflow: activeWorkflow } : {}),
+			...(activeTrigger ? { trigger: activeTrigger } : {}),
+		};
+		return <Tabs surface="/trigger" path={cleaned} scope={scope} />;
 	}
 
 	function entriesAcrossOwners(

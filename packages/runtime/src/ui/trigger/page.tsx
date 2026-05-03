@@ -17,13 +17,21 @@ import { Layout } from "../layout.js";
 // ---------------------------------------------------------------------------
 //
 // Two page shapes:
-//   - `renderTriggerTreePage` — index view at `/trigger` and
-//     `/trigger/:owner`; collapsible `<details>` per owner / repo.
-//   - `renderRepoTriggerPage` — leaf view at `/trigger/:owner/:repo`; one
-//     collapsible card per registered trigger, grouped into per-workflow
-//     sections. HTTP, cron, and manual cards all POST to the kind-agnostic
-//     `/trigger/:owner/:repo/:workflow/:trigger` endpoint so the session
-//     user can be captured as dispatch provenance.
+//   - `ScopeTriggerPage` — every multi-card scope (`/trigger`,
+//     `/trigger/:owner`, `/trigger/:owner/:repo`,
+//     `/trigger/:owner/:repo/:workflow`). One `<section>` per workflow;
+//     section heading is the path *relative* to the current scope down to
+//     the workflow (omitted at workflow scope, where the tabbar breadcrumb
+//     already names it).
+//   - `SingleTriggerPage` — leaf view at
+//     `/trigger/:owner/:repo/:workflow/:trigger`; renders the named trigger
+//     pre-expanded.
+//
+// HTTP, cron, and manual cards all POST to the kind-agnostic
+// `/trigger/:owner/:repo/:workflow/:trigger` endpoint so the session user
+// can be captured as dispatch provenance. Navigation across scopes is the
+// sidebar tree's job; in-page breadcrumbs/headings are gone and live in
+// the shared tabbar (`tabs.tsx`).
 
 // triggerCardMeta — formats descriptor-specific metadata. Inlined here as
 // the single caller; was previously exported from `ui/triggers.ts` (now
@@ -296,32 +304,20 @@ interface RepoTriggerPageOptions {
 }
 
 function RepoTriggerCards({ entries }: { entries: readonly WorkflowEntry[] }) {
-	// Group cards by workflow, alpha-sort groups and triggers within groups.
-	const byWorkflow = new Map<string, TriggerCardData[]>();
-	for (const entry of entries) {
-		const cards = entryToCardDataList(entry);
-		const existing = byWorkflow.get(entry.workflow.name) ?? [];
-		byWorkflow.set(entry.workflow.name, existing.concat(cards));
-	}
-	const groupNames = [...byWorkflow.keys()].sort((a, b) => a.localeCompare(b));
-	if (groupNames.length === 0) {
+	// Flat list of cards across the supplied entries (alpha-sorted by trigger
+	// name). Per-workflow grouping at the page level is handled by the scope
+	// renderer so it can compute the relative-path heading.
+	const cards = entries
+		.flatMap((entry) => entryToCardDataList(entry))
+		.sort((a, b) => a.trigger.localeCompare(b.trigger));
+	if (cards.length === 0) {
 		return <div class="empty-state">No triggers registered</div>;
 	}
 	return (
 		<>
-			{groupNames.map((name) => {
-				const cards = (byWorkflow.get(name) ?? [])
-					.slice()
-					.sort((a, b) => a.trigger.localeCompare(b.trigger));
-				return (
-					<section class="trigger-group" aria-label={name}>
-						<h2 class="trigger-group-title">{name}</h2>
-						{cards.map((c) => (
-							<TriggerCard data={c} />
-						))}
-					</section>
-				);
-			})}
+			{cards.map((c) => (
+				<TriggerCard data={c} />
+			))}
 		</>
 	);
 }
@@ -375,20 +371,6 @@ function SingleTriggerPage(options: SingleTriggerPageOptions) {
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
 			{...(tabs === undefined ? {} : { tabs })}
 		>
-			<div class="page-header">
-				<nav class="breadcrumb" aria-label="Breadcrumb">
-					<a href="/trigger">Trigger</a>
-					<span class="breadcrumb-sep">/</span>
-					<a href={`/trigger/${owner}`}>{owner}</a>
-					<span class="breadcrumb-sep">/</span>
-					<a href={`/trigger/${owner}/${repo}`}>{repo}</a>
-					<span class="breadcrumb-sep">/</span>
-					<a href={`/trigger/${owner}/${repo}/${workflow}`}>{workflow}</a>
-					<span class="breadcrumb-sep">/</span>
-					<span class="breadcrumb-current">{trigger}</span>
-				</nav>
-				<h1>{`${workflow} / ${trigger}`}</h1>
-			</div>
 			<div class="trigger-content">
 				{card ? (
 					<TriggerCard data={card} open={true} />
@@ -424,48 +406,7 @@ interface ScopeTriggerPageOptions {
 	readonly tabs?: Child;
 }
 
-function ScopeBreadcrumb({
-	scope,
-}: {
-	scope: ScopeTriggerPageOptions["scope"];
-}) {
-	if (!scope.owner) {
-		return <span class="breadcrumb-current">All</span>;
-	}
-	if (!scope.repo) {
-		return (
-			<>
-				<a href="/trigger">All</a>
-				<span class="breadcrumb-sep">/</span>
-				<span class="breadcrumb-current">{scope.owner}</span>
-			</>
-		);
-	}
-	if (!scope.workflow) {
-		return (
-			<>
-				<a href="/trigger">All</a>
-				<span class="breadcrumb-sep">/</span>
-				<a href={`/trigger/${scope.owner}`}>{scope.owner}</a>
-				<span class="breadcrumb-sep">/</span>
-				<span class="breadcrumb-current">{scope.repo}</span>
-			</>
-		);
-	}
-	return (
-		<>
-			<a href="/trigger">All</a>
-			<span class="breadcrumb-sep">/</span>
-			<a href={`/trigger/${scope.owner}`}>{scope.owner}</a>
-			<span class="breadcrumb-sep">/</span>
-			<a href={`/trigger/${scope.owner}/${scope.repo}`}>{scope.repo}</a>
-			<span class="breadcrumb-sep">/</span>
-			<span class="breadcrumb-current">{scope.workflow}</span>
-		</>
-	);
-}
-
-function scopeHeading(scope: ScopeTriggerPageOptions["scope"]): string {
+function scopeTitle(scope: ScopeTriggerPageOptions["scope"]): string {
 	if (!scope.owner) {
 		return "Trigger";
 	}
@@ -478,73 +419,72 @@ function scopeHeading(scope: ScopeTriggerPageOptions["scope"]): string {
 	return `${scope.owner}/${scope.repo} · ${scope.workflow}`;
 }
 
-function ScopeRepoSection({
-	owner,
-	repo,
-	entries,
-	showHeader,
-}: {
-	owner: string;
-	repo: string;
-	entries: readonly WorkflowEntry[];
-	showHeader: boolean;
-}) {
-	return (
-		<section class="trigger-repo-section">
-			{showHeader ? (
-				<h2 class="trigger-repo-title">
-					<a href={`/trigger/${owner}/${repo}`}>{`${owner}/${repo}`}</a>
-				</h2>
-			) : null}
-			<RepoTriggerCards entries={entries} />
-		</section>
-	);
+// Heading shown above each per-workflow card section. Path is *relative* to
+// the current scope, down to the workflow grouping. At workflow scope (and
+// the leaf single-trigger page) the heading is omitted entirely.
+function relativeWorkflowPath(
+	scope: ScopeTriggerPageOptions["scope"],
+	owner: string,
+	repo: string,
+	workflow: string,
+): string | null {
+	if (!scope.owner) {
+		return `${owner}/${repo}/${workflow}`;
+	}
+	if (!scope.repo) {
+		return `${repo}/${workflow}`;
+	}
+	if (!scope.workflow) {
+		return workflow;
+	}
+	return null;
 }
 
 function ScopeTriggerPage(options: ScopeTriggerPageOptions) {
 	const { user, email, scope, entries, sidebarTree, tabs } = options;
-	const heading = scopeHeading(scope);
-	// Group entries by (owner, repo) for the cross-repo views; show repo
-	// header only when more than one (owner, repo) section is present.
-	const byPair = new Map<string, WorkflowEntry[]>();
+	// Group entries by (owner, repo, workflow) — one section per workflow at
+	// every scope. Sort by the composite key so the rendering order is stable
+	// across reloads.
+	const byWorkflow = new Map<string, WorkflowEntry[]>();
 	for (const entry of entries) {
-		const key = `${entry.owner}/${entry.repo}`;
-		const bucket = byPair.get(key) ?? [];
+		const key = `${entry.owner}/${entry.repo}/${entry.workflow.name}`;
+		const bucket = byWorkflow.get(key) ?? [];
 		bucket.push(entry);
-		byPair.set(key, bucket);
+		byWorkflow.set(key, bucket);
 	}
-	const pairKeys = [...byPair.keys()].sort((a, b) => a.localeCompare(b));
-	const showRepoHeader = pairKeys.length > 1;
+	const groupKeys = [...byWorkflow.keys()].sort((a, b) => a.localeCompare(b));
 	return (
 		<Layout
-			title={`Trigger — ${heading}`}
+			title={`Trigger — ${scopeTitle(scope)}`}
 			activePath="/trigger"
 			user={user}
 			email={email}
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
 			{...(tabs === undefined ? {} : { tabs })}
 		>
-			<div class="page-header">
-				<nav class="breadcrumb" aria-label="Breadcrumb">
-					<ScopeBreadcrumb scope={scope} />
-				</nav>
-				<h1>{heading}</h1>
-			</div>
 			<div class="trigger-content">
-				{pairKeys.length === 0 ? (
+				{groupKeys.length === 0 ? (
 					<div class="empty-state">No triggers registered</div>
 				) : (
-					pairKeys.map((key) => {
-						const bucket = byPair.get(key) ?? [];
-						const owner = bucket[0]?.owner ?? "";
-						const repo = bucket[0]?.repo ?? "";
+					groupKeys.map((key) => {
+						const bucket = byWorkflow.get(key) ?? [];
+						const first = bucket[0];
+						if (!first) {
+							return null;
+						}
+						const heading = relativeWorkflowPath(
+							scope,
+							first.owner,
+							first.repo,
+							first.workflow.name,
+						);
 						return (
-							<ScopeRepoSection
-								owner={owner}
-								repo={repo}
-								entries={bucket}
-								showHeader={showRepoHeader}
-							/>
+							<section class="trigger-group" aria-label={first.workflow.name}>
+								{heading ? (
+									<h2 class="trigger-group-title">{heading}</h2>
+								) : null}
+								<RepoTriggerCards entries={bucket} />
+							</section>
 						);
 					})
 				)}

@@ -609,7 +609,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 				rows,
 				...(filter ? { filter } : {}),
 				sidebarTree: buildSidebarTree(owners, filter ?? {}),
-				tabs: <Tabs surface="/dashboard" path={path} />,
+				tabs: <Tabs surface="/dashboard" path={path} scope={filter ?? {}} />,
 			}),
 		);
 	}
