@@ -98,14 +98,17 @@ Adding a new tenant (e.g., `wfe-experimental`) is a tofu-only operation: add an 
 
 ## Migration ritual: surviving a cloud-init edit
 
-When you do need to edit the cloud-init bootstrap minimum (rare — SSH key rotation, port change), the VPS is replaced and `/srv` is destroyed. To preserve data, use this ritual:
+When you do need to edit the cloud-init bootstrap minimum (rare — SSH key rotation, sshd port change, sudoers verb addition, FORWARD policy change), `tofu apply` automatically replaces the VPS. The trigger is a sha256 of the rendered cloud-init content, captured by `terraform_data.cloud_init_bootstrap`; when the hash flips, `lifecycle { replace_triggered_by = [...] }` on `scaleway_instance_server.vps` forces replacement. (Without this, the Scaleway provider would just update `user_data` in place — but cloud-init only runs at first boot, so the new content would never take effect.)
+
+VPS replacement destroys the local SSD root, including `/srv/wfe/<env>` (event-store) and `/srv/caddy/data` (ACME state). To preserve data across the rebuild:
 
 ```bash
 # 1. Backup before applying.
 rsync -aAX deploy@<host>:/srv/wfe/prod /tmp/prod-pre-apply-$(date +%F)
 rsync -aAX deploy@<host>:/srv/caddy/data /tmp/caddy-pre-apply-$(date +%F)
 
-# 2. Apply the change.
+# 2. Apply the change. tofu will plan a `-/+ destroy and then create
+# replacement` for scaleway_instance_server.vps — that's expected.
 tofu -chdir=infrastructure apply
 
 # 3. Wait for the new VPS to come up. ssh in as deploy.
@@ -116,10 +119,13 @@ ssh deploy@<host> "sudo /usr/bin/install -d -m 0700 -o wfe-prod -g wfe-prod /srv
 
 # 5. Restart services. (Caddy will re-issue ACME certs from scratch unless
 # /srv/caddy/data was also restored.)
-ssh deploy@<host> "sudo /bin/systemctl restart wfe-prod.service caddy.service"
+ssh deploy@<host> "sudo /usr/bin/runuser -u wfe-prod -- env XDG_RUNTIME_DIR=/run/user/$(id -u wfe-prod) /bin/systemctl --user restart wfe-prod.service"
+ssh deploy@<host> "sudo /usr/bin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$(id -u wfe-caddy) /bin/systemctl --user restart caddy.service"
 ```
 
 For staging, data loss is acceptable; skip the rsync.
+
+**Forcing a rebuild without a content edit.** If you need to re-bake the bootstrap minimum without changing the source (e.g., to rotate the in-memory session-sealing password by recycling all containers), run `tofu -chdir=infrastructure taint scaleway_instance_server.vps && tofu apply`. Same data-loss caveats; same rsync ritual applies.
 
 **When to run apply-infra.** Any PR touching `infrastructure/`. The pre-merge `plan (vps)` gate fails if the plan is non-empty, so the operator runs `apply-infra` from the feature branch *before* requesting review.
 
