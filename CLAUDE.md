@@ -45,14 +45,14 @@ Prod/staging runbook: `docs/infrastructure.md`.
 
 ## Dev verification
 
-Agents verify changes against `pnpm dev` (http://localhost:<port>). `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` and `workflows/src/demo-advanced.ts` under owner `local` (repos `demo` and `demo-advanced`), and hot-reloads on source changes.
+Agents verify changes against `pnpm dev` (http://localhost:<port>). `pnpm dev` boots the runtime, auto-uploads `workflows/src/demo.ts` under owner `local-user` to two repos (`demo-repo` and `another-repo`) so the dashboard drill-down and cross-repo paths exercise on every boot, and hot-reloads on source changes.
 
 For changes touching `infrastructure/`, Caddyfile/routing, `secure-headers.ts` (CSP/HSTS/Permissions-Policy), or sshd/firewall posture, agents document the verification under `## Cluster smoke (human)` in `tasks.md`. Agents do NOT run `tofu apply`; the operator runs the `apply-infra` workflow.
 
 ### Spawn & readiness
 
 1. Start backgrounded: `pnpm dev --random-port --kill`. Agents use `run_in_background` so the process tree is owned by the agent.
-2. Grep stdout for the ready marker: `Dev ready on http://localhost:<port> (tenant=dev)`. Parse the port from that line. Do NOT probe before the marker appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
+2. Grep stdout for the ready marker: `[READY] Dev server listening on http://localhost:<port>`. Parse the port from that line. Do NOT probe before the marker appears — the port opens before the initial `runUpload` completes, so early curl will hit an empty registry.
 3. Kill the process tree at end of task. `.persistence/` is left as-is between tasks; each boot re-uploads the bundle anyway.
 
 Probe recipes (curl, EventStore, dashboard scrape, Playwright, auth fixture, canonical `demo.ts` triggers) live in `docs/dev-probes.md`.

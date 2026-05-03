@@ -11,7 +11,7 @@ Boot `pnpm dev` on a random port and open a given path in the VS Code Simple Bro
 
 $ARGUMENTS
 
-- Required: a path like `dashboard`, `/trigger`, or `/dashboard/local/demo`. A leading `/` is optional.
+- Required: a path like `dashboard`, `/trigger`, or `/dashboard/local-user/demo-repo`. A leading `/` is optional.
 - If empty: ABORT with `Usage: /preview <path>` (e.g. `/preview dashboard`).
 
 ## Execution
@@ -35,10 +35,10 @@ Use `run_in_background: true` so the agent owns the process tree. Capture the ou
 Poll the output file (up to ~120s) for the line:
 
 ```
-Dev ready on http://localhost:<port> (tenant=dev)
+[READY] Dev server listening on http://localhost:<port>
 ```
 
-Parse `<port>` from that line. The literal `tenant=dev` is legacy — actual upload owner is `local`.
+Parse `<port>` from that line.
 
 If the marker never appears: ABORT with the last 20 lines of the output file.
 
