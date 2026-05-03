@@ -10,7 +10,12 @@ The runtime SHALL expose a `POST /api/workflows/<tenant>` endpoint that accepts 
 
 The `<tenant>` path parameter SHALL be validated by the `requireTenantMember()` middleware (see `auth` capability) BEFORE the upload handler runs: invalid tenant identifiers AND non-member users SHALL both receive `404 Not Found` with body `{error: "Not Found"}`. The upload handler SHALL NOT receive a request whose `<tenant>` has not been validated and authorized.
 
-Error responses from the upload handler itself (after tenant authorization passes) SHALL include a JSON body. A `415` response SHALL include `{ "error": <string> }`. A `422` response SHALL include `{ "error": <string> }` where `<string>` is a specific reason for the failure (e.g., `missing manifest.json`, `missing workflow module: <path>`, or `invalid manifest: <details>`). When the `422` is caused by manifest validation failing `ManifestSchema`, the body SHALL additionally include `issues: Array<{ path: Array<string | number>, message: string }>` derived from the underlying Zod validation issues.
+Error responses from the upload handler itself (after tenant authorization passes) SHALL include a JSON body. A `415` response SHALL include `{ "error": <string> }`. A `422` response SHALL include `{ "error": <string> }` where `<string>` is a specific reason for the failure (e.g., `missing manifest.json`, `missing workflow module: <path>`, or `invalid manifest: <details>`). When the `422` is caused by manifest validation failing `ManifestSchema`, the body SHALL additionally include `issues: Array<{ path: Array<string | number>, message: string, formatted: string }>` where:
+
+- `path` and `message` are derived from the underlying Zod validation issue, preserving the pre-existing structured shape for non-CLI consumers.
+- `formatted` is the result of calling `formatIssue(issue, parsedValue)` from `@workflow-engine/core` against the manifest object that failed validation. The `formatted` string follows the convention `Workflow "<name>": <type> trigger "<name>": <suffix>` (or the action / workflow-root variants). CLI consumers SHALL prefer printing `formatted` over reconstructing the message from `path` + `message`.
+
+The `formatted` field is additive: clients that only consume `path` and `message` continue to work unchanged.
 
 #### Scenario: Successful upload
 
@@ -29,7 +34,14 @@ Error responses from the upload handler itself (after tenant authorization passe
 - **WHEN** the archive contains a `manifest.json` that is missing, malformed, or does not pass `ManifestSchema` validation
 - **THEN** the runtime SHALL respond with `422 Unprocessable Entity`
 - **AND** the response body SHALL include `error` naming the specific failure
-- **AND** when the failure is a `ManifestSchema` validation error, the response body SHALL include `issues: Array<{ path, message }>` reflecting the Zod validation issues
+- **AND** when the failure is a `ManifestSchema` validation error, the response body SHALL include `issues: Array<{ path, message, formatted }>` reflecting the Zod validation issues
+- **AND** each `formatted` entry SHALL be a single-line string rendered via `formatIssue` from `@workflow-engine/core`
+
+#### Scenario: Issue formatted field for empty triggers
+
+- **GIVEN** an upload whose manifest contains a workflow named `"demo"` with `triggers: []`
+- **WHEN** the upload handler returns 422
+- **THEN** the response body's `issues[]` SHALL contain at least one entry with `formatted` of the form `Workflow "demo": must declare at least one trigger`
 
 #### Scenario: Non-member tenant returns 404
 
@@ -257,3 +269,4 @@ The handler SHALL NOT emit `system.upload` events on `415` (invalid archive) or 
 - **GIVEN** a request whose manifest fails `ManifestSchema` validation
 - **WHEN** the handler returns `422`
 - **THEN** the EventStore SHALL gain ZERO `system.upload` events
+

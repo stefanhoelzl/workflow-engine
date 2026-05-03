@@ -3,9 +3,9 @@ import { readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import {
+	formatIssue,
 	IIFE_NAMESPACE,
-	isReservedResponseHeader,
-	TRIGGER_NAME_RE,
+	workflowManifestSchema,
 } from "@workflow-engine/core";
 import MagicString from "magic-string";
 import ts from "typescript";
@@ -661,39 +661,8 @@ function extractHttpTriggerJsonSchemas(
 			label,
 			workflowName,
 		);
-		assertNoReservedResponseHeaders(
-			responseHeadersJson,
-			exportName,
-			workflowName,
-		);
 	}
 	return { bodyJson, headersJson, responseBodyJson, responseHeadersJson };
-}
-
-// Reject any `response.headers` zod schema that statically declares a
-// reserved name. Walks `properties.*` of the JSON Schema produced from the
-// zod schema; schemas without `properties` (open records, e.g. z.record)
-// are accepted — the runtime strip is load-bearing for those cases.
-function assertNoReservedResponseHeaders(
-	responseHeadersJson: Record<string, unknown>,
-	exportName: string,
-	workflowName: string,
-): void {
-	const properties = responseHeadersJson.properties;
-	if (
-		typeof properties !== "object" ||
-		properties === null ||
-		Array.isArray(properties)
-	) {
-		return;
-	}
-	for (const declared of Object.keys(properties)) {
-		if (isReservedResponseHeader(declared)) {
-			buildContext.error(
-				`Workflow "${workflowName}": trigger "${exportName}".response.headers declares reserved header "${declared}". The platform owns this header on /webhooks/* responses; remove it from the schema.`,
-			);
-		}
-	}
 }
 
 function buildTriggerEntry(
@@ -704,11 +673,6 @@ function buildTriggerEntry(
 	if (typeof trigger !== "function") {
 		buildContext.error(
 			`Workflow "${workflowName}": trigger "${exportName}" is missing a handler function`,
-		);
-	}
-	if (!TRIGGER_NAME_RE.test(exportName)) {
-		buildContext.error(
-			`Workflow "${workflowName}": trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
 		);
 	}
 	const { bodyJson, headersJson, responseBodyJson, responseHeadersJson } =
@@ -749,16 +713,6 @@ function buildCronTriggerEntry(
 			`Workflow "${workflowName}": cron trigger "${exportName}" is missing a handler function`,
 		);
 	}
-	if (typeof trigger.schedule !== "string" || trigger.schedule === "") {
-		buildContext.error(
-			`Workflow "${workflowName}": cron trigger "${exportName}" has no schedule`,
-		);
-	}
-	if (typeof trigger.tz !== "string" || trigger.tz === "") {
-		buildContext.error(
-			`Workflow "${workflowName}": cron trigger "${exportName}" has no tz (factory default resolution failed)`,
-		);
-	}
 	return {
 		name: exportName,
 		type: "cron",
@@ -777,11 +731,6 @@ function buildImapTriggerEntry(
 	if (typeof trigger !== "function") {
 		buildContext.error(
 			`Workflow "${workflowName}": imap trigger "${exportName}" is missing a handler function`,
-		);
-	}
-	if (!TRIGGER_NAME_RE.test(exportName)) {
-		buildContext.error(
-			`Workflow "${workflowName}": imap trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
 		);
 	}
 	const onError: { command?: string[] } =
@@ -816,11 +765,6 @@ function buildManualTriggerEntry(
 			`Workflow "${workflowName}": manual trigger "${exportName}" is missing a handler function`,
 		);
 	}
-	if (!TRIGGER_NAME_RE.test(exportName)) {
-		buildContext.error(
-			`Workflow "${workflowName}": manual trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
-		);
-	}
 	const inputSchemaLabel = `manual trigger "${exportName}".inputSchema`;
 	assertZodSchema(trigger.inputSchema, inputSchemaLabel, workflowName);
 	const outputSchemaLabel = `manual trigger "${exportName}".outputSchema`;
@@ -849,11 +793,6 @@ function buildWsTriggerEntry(
 	if (typeof trigger !== "function") {
 		buildContext.error(
 			`Workflow "${workflowName}": ws trigger "${exportName}" is missing a handler function`,
-		);
-	}
-	if (!TRIGGER_NAME_RE.test(exportName)) {
-		buildContext.error(
-			`Workflow "${workflowName}": ws trigger export name "${exportName}" must match ${TRIGGER_NAME_RE}`,
 		);
 	}
 	const requestLabel = `ws trigger "${exportName}".request`;
@@ -946,6 +885,19 @@ function buildManifestFromMod(
 	};
 	if (secretBindings !== undefined && secretBindings.length > 0) {
 		built.secretBindings = [...secretBindings];
+	}
+	// Validate the assembled manifest against the canonical schema. Strip
+	// `secretBindings` for the validation pass — it is the unsealed-build
+	// intermediate that the schema legitimately rejects post-seal; here we
+	// only want the schema to surface other shape issues (≥1 trigger, unique
+	// names, reserved http response headers, etc.).
+	const { secretBindings: _sb, ...forValidation } = built;
+	const parsed = workflowManifestSchema.safeParse(forValidation);
+	if (!parsed.success) {
+		const lines = parsed.error.issues.map((issue) =>
+			formatIssue(issue, forValidation),
+		);
+		buildContext.error(lines.join("\n"));
 	}
 	return built;
 }

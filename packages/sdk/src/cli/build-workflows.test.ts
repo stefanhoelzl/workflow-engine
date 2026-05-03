@@ -106,19 +106,23 @@ export const onEvent = httpTrigger({
 `;
 
 const NAMED_WORKFLOW = `
-import { defineWorkflow } from "@workflow-engine/sdk";
+import { defineWorkflow, manualTrigger } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow({ name: "custom-name" });
+
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 
 const NO_DEFINE_WORKFLOW = `
-import { action, z } from "@workflow-engine/sdk";
+import { action, manualTrigger, z } from "@workflow-engine/sdk";
 
 export const anAction = action({
 	input: z.object({}),
 	output: z.string(),
 	handler: async () => "x",
 });
+
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 
 const TWO_DEFINE_WORKFLOWS = `
@@ -318,13 +322,15 @@ describe("buildWorkflows: brand-based discovery", () => {
 
 	it("emits open '{}' JSON Schema when action input/output are omitted", async () => {
 		const SCHEMALESS_ACTION = `
-import { action, defineWorkflow } from "@workflow-engine/sdk";
+import { action, defineWorkflow, manualTrigger } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow();
 
 export const passthrough = action({
 	handler: async (x) => x,
 });
+
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 		const { result } = await buildFixture({
 			files: { "schemaless.ts": SCHEMALESS_ACTION },
@@ -404,6 +410,21 @@ describe("buildWorkflows: name derivation", () => {
 	});
 });
 
+describe("buildWorkflows: schema-level rules", () => {
+	it("fails the build when a workflow declares no triggers", async () => {
+		const NO_TRIGGERS = `
+import { defineWorkflow } from "@workflow-engine/sdk";
+export const workflow = defineWorkflow({ name: "lonely" });
+`;
+		await expect(
+			buildFixture({
+				files: { "wf.ts": NO_TRIGGERS },
+				workflows: ["./wf.ts"],
+			}),
+		).rejects.toThrow(/must declare at least one trigger/);
+	});
+});
+
 describe("buildWorkflows: HTTP trigger entry", () => {
 	it("fails the build when an HTTP trigger export name contains non-URL-safe characters", async () => {
 		await expect(
@@ -411,7 +432,7 @@ describe("buildWorkflows: HTTP trigger entry", () => {
 				files: { "bad.ts": TRIGGER_NON_URL_SAFE_NAME },
 				workflows: ["./bad.ts"],
 			}),
-		).rejects.toThrow(/trigger export name ".+" must match/);
+		).rejects.toThrow(/http trigger "\$weird"/);
 	});
 
 	it("accepts an HTTP trigger export name with a leading underscore", async () => {
@@ -917,7 +938,7 @@ export const open = httpTrigger({
 
 describe("buildWorkflows: secret bindings", () => {
 	const WITH_SECRETS = `
-import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";
+import { action, defineWorkflow, env, manualTrigger, z } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow({
 	env: {
@@ -932,10 +953,12 @@ export const call = action({
 	output: z.object({}),
 	handler: async () => ({}),
 });
+
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 
 	const PLAINTEXT_ONLY = `
-import { action, defineWorkflow, env, z } from "@workflow-engine/sdk";
+import { action, defineWorkflow, env, manualTrigger, z } from "@workflow-engine/sdk";
 
 export const workflow = defineWorkflow({
 	env: {
@@ -948,6 +971,8 @@ export const call = action({
 	output: z.object({}),
 	handler: async () => ({}),
 });
+
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 
 	it("routes secret bindings into manifest.secretBindings, not manifest.env", async () => {

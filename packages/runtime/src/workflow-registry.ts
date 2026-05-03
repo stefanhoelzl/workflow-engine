@@ -3,6 +3,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
 	type CronTriggerManifest,
+	formatIssue,
 	type HttpTriggerManifest,
 	type ImapTriggerManifest,
 	type Manifest,
@@ -766,12 +767,23 @@ function createWorkflowRegistry(
 		repo: string,
 		manifestRaw: string,
 	): { ok: true; manifest: Manifest } | { ok: false; result: RegisterResult } {
+		let parsedValue: unknown;
 		try {
-			const parsed: unknown = JSON.parse(manifestRaw);
-			const manifest = ManifestSchema.parse(parsed);
+			parsedValue = JSON.parse(manifestRaw);
+		} catch (err) {
+			const shape = toRegisterIssue(err, undefined);
+			options.logger.warn("workflow-registry.register-failed", {
+				owner,
+				repo,
+				...shape,
+			});
+			return { ok: false, result: { ok: false, ...shape } };
+		}
+		try {
+			const manifest = ManifestSchema.parse(parsedValue);
 			return { ok: true, manifest };
 		} catch (err) {
-			const shape = toRegisterIssue(err);
+			const shape = toRegisterIssue(err, parsedValue);
 			options.logger.warn("workflow-registry.register-failed", {
 				owner,
 				repo,
@@ -1071,6 +1083,7 @@ function createWorkflowRegistry(
 interface ManifestIssue {
 	readonly path: (string | number)[];
 	readonly message: string;
+	readonly formatted: string;
 }
 
 type RegisterResult =
@@ -1115,7 +1128,10 @@ function mapAggregateToResult(aggregate: ReconfigureAggregate): RegisterResult {
 	return { ok: true, owner: "", repo: "", workflows: [] };
 }
 
-function normalizeIssue(raw: unknown): ManifestIssue | undefined {
+function normalizeIssue(
+	raw: unknown,
+	parsedValue: unknown,
+): ManifestIssue | undefined {
 	if (typeof raw !== "object" || raw === null) {
 		return;
 	}
@@ -1127,10 +1143,20 @@ function normalizeIssue(raw: unknown): ManifestIssue | undefined {
 			)
 		: [];
 	const message = typeof rec.message === "string" ? rec.message : "";
-	return { path, message };
+	const formatted = formatIssue(
+		{
+			path: Array.isArray(rec.path) ? (rec.path as PropertyKey[]) : [],
+			message,
+		},
+		parsedValue,
+	);
+	return { path, message, formatted };
 }
 
-function toRegisterIssue(err: unknown): {
+function toRegisterIssue(
+	err: unknown,
+	parsedValue: unknown,
+): {
 	error: string;
 	issues?: ManifestIssue[];
 } {
@@ -1138,7 +1164,7 @@ function toRegisterIssue(err: unknown): {
 		const zodIssues = (err as { issues: unknown[] }).issues;
 		const issues: ManifestIssue[] = [];
 		for (const raw of zodIssues) {
-			const normalized = normalizeIssue(raw);
+			const normalized = normalizeIssue(raw, parsedValue);
 			if (normalized) {
 				issues.push(normalized);
 			}

@@ -217,6 +217,74 @@ describe("POST /api/workflows/:owner/:repo — error classification", () => {
 		expect(res.status).toBe(422);
 	});
 
+	it("returns 422 with formatIssue-rendered issues when a workflow has zero triggers", async () => {
+		const { app } = await mountWithBackends([stubBackend("http", "ok")]);
+		const empty = {
+			workflows: [
+				{
+					...VALID_MANIFEST.workflows[0],
+					triggers: [],
+				},
+			],
+		};
+		const bundle = await packOwnerBundle(
+			new Map([
+				["manifest.json", JSON.stringify(empty)],
+				["demo.js", "/* bundle */"],
+			]),
+		);
+		const res = await postUpload(app, "acme", "demo", bundle);
+		expect(res.status).toBe(422);
+		const body = (await res.json()) as {
+			error?: string;
+			issues?: Array<{
+				path: (string | number)[];
+				message: string;
+				formatted: string;
+			}>;
+		};
+		expect(body.issues).toBeDefined();
+		const issue = body.issues?.find(
+			(i) => i.message === "must declare at least one trigger",
+		);
+		expect(issue).toBeDefined();
+		expect(issue?.formatted).toBe(
+			'Workflow "demo": must declare at least one trigger',
+		);
+		// back-compat: structured fields preserved
+		expect(Array.isArray(issue?.path)).toBe(true);
+		expect(typeof issue?.message).toBe("string");
+	});
+
+	it("returns 422 with formatIssue-rendered issues for duplicate trigger names", async () => {
+		const { app } = await mountWithBackends([stubBackend("http", "ok")]);
+		const httpTrigger = VALID_MANIFEST.workflows[0]?.triggers[0];
+		const dup = {
+			workflows: [
+				{
+					...VALID_MANIFEST.workflows[0],
+					triggers: [httpTrigger, httpTrigger],
+				},
+			],
+		};
+		const bundle = await packOwnerBundle(
+			new Map([
+				["manifest.json", JSON.stringify(dup)],
+				["demo.js", "/* bundle */"],
+			]),
+		);
+		const res = await postUpload(app, "acme", "demo", bundle);
+		expect(res.status).toBe(422);
+		const body = (await res.json()) as {
+			issues?: Array<{ formatted: string; message: string }>;
+		};
+		const issue = body.issues?.find((i) =>
+			i.message.includes("trigger names must be unique"),
+		);
+		expect(issue).toBeDefined();
+		expect(issue?.formatted).toContain('Workflow "demo":');
+	});
+
 	it("returns 422 when a Zod-valid kind has no registered backend (runtime allowlist)", async () => {
 		const { app } = await mountWithBackends([stubBackend("http", "ok")]);
 		const cronOnlyManifest = {

@@ -19,8 +19,9 @@ async function linkSdk(tempDir: string): Promise<void> {
 }
 
 const TRIVIAL_WORKFLOW = `
-import { defineWorkflow } from "@workflow-engine/sdk";
+import { defineWorkflow, manualTrigger } from "@workflow-engine/sdk";
 export const workflow = defineWorkflow();
+export const rerun = manualTrigger({ handler: async () => "ok" });
 `;
 
 describe("build() — error paths", () => {
