@@ -14,6 +14,13 @@ Image=${image_ref}
 # restarts this unit when the manifest digest at the configured tag changes.
 Label=io.containers.autoupdate=registry
 PublishPort=127.0.0.1:${host_port}:8080
+# Hairpin self-reach: rootless pasta gives src=public-IP for outbound, so a
+# direct connect to our own public IP is rejected by the kernel. Map the
+# public hostname to the host-gateway address (169.254.1.2 under pasta);
+# Caddy serves the matching TLS cert via SNI, so https:// just works.
+# Required by /readyz domain/webhooks probes and by workflows that fetch
+# their own httpTriggers / OAuth callbacks.
+AddHost=${domain}:host-gateway
 # `:U` makes Podman chown the source dir to match the container's UID
 # (65532 per the Dockerfile) at start time. Without it, the container
 # process can't write to a host dir owned by `deploy`.

@@ -8,6 +8,7 @@ locals {
         host_port  = cfg.port
         data_dir   = cfg.data_dir
         memory_max = cfg.memory_max
+        domain     = cfg.domain
         base_url   = "https://${cfg.domain}"
         auth_allow = cfg.auth_allow
       }
