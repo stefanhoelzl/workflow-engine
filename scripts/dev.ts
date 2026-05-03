@@ -6,11 +6,11 @@ import { resolve } from "node:path";
 import { upload } from "@workflow-engine/sdk/cli";
 
 const DEFAULT_PORT = 8080;
-const DEV_OWNER = "local";
+const DEV_OWNER = "local-user";
 // Two upload targets under the same owner so the dashboard drill-down,
 // cross-repo workflow-name collision, and trigger-backend per-(owner, repo)
 // reconfigure paths all exercise on every `pnpm start`.
-const DEV_REPOS = ["demo", "demo-advanced"] as const;
+const DEV_REPOS = ["demo-repo", "another-repo"] as const;
 const DEBOUNCE_MS = 300;
 const PORT_POLL_INTERVAL_MS = 100;
 const PORT_POLL_TIMEOUT_MS = 10_000;
@@ -185,7 +185,7 @@ function runtimeEnv(port: number): NodeJS.ProcessEnv {
 		PORT: String(port),
 		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
 		BASE_URL: `http://localhost:${String(port)}`,
-		AUTH_ALLOW: "local:local,local:alice:acme,local:bob",
+		AUTH_ALLOW: "local:local-user,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",
 		SECRETS_PRIVATE_KEYS: DEV_SECRETS_PRIVATE_KEYS,
 	};
@@ -350,8 +350,11 @@ async function main(): Promise<void> {
 	}
 
 	await runUpload(port);
-	// `tenant=dev` is a stable agent-parseable ready marker; the actual upload owner is `local`.
-	console.log(`Dev ready on http://localhost:${String(port)} (tenant=dev)`);
+	// Stable agent-parseable ready marker. Decoupled from the upload owner so
+	// agents grep a single literal regardless of dev-fixture renames.
+	console.log(
+		`[READY] Dev server listening on http://localhost:${String(port)}`,
+	);
 	watchWorkflows(port);
 	watchRuntime(
 		port,
