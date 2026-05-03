@@ -252,6 +252,31 @@ function ChevronDownIcon({ class: cls = "icon" }: IconProps = {}) {
 	);
 }
 
+// log-out — sign-out affordance in the universal topbar.
+// Rendered verbatim from lucide.dev (log-out) — kept outside the shared
+// <Svg> wrapper so the .icon CSS rule does not clamp it to 16px and so
+// stroke-width matches Lucide's design at the native 24×24 size.
+function LogOutIcon({ class: cls = "lucide-log-out" }: IconProps = {}) {
+	return (
+		<svg
+			class={cls}
+			width="24"
+			height="24"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+		>
+			<path d="m16 17 5-5-5-5" />
+			<path d="M21 12H9" />
+			<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+		</svg>
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Universal topbar — used by <Layout/> (authenticated surfaces), the login
 // page, and the error pages. Renders the brand wordmark always; renders the
@@ -271,19 +296,24 @@ function TopBar({ user, email }: TopBarProps = {}) {
 			{user ? (
 				<div class="topbar-right">
 					<section class="topbar-user" aria-label={`Signed in as ${user}`}>
-						<div class="topbar-user-line">
+						<div class="topbar-user-text">
 							<span class="topbar-username">{user}</span>
-							<form
-								class="topbar-signout-form"
-								method="post"
-								action="/auth/logout"
-							>
-								<button class="topbar-signout" type="submit">
-									Sign out
-								</button>
-							</form>
+							<span class="topbar-email">{email ?? ""}</span>
 						</div>
-						{email ? <div class="topbar-email">{email}</div> : null}
+						<form
+							class="topbar-signout-form"
+							method="post"
+							action="/auth/logout"
+						>
+							<button
+								class="topbar-signout"
+								type="submit"
+								aria-label="Sign out"
+								title="Sign out"
+							>
+								<LogOutIcon />
+							</button>
+						</form>
 					</section>
 				</div>
 			) : null}
