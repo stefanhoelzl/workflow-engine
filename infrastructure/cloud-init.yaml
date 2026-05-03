@@ -30,19 +30,25 @@ write_files:
     permissions: "0644"
 
   # Wall-clock trigger for podman-auto-update. The package default fires every
-  # 24h; we want ~minute-granularity rotation after a CI image push. Earlier
-  # versions used OnBootSec=2min + OnUnitActiveSec=1min, but cloud-init starts
-  # this timer late in boot — by then OnBootSec has already elapsed, so the
-  # timer reaches `active (elapsed)` with `Trigger: n/a` and the service is
-  # never invoked. OnCalendar is wall-clock-relative (immune to start-time
-  # ordering) and Persistent=true fires the missed tick on activation and
-  # after every reboot.
+  # 24h with RandomizedDelaySec=900 (15-min jitter — fine for daily, fatal for
+  # minutely). We override to OnCalendar=minutely + RandomizedDelaySec=0 so
+  # each fire lands within seconds of the wall-clock minute, keeping the rollout
+  # within deploy CI's 5-min /readyz poll window.
+  #
+  # The empty OnBootSec=/OnUnitActiveSec= lines drop the upstream defaults; an
+  # earlier version used OnBootSec=2min + OnUnitActiveSec=1min, but cloud-init
+  # starts this timer late in boot — by then OnBootSec had already elapsed, so
+  # the timer reached `active (elapsed)` with `Trigger: n/a` and the service
+  # was never invoked. OnCalendar is wall-clock-relative (immune to start-time
+  # ordering) and Persistent=true fires the missed tick on activation and after
+  # every reboot.
   - path: /etc/systemd/system/podman-auto-update.timer.d/override.conf
     content: |
       [Timer]
       OnBootSec=
       OnUnitActiveSec=
       OnCalendar=minutely
+      RandomizedDelaySec=0
       Persistent=true
     permissions: "0644"
 
