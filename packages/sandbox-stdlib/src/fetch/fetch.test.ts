@@ -1,5 +1,5 @@
-import type { PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
+import { createNoopPluginContext } from "../test-utils/plugin-context.js";
 import {
 	dependsOn as FETCH_DEPENDS_ON,
 	FETCH_DISPATCHER_NAME,
@@ -10,14 +10,7 @@ import {
 	worker,
 } from "./index.js";
 
-const noopCtx: PluginContext = {
-	emit() {
-		return 0 as never;
-	},
-	request(_prefix, _options, fn) {
-		return fn();
-	},
-};
+const noopCtx = createNoopPluginContext();
 
 describe("fetch plugin (§10 shape)", () => {
 	it("exposes expected name + dependsOn", () => {

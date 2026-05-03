@@ -1,16 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type {
-	CronTriggerDescriptor,
-	HttpTriggerDescriptor,
-	InvokeResult,
-	ManualTriggerDescriptor,
-} from "../executor/types.js";
-import { createLogger } from "../logger.js";
+import type { InvokeResult } from "../executor/types.js";
+import { createTestLogger } from "../test-utils/logger.js";
 import { createCronTriggerSource } from "./cron.js";
 import { createHttpTriggerSource } from "./http.js";
 import { createManualTriggerSource } from "./manual.js";
 import type { TriggerEntry, TriggerSource } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	makeCronDescriptor,
+	makeHttpDescriptor,
+	makeManualDescriptor,
+} from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // TriggerSource contract tests — parameterised by kind
@@ -34,25 +33,8 @@ const stubFire: Fire = () =>
 const httpKind: KindFactory<"http"> = {
 	kind: "http",
 	makeEntry(name) {
-		const descriptor: HttpTriggerDescriptor = withZodSchemas({
-			kind: "http",
-			type: "http",
-			name,
-			workflowName: "w",
-			method: "POST",
-			request: {
-				body: { type: "object" },
-				headers: {
-					type: "object",
-					properties: {},
-					additionalProperties: false,
-				},
-			},
-			inputSchema: { type: "object" },
-			outputSchema: { type: "object" },
-		});
 		return {
-			descriptor,
+			descriptor: makeHttpDescriptor({ name }),
 			fire: vi.fn<Fire>(stubFire),
 			exception: vi.fn(async () => undefined),
 		};
@@ -65,29 +47,15 @@ const httpKind: KindFactory<"http"> = {
 const cronKind: KindFactory<"cron"> = {
 	kind: "cron",
 	makeEntry(name) {
-		const descriptor: CronTriggerDescriptor = withZodSchemas({
-			kind: "cron",
-			type: "cron",
-			name,
-			workflowName: "w",
-			schedule: "0 0 1 1 *",
-			tz: "UTC",
-			inputSchema: {
-				type: "object",
-				properties: {},
-				additionalProperties: false,
-			},
-			outputSchema: {},
-		});
 		return {
-			descriptor,
+			descriptor: makeCronDescriptor({ name, schedule: "0 0 1 1 *" }),
 			fire: vi.fn<Fire>(stubFire),
 			exception: vi.fn(async () => undefined),
 		};
 	},
 	createSource() {
 		return createCronTriggerSource({
-			logger: createLogger("test-cron", { level: "silent" }),
+			logger: createTestLogger(),
 		}) as unknown as TriggerSource;
 	},
 };
@@ -95,18 +63,7 @@ const cronKind: KindFactory<"cron"> = {
 const manualKind: KindFactory<"manual"> = {
 	kind: "manual",
 	makeEntry(name) {
-		const descriptor: ManualTriggerDescriptor = withZodSchemas({
-			kind: "manual",
-			type: "manual",
-			name,
-			workflowName: "w",
-			inputSchema: {
-				type: "object",
-				properties: {},
-				additionalProperties: false,
-			},
-			outputSchema: {},
-		});
+		const descriptor = makeManualDescriptor({ name });
 		return {
 			descriptor,
 			fire: vi.fn<Fire>(stubFire),

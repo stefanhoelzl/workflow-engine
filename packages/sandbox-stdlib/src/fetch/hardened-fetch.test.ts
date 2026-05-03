@@ -1,40 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // vitest hoists vi.mock() above imports, so the mock is installed before
-// hardened-fetch.ts imports from node:dns/promises. Each test programs the
-// `lookup` return via vi.mocked below.
+// hardened-fetch.ts imports from node:dns/promises.
 vi.mock("node:dns/promises", () => ({
 	lookup: vi.fn(),
 }));
 
-import { lookup as mockLookup } from "node:dns/promises";
 import { HostBlockedError } from "../net-guard/index.js";
+import {
+	dnsLookup as lookup,
+	mockResolveAddress as mockResolve,
+	mockResolveOnce as mockResolveMany,
+	resetDnsMock,
+} from "../test-utils/dns-mock.js";
 import { hardenedFetch } from "./hardened-fetch.js";
 
-// dns.promises.lookup has two overloads (single address vs array). vi.mocked
-// picks the single-address overload by default; cast through unknown when
-// returning arrays so the all:true callsite inside hardened-fetch.ts sees the
-// expected shape at runtime. (Type-only erasure; no runtime impact.)
-const lookup = vi.mocked(mockLookup) as unknown as {
-	mockResolvedValueOnce: (
-		value: Array<{ address: string; family: 4 | 6 }>,
-	) => void;
-	mockRejectedValueOnce: (err: unknown) => void;
-	mockReset: () => void;
-};
-
-function mockResolve(addr: string, family: 4 | 6 = 4): void {
-	lookup.mockResolvedValueOnce([{ address: addr, family }]);
-}
-
-function mockResolveMany(
-	addrs: Array<{ address: string; family: 4 | 6 }>,
-): void {
-	lookup.mockResolvedValueOnce(addrs);
-}
-
 beforeEach(() => {
-	lookup.mockReset();
+	resetDnsMock();
 });
 
 // `isBlockedAddress`, `hasZoneIdentifier`, and the CIDR constants live in

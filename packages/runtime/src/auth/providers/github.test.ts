@@ -1,9 +1,10 @@
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE, STATE_COOKIE } from "../constants.js";
 import { type SessionPayload, unsealSession } from "../session-cookie.js";
 import { sealState } from "../state-cookie.js";
 import { githubProviderFactory } from "./github.js";
+import { createFakeGitHubFetch as fakeGitHub } from "./test-fakes.js";
 import type { ProviderRouteDeps } from "./types.js";
 
 const NOW = 1_700_000_000_000;
@@ -18,41 +19,6 @@ const DEPS: ProviderRouteDeps = {
 
 function depsWith(fetchFn: typeof globalThis.fetch): ProviderRouteDeps {
 	return { ...DEPS, fetchFn };
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-	return new Response(JSON.stringify(body), { status });
-}
-
-interface FakeGithubOpts {
-	readonly user?: { login: string; email: string | null };
-	readonly orgs?: ReadonlyArray<{ login: string }>;
-	readonly tokenStatus?: number;
-	readonly userStatus?: number;
-	readonly orgsStatus?: number;
-	readonly accessToken?: string;
-}
-
-function fakeGitHub(opts: FakeGithubOpts = {}) {
-	return vi.fn(async (input: RequestInfo | URL) => {
-		const url = input.toString();
-		if (url.endsWith("/login/oauth/access_token")) {
-			if (opts.tokenStatus && opts.tokenStatus >= 400) {
-				return jsonResponse({}, opts.tokenStatus);
-			}
-			return jsonResponse({ access_token: opts.accessToken ?? "gho_xxx" });
-		}
-		if (url.endsWith("/user/orgs")) {
-			return jsonResponse(opts.orgs ?? [], opts.orgsStatus ?? 200);
-		}
-		if (url.endsWith("/user")) {
-			return jsonResponse(
-				opts.user ?? { login: "alice", email: null },
-				opts.userStatus ?? 200,
-			);
-		}
-		return jsonResponse({}, 404);
-	});
 }
 
 function mountProvider(

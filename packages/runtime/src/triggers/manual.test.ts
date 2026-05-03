@@ -1,32 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import type {
-	InvokeResult,
-	ManualTriggerDescriptor,
-} from "../executor/types.js";
+import { describe, expect, it } from "vitest";
+import type { ManualTriggerDescriptor } from "../executor/types.js";
 import { createManualTriggerSource } from "./manual.js";
 import type { TriggerEntry } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import { makeManualDescriptor, makeTriggerEntry } from "./test-descriptors.js";
 
 function makeEntry(name: string): TriggerEntry<ManualTriggerDescriptor> {
-	const descriptor: ManualTriggerDescriptor = withZodSchemas({
-		kind: "manual",
-		type: "manual",
-		name,
-		workflowName: "w",
-		inputSchema: {
-			type: "object",
-			properties: {},
-			additionalProperties: false,
-		},
-		outputSchema: {},
+	return makeTriggerEntry(makeManualDescriptor({ name }), {
+		onFire: async () => ({ ok: true, output: {} }),
 	});
-	const fire = vi.fn<(input: unknown) => Promise<InvokeResult<unknown>>>(
-		async () => ({
-			ok: true,
-			output: {},
-		}),
-	);
-	return { descriptor, fire, exception: vi.fn(async () => undefined) };
 }
 
 describe("createManualTriggerSource", () => {

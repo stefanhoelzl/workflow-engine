@@ -2,17 +2,17 @@
 // composition via `sandbox-store`. Each describe block maps to one of the
 // plugin-discipline rules in SECURITY.md §2.
 
-import type { SandboxEvent, WorkflowManifest } from "@workflow-engine/core";
+import type { SandboxEvent } from "@workflow-engine/core";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import { createTestLogger as makeLogger } from "./test-utils/logger.js";
+import { makeWorkflowManifest } from "./test-utils/manifest.js";
 
-const WORKFLOW: WorkflowManifest = {
+const WORKFLOW = makeWorkflowManifest({
 	name: "demo",
 	module: "demo.js",
 	sha: "s".repeat(64),
-	env: {},
 	actions: [
 		{
 			name: "doIt",
@@ -37,7 +37,7 @@ const WORKFLOW: WorkflowManifest = {
 			outputSchema: { type: "object" },
 		},
 	],
-};
+});
 
 function makeStore(): SandboxStore {
 	const logger = makeLogger();

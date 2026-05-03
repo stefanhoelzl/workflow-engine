@@ -3,6 +3,10 @@ import type { DepsMap, PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import { compileActionValidators } from "../host-call-action-config.js";
 import {
+	makeWorkflowManifest,
+	type WorkflowAction,
+} from "../test-utils/manifest.js";
+import {
 	type Config,
 	dependsOn,
 	name as HOST_CALL_ACTION_PLUGIN_NAME,
@@ -19,17 +23,13 @@ const ctx: PluginContext = {
 	},
 };
 
-function manifestWith(
-	actions: Array<{ name: string; input: unknown; output: unknown }>,
-): WorkflowManifest {
-	return {
+function manifestWith(actions: WorkflowAction[]): WorkflowManifest {
+	return makeWorkflowManifest({
 		name: "testWorkflow",
 		module: "test.js",
 		sha: "deadbeef",
-		env: {},
-		actions: actions as unknown as WorkflowManifest["actions"],
-		triggers: [],
-	};
+		actions,
+	});
 }
 
 function configFor(manifest: WorkflowManifest): Config {

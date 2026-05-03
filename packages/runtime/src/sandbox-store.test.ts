@@ -6,9 +6,10 @@ import {
 	type TerminationCause,
 } from "@workflow-engine/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Logger } from "./logger.js";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
+import { createTestLogger } from "./test-utils/logger.js";
+import { makeWorkflowManifest } from "./test-utils/manifest.js";
 
 const stubKeyStore: SecretsKeyStore = {
 	getPrimary: () => ({
@@ -20,20 +21,10 @@ const stubKeyStore: SecretsKeyStore = {
 	allKeyIds: () => ["0000000000000000"],
 };
 
-function makeLogger(): Logger {
-	return {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-	} as unknown as Logger;
-}
-
-const WORKFLOW: WorkflowManifest = {
+const WORKFLOW = makeWorkflowManifest({
 	name: "demo",
 	module: "demo.js",
 	sha: "a".repeat(64),
-	env: {},
 	actions: [
 		{
 			name: "doIt",
@@ -58,7 +49,7 @@ const WORKFLOW: WorkflowManifest = {
 			outputSchema: { type: "object" },
 		},
 	],
-};
+});
 
 // IIFE bundle: the vite-plugin outputs `format: "iife"` assigning exports to
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
@@ -88,7 +79,7 @@ var __wfe_exports__ = (function(exports) {
 `;
 
 function makeStore(maxCount = 100): SandboxStore {
-	const logger = makeLogger();
+	const logger = createTestLogger();
 	const factory = createSandboxFactory({
 		logger,
 		memoryBytes: 67_108_864,
@@ -461,7 +452,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 		const plaintext = "PLAINTEXT_SECRET_VALUE";
 		const ct = sealCiphertext(plaintext, pk);
 
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const factory = createSandboxFactory({
 			logger,
 			memoryBytes: 67_108_864,
@@ -477,7 +468,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 			maxCount: 100,
 		});
 
-		const workflow = {
+		const workflow = makeWorkflowManifest({
 			name: "sec",
 			module: "sec.js",
 			sha: "c".repeat(64),
@@ -494,7 +485,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 			triggers: [
 				{
 					name: "onPing",
-					type: "http" as const,
+					type: "http",
 					method: "POST",
 					request: {
 						body: { type: "object" },
@@ -508,7 +499,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 					outputSchema: { type: "object" },
 				},
 			],
-		};
+		});
 		const bundle = `
 var __wfe_exports__ = (function(exports) {
   exports.reveal = async (input) => globalThis.__sdk.dispatchAction(
@@ -636,7 +627,7 @@ async function flushMicrotasks(): Promise<void> {
 describe("sandbox-store: LRU eviction", () => {
 	it("evicts the least recently used idle sandbox when the cap is exceeded", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -676,7 +667,7 @@ describe("sandbox-store: LRU eviction", () => {
 
 	it("skips active sandboxes during sweep (soft cap)", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -699,7 +690,7 @@ describe("sandbox-store: LRU eviction", () => {
 
 	it("cache hit promotes entry to MRU so a later miss evicts the other entry", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -724,7 +715,7 @@ describe("sandbox-store: LRU eviction", () => {
 
 	it("skips unresolved building entries without awaiting them", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		// Override create to make the first build never resolve.
 		let neverResolve: Promise<FakeSandbox>;
 		const b = makeFakeSandbox();
@@ -763,7 +754,7 @@ describe("sandbox-store: LRU eviction", () => {
 
 	it("dispose awaits pending fire-and-forget dispose promises", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -805,7 +796,7 @@ describe("sandbox-store: LRU eviction", () => {
 		// sees two independent `options.plugins` arrays here, proving no shared
 		// descriptor leaks between the two owners.
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -831,7 +822,7 @@ describe("sandbox-store: LRU eviction", () => {
 describe("sandbox-store: termination eviction", () => {
 	it("evicts the cached entry when the sandbox terminates with a limit cause", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -855,7 +846,7 @@ describe("sandbox-store: termination eviction", () => {
 
 	it("evicts the cached entry on a crash termination", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -878,7 +869,7 @@ describe("sandbox-store: termination eviction", () => {
 describe("sandbox-store: dispose error reporting", () => {
 	it("per-entry dispose failure logs at error severity with locked-in fields", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -910,7 +901,7 @@ describe("sandbox-store: dispose error reporting", () => {
 
 	it("one failing dispose does not strand siblings", async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,
@@ -943,7 +934,7 @@ describe("sandbox-store: dispose error reporting", () => {
 
 	it('LRU eviction failure logs reason "lru"', async () => {
 		const factory = makeFakeFactory();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const store = createSandboxStore({
 			sandboxFactory: factory,
 			logger,

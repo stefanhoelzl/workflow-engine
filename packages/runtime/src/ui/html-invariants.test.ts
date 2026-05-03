@@ -1,6 +1,7 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import { makeEvent } from "@workflow-engine/core/test-utils";
 import { describe, expect, it } from "vitest";
+import { makeWorkflowManifest } from "../test-utils/manifest.js";
 import { withZodSchemas } from "../triggers/test-descriptors.js";
 import type { WorkflowEntry } from "../workflow-registry.js";
 import { LoginPage } from "./auth/login-page.js";
@@ -48,14 +49,7 @@ function makeWorkflowEntry(): WorkflowEntry {
 	return {
 		owner: "t0",
 		repo: "r0",
-		workflow: {
-			name: "w",
-			module: "w.js",
-			sha: "0".repeat(64),
-			env: {},
-			actions: [],
-			triggers: [],
-		},
+		workflow: makeWorkflowManifest({ name: "w", module: "w.js" }),
 		bundleSource: "",
 		triggers: [
 			withZodSchemas({

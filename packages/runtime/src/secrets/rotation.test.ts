@@ -4,6 +4,7 @@ import {
 	sealCiphertext,
 } from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { makeManifest, makeWorkflowManifest } from "../test-utils/manifest.js";
 import { decryptWorkflowSecrets } from "./decrypt-workflow.js";
 import { createKeyStore, readyCrypto } from "./key-store.js";
 import { verifyManifestSecrets } from "./verify-manifest.js";
@@ -35,20 +36,16 @@ function workflow(
 	secretsKeyId: string,
 	ciphertextB64: string,
 ): WorkflowManifest {
-	return {
+	return makeWorkflowManifest({
 		name,
 		module: `${name}.js`,
-		sha: "0".repeat(64),
-		env: {},
-		actions: [],
-		triggers: [],
 		secrets: { MY_SECRET: ciphertextB64 },
 		secretsKeyId,
-	};
+	});
 }
 
 function manifestOf(workflows: WorkflowManifest[]): Manifest {
-	return { workflows };
+	return makeManifest({ workflows });
 }
 
 describe("secrets key rotation lifecycle", () => {

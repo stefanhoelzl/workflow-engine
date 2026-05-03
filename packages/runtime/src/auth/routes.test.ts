@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	FLASH_COOKIE,
 	SESSION_COOKIE,
@@ -10,6 +10,7 @@ import { sealFlash } from "./flash-cookie.js";
 import { githubProviderFactory } from "./providers/github.js";
 import { buildRegistry, type ProviderRegistry } from "./providers/index.js";
 import { localProviderFactory } from "./providers/local.js";
+import { createFakeGitHubFetch as fakeGitHub } from "./providers/test-fakes.js";
 import { authMiddleware, loginPageMiddleware } from "./routes.js";
 import { type SessionPayload, sealSession } from "./session-cookie.js";
 import { sealState } from "./state-cookie.js";
@@ -43,41 +44,6 @@ function mount(opts: MountOpts) {
 	app.all(loginMw.match, loginMw.handler);
 	app.all(authMw.match, authMw.handler);
 	return app;
-}
-
-function jsonResponse(body: unknown, status = 200) {
-	return new Response(JSON.stringify(body), { status });
-}
-
-function fakeGitHub(
-	opts: {
-		user?: { login: string; email: string | null };
-		orgs?: Array<{ login: string }>;
-		tokenStatus?: number;
-		userStatus?: number;
-		orgsStatus?: number;
-		accessToken?: string;
-	} = {},
-) {
-	return vi.fn(async (input: RequestInfo | URL) => {
-		const url = input.toString();
-		if (url.endsWith("/login/oauth/access_token")) {
-			if (opts.tokenStatus && opts.tokenStatus >= 400) {
-				return jsonResponse({}, opts.tokenStatus);
-			}
-			return jsonResponse({ access_token: opts.accessToken ?? "gho_xxx" });
-		}
-		if (url.endsWith("/user/orgs")) {
-			return jsonResponse(opts.orgs ?? [], opts.orgsStatus ?? 200);
-		}
-		if (url.endsWith("/user")) {
-			return jsonResponse(
-				opts.user ?? { login: "alice", email: null },
-				opts.userStatus ?? 200,
-			);
-		}
-		return jsonResponse({}, 404);
-	});
 }
 
 function getSetCookies(res: Response): string[] {

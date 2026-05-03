@@ -1,24 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { HttpTriggerDescriptor } from "../executor/types.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import { makeHttpDescriptor } from "./test-descriptors.js";
 import { validate } from "./validator.js";
 
 function makeDescriptor(
 	inputSchema: Record<string, unknown>,
 ): HttpTriggerDescriptor {
-	return withZodSchemas({
-		kind: "http",
-		type: "http",
-		name: "t",
-		workflowName: "w",
-		method: "POST",
-		request: {
-			body: { type: "object" },
-			headers: { type: "object", properties: {}, additionalProperties: false },
-		},
-		inputSchema,
-		outputSchema: { type: "object" },
-	});
+	return makeHttpDescriptor({ inputSchema });
 }
 
 describe("validate", () => {

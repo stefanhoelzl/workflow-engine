@@ -1,5 +1,5 @@
-import type { PluginContext } from "@workflow-engine/sandbox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createNoopPluginContext } from "../test-utils/plugin-context.js";
 
 // Mock the DNS resolver used by net-guard so we can drive public / private /
 // multi-address responses per test. Vitest hoists vi.mock() above imports.
@@ -27,27 +27,20 @@ vi.mock("nodemailer", () => {
 	};
 });
 
-import { lookup as mockLookup } from "node:dns/promises";
+import {
+	dnsLookup as lookup,
+	mockPublicHost,
+	resetDnsMock,
+} from "../test-utils/dns-mock.js";
 import { MAIL_DISPATCHER_NAME } from "./descriptor-name.js";
 import { classifyMailError, dispatchMailSend, worker } from "./worker.js";
 
-const lookup = vi.mocked(mockLookup) as unknown as {
-	mockResolvedValueOnce: (
-		value: Array<{ address: string; family: 4 | 6 }>,
-	) => void;
-	mockReset: () => void;
-};
-
 beforeEach(() => {
-	lookup.mockReset();
+	resetDnsMock();
 	nmMock.sendMail.mockReset();
 	nmMock.close.mockReset();
 	nmMock.createTransport.mockClear();
 });
-
-function mockPublicHost(addr = "93.184.216.34"): void {
-	lookup.mockResolvedValueOnce([{ address: addr, family: 4 }]);
-}
 
 function validOpts(overrides: Partial<Record<string, unknown>> = {}) {
 	return {
@@ -67,14 +60,7 @@ function validOpts(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe("mail plugin — descriptor shape", () => {
 	it("exposes name + dependsOn + dispatcher descriptor with log.request:'system'", () => {
-		const noopCtx: PluginContext = {
-			emit() {
-				return 0 as never;
-			},
-			request(_p, _o, fn) {
-				return fn();
-			},
-		};
+		const noopCtx = createNoopPluginContext();
 		const setup = worker(noopCtx);
 		expect(setup.guestFunctions).toHaveLength(1);
 		const gf = setup.guestFunctions?.[0];
@@ -84,14 +70,7 @@ describe("mail plugin — descriptor shape", () => {
 	});
 
 	it("logName uses the first recipient", () => {
-		const noopCtx: PluginContext = {
-			emit() {
-				return 0 as never;
-			},
-			request(_p, _o, fn) {
-				return fn();
-			},
-		};
+		const noopCtx = createNoopPluginContext();
 		const gf = worker(noopCtx).guestFunctions?.[0];
 		const name = gf?.logName?.([
 			{ to: ["a@example.com", "b@example.com"] } as unknown,
@@ -100,14 +79,7 @@ describe("mail plugin — descriptor shape", () => {
 	});
 
 	it("logInput strips text/html/attachments AND smtp.auth", () => {
-		const noopCtx: PluginContext = {
-			emit() {
-				return 0 as never;
-			},
-			request(_p, _o, fn) {
-				return fn();
-			},
-		};
+		const noopCtx = createNoopPluginContext();
 		const gf = worker(noopCtx).guestFunctions?.[0];
 		const picked = gf?.logInput?.([
 			{
@@ -381,14 +353,7 @@ describe("mail plugin — structured throw on send failure", () => {
 });
 
 describe("mail plugin — run-scoped transport cleanup", () => {
-	const noopCtx: PluginContext = {
-		emit() {
-			return 0 as never;
-		},
-		request(_p, _o, fn) {
-			return fn();
-		},
-	};
+	const noopCtx = createNoopPluginContext();
 
 	it("per-call success closes transport via the per-call finally", async () => {
 		mockPublicHost();

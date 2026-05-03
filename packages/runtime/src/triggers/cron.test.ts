@@ -1,39 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CronTriggerDescriptor, InvokeResult } from "../executor/types.js";
-import { createLogger } from "../logger.js";
+import type { CronTriggerDescriptor } from "../executor/types.js";
+import { createTestLogger } from "../test-utils/logger.js";
 import { createCronTriggerSource } from "./cron.js";
-import type { TriggerEntry } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	type MockTriggerEntry,
+	makeCronDescriptor,
+	makeTriggerEntry,
+} from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // Cron TriggerSource behavior tests
 // ---------------------------------------------------------------------------
 
-function makeDescriptor(
-	name: string,
-	schedule: string,
-	tz: string,
-	workflowName = "w",
-): CronTriggerDescriptor {
-	return withZodSchemas({
-		kind: "cron",
-		type: "cron",
-		name,
-		workflowName,
-		schedule,
-		tz,
-		inputSchema: {
-			type: "object",
-			properties: {},
-			additionalProperties: false,
-		},
-		outputSchema: {},
-	});
-}
-
 interface RecordedEntry {
-	entry: TriggerEntry<CronTriggerDescriptor>;
-	fire: ReturnType<typeof vi.fn>;
+	entry: MockTriggerEntry<CronTriggerDescriptor>;
+	fire: MockTriggerEntry<CronTriggerDescriptor>["fire"];
 }
 
 function makeEntry(
@@ -42,19 +23,10 @@ function makeEntry(
 	tz = "UTC",
 	workflowName = "w",
 ): RecordedEntry {
-	const fire = vi.fn<(input: unknown) => Promise<InvokeResult<unknown>>>(
-		async () => ({ ok: true, output: undefined }),
+	const entry = makeTriggerEntry(
+		makeCronDescriptor({ name, workflowName, schedule, tz }),
 	);
-	const entry: TriggerEntry<CronTriggerDescriptor> = {
-		descriptor: makeDescriptor(name, schedule, tz, workflowName),
-		fire,
-		exception: vi.fn(async () => undefined),
-	};
-	return { entry, fire };
-}
-
-function silentLogger() {
-	return createLogger("test", { level: "silent" });
+	return { entry, fire: entry.fire };
 }
 
 describe("createCronTriggerSource", () => {
@@ -67,7 +39,7 @@ describe("createCronTriggerSource", () => {
 
 	it("fires entry.fire with empty payload when a tick is due", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
 		await source.reconfigure("t0", "r0", [rec.entry]);
@@ -83,7 +55,7 @@ describe("createCronTriggerSource", () => {
 
 	it("rearms the next tick after firing", async () => {
 		vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("minutely", "* * * * *", "UTC");
 
 		await source.reconfigure("t0", "r0", [rec.entry]);
@@ -99,7 +71,7 @@ describe("createCronTriggerSource", () => {
 
 	it("cancels pending timers on reconfigure for the same owner", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 10 * * *", "UTC");
 
@@ -120,7 +92,7 @@ describe("createCronTriggerSource", () => {
 
 	it("reconfigure for one owner does not affect another", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 9 * * *", "UTC");
 
@@ -139,7 +111,7 @@ describe("createCronTriggerSource", () => {
 
 	it("reconfigure returns {ok: true} for valid entries", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
 		const result = await source.reconfigure("t0", "r0", [rec.entry]);
@@ -150,7 +122,7 @@ describe("createCronTriggerSource", () => {
 
 	it("stop cancels all timers across owners", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const recA = makeEntry("A", "0 9 * * *", "UTC");
 		const recB = makeEntry("B", "0 9 * * *", "UTC");
 		await source.reconfigure("t0", "r0", [recA.entry]);
@@ -165,7 +137,7 @@ describe("createCronTriggerSource", () => {
 
 	it("clamps long delays to 24h and re-arms without firing", async () => {
 		vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("yearly", "0 0 1 1 *", "UTC");
 
 		await source.reconfigure("t0", "r0", [rec.entry]);
@@ -181,7 +153,7 @@ describe("createCronTriggerSource", () => {
 
 	it("silently skips missed ticks on fresh reconfigure (restart semantics)", async () => {
 		vi.setSystemTime(new Date("2026-04-21T09:02:00.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC");
 
 		await source.reconfigure("t0", "r0", [rec.entry]);
@@ -197,7 +169,7 @@ describe("createCronTriggerSource", () => {
 
 	it("getEntry resolves the installed TriggerEntry for manual fire", async () => {
 		vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-		const source = createCronTriggerSource({ logger: silentLogger() });
+		const source = createCronTriggerSource({ logger: createTestLogger() });
 		const rec = makeEntry("daily", "0 9 * * *", "UTC", "w");
 		await source.reconfigure("t0", "r0", [rec.entry]);
 
@@ -212,7 +184,7 @@ describe("createCronTriggerSource", () => {
 	describe("trigger.exception emission on arm-time failure", () => {
 		it("emits trigger.exception when computeNextDelay throws on cold-boot arm", async () => {
 			vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
-			const source = createCronTriggerSource({ logger: silentLogger() });
+			const source = createCronTriggerSource({ logger: createTestLogger() });
 			// `Not/A_Zone` is not a valid IANA tz; cron-parser throws on
 			// unknown timezones at nextDate().
 			const rec = makeEntry("daily", "0 9 * * *", "Not/A_Zone");
@@ -237,7 +209,7 @@ describe("createCronTriggerSource", () => {
 
 		it("emits trigger.exception when reconfigure swaps in a bad schedule", async () => {
 			vi.setSystemTime(new Date("2026-04-21T00:00:00.000Z"));
-			const source = createCronTriggerSource({ logger: silentLogger() });
+			const source = createCronTriggerSource({ logger: createTestLogger() });
 			const good = makeEntry("daily", "0 9 * * *", "UTC");
 			await source.reconfigure("t0", "r0", [good.entry]);
 			expect(good.entry.exception).not.toHaveBeenCalled();
@@ -258,7 +230,7 @@ describe("createCronTriggerSource", () => {
 			// mutate the descriptor's tz to an invalid one before the next
 			// arm() runs. The post-fire arm() catches and emits.
 			vi.setSystemTime(new Date("2026-04-21T08:59:59.000Z"));
-			const source = createCronTriggerSource({ logger: silentLogger() });
+			const source = createCronTriggerSource({ logger: createTestLogger() });
 			const rec = makeEntry("daily", "0 9 * * *", "UTC");
 			await source.reconfigure("t0", "r0", [rec.entry]);
 

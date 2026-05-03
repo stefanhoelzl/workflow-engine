@@ -1,39 +1,17 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { InvocationEvent, WorkflowManifest } from "@workflow-engine/core";
+import type { InvocationEvent } from "@workflow-engine/core";
 import { describe, expect, it } from "vitest";
 import type { EventStore } from "../event-store.js";
 import { createTestEventStore } from "../test-utils/event-store.js";
-import { withZodSchemas } from "../triggers/test-descriptors.js";
+import { makeWorkflowManifest as makeManifest } from "../test-utils/manifest.js";
+import { makeHttpDescriptor } from "../triggers/test-descriptors.js";
 import { emitTriggerException } from "./exception.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
-function makeManifest(): WorkflowManifest {
-	return {
-		name: "wf",
-		module: "wf.js",
-		sha: "0".repeat(64),
-		env: {},
-		actions: [],
-		triggers: [],
-	};
-}
-
 function makeDescriptor(): HttpTriggerDescriptor {
-	return withZodSchemas({
-		kind: "http",
-		type: "http",
-		name: "inbound",
-		workflowName: "wf",
-		method: "POST",
-		request: {
-			body: { type: "object" },
-			headers: { type: "object", properties: {}, additionalProperties: false },
-		},
-		inputSchema: { type: "object" },
-		outputSchema: { type: "object" },
-	});
+	return makeHttpDescriptor({ name: "inbound", workflowName: "wf" });
 }
 
 function makeStore(seen: InvocationEvent[]): EventStore {

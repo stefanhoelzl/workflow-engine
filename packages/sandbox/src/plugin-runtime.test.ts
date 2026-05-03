@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	Plugin,
-	PluginContext,
 	PluginDescriptor,
 	PluginSetup,
 	RunInput,
@@ -22,17 +21,9 @@ import {
 	type SourceEvaluator,
 } from "./plugin-runtime.js";
 import type { WorkerToMain } from "./protocol.js";
+import { createNoopPluginContext } from "./test-harness.js";
 
-const noopCtx: PluginContext = {
-	// Cast to `never` matches the boundary cast in `createPluginContext` —
-	// `emit` has a conditional return type that narrows per call site.
-	emit() {
-		return 0 as never;
-	},
-	request(_prefix, _options, fn) {
-		return fn();
-	},
-};
+const noopCtx = createNoopPluginContext();
 
 function descriptor(
 	name: string,

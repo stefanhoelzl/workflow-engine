@@ -8,8 +8,15 @@ import type {
 	InvokeResult,
 	ManualTriggerDescriptor,
 } from "../../executor/types.js";
+import { makeWorkflowManifest } from "../../test-utils/manifest.js";
 import type { TriggerEntry } from "../../triggers/source.js";
-import { withZodSchemas } from "../../triggers/test-descriptors.js";
+import {
+	makeCronDescriptor,
+	makeHttpDescriptor,
+	makeImapDescriptor,
+	makeManualDescriptor,
+	withZodSchemas,
+} from "../../triggers/test-descriptors.js";
 import { validate } from "../../triggers/validator.js";
 import type {
 	WorkflowEntry,
@@ -97,9 +104,7 @@ function makeHttpStub(
 	},
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: HttpTriggerDescriptor = withZodSchemas({
-		kind: "http",
-		type: "http",
+	const descriptor: HttpTriggerDescriptor = makeHttpDescriptor({
 		name: spec.name,
 		workflowName,
 		method: spec.method,
@@ -112,7 +117,6 @@ function makeHttpStub(
 			},
 		},
 		inputSchema: spec.inputSchema ?? { type: "object" },
-		outputSchema: { type: "object" },
 	});
 	const defaultFire: Fire = async (input) => {
 		const v = validate(descriptor, input);
@@ -141,14 +145,10 @@ function makeHttpStub(
 		workflowEntry: {
 			owner,
 			repo: DEFAULT_REPO,
-			workflow: {
+			workflow: makeWorkflowManifest({
 				name: workflowName,
 				module: `${workflowName}.js`,
-				sha: "0".repeat(64),
-				env: {},
-				actions: [],
-				triggers: [],
-			},
+			}),
 			bundleSource: "",
 			triggers: [descriptor],
 		},
@@ -161,19 +161,11 @@ function makeCronStub(
 	spec: { name: string; schedule: string; tz: string },
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: CronTriggerDescriptor = withZodSchemas({
-		kind: "cron",
-		type: "cron",
+	const descriptor: CronTriggerDescriptor = makeCronDescriptor({
 		name: spec.name,
 		workflowName,
 		schedule: spec.schedule,
 		tz: spec.tz,
-		inputSchema: {
-			type: "object",
-			properties: {},
-			additionalProperties: false,
-		},
-		outputSchema: {},
 	});
 	const defaultFire: Fire = async () => ({
 		ok: true,
@@ -193,14 +185,10 @@ function makeCronStub(
 		workflowEntry: {
 			owner,
 			repo: DEFAULT_REPO,
-			workflow: {
+			workflow: makeWorkflowManifest({
 				name: workflowName,
 				module: `${workflowName}.js`,
-				sha: "0".repeat(64),
-				env: {},
-				actions: [],
-				triggers: [],
-			},
+			}),
 			bundleSource: "",
 			triggers: [descriptor],
 		},
@@ -217,17 +205,11 @@ function makeManualStub(
 	},
 	fire?: Fire,
 ): StubEntry {
-	const descriptor: ManualTriggerDescriptor = withZodSchemas({
-		kind: "manual",
-		type: "manual",
+	const descriptor: ManualTriggerDescriptor = makeManualDescriptor({
 		name: spec.name,
 		workflowName,
-		inputSchema: spec.inputSchema ?? {
-			type: "object",
-			properties: {},
-			additionalProperties: false,
-		},
-		outputSchema: spec.outputSchema ?? {},
+		...(spec.inputSchema ? { inputSchema: spec.inputSchema } : {}),
+		...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
 	});
 	const defaultFire: Fire = async (input) => {
 		const v = validate(descriptor, input);
@@ -256,14 +238,10 @@ function makeManualStub(
 		workflowEntry: {
 			owner,
 			repo: DEFAULT_REPO,
-			workflow: {
+			workflow: makeWorkflowManifest({
 				name: workflowName,
 				module: `${workflowName}.js`,
-				sha: "0".repeat(64),
-				env: {},
-				actions: [],
-				triggers: [],
-			},
+			}),
 			bundleSource: "",
 			triggers: [descriptor],
 		},
@@ -275,27 +253,22 @@ function makeImapStub(
 	workflowName: string,
 	spec: { name: string; host?: string; port?: number; folder?: string },
 ): StubEntry {
-	const descriptor: ImapTriggerDescriptor = withZodSchemas({
-		kind: "imap",
-		type: "imap",
+	const descriptor: ImapTriggerDescriptor = makeImapDescriptor({
 		name: spec.name,
 		workflowName,
 		host: spec.host ?? "imap.example.com",
 		port: spec.port ?? 993,
 		tls: "required",
-		insecureSkipVerify: false,
 		user: "alice",
 		password: "hunter2",
 		folder: spec.folder ?? "INBOX",
 		search: "UNSEEN",
 		mode: "idle",
-		onError: {},
 		inputSchema: {
 			type: "object",
 			properties: {},
 			additionalProperties: true,
 		},
-		outputSchema: {},
 	});
 	const triggerEntry: TriggerEntry = {
 		descriptor,
@@ -311,14 +284,10 @@ function makeImapStub(
 		workflowEntry: {
 			owner,
 			repo: DEFAULT_REPO,
-			workflow: {
+			workflow: makeWorkflowManifest({
 				name: workflowName,
 				module: `${workflowName}.js`,
-				sha: "0".repeat(64),
-				env: {},
-				actions: [],
-				triggers: [],
-			},
+			}),
 			bundleSource: "",
 			triggers: [descriptor],
 		},
@@ -1020,14 +989,10 @@ describe("triggerMiddleware: ws trigger rendering + dispatch", () => {
 			workflowEntry: {
 				owner,
 				repo: DEFAULT_REPO,
-				workflow: {
+				workflow: makeWorkflowManifest({
 					name: workflowName,
 					module: `${workflowName}.js`,
-					sha: "0".repeat(64),
-					env: {},
-					actions: [],
-					triggers: [],
-				},
+				}),
 				bundleSource: "",
 				triggers: [descriptor],
 			},

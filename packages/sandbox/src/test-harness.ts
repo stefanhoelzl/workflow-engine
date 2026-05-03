@@ -17,6 +17,7 @@
 // Neither helper is production code — they live in the package but are
 // intended for `*.test.ts` consumers across the monorepo.
 
+import type { PluginContext } from "./plugin.js";
 import type { Sandbox, SandboxOptions } from "./sandbox.js";
 import { sandbox } from "./sandbox.js";
 
@@ -96,4 +97,23 @@ async function withPluginSandbox<T>(
 	}
 }
 
-export { TEST_SANDBOX_LIMITS, withPluginSandbox, withStagedGlobals };
+// A `PluginContext` whose `emit` is a no-op and whose `request` invokes `fn()`
+// with no paired open/close events. Returns a fresh instance per call so tests
+// stay independent.
+function createNoopPluginContext(): PluginContext {
+	return {
+		emit() {
+			return 0 as never;
+		},
+		request(_prefix, _options, fn) {
+			return fn();
+		},
+	};
+}
+
+export {
+	createNoopPluginContext,
+	TEST_SANDBOX_LIMITS,
+	withPluginSandbox,
+	withStagedGlobals,
+};

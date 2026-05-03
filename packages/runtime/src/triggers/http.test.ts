@@ -3,55 +3,27 @@ import { describe, expect, it, vi } from "vitest";
 import type { HttpTriggerDescriptor, InvokeResult } from "../executor/types.js";
 import { createHttpTriggerSource } from "./http.js";
 import type { TriggerEntry } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	type MockTriggerEntry,
+	makeHttpDescriptor as makeDescriptor,
+	makeTriggerEntry,
+} from "./test-descriptors.js";
 import { validate } from "./validator.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeDescriptor(
-	overrides: Partial<HttpTriggerDescriptor> = {},
-): HttpTriggerDescriptor {
-	const base = {
-		kind: "http" as const,
-		type: "http" as const,
-		name: "t",
-		workflowName: "w",
-		method: "POST",
-		request: {
-			body: { type: "object" } as Record<string, unknown>,
-			headers: {
-				type: "object",
-				properties: {},
-				additionalProperties: false,
-			} as Record<string, unknown>,
-		},
-		inputSchema: { type: "object" } as Record<string, unknown>,
-		outputSchema: { type: "object" } as Record<string, unknown>,
-		...overrides,
-	};
-	return withZodSchemas(base);
-}
-
 type Fire = (input: unknown) => Promise<InvokeResult<unknown>>;
 
 function makeEntry(
 	descriptor: HttpTriggerDescriptor,
 	fire?: Fire,
-): TriggerEntry<HttpTriggerDescriptor> & { fire: ReturnType<typeof vi.fn> } {
-	const fireMock = vi.fn<Fire>(
-		fire ??
-			(async () => ({
-				ok: true as const,
-				output: { status: 200, body: "ok" },
-			})),
-	);
-	return {
-		descriptor,
-		fire: fireMock,
-		exception: vi.fn(async () => undefined),
-	};
+): MockTriggerEntry<HttpTriggerDescriptor> {
+	return makeTriggerEntry(descriptor, {
+		onFire:
+			fire ?? (async () => ({ ok: true, output: { status: 200, body: "ok" } })),
+	});
 }
 
 // fire closure that runs the real input-schema validator, mirroring the

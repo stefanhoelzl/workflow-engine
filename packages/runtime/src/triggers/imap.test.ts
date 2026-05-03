@@ -1,12 +1,15 @@
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { ImapFlow } from "imapflow";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type vi } from "vitest";
 import type { ImapTriggerDescriptor, InvokeResult } from "../executor/types.js";
-import type { Logger } from "../logger.js";
+import { createTestLogger, type MockLogger } from "../test-utils/logger.js";
 import { createImapTriggerSource } from "./imap.js";
-import type { TriggerEntry } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	type MockTriggerEntry,
+	makeImapDescriptor as makeDescriptor,
+	makeTriggerEntry,
+} from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // Integration tests for createImapTriggerSource against a live hoodiecrow IMAP
@@ -29,29 +32,6 @@ interface HoodiecrowServer {
 const hoodiecrow = require_("hoodiecrow-imap") as (
 	options: Record<string, unknown>,
 ) => HoodiecrowServer;
-
-type LogFn = (msg: string, data?: Record<string, unknown>) => void;
-
-interface FakeLogger extends Logger {
-	readonly warn: LogFn & ReturnType<typeof vi.fn>;
-	readonly error: LogFn & ReturnType<typeof vi.fn>;
-	readonly info: LogFn & ReturnType<typeof vi.fn>;
-	readonly debug: LogFn & ReturnType<typeof vi.fn>;
-	readonly trace: LogFn & ReturnType<typeof vi.fn>;
-}
-
-function makeLogger(): FakeLogger {
-	const wrap = () => vi.fn() as unknown as LogFn & ReturnType<typeof vi.fn>;
-	const logger: FakeLogger = {
-		warn: wrap(),
-		error: wrap(),
-		info: wrap(),
-		debug: wrap(),
-		trace: wrap(),
-		child: () => logger,
-	};
-	return logger;
-}
 
 async function freePort(): Promise<number> {
 	return await new Promise((resolve, reject) => {
@@ -116,50 +96,18 @@ async function startHoodiecrow(opts?: {
 	};
 }
 
-function makeDescriptor(
-	overrides: Partial<ImapTriggerDescriptor> & { port: number },
-): ImapTriggerDescriptor {
-	const { port, ...rest } = overrides;
-	const base = {
-		kind: "imap" as const,
-		type: "imap" as const,
-		name: "inbound",
-		workflowName: "w",
-		host: "127.0.0.1",
-		tls: "none" as const,
-		insecureSkipVerify: false,
-		user: "dev",
-		password: "devpass",
-		folder: "INBOX",
-		search: "ALL",
-		mode: "poll" as const,
-		onError: {},
-		inputSchema: {} as Record<string, unknown>,
-		outputSchema: {} as Record<string, unknown>,
-		...rest,
-		port,
-	};
-	return withZodSchemas(base);
-}
-
 interface RecordedEntry {
-	entry: TriggerEntry<ImapTriggerDescriptor>;
-	fire: ReturnType<typeof vi.fn>;
-	exception: ReturnType<typeof vi.fn>;
+	entry: MockTriggerEntry<ImapTriggerDescriptor>;
+	fire: MockTriggerEntry<ImapTriggerDescriptor>["fire"];
+	exception: MockTriggerEntry<ImapTriggerDescriptor>["exception"];
 }
 
 function makeEntry(
 	descriptor: ImapTriggerDescriptor,
 	fireImpl: (input: unknown) => Promise<InvokeResult<unknown>>,
 ): RecordedEntry {
-	const fire = vi.fn(fireImpl);
-	const exception = vi.fn(async () => undefined);
-	const entry: TriggerEntry<ImapTriggerDescriptor> = {
-		descriptor,
-		fire,
-		exception,
-	};
-	return { entry, fire, exception };
+	const entry = makeTriggerEntry(descriptor, { onFire: fireImpl });
+	return { entry, fire: entry.fire, exception: entry.exception };
 }
 
 async function waitForExceptionCount(
@@ -233,7 +181,7 @@ async function waitForFireCount(
 }
 
 async function waitForLog(
-	logger: FakeLogger,
+	logger: MockLogger,
 	level: "warn" | "error",
 	predicate: (
 		msg: string,
@@ -274,7 +222,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.1 fires handler with parsed message and applies +FLAGS Seen disposition", async () => {
 		await appendMessage(server.port, "INBOX", "probe1");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "UNSEEN" });
 		const rec = makeEntry(desc, async (input) => {
@@ -311,7 +259,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.2 +FLAGS (\\Seen) disposition reflected in subsequent UNSEEN search", async () => {
 		await appendMessage(server.port, "INBOX", "probe2");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "UNSEEN" });
 		const rec = makeEntry(desc, async (input) => {
@@ -336,7 +284,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.3 custom keyword +FLAGS (processed) is set on the message", async () => {
 		await appendMessage(server.port, "INBOX", "probe3");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 		const rec = makeEntry(desc, async (input) => {
@@ -363,7 +311,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.4 UID MOVE Archive removes message from INBOX and creates it in Archive", async () => {
 		await appendMessage(server.port, "INBOX", "probe4");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 		const rec = makeEntry(desc, async (input) => {
@@ -390,7 +338,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.5 +FLAGS (\\Deleted) followed by UID EXPUNGE removes message", async () => {
 		await appendMessage(server.port, "INBOX", "probe5");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 		const rec = makeEntry(desc, async (input) => {
@@ -419,7 +367,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.6 handler throws + onError command applied; subsequent poll does not re-match", async () => {
 		await appendMessage(server.port, "INBOX", "probe6");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -453,7 +401,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("7.7 handler throws + empty onError; subsequent poll re-fires same UID", async () => {
 		await appendMessage(server.port, "INBOX", "probe7");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -478,7 +426,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("7.8 bad credentials emit trigger.exception without leaking user/password", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -513,7 +461,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	it("7.9 failing disposition emits trigger.exception(stage=disposition) and stops batch", async () => {
 		await appendMessage(server.port, "INBOX", "msgA");
 		await appendMessage(server.port, "INBOX", "msgB");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 		// Use an unknown IMAP verb so the disposition's raw-exec fallback path
@@ -549,7 +497,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		await appendMessage(server.port, "INBOX", "m2");
 		await appendMessage(server.port, "INBOX", "m3");
 
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "ALL" });
 
@@ -586,7 +534,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("7.12 connect refused emits one trigger.exception(stage=connect)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		// Deliberately wrong port — TCP RST.
 		const refusedPort = await freePort();
@@ -617,7 +565,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("7.13 search rejected emits one trigger.exception(stage=search)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		// Hoodiecrow rejects unknown SEARCH keywords with BAD.
 		const desc = makeDescriptor({
@@ -641,7 +589,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("7.14 successful empty cycle emits no trigger.exception", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: server.port, search: "UNSEEN" });
 		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
@@ -682,7 +630,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		// drain in a single connect's first drain pass).
 		await appendMessage(server.port, "INBOX", "p1-a");
 		await appendMessage(server.port, "INBOX", "p1-b");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -707,7 +655,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		// refusal. The reconnect timer will be armed at 60s; stop() must
 		// cancel it.
 		const deadPort = await freePort();
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({ port: deadPort, mode: "poll" });
 		const rec = makeEntry(desc, async () => ({ ok: true, output: {} }));
@@ -728,7 +676,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		// dispatched by the post-connect drain (gap recovery), not by a
 		// later 60s tick.
 		await appendMessage(server.port, "INBOX", "p3-prefilled");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -755,7 +703,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	// -------------------------------------------------------------------
 
 	it("I-1 mode:idle dispatches messages within 1s of APPEND (push, not poll)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -789,7 +737,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 			extraFolders: ["Archive"],
 			plugins: ["UIDPLUS", "MOVE", "LITERALPLUS"],
 		});
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -811,7 +759,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("I-3 mid-drain APPEND in IDLE mode is dispatched in next drain (dirty re-drain)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -842,7 +790,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("I-4 IDLE re-arms across drains (multiple EXISTS pushes observed sequentially)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		// UNSEEN + \Seen disposition ensures each message dispatches exactly
 		// once, so re-arm is observable as exactly N fires for N appends.
@@ -877,7 +825,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 	});
 
 	it("I-5 mode:idle reconnects after server drops connection", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -905,7 +853,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 
 	it("I-6 disposition committed before next drain's SEARCH (UNSEEN exclusion)", async () => {
 		await appendMessage(server.port, "INBOX", "i6-a");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -950,7 +898,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		// EXPUNGE doesn't trigger an extra drain — only EXISTS for new
 		// arrivals does.
 		await appendMessage(server.port, "INBOX", "i7-a");
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,
@@ -1000,7 +948,7 @@ describe("createImapTriggerSource (hoodiecrow integration)", {
 		// are correctly demarcated as two separate drain events: each
 		// dispatched message corresponds to one drain pass, and there
 		// are no cross-pass leaks (no exception when none expected).
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const source = createImapTriggerSource({ logger });
 		const desc = makeDescriptor({
 			port: server.port,

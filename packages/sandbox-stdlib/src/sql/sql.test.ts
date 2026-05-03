@@ -1,5 +1,5 @@
-import type { PluginContext } from "@workflow-engine/sandbox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createNoopPluginContext as noopCtx } from "../test-utils/plugin-context.js";
 
 // Mock DNS so we can drive public / private / reserved addresses per test.
 vi.mock("node:dns/promises", () => ({
@@ -36,7 +36,11 @@ vi.mock("postgres", () => ({
 	default: pgMock.factory,
 }));
 
-import { lookup as mockLookup } from "node:dns/promises";
+import {
+	mockPrivateHost,
+	mockPublicHost,
+	resetDnsMock,
+} from "../test-utils/dns-mock.js";
 import { SQL_DISPATCHER_NAME } from "./descriptor-name.js";
 import {
 	assertInput,
@@ -50,22 +54,7 @@ import {
 	worker,
 } from "./worker.js";
 
-const lookup = vi.mocked(mockLookup) as unknown as {
-	mockResolvedValueOnce: (
-		value: Array<{ address: string; family: 4 | 6 }>,
-	) => void;
-	mockReset: () => void;
-};
-
 const PUBLIC_IP = "93.184.216.34";
-
-function mockPublicHost(addr = PUBLIC_IP): void {
-	lookup.mockResolvedValueOnce([{ address: addr, family: 4 }]);
-}
-
-function mockPrivateHost(addr = "10.0.0.5"): void {
-	lookup.mockResolvedValueOnce([{ address: addr, family: 4 }]);
-}
 
 function mockDriverRows(
 	rows: Record<string, unknown>[],
@@ -93,19 +82,8 @@ function captureOptions(): Record<string, unknown> {
 	return last.options as Record<string, unknown>;
 }
 
-function noopCtx(): PluginContext {
-	return {
-		emit() {
-			/* no-op */
-		},
-		request(_p: unknown, _n: unknown, _e: unknown, fn: () => unknown) {
-			return fn();
-		},
-	} as unknown as PluginContext;
-}
-
 beforeEach(() => {
-	lookup.mockReset();
+	resetDnsMock();
 	pgMock.unsafe.mockReset();
 	pgMock.end.mockReset();
 	pgMock.end.mockImplementation(async () => undefined);

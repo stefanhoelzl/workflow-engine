@@ -6,9 +6,13 @@ import type { ProviderRegistry } from "../auth/providers/index.js";
 import type { AuthProvider } from "../auth/providers/types.js";
 import type { UserContext } from "../auth/user-context.js";
 import type { InvokeResult, WsTriggerDescriptor } from "../executor/types.js";
-import { createLogger } from "../logger.js";
+import { createTestLogger } from "../test-utils/logger.js";
 import type { TriggerEntry } from "./source.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	type MockTriggerEntry,
+	makeTriggerEntry,
+	makeWsDescriptor,
+} from "./test-descriptors.js";
 import {
 	createWsTriggerSource,
 	isUpgradeRequest,
@@ -23,10 +27,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function silentLogger() {
-	return createLogger("test", { level: "silent" });
-}
 
 function makeUser(login: string, orgs: string[]): UserContext {
 	return {
@@ -58,39 +58,6 @@ function makeAuthRegistry(opts: {
 	} as unknown as ProviderRegistry;
 }
 
-function makeWsDescriptor(
-	overrides: Partial<WsTriggerDescriptor> = {},
-): WsTriggerDescriptor {
-	return withZodSchemas({
-		kind: "ws" as const,
-		type: "ws" as const,
-		name: "echo",
-		workflowName: "wf",
-		request: {
-			type: "object",
-			properties: { greet: { type: "string" } },
-			required: ["greet"],
-			additionalProperties: false,
-		},
-		response: {},
-		inputSchema: {
-			type: "object",
-			properties: {
-				data: {
-					type: "object",
-					properties: { greet: { type: "string" } },
-					required: ["greet"],
-					additionalProperties: false,
-				},
-			},
-			required: ["data"],
-			additionalProperties: false,
-		},
-		outputSchema: {},
-		...overrides,
-	});
-}
-
 type Fire = (
 	input: unknown,
 	dispatch?: { source: string },
@@ -99,29 +66,24 @@ type Fire = (
 function makeEntry(
 	descriptor: WsTriggerDescriptor,
 	fire?: Fire,
-): TriggerEntry<WsTriggerDescriptor> & { fire: ReturnType<typeof vi.fn> } {
-	const fireMock = vi.fn<Fire>(
-		fire ??
+): MockTriggerEntry<WsTriggerDescriptor> {
+	return makeTriggerEntry(descriptor, {
+		onFire:
+			fire ??
 			(async (input: unknown) => {
-				// minimal validating fire: ensure data has a `greet` string
 				const d = (input as { data?: { greet?: unknown } }).data;
 				if (!d || typeof d.greet !== "string") {
 					return {
-						ok: false as const,
+						ok: false,
 						error: {
 							message: "validation",
 							issues: [{ path: ["data", "greet"], message: "required" }],
 						},
 					};
 				}
-				return { ok: true as const, output: { echo: d.greet } };
+				return { ok: true, output: { echo: d.greet } };
 			}),
-	);
-	return {
-		descriptor,
-		fire: fireMock,
-		exception: vi.fn(async () => undefined),
-	};
+	});
 }
 
 interface Bound {
@@ -260,7 +222,7 @@ describe("upgradeHandler rejection paths", () => {
 
 	beforeEach(async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({ resolves: undefined }),
 		});
 		bound = await bind(source);
@@ -344,7 +306,7 @@ describe("upgradeHandler rejection paths", () => {
 describe("upgradeHandler authenticated rejections", () => {
 	it("user not member → 404", async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["other"]),
 			}),
@@ -375,7 +337,7 @@ describe("upgradeHandler authenticated rejections", () => {
 
 	it("trigger not registered → 404", async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["acme"]),
 			}),
@@ -415,7 +377,7 @@ describe("upgradeHandler accepted + dispatch", () => {
 
 	beforeEach(async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["acme"]),
 			}),
@@ -533,7 +495,7 @@ describe("upgradeHandler accepted + dispatch", () => {
 describe("reconfigure + stop", () => {
 	it("reconfigure removing the trigger force-closes existing connections (1012)", async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["acme"]),
 			}),
@@ -561,7 +523,7 @@ describe("reconfigure + stop", () => {
 
 	it("reconfigure keeping the trigger leaves connections open", async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["acme"]),
 			}),
@@ -593,7 +555,7 @@ describe("reconfigure + stop", () => {
 
 	it("stop() closes all connections", async () => {
 		const source = createWsTriggerSource({
-			logger: silentLogger(),
+			logger: createTestLogger(),
 			authRegistry: makeAuthRegistry({
 				resolves: makeUser("alice", ["acme"]),
 			}),

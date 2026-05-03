@@ -1,30 +1,16 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
 import {
 	derivePublicKey,
 	generateKeypair,
 	sealCiphertext,
 } from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { makeWorkflowManifest as makeWorkflow } from "../test-utils/manifest.js";
 import { decryptWorkflowSecrets } from "./decrypt-workflow.js";
 import { createKeyStore, readyCrypto, UnknownKeyIdError } from "./key-store.js";
 
 beforeAll(async () => {
 	await readyCrypto();
 });
-
-function makeWorkflow(
-	overrides: Partial<WorkflowManifest> = {},
-): WorkflowManifest {
-	return {
-		name: "wf",
-		module: "wf.js",
-		sha: "0".repeat(64),
-		env: {},
-		actions: [],
-		triggers: [],
-		...overrides,
-	};
-}
 
 describe("decryptWorkflowSecrets", () => {
 	it("returns {} when manifest has no secrets", () => {
