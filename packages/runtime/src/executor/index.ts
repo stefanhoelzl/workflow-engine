@@ -198,7 +198,11 @@ function createExecutor(options: ExecutorOptions): Executor {
 		// executor has no per-invocation crypto responsibility.
 		let result: InvokeResult<unknown>;
 		try {
-			const runResult = await sb.run(descriptor.name, input);
+			// Extras carry per-invocation context that plugins capture in
+			// `onBeforeRunStarted`. Currently only the queue plugin reads
+			// `extras.queue.{owner, repo}`; other plugins ignore it.
+			const extras = { queue: { owner, repo } };
+			const runResult = await sb.run(descriptor.name, input, extras);
 			if (runResult.ok) {
 				result = { ok: true, output: runResult.result };
 			} else {

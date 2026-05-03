@@ -5,6 +5,7 @@ import { createContext, runInContext } from "node:vm";
 import {
 	formatIssue,
 	IIFE_NAMESPACE,
+	QUEUE_NAME_RE,
 	workflowManifestSchema,
 } from "@workflow-engine/core";
 import MagicString from "magic-string";
@@ -20,9 +21,11 @@ import {
 	isHttpTrigger,
 	isImapTrigger,
 	isManualTrigger,
+	isQueue,
 	isWorkflow,
 	isWsTrigger,
 	type ManualTrigger,
+	type Queue,
 	type Workflow,
 	type WsTrigger,
 } from "../index.js";
@@ -131,6 +134,7 @@ interface UnsealedWorkflowManifest {
 	secretBindings?: string[];
 	actions: ManifestActionEntry[];
 	triggers: ManifestTriggerEntry[];
+	queues: ManifestQueueEntry[];
 }
 
 interface UnsealedManifest {
@@ -275,6 +279,11 @@ interface ManifestActionEntry {
 	output: Record<string, unknown>;
 }
 
+interface ManifestQueueEntry {
+	name: string;
+	schema: Record<string, unknown>;
+}
+
 interface ManifestHttpTriggerEntry {
 	name: string;
 	type: "http";
@@ -348,6 +357,7 @@ interface DiscoveredExports {
 	imapTriggerEntries: [string, ImapTrigger][];
 	manualTriggerEntries: [string, ManualTrigger][];
 	wsTriggerEntries: [string, WsTrigger][];
+	queueEntries: [string, Queue][];
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear if/else chain dispatching by trigger brand — each branch is a simple isX(value) → push; refactoring into a registry would obscure the per-kind discovery contract
@@ -362,6 +372,7 @@ function discoverExports(
 	const manualTriggerEntries: [string, ManualTrigger][] = [];
 	const imapTriggerEntries: [string, ImapTrigger][] = [];
 	const wsTriggerEntries: [string, WsTrigger][] = [];
+	const queueEntries: [string, Queue][] = [];
 	for (const [exportName, value] of Object.entries(mod)) {
 		if (exportName === "default" && isAction(value)) {
 			buildContext.error(
@@ -382,6 +393,8 @@ function discoverExports(
 			imapTriggerEntries.push([exportName, value]);
 		} else if (isWsTrigger(value)) {
 			wsTriggerEntries.push([exportName, value]);
+		} else if (isQueue(value)) {
+			queueEntries.push([exportName, value]);
 		}
 	}
 	return {
@@ -392,6 +405,7 @@ function discoverExports(
 		manualTriggerEntries,
 		imapTriggerEntries,
 		wsTriggerEntries,
+		queueEntries,
 	};
 }
 
@@ -436,6 +450,56 @@ function buildActionEntries(
 		});
 	}
 	return actions;
+}
+
+function buildQueueEntries(
+	entries: [string, Queue][],
+	workflowName: string,
+	reservedNames: ReadonlySet<string>,
+	logger: { warn: (message: string) => void },
+): ManifestQueueEntry[] {
+	// Resolved name = explicit factory `name` argument (closed over the handle)
+	// OR the export identifier injected by the AST transform. An empty `name`
+	// at this point means the AST injection did not run AND the author did not
+	// pass `name` — fail loudly.
+	const seenNames = new Set<string>();
+	const queues: ManifestQueueEntry[] = [];
+	for (const [exportName, queueObj] of entries) {
+		const resolvedName = queueObj.name;
+		if (resolvedName === "") {
+			buildContext.error(
+				`Workflow "${workflowName}": queue "${exportName}" was not transformed at build time. Queues must be declared as: export const ${exportName} = defineQueue({schema, ...})`,
+			);
+		}
+		if (!QUEUE_NAME_RE.test(resolvedName)) {
+			buildContext.error(
+				`Workflow "${workflowName}": queue resolved name "${resolvedName}" (export "${exportName}") must match ${QUEUE_NAME_RE}`,
+			);
+		}
+		if (seenNames.has(resolvedName)) {
+			buildContext.error(
+				`Workflow "${workflowName}": queue name "${resolvedName}" is declared more than once`,
+			);
+		}
+		seenNames.add(resolvedName);
+		// Collision warning: queue names live in a separate namespace from
+		// action / trigger names (different brand, different runtime path),
+		// but a same-name collision often signals author confusion.
+		if (reservedNames.has(resolvedName)) {
+			logger.warn(
+				`Workflow "${workflowName}": queue name "${resolvedName}" collides with an action or trigger name in the same workflow (different namespace, but the collision is likely unintentional)`,
+			);
+		}
+		const schemaLabel = `queue "${resolvedName}".schema`;
+		assertZodSchema(queueObj.schema, schemaLabel, workflowName);
+		queues.push({
+			name: resolvedName,
+			schema: stripDraftMarker(
+				toJsonSchema(queueObj.schema, schemaLabel, workflowName),
+			),
+		});
+	}
+	return queues;
 }
 
 const JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema";
@@ -833,6 +897,7 @@ function buildManifestFromMod(
 		manualTriggerEntries,
 		imapTriggerEntries,
 		wsTriggerEntries,
+		queueEntries,
 	} = discoverExports(mod, filestem);
 
 	if (workflowEntries.length > 1) {
@@ -875,6 +940,21 @@ function buildManifestFromMod(
 		...wsTriggerEntries.map(([k, v]) => buildWsTriggerEntry(k, v, name)),
 	];
 
+	const reservedNames = new Set<string>();
+	for (const a of actions) {
+		reservedNames.add(a.name);
+	}
+	for (const t of triggers) {
+		reservedNames.add(t.name);
+	}
+	const queues = buildQueueEntries(queueEntries, name, reservedNames, {
+		warn(message) {
+			// Build-time author-facing notice routed to stderr so it doesn't
+			// pollute structured manifest stdout when the CLI is piped.
+			process.stderr.write(`${message}\n`);
+		},
+	});
+
 	const built: UnsealedWorkflowManifest = {
 		name,
 		module: `${name}.js`,
@@ -882,6 +962,7 @@ function buildManifestFromMod(
 		env,
 		actions,
 		triggers,
+		queues,
 	};
 	if (secretBindings !== undefined && secretBindings.length > 0) {
 		built.secretBindings = [...secretBindings];
@@ -989,11 +1070,15 @@ interface ExportNamedDeclarationNode extends AstNodeBase {
 function sourceMightContainActionCall(code: string): boolean {
 	return code.includes("action(");
 }
+function sourceMightContainQueueCall(code: string): boolean {
+	return code.includes("defineQueue(");
+}
 function sourceMightContainFactoryCall(code: string): boolean {
 	return (
 		code.includes("action(") ||
 		code.includes("httpTrigger(") ||
-		code.includes("cronTrigger(")
+		code.includes("cronTrigger(") ||
+		code.includes("defineQueue(")
 	);
 }
 
@@ -1059,6 +1144,36 @@ function matchActionExport(
 	return match ? { id: match.id, call: match.call } : null;
 }
 
+function matchQueueExport(
+	top: AstNodeBase,
+): { id: IdentifierNode; call: CallExpressionNode } | null {
+	const match = matchFactoryExport(top, ["defineQueue"]);
+	return match ? { id: match.id, call: match.call } : null;
+}
+
+interface PropertyKeyNode extends AstNodeBase {
+	type: string;
+	name?: string;
+	value?: unknown;
+}
+
+function objectHasNameProperty(obj: ObjectExpressionNode): boolean {
+	for (const p of obj.properties) {
+		if (p.type !== "Property") {
+			continue;
+		}
+		const prop = p as PropertyNode;
+		const key = prop.key as PropertyKeyNode;
+		if (key.type === "Identifier" && key.name === "name") {
+			return true;
+		}
+		if (key.type === "Literal" && key.value === "name") {
+			return true;
+		}
+	}
+	return false;
+}
+
 function injectNameIntoCall(
 	magic: MagicString,
 	call: CallExpressionNode,
@@ -1068,6 +1183,24 @@ function injectNameIntoCall(
 	const insertPos = obj.end - 1;
 	const sep = obj.properties.length === 0 ? "" : ", ";
 	magic.appendLeft(insertPos, `${sep}name: ${JSON.stringify(idName)}`);
+}
+
+// Inject a `name: "<idName>"` property only when the object literal does
+// not already have one. Used by `defineQueue`, where the explicit factory
+// argument SHOULD win (unlike `action`, where the AST always wins).
+function injectNameIfMissing(
+	magic: MagicString,
+	call: CallExpressionNode,
+	idName: string,
+): boolean {
+	const obj = call.arguments[0] as ObjectExpressionNode;
+	if (objectHasNameProperty(obj)) {
+		return false;
+	}
+	const insertPos = obj.end - 1;
+	const sep = obj.properties.length === 0 ? "" : ", ";
+	magic.appendLeft(insertPos, `${sep}name: ${JSON.stringify(idName)}`);
+	return true;
 }
 
 function injectActionNames(
@@ -1096,6 +1229,35 @@ function injectActionNames(
 	};
 }
 
+// Mirrors `injectActionNames` for queues, but injects only when the
+// `defineQueue({...})` call's object literal does NOT already have a `name`
+// property. This preserves the `defineQueue({name?, schema})` semantic that
+// the explicit factory argument wins over the export identifier.
+function injectQueueNames(
+	code: string,
+	parse: (src: string) => unknown,
+): InjectResult | null {
+	if (!sourceMightContainQueueCall(code)) {
+		return null;
+	}
+	const ast = parse(code) as { body: AstNodeBase[] };
+	const magic = new MagicString(code);
+	let changed = false;
+	for (const top of ast.body) {
+		const match = matchQueueExport(top);
+		if (match && injectNameIfMissing(magic, match.call, match.id.name)) {
+			changed = true;
+		}
+	}
+	if (!changed) {
+		return null;
+	}
+	return {
+		code: magic.toString(),
+		map: magic.generateMap({ hires: true }),
+	};
+}
+
 function actionNameInjectionPlugin(workflowPath: string): Plugin {
 	return {
 		name: "workflow-engine:inject-action-names",
@@ -1104,7 +1266,23 @@ function actionNameInjectionPlugin(workflowPath: string): Plugin {
 			if (id !== workflowPath) {
 				return null;
 			}
-			return injectActionNames(code, (src) => this.parse(src));
+			const actionResult = injectActionNames(code, (src) => this.parse(src));
+			const queueInputCode = actionResult?.code ?? code;
+			const queueResult = injectQueueNames(queueInputCode, (src) =>
+				this.parse(src),
+			);
+			// Both passes ran: sourcemap merging across two MagicString passes
+			// is non-trivial, so we hand back the queue-pass map (it carries
+			// position info for the final code, which is sufficient for vite's
+			// downstream consumers given that per-call insertion is the only
+			// transform either pass performs).
+			if (queueResult !== null) {
+				return queueResult;
+			}
+			if (actionResult !== null) {
+				return actionResult;
+			}
+			return null;
 		},
 	};
 }
@@ -1292,6 +1470,7 @@ export type {
 	ManifestCronTriggerEntry,
 	ManifestHttpTriggerEntry,
 	ManifestManualTriggerEntry,
+	ManifestQueueEntry,
 	ManifestTriggerEntry,
 	UnsealedManifest,
 	UnsealedWorkflowManifest,
@@ -1300,5 +1479,6 @@ export {
 	BuildWorkflowsError,
 	buildWorkflows,
 	injectActionNames,
+	injectQueueNames,
 	typecheckWorkflows,
 };

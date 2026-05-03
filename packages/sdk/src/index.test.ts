@@ -5,6 +5,7 @@ import {
 	action,
 	CRON_TRIGGER_BRAND,
 	cronTrigger,
+	defineQueue,
 	defineWorkflow,
 	env,
 	HTTP_TRIGGER_BRAND,
@@ -17,12 +18,14 @@ import {
 	isHttpTrigger,
 	isImapTrigger,
 	isManualTrigger,
+	isQueue,
 	isSecret,
 	isWorkflow,
 	isWsTrigger,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
+	QUEUE_BRAND,
 	secret,
 	WORKFLOW_BRAND,
 	WS_TRIGGER_BRAND,
@@ -1288,5 +1291,109 @@ describe("secret()", () => {
 		secret("a");
 		secret("b");
 		expect(addSecret).toHaveBeenCalledTimes(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// defineQueue
+// ---------------------------------------------------------------------------
+
+describe("defineQueue", () => {
+	const QUEUE_NAME_MISSING_RE = /Queue constructed without a name/;
+	const QUEUE_DISPATCHER_MISSING_RE = /No queue dispatcher installed/;
+
+	afterEach(() => {
+		(globalThis as Record<string, unknown>).__queue = undefined;
+	});
+
+	it("returns a brand-tagged frozen handle exposing put and get", () => {
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({ url: z.string() }),
+		});
+		expect((q as unknown as Record<symbol, unknown>)[QUEUE_BRAND]).toBe(true);
+		expect(isQueue(q)).toBe(true);
+		expect(q.name).toBe("jobs");
+		expect(typeof q.put).toBe("function");
+		expect(typeof q.get).toBe("function");
+		expect(Object.isFrozen(q)).toBe(true);
+	});
+
+	it("isQueue rejects plain objects and other branded primitives", () => {
+		expect(isQueue({})).toBe(false);
+		expect(isQueue(undefined)).toBe(false);
+		expect(isQueue(null)).toBe(false);
+		const a = action({ handler: async () => "x", name: "a" });
+		expect(isQueue(a)).toBe(false);
+	});
+
+	it("put dispatches via globalThis.__queue.put with the handle name + item", async () => {
+		const put = vi.fn(async () => undefined);
+		(globalThis as Record<string, unknown>).__queue = { put, get: vi.fn() };
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({ url: z.string() }),
+		});
+		await q.put({ url: "https://example.com" });
+		expect(put).toHaveBeenCalledWith("jobs", { url: "https://example.com" });
+	});
+
+	it("get dispatches via globalThis.__queue.get with the handle name and forwards the result", async () => {
+		const get = vi.fn(async () => ({ url: "https://example.com" }));
+		(globalThis as Record<string, unknown>).__queue = { put: vi.fn(), get };
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({ url: z.string() }),
+		});
+		const result = await q.get();
+		expect(get).toHaveBeenCalledWith("jobs");
+		expect(result).toEqual({ url: "https://example.com" });
+	});
+
+	it("throws when the queue dispatcher is missing", async () => {
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({}),
+		});
+		await expect(q.put({})).rejects.toThrow(QUEUE_DISPATCHER_MISSING_RE);
+		await expect(q.get()).rejects.toThrow(QUEUE_DISPATCHER_MISSING_RE);
+	});
+
+	it("throws when the handle was constructed without a name (build pipeline injection skipped)", async () => {
+		// `defineQueue({schema})` without `name` is the form authors use; the
+		// vite plugin AST-injects the export identifier as `name` at build time.
+		// If the handle is invoked without that injection the put/get must fail
+		// loud — there is no fallback name.
+		(globalThis as Record<string, unknown>).__queue = {
+			put: async () => undefined,
+			get: async () => undefined,
+		};
+		const q = defineQueue({ schema: z.object({}) });
+		await expect(q.put({})).rejects.toThrow(QUEUE_NAME_MISSING_RE);
+		await expect(q.get()).rejects.toThrow(QUEUE_NAME_MISSING_RE);
+	});
+
+	it("frozen handle: cannot overwrite put or get", () => {
+		const q = defineQueue({ name: "jobs", schema: z.object({}) });
+		expect(() => {
+			(q as unknown as Record<string, unknown>).put = () => Promise.resolve();
+		}).toThrow();
+		expect(() => {
+			(q as unknown as Record<string, unknown>).get = () =>
+				Promise.resolve(undefined);
+		}).toThrow();
+	});
+
+	it("infers item type from schema (compile-time check)", async () => {
+		const put = vi.fn(async () => undefined);
+		(globalThis as Record<string, unknown>).__queue = { put, get: vi.fn() };
+		const q = defineQueue({
+			name: "typed",
+			schema: z.object({ count: z.number() }),
+		});
+		// Type-level: argument must satisfy {count: number}; runtime is the
+		// host's job, so we just verify the call passed through.
+		await q.put({ count: 42 });
+		expect(put).toHaveBeenCalledWith("typed", { count: 42 });
 	});
 });

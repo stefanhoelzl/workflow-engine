@@ -16,6 +16,7 @@ import wasiPlugin from "../../sandbox/src/plugins/wasi-plugin.ts?sandbox-plugin"
 import consolePlugin from "../../sandbox-stdlib/src/console/index.ts?sandbox-plugin";
 import fetchPlugin from "../../sandbox-stdlib/src/fetch/index.ts?sandbox-plugin";
 import mailPlugin from "../../sandbox-stdlib/src/mail/index.ts?sandbox-plugin";
+import queuePlugin from "../../sandbox-stdlib/src/queue/index.ts?sandbox-plugin";
 import sqlPlugin from "../../sandbox-stdlib/src/sql/index.ts?sandbox-plugin";
 import timersPlugin from "../../sandbox-stdlib/src/timers/index.ts?sandbox-plugin";
 import webPlatformPlugin from "../../sandbox-stdlib/src/web-platform/index.ts?sandbox-plugin";
@@ -26,6 +27,7 @@ import hostCallActionPlugin from "./plugins/host-call-action.ts?sandbox-plugin";
 import secretsPlugin from "./plugins/secrets.ts?sandbox-plugin";
 import triggerPlugin from "./plugins/trigger.ts?sandbox-plugin";
 import wasiTelemetryPlugin from "./plugins/wasi-telemetry.ts?sandbox-plugin";
+import { buildQueueConfig } from "./queue-plugin-config.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 
@@ -52,6 +54,10 @@ interface SandboxStoreOptions {
 	readonly logger: Logger;
 	readonly keyStore: SecretsKeyStore;
 	readonly maxCount: number;
+	// Persistence root for the queue plugin: `<PERSISTENCE_PATH>/queues`.
+	// Threaded into every per-sandbox queue config; queues outside this
+	// subtree are unreachable.
+	readonly queuesRoot: string;
 }
 
 interface CacheEntry {
@@ -74,9 +80,15 @@ function storeKey(owner: string, sha: string): string {
 	return `${owner}/${sha}`;
 }
 
+interface BuildPluginDescriptorsOptions {
+	readonly owner: string;
+	readonly queuesRoot: string;
+}
+
 function buildPluginDescriptors(
 	workflow: WorkflowManifest,
 	keyStore: SecretsKeyStore,
+	opts: BuildPluginDescriptorsOptions,
 ): readonly PluginDescriptor[] {
 	// Per-plugin `Config` interfaces are structurally JSON-serializable but
 	// TS can't prove they satisfy the index-signature constraint of
@@ -94,6 +106,13 @@ function buildPluginDescriptors(
 		env: workflow.env,
 		plaintextStore,
 	} as unknown as PluginDescriptor["config"];
+	const queueConfig = Object.freeze(
+		buildQueueConfig({
+			owner: opts.owner,
+			workflow,
+			queuesRoot: opts.queuesRoot,
+		}),
+	) as unknown as PluginDescriptor["config"];
 	return [
 		{ ...wasiPlugin },
 		{ ...wasiTelemetryPlugin },
@@ -102,6 +121,7 @@ function buildPluginDescriptors(
 		{ ...fetchPlugin },
 		{ ...mailPlugin },
 		{ ...sqlPlugin },
+		{ ...queuePlugin, config: queueConfig },
 		{ ...timersPlugin },
 		{ ...consolePlugin },
 		{ ...hostCallActionPlugin, config: hostCallActionConfig },
@@ -112,18 +132,22 @@ function buildPluginDescriptors(
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups cache LRU bookkeeping, eviction sweep, and dispose drain
 function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
-	const { sandboxFactory, keyStore, logger, maxCount } = options;
+	const { sandboxFactory, keyStore, logger, maxCount, queuesRoot } = options;
 	const cache = new Map<string, CacheEntry>();
 	const pendingDisposals = new Set<Promise<void>>();
 
 	function build(
+		owner: string,
 		workflow: WorkflowManifest,
 		bundleSource: string,
 	): Promise<Sandbox> {
 		return sandboxFactory.create({
 			source: bundleSource,
 			filename: `${workflow.name}.js`,
-			plugins: buildPluginDescriptors(workflow, keyStore),
+			plugins: buildPluginDescriptors(workflow, keyStore, {
+				owner,
+				queuesRoot,
+			}),
 		});
 	}
 
@@ -200,7 +224,7 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 				existing.runCount++;
 				return existing.promise;
 			}
-			const promise = build(workflow, bundleSource);
+			const promise = build(owner, workflow, bundleSource);
 			const entry: CacheEntry = {
 				key,
 				owner,

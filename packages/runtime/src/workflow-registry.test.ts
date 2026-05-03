@@ -127,6 +127,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(result.ok).toBe(true);
@@ -149,6 +150,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.registerOwner("acme", "demo", ownerFiles());
 		await registry.registerOwner("contoso", "demo", ownerFiles());
@@ -164,6 +166,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.registerOwner("acme", "demo", ownerFiles());
 		await registry.registerOwner("acme", "demo-advanced", ownerFiles());
@@ -198,6 +201,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(registry.list("acme", "demo")).toHaveLength(1);
@@ -215,6 +219,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		// First upload succeeds
 		await registry.registerOwner("acme", "demo", ownerFiles());
@@ -241,6 +246,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", new Map());
 		expect(result.ok).toBe(false);
@@ -252,6 +258,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner(
 			"acme",
@@ -271,6 +278,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const badManifest = {
 			workflows: [
@@ -306,6 +314,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const badManifest = {
 			workflows: [
@@ -341,6 +350,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const goodManifest = {
 			workflows: [
@@ -380,6 +390,7 @@ describe("workflow registry", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(result.ok).toBe(true);
@@ -434,6 +445,7 @@ describe("workflow registry: persistence and recovery", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			storageBackend: backend,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 
 		const files = ownerFiles();
@@ -464,6 +476,7 @@ describe("workflow registry: persistence and recovery", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			storageBackend: backend,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.recover();
 
@@ -496,6 +509,7 @@ describe("workflow registry: persistence and recovery", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			storageBackend: backend,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.recover();
 
@@ -557,6 +571,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			backends: [http.source, cron.source],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(http.calls).toHaveLength(1);
@@ -575,6 +590,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			backends: [http.source, cron.source],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(result.ok).toBe(false);
@@ -595,6 +611,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			backends: [http.source, cron.source],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(result.ok).toBe(false);
@@ -615,6 +632,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			backends: [http.source, cron.source],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const result = await registry.registerOwner("acme", "demo", ownerFiles());
 		expect(result.ok).toBe(false);
@@ -634,6 +652,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 			executor: makeExecutor(),
 			keyStore: makeKeyStore(),
 			backends: [http.source],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const badManifest = {
 			workflows: [
@@ -675,6 +694,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 				keyStore: makeKeyStore(),
 				backends: [http.source],
 				storageBackend: storage,
+				queuesRoot: "/tmp/wfe-test-queues",
 			});
 			const files = ownerFiles();
 			const tarballBytes = await packOwnerBundle(files);
@@ -769,6 +789,7 @@ describe("registry — trigger-config secrets", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);
@@ -803,6 +824,7 @@ describe("registry — trigger-config secrets", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);
@@ -844,6 +866,7 @@ describe("registry — trigger-config secrets", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);
@@ -879,6 +902,7 @@ describe("registry — trigger-config secrets", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);
@@ -958,6 +982,7 @@ describe("registry — trigger-config secrets", () => {
 			logger,
 			executor: makeExecutor(),
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);
@@ -1009,6 +1034,7 @@ describe("registry — trigger-config secrets", () => {
 			executor: makeExecutor(),
 			keyStore,
 			backends: [httpBackend],
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		try {
 			const result = await registry.registerOwner("acme", "demo", files);

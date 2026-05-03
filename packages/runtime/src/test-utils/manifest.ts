@@ -14,6 +14,7 @@ function makeWorkflowManifest(
 		env: {},
 		actions: [],
 		triggers: [],
+		queues: [],
 		...overrides,
 	};
 }

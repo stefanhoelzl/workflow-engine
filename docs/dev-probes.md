@@ -46,3 +46,14 @@ Not in `pnpm test` / `pnpm validate`. Use for Alpine-driven interactivity, focus
 ## Canonical fixture
 
 `workflows/src/demo.ts` is the probe target. Its triggers: `runDemo` cron, http GET + POST under `/webhooks/local/demo/*`, manual `fail` (exercises the `action.error` / `trigger.error` path). SDK or sandbox-stdlib changes must keep `demo.ts` in sync (see `CLAUDE.md` §Example workflows), so the probe surface stays stable.
+
+## Cross-invocation persistence (queues)
+
+Queue files live at `.persistence/queues/<owner>/<repo>/<workflow>/<queueName>.ndjson` — one JSON-encoded item per line. The eager-create-at-upload invariant means every declared queue has a file (possibly zero-byte) on disk after a successful upload.
+
+- **Confirm a queue file exists after upload.** `ls .persistence/queues/local/demo/demo/` after `pnpm dev` settles — should list `jobs.ndjson` (the demo's `defineQueue({...})` declaration).
+- **Producer round-trip.** `curl -X POST http://localhost:<port>/webhooks/local/demo/enqueueJob -H 'content-type: application/json' -d '{"url":"https://example.com","note":"hi"}'` → 202; then `cat .persistence/queues/local/demo/demo/jobs.ndjson` shows one line.
+- **Consumer drain.** Fire the manual `drainOnce` trigger via `/trigger/local/demo/drainOnce` (session cookie required) with `{"max":10}`; the file becomes empty after a successful drain.
+- **Schema-mismatch event.** Send a body that fails the schema (e.g. `note` longer than 64 chars) and grep stdout for `system.error` with `name="queue.put"` and `code="queue.schemaMismatch"`. The file remains unchanged.
+- **Boot reconciliation.** Add a manual orphan: `echo '{}' > .persistence/queues/local/demo/demo/ghost.ndjson`. Restart `pnpm dev` and grep stdout for `queue-lifecycle.boot-sweep-orphan-removed { ... queue: "ghost" }`. The file is unlinked.
+- **Re-upload preserves data.** Touch a workflow file to trigger hot-reload; verify the existing items in `jobs.ndjson` are still there (sha changed, but `(owner, repo, workflow, queueName)` identity is sha-independent).

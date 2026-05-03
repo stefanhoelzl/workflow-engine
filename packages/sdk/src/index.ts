@@ -39,6 +39,39 @@ function dispatchViaSdk(
 	return sdk.dispatchAction(name, input, handler);
 }
 
+// Queue dispatch is routed through the locked-outer + frozen-inner `__queue`
+// global installed by the queue plugin's Phase-2 IIFE. Mirrors `__sdk` for
+// actions: cross the bridge via host-installed function, not directly.
+
+interface QueueGuestApi {
+	put?: (name: string, item: unknown) => Promise<void>;
+	get?: (name: string) => Promise<unknown>;
+}
+
+function dispatchQueuePut(name: string, item: unknown): Promise<void> {
+	const api = (globalThis as Record<string, unknown>).__queue as
+		| QueueGuestApi
+		| undefined;
+	if (!api || typeof api.put !== "function") {
+		throw new Error(
+			"No queue dispatcher installed; queues can only be used inside the workflow sandbox",
+		);
+	}
+	return api.put(name, item);
+}
+
+function dispatchQueueGet(name: string): Promise<unknown> {
+	const api = (globalThis as Record<string, unknown>).__queue as
+		| QueueGuestApi
+		| undefined;
+	if (!api || typeof api.get !== "function") {
+		throw new Error(
+			"No queue dispatcher installed; queues can only be used inside the workflow sandbox",
+		);
+	}
+	return api.get(name);
+}
+
 // ---------------------------------------------------------------------------
 // Brand symbols
 // ---------------------------------------------------------------------------
@@ -60,6 +93,7 @@ const WS_TRIGGER_BRAND: unique symbol = Symbol.for(
 	"@workflow-engine/ws-trigger",
 );
 const WORKFLOW_BRAND: unique symbol = Symbol.for("@workflow-engine/workflow");
+const QUEUE_BRAND: unique symbol = Symbol.for("@workflow-engine/queue");
 const ENV_REF_BRAND: unique symbol = Symbol.for("@workflow-engine/env-ref");
 // Carries the list of envNames declared with `env({secret: true})` on the
 // returned Workflow at build-time discovery. Vite plugin reads this via
@@ -316,6 +350,71 @@ function isAction(value: unknown): value is Action {
 	return (
 		typeof value === "function" &&
 		(value as unknown as Record<symbol, unknown>)[ACTION_BRAND] === true
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Queue
+// ---------------------------------------------------------------------------
+//
+// `defineQueue({name?, schema})` declares a per-workflow durable FIFO. The
+// returned brand-tagged handle exposes exactly `put` and `get`; both calls
+// cross the host bridge via the locked `__queue` global installed by the
+// queue plugin (parallel to `__sdk` for actions). The handle's `name` is
+// closed over the callable. When the factory is called without a `name`,
+// the workflow build pipeline injects the export identifier as the queue's
+// name (mirroring the action / *Trigger AST transform); invoking a handle
+// constructed without a name throws.
+//
+// The `schema` is consumed at build time by the vite plugin (rendered to
+// JSON Schema via `z.toJSONSchema`, emitted into the manifest's `queues`
+// field, and compiled to an Ajv validator host-side at sandbox construction).
+// At runtime in the guest the schema is not invoked — host-side validation
+// is the single source of truth, just like action input/output.
+
+interface Queue<T = unknown> {
+	readonly [QUEUE_BRAND]: true;
+	readonly name: string;
+	readonly schema: z.ZodType<T>;
+	put(item: T): Promise<void>;
+	get(): Promise<T | undefined>;
+}
+
+function defineQueue<Schema extends z.ZodType = z.ZodAny>(config: {
+	name?: string;
+	schema: Schema;
+}): Queue<z.infer<Schema>> {
+	const assignedName = config.name;
+	const schema = config.schema;
+	const handle = {
+		[QUEUE_BRAND]: true,
+		name: assignedName ?? "",
+		schema,
+		async put(item: unknown): Promise<void> {
+			if (assignedName === undefined || assignedName === "") {
+				throw new Error(
+					"Queue constructed without a name; build via the wfe CLI (which name-injects via AST transform)",
+				);
+			}
+			await dispatchQueuePut(assignedName, item);
+		},
+		async get(): Promise<unknown> {
+			if (assignedName === undefined || assignedName === "") {
+				throw new Error(
+					"Queue constructed without a name; build via the wfe CLI (which name-injects via AST transform)",
+				);
+			}
+			return await dispatchQueueGet(assignedName);
+		},
+	};
+	return Object.freeze(handle) as unknown as Queue<z.infer<Schema>>;
+}
+
+function isQueue(value: unknown): value is Queue {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		(value as Record<symbol, unknown>)[QUEUE_BRAND] === true
 	);
 }
 
@@ -934,6 +1033,7 @@ export type {
 	HttpTrigger,
 	ImapTrigger,
 	ManualTrigger,
+	Queue,
 	Trigger,
 	Workflow,
 	WsTrigger,
@@ -944,6 +1044,7 @@ export {
 	action,
 	CRON_TRIGGER_BRAND,
 	cronTrigger,
+	defineQueue,
 	defineWorkflow,
 	env,
 	executeSql,
@@ -957,12 +1058,14 @@ export {
 	isHttpTrigger,
 	isImapTrigger,
 	isManualTrigger,
+	isQueue,
 	isSecret,
 	isWorkflow,
 	isWsTrigger,
 	MANUAL_TRIGGER_BRAND,
 	ManifestSchema,
 	manualTrigger,
+	QUEUE_BRAND,
 	secret,
 	sendMail,
 	WORKFLOW_BRAND,

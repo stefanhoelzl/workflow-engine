@@ -246,6 +246,12 @@ const actionManifestSchema = z.object({
 const OWNER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/;
 const REPO_NAME_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+const QUEUE_NAME_RE = /^[a-z][a-zA-Z0-9]*$/;
+
+const queueManifestSchema = z.object({
+	name: z.string().regex(QUEUE_NAME_RE),
+	schema: jsonSchemaValidator,
+});
 
 const httpTriggerManifestSchema = z.object({
 	name: z.string().regex(TRIGGER_NAME_RE),
@@ -464,7 +470,27 @@ const workflowManifestSchema = z
 			.optional(),
 		actions: z.array(actionManifestSchema),
 		triggers: z.array(triggerManifestSchema),
+		// Optional: existing manifests serialized before the queues capability
+		// was introduced parse cleanly; the workflow build pipeline always emits
+		// at least an empty array for new builds.
+		queues: z.array(queueManifestSchema).default([]),
 	})
+	.refine(
+		(w) => {
+			const seen = new Set<string>();
+			for (const q of w.queues) {
+				if (seen.has(q.name)) {
+					return false;
+				}
+				seen.add(q.name);
+			}
+			return true;
+		},
+		{
+			error: "workflow `queues` names must be unique within a workflow",
+			path: ["queues"],
+		},
+	)
 	.refine((w) => (w.secrets === undefined) === (w.secretsKeyId === undefined), {
 		error:
 			"workflow `secrets` and `secretsKeyId` must both be present or both absent",
@@ -536,6 +562,17 @@ const ManifestSchema = z
 
 type Manifest = z.infer<typeof ManifestSchema>;
 type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
+type QueueManifest = z.infer<typeof queueManifestSchema>;
+
+// Wire-stable error codes produced by the queue host-bridge plugin and
+// surfaced on `InvocationEventError.code` for queue-related failures. See
+// `openspec/specs/queues/spec.md` and `openspec/specs/invocations/spec.md`.
+type QueueErrorCode =
+	| "queue.itemTooLarge"
+	| "queue.full"
+	| "queue.schemaMismatch"
+	| "queue.gone"
+	| "queue.notDeclared";
 
 // ---------------------------------------------------------------------------
 // formatIssue — render a single Zod issue from a workflowManifestSchema
@@ -793,6 +830,8 @@ export type {
 	InvocationEventError,
 	Manifest,
 	ManualTriggerManifest,
+	QueueErrorCode,
+	QueueManifest,
 	RuntimeSecrets,
 	RuntimeWorkflow,
 	SandboxEvent,
@@ -811,6 +850,7 @@ export {
 	isReservedResponseHeader,
 	ManifestSchema,
 	OWNER_NAME_RE,
+	QUEUE_NAME_RE,
 	REPO_NAME_RE,
 	RESERVED_RESPONSE_HEADERS,
 	SECRETS_KEY_ID_BYTES,

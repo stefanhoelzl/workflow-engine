@@ -139,6 +139,7 @@ async function mountWithBackends(backends: readonly TriggerSource[]) {
 		executor: stubExecutor,
 		backends,
 		keyStore: stubKeyStore,
+		queuesRoot: "/tmp/wfe-test-queues",
 	});
 	const handle = await createRealEventStoreForTest();
 	const eventStore = handle.store;

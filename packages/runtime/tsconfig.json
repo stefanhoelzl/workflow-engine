@@ -9,5 +9,9 @@
 		"jsxImportSource": "hono/jsx"
 	},
 	"include": ["src"],
-	"references": [{ "path": "../core" }, { "path": "../sandbox" }]
+	"references": [
+		{ "path": "../core" },
+		{ "path": "../sandbox" },
+		{ "path": "../sandbox-stdlib" }
+	]
 }

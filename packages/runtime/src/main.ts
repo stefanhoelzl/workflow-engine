@@ -121,6 +121,7 @@ async function init() {
 		logger: runtimeLogger,
 		keyStore,
 		maxCount: config.sandboxMaxCount,
+		queuesRoot: `${config.persistencePath}/queues`,
 	});
 
 	// 5. Create the executor (serializes per-(owner, sha) invocations;
@@ -165,6 +166,7 @@ async function init() {
 		keyStore,
 		backends: triggerBackends,
 		storageBackend,
+		queuesRoot: `${config.persistencePath}/queues`,
 	});
 	await registry.recover();
 	runtimeLogger.info("workflows.loaded", { count: registry.size });
