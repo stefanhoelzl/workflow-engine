@@ -76,11 +76,6 @@ async function spawnRuntime(spec: SpawnSpec): Promise<SpawnedChild> {
 		LOCAL_DEPLOYMENT: "1",
 		SECRETS_PRIVATE_KEYS: spec.secretsKey,
 		LOG_LEVEL: "info",
-		// Force EventStore to flush every commit's inlined rows to Parquet
-		// immediately so the test framework's read_parquet glob can observe
-		// terminal events without conflicting with the runtime's exclusive
-		// catalog file lock. See `packages/tests/src/events.ts`.
-		EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS: "1",
 		...spec.env,
 	};
 
