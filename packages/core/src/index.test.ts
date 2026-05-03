@@ -915,3 +915,72 @@ describe("isReservedResponseHeader", () => {
 		expect(isReservedResponseHeader("cache-control")).toBe(false);
 	});
 });
+
+describe("ManifestSchema queues field", () => {
+	// Manifests must declare at least one trigger; queues are an additive
+	// surface so the test fixture pins a no-op http trigger in every case.
+	const dummyTrigger = {
+		name: "ping",
+		type: "http" as const,
+		method: "GET",
+		request: {
+			body: {},
+			headers: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+		},
+		inputSchema: {},
+		outputSchema: {},
+	};
+	const baseWorkflow = (queues: unknown[] | undefined) => ({
+		workflows: [
+			{
+				name: "wf",
+				module: "wf.js",
+				sha: "sha",
+				env: {},
+				actions: [],
+				triggers: [dummyTrigger],
+				...(queues === undefined ? {} : { queues }),
+			},
+		],
+	});
+	const validQueue = {
+		name: "jobs",
+		schema: {
+			type: "object",
+			properties: { url: { type: "string" } },
+			additionalProperties: false,
+		},
+	};
+
+	it("accepts a workflow with no queues field (forward-compat)", () => {
+		const parsed = ManifestSchema.parse(baseWorkflow(undefined));
+		expect(parsed.workflows[0]?.queues).toEqual([]);
+	});
+
+	it("accepts a workflow with a valid queue declaration", () => {
+		const parsed = ManifestSchema.parse(baseWorkflow([validQueue]));
+		expect(parsed.workflows[0]?.queues).toEqual([validQueue]);
+	});
+
+	it("rejects a queue with a name that fails the queue-name regex", () => {
+		const bad = { ...validQueue, name: "Bad-Name" };
+		expect(() => ManifestSchema.parse(baseWorkflow([bad]))).toThrow();
+	});
+
+	it("rejects a workflow with duplicate queue names", () => {
+		expect(() =>
+			ManifestSchema.parse(
+				baseWorkflow([validQueue, { ...validQueue, schema: {} }]),
+			),
+		).toThrow();
+	});
+
+	it("accepts an empty queues array", () => {
+		const parsed = ManifestSchema.parse(baseWorkflow([]));
+		expect(parsed.workflows[0]?.queues).toEqual([]);
+	});
+});

@@ -93,6 +93,7 @@ function makeStore(maxCount = 100): SandboxStore {
 		logger,
 		keyStore: stubKeyStore,
 		maxCount,
+		queuesRoot: "/tmp/wfe-test-queues",
 	});
 }
 
@@ -466,6 +467,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 			logger,
 			keyStore: realKeyStore,
 			maxCount: 100,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 
 		const workflow = makeWorkflowManifest({
@@ -633,6 +635,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 2,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -673,6 +676,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -696,6 +700,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 2,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -739,6 +744,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		// First get: promise returned but never resolves.
 		const _ignored = store.get("o", workflowWithSha("a".repeat(64)), "src");
@@ -760,6 +766,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const resolvers: (() => void)[] = [];
 		const slow = makeFakeSandbox();
@@ -802,6 +809,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		factory.buildQueue.push(makeFakeSandbox());
 		factory.buildQueue.push(makeFakeSandbox());
@@ -828,6 +836,7 @@ describe("sandbox-store: termination eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const sb1 = factory.buildNext();
 		const sb2 = factory.buildNext();
@@ -852,6 +861,7 @@ describe("sandbox-store: termination eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const sb1 = factory.buildNext();
 		factory.buildNext();
@@ -875,6 +885,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const err = new Error("terminate failed");
 		const sb = makeFakeSandbox();
@@ -907,6 +918,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const a = makeFakeSandbox();
 		const b = makeFakeSandbox();
@@ -940,6 +952,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const failing = makeFakeSandbox();
 		const evictErr = new Error("evict-time terminate failed");

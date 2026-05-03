@@ -123,7 +123,7 @@ packages/
 ├── core/             # @workflow-engine/core (shared contract types: manifest schemas, trigger payloads, event types, Zod v4 re-export)
 ├── sdk/              # @workflow-engine/sdk (authoring API + vite plugin + sdk-support plugin)
 ├── sandbox/          # @workflow-engine/sandbox (QuickJS host + plugin mechanism)
-├── sandbox-stdlib/   # @workflow-engine/sandbox-stdlib (web-platform / fetch / timers / console plugins)
+├── sandbox-stdlib/   # @workflow-engine/sandbox-stdlib (web-platform / fetch / timers / console / mail / sql / queue plugins)
 └── runtime/          # @workflow-engine/runtime (HTTP server + executor + registry + SandboxStore)
 workflows/            # User-defined workflows (build target, not a package)
 infrastructure/       # OpenTofu IaC (modules + local/persistence/cluster/prod/staging environments)

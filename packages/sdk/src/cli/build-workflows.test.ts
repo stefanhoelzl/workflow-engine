@@ -1055,3 +1055,145 @@ describe("buildWorkflows: artifact shape", () => {
 		expect(result.manifest.workflows.length).toBeGreaterThan(0);
 	});
 });
+
+describe("buildWorkflows: queue discovery", () => {
+	const QUEUE_BASIC = `
+import { defineQueue, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+// Manifest schema requires at least one trigger.
+export const ping = httpTrigger({ method: "GET", handler: async () => ({ status: 200 }) });
+
+export const jobs = defineQueue({
+	schema: z.object({ url: z.string() }),
+});
+`;
+	const QUEUE_EXPLICIT_NAME = `
+import { defineQueue, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+// Manifest schema requires at least one trigger.
+export const ping = httpTrigger({ method: "GET", handler: async () => ({ status: 200 }) });
+
+export const jobs = defineQueue({
+	name: "jobsV2",
+	schema: z.object({ url: z.string() }),
+});
+`;
+	const QUEUE_NOT_EXPORTED = `
+import { defineQueue, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+// Manifest schema requires at least one trigger.
+export const ping = httpTrigger({ method: "GET", handler: async () => ({ status: 200 }) });
+
+const internal = defineQueue({
+	name: "internal",
+	schema: z.object({}),
+});
+internal;
+`;
+	const QUEUE_DUPLICATE_NAME = `
+import { defineQueue, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+// Manifest schema requires at least one trigger.
+export const ping = httpTrigger({ method: "GET", handler: async () => ({ status: 200 }) });
+
+export const jobs = defineQueue({ schema: z.object({}) });
+export const jobs2 = defineQueue({ name: "jobs", schema: z.object({}) });
+`;
+	const QUEUE_BAD_NAME_REGEX = `
+import { defineQueue, defineWorkflow, httpTrigger, z } from "@workflow-engine/sdk";
+
+export const workflow = defineWorkflow();
+
+// Manifest schema requires at least one trigger.
+export const ping = httpTrigger({ method: "GET", handler: async () => ({ status: 200 }) });
+
+export const jobs = defineQueue({
+	name: "Bad-Name",
+	schema: z.object({}),
+});
+`;
+
+	it("derives the queue's name from the export identifier when no `name` is passed", async () => {
+		const { result } = await buildFixture({
+			files: { "qd.ts": QUEUE_BASIC },
+			workflows: ["./qd.ts"],
+		});
+		const manifest = getManifest(result, "qd");
+		expect(manifest.queues).toHaveLength(1);
+		expect(manifest.queues[0]?.name).toBe("jobs");
+		// JSON Schema present
+		const schema = manifest.queues[0]?.schema as {
+			type: string;
+			properties: Record<string, unknown>;
+		};
+		expect(schema.type).toBe("object");
+		expect(schema.properties).toHaveProperty("url");
+	});
+
+	it("AST-injects `name` into defineQueue() calls (so __queue.put receives the resolved name)", async () => {
+		const { result } = await buildFixture({
+			files: { "qd.ts": QUEUE_BASIC },
+			workflows: ["./qd.ts"],
+		});
+		const bundle = getBundle(result, "qd");
+		expect(bundle).toContain('name: "jobs"');
+	});
+
+	it("explicit `name` argument wins over the export identifier", async () => {
+		const { result } = await buildFixture({
+			files: { "qe.ts": QUEUE_EXPLICIT_NAME },
+			workflows: ["./qe.ts"],
+		});
+		const manifest = getManifest(result, "qe");
+		expect(manifest.queues).toHaveLength(1);
+		expect(manifest.queues[0]?.name).toBe("jobsV2");
+		const bundle = getBundle(result, "qe");
+		// Author's explicit name remains; AST does NOT inject a second `name`.
+		expect(bundle).toContain('name: "jobsV2"');
+		expect(bundle).not.toContain('name: "jobs"');
+	});
+
+	it("non-exported defineQueue() calls are not in the manifest", async () => {
+		const { result } = await buildFixture({
+			files: { "qn.ts": QUEUE_NOT_EXPORTED },
+			workflows: ["./qn.ts"],
+		});
+		const manifest = getManifest(result, "qn");
+		expect(manifest.queues).toEqual([]);
+	});
+
+	it("rejects duplicate queue names within one workflow file", async () => {
+		await expect(
+			buildFixture({
+				files: { "qdup.ts": QUEUE_DUPLICATE_NAME },
+				workflows: ["./qdup.ts"],
+			}),
+		).rejects.toThrow(/queue name "jobs" is declared more than once/);
+	});
+
+	it("rejects a queue whose resolved name fails the queue-name regex", async () => {
+		await expect(
+			buildFixture({
+				files: { "qbad.ts": QUEUE_BAD_NAME_REGEX },
+				workflows: ["./qbad.ts"],
+			}),
+		).rejects.toThrow(/must match/);
+	});
+
+	it("emits an empty queues array for workflows that declare none", async () => {
+		const { result } = await buildFixture({
+			files: { "basic.ts": BASIC_WORKFLOW },
+			workflows: ["./basic.ts"],
+		});
+		const manifest = getManifest(result, "basic");
+		expect(manifest.queues).toEqual([]);
+	});
+});

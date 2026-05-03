@@ -63,6 +63,7 @@ function makeStore(): SandboxStore {
 		logger,
 		keyStore: stubKeyStore,
 		maxCount: 100,
+		queuesRoot: "/tmp/wfe-test-queues",
 	});
 }
 

@@ -59,6 +59,7 @@ async function mountApi(opts: MountOpts) {
 		logger,
 		executor: stubExecutor,
 		keyStore: stubKeyStore,
+		queuesRoot: "/tmp/wfe-test-queues",
 	});
 	const eventStore = (await createRealEventStoreForTest()).store;
 	const middleware = apiMiddleware({

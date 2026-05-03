@@ -103,6 +103,9 @@ const SQL_GLOBALS = ["__sql"] as const;
 // `mail` plugin (packages/sandbox-stdlib/src/mail/index.ts):
 const MAIL_GLOBALS = ["__mail"] as const;
 
+// `queue` plugin (packages/sandbox-stdlib/src/queue/index.ts):
+const QUEUE_GLOBALS = ["__queue"] as const;
+
 // `timers` plugin (packages/sandbox-stdlib/src/timers/index.ts):
 const TIMERS_GLOBALS = [
 	"clearInterval",
@@ -194,6 +197,7 @@ const EXPECTED_DELTA: readonly string[] = [
 	...SDK_SUPPORT_GLOBALS,
 	...SQL_GLOBALS,
 	...MAIL_GLOBALS,
+	...QUEUE_GLOBALS,
 	...TIMERS_GLOBALS,
 	...CONSOLE_GLOBALS,
 	...FETCH_GLOBALS,
@@ -252,7 +256,10 @@ describe("globals surface — R-14 enumeration", () => {
 	it("production plugin set adds exactly the documented globals over the baseline", async () => {
 		const baseline = await bootAndListGlobals(NOOP_PLUGINS);
 		const production = await bootAndListGlobals(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
+				owner: "owner",
+				queuesRoot: "/tmp/wfe-test-queues",
+			}),
 		);
 
 		const added = diff(production, baseline);
@@ -282,7 +289,10 @@ describe("globals surface — R-14 enumeration", () => {
 	it("`__wfe_exports__` is present in both baseline and production (workflow-IIFE-installed)", async () => {
 		const baseline = await bootAndListGlobals(NOOP_PLUGINS);
 		const production = await bootAndListGlobals(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
+				owner: "owner",
+				queuesRoot: "/tmp/wfe-test-queues",
+			}),
 		);
 		expect(baseline).toContain("__wfe_exports__");
 		expect(production).toContain("__wfe_exports__");
@@ -297,11 +307,15 @@ describe("globals surface — R-14 enumeration", () => {
 		"__sdk",
 		"__sql",
 		"__mail",
+		"__queue",
 		"$secrets",
 		"workflow",
 	] as const)("locked global %s rejects guest-side defineProperty redefinition", async (name) => {
 		const errorName = await bootAndTryLock(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
+				owner: "owner",
+				queuesRoot: "/tmp/wfe-test-queues",
+			}),
 			name,
 		);
 		expect(errorName).toBe("TypeError");

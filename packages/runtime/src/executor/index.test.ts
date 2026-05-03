@@ -120,8 +120,11 @@ describe("executor", () => {
 		}
 		expect(call[0]).toBe("trig");
 		expect(call[1]).toEqual({ hello: "world" });
-		// sb.run takes no 3rd arg — runtime metadata lives on bus events only
-		expect(call).toHaveLength(2);
+		// sb.run's 3rd arg carries per-invocation extras: the queue plugin
+		// reads `extras.queue.{owner, repo}` in `onBeforeRunStarted` to
+		// resolve queue file paths. Other plugins ignore the field.
+		expect(call).toHaveLength(3);
+		expect(call[2]).toEqual({ queue: { owner: "t0", repo: "r0" } });
 
 		expect(seen).toHaveLength(1);
 		const first = seen[0];

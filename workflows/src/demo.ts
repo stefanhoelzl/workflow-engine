@@ -1,6 +1,7 @@
 import {
 	action,
 	cronTrigger,
+	defineQueue,
 	defineWorkflow,
 	env,
 	executeSql,
@@ -42,6 +43,12 @@ const ETHEREAL_MSGID_RE = /MSGID=([^\s\]]+)/;
 // Length filter for the parameterized sample query — picks a non-empty slice
 // of the `rna` table without relying on its exact contents.
 const SAMPLE_RNA_LEN = 100;
+
+// Per-item note caps. The queue's hard byte cap is 1 KB host-side; these
+// schema-level caps shape author intent (notes are short labels).
+const JOB_NOTE_MAX = 64;
+const DRAIN_MAX_ITEMS = 100;
+const DRAIN_DEFAULT_ITEMS = 10;
 
 export const workflow = defineWorkflow({
 	env: {
@@ -581,6 +588,74 @@ export const inbound = imapTrigger({
 			);
 		}
 		return { command: [`UID STORE ${msg.uid} +FLAGS (\\Seen)`] };
+	},
+});
+// ---------------------------------------------------------------------------
+// defineQueue — small durable FIFO scoped to this workflow. Items survive
+// across invocations, capped at 1000 entries × 1024 bytes each. Producer
+// and consumer are separate triggers under the same workflow; the
+// `(owner, repo, workflow, queueName)` identity makes the queue invisible
+// to any other workflow.
+// ---------------------------------------------------------------------------
+
+// Author-facing schema. Build pipeline derives JSON Schema and seeds an
+// empty file at upload time; runtime validates on both put and get.
+export const jobs = defineQueue({
+	schema: z.object({
+		url: z.string().meta({ example: "https://example.com" }),
+		// Small, intentional payload — the 1 KB cap is per item.
+		note: z.exactOptional(z.string().max(JOB_NOTE_MAX)),
+	}),
+});
+
+// Producer: HTTP webhook puts the body straight onto the queue. Demonstrates
+// schema validation at the bridge (mismatch surfaces as a 5xx with a
+// `system.error name="queue.put"` event payload).
+export const enqueueJob = httpTrigger({
+	method: "POST",
+	request: {
+		body: z.object({
+			url: z.string(),
+			note: z.exactOptional(z.string().max(JOB_NOTE_MAX)),
+		}),
+	},
+	handler: async ({ body }) => {
+		await jobs.put(body);
+		return { status: 202, body: { enqueued: true } };
+	},
+});
+
+// Consumer: drains up to N items per invocation; stops when the queue
+// empties (`get()` returns `undefined`). The drainOnce manual trigger
+// gives a single-shot drain for demos / tests.
+export const drainOnce = manualTrigger({
+	input: z.object({
+		max: z
+			.number()
+			.int()
+			.min(1)
+			.max(DRAIN_MAX_ITEMS)
+			.default(DRAIN_DEFAULT_ITEMS),
+	}),
+	output: z.object({
+		drained: z.array(
+			z.object({
+				url: z.string(),
+				note: z.exactOptional(z.string()),
+			}),
+		),
+	}),
+	handler: async ({ max }) => {
+		const drained: { url: string; note?: string }[] = [];
+		for (let i = 0; i < max; i++) {
+			// biome-ignore lint/performance/noAwaitInLoops: queue ops are intentionally serial — `get()` removes the head item; we cannot fan out to `Promise.all` because each pop must observe the previous pop's result
+			const item = await jobs.get();
+			if (item === undefined) {
+				break;
+			}
+			drained.push(item);
+		}
+		return { drained };
 	},
 });
 // touch 1777132961

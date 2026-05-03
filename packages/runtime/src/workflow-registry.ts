@@ -25,6 +25,11 @@ import type {
 	WsTriggerDescriptor,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
+import {
+	applyQueueDiff,
+	diffManifests,
+	reconcileQueueFiles,
+} from "./queue-fs-lifecycle.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 import type { StorageBackend } from "./storage/index.js";
@@ -556,6 +561,12 @@ interface WorkflowRegistryOptions {
 	// parallel with `Promise.allSettled`. The registry does NOT manage
 	// backend lifecycle (start/stop); the caller (main.ts) owns that.
 	readonly backends?: readonly TriggerSource[];
+	// Filesystem root for queue files (`<PERSISTENCE_PATH>/queues`). The
+	// registry diffs queue declarations on every upload and creates / unlinks
+	// files atomically with the metadata swap so the queue plugin's
+	// "file exists ⇔ queue declared" invariant holds across re-uploads,
+	// removed declarations, and removed workflows.
+	readonly queuesRoot: string;
 }
 
 interface RegisterOwnerOptions {
@@ -904,6 +915,44 @@ function createWorkflowRegistry(
 		};
 	}
 
+	// Atomic-with-metadata-swap queue file lifecycle: diff old vs new queue
+	// declarations and apply the corresponding fs ops before the in-memory
+	// state swap. Errors here surface as registration failure so a
+	// partially-applied diff doesn't leave the runtime claiming a queue
+	// exists while its file does not (or vice versa).
+	async function applyQueueLifecycleForUpload(
+		owner: string,
+		repo: string,
+		state: OwnerRepoState,
+	): Promise<{ ok: true } | { ok: false; result: RegisterResult }> {
+		const oldState = getRepoState(owner, repo);
+		const oldWorkflows = oldState?.workflows ?? new Map();
+		const queueDiff = diffManifests({
+			oldWorkflows,
+			newWorkflows: state.workflows,
+		});
+		try {
+			await applyQueueDiff({
+				queuesRoot: options.queuesRoot,
+				owner,
+				repo,
+				removedWorkflows: queueDiff.removedWorkflows,
+				perWorkflow: queueDiff.perWorkflow,
+				newWorkflows: queueDiff.newWorkflows,
+				logger: options.logger,
+			});
+			return { ok: true };
+		} catch (err) {
+			const error = `failed to apply queue file lifecycle: ${err instanceof Error ? err.message : String(err)}`;
+			options.logger.error("workflow-registry.queue-lifecycle-failed", {
+				owner,
+				repo,
+				error,
+			});
+			return { ok: false, result: { ok: false, error } };
+		}
+	}
+
 	async function registerOwner(
 		owner: string,
 		repo: string,
@@ -937,6 +986,14 @@ function createWorkflowRegistry(
 				});
 				return { ok: false, error };
 			}
+		}
+		const queueLifecycleResult = await applyQueueLifecycleForUpload(
+			owner,
+			repo,
+			state,
+		);
+		if (!queueLifecycleResult.ok) {
+			return queueLifecycleResult.result;
 		}
 		setRepoState(owner, repo, state);
 		options.logger.info("workflow-registry.registered", {
@@ -1007,6 +1064,43 @@ function createWorkflowRegistry(
 		return { owner, repo };
 	}
 
+	function snapshotLoadedWorkflows(): Map<
+		string,
+		Map<string, Map<string, WorkflowManifest>>
+	> {
+		const loaded = new Map<
+			string,
+			Map<string, Map<string, WorkflowManifest>>
+		>();
+		for (const [owner, repos] of ownerStates) {
+			const repoMap = new Map<string, Map<string, WorkflowManifest>>();
+			for (const [repo, state] of repos) {
+				const wfMap = new Map<string, WorkflowManifest>();
+				for (const [name, wf] of state.workflows) {
+					wfMap.set(name, wf);
+				}
+				repoMap.set(repo, wfMap);
+			}
+			loaded.set(owner, repoMap);
+		}
+		return loaded;
+	}
+
+	async function runBootQueueReconcile(): Promise<void> {
+		try {
+			await reconcileQueueFiles({
+				queuesRoot: options.queuesRoot,
+				loadedWorkflows: snapshotLoadedWorkflows(),
+				logger: options.logger,
+			});
+		} catch (err) {
+			options.logger.error("workflow-registry.queue-reconcile-failed", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			throw err;
+		}
+	}
+
 	async function recover(): Promise<void> {
 		if (!backend) {
 			return;
@@ -1021,6 +1115,12 @@ function createWorkflowRegistry(
 			}
 			await recoverOne(backend, key, parsed.owner, parsed.repo);
 		}
+		// After every (owner, repo) is loaded, walk `<queuesRoot>/` and
+		// reconcile against the current manifests: unlink orphan files that
+		// belong to no declared queue, restore missing files for declared
+		// queues. Closes the SIGKILL-between-manifest-persist-and-fs-op
+		// window. Tolerates a missing root.
+		await runBootQueueReconcile();
 	}
 
 	function list(owner?: string, repo?: string): WorkflowEntry[] {

@@ -58,6 +58,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 			logger,
 			executor: stubExecutor,
 			keyStore,
+			queuesRoot: "/tmp/wfe-test-queues",
 		});
 		const eventStore = (await createRealEventStoreForTest()).store;
 		const middleware = apiMiddleware({

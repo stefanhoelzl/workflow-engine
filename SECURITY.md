@@ -136,6 +136,7 @@ table below is the navigation map:
 | Invocation event writes                                          | Runtime stamps `owner` + `repo` in its `sb.onEvent` receiver before forwarding to the bus (the sandbox has no identity)        | `executor/spec.md`, §2 R-2, R-8    |
 | `POST /webhooks/:owner/:repo/:workflow/:trigger`                 | Registry lookup by `(owner, repo, workflow, trigger)` tuple                                                                    | §3, `http-trigger/spec.md`         |
 | Workflow bundle storage                                          | Storage key = `workflows/<owner>/<repo>.tar.gz`                                                                                | `workflow-registry/spec.md`        |
+| Queue file paths                                                 | Path = `<queuesRoot>/<owner>/<repo>/<workflow>/<queueName>.ndjson`. None of the segments come from guest input; queue name is regex-validated at build AND at the host bridge. Worker opens with `O_NOFOLLOW`. | `queues/spec.md`, §2 T-Q1, T-Q2 |
 
 The regex-validated owner + repo identifiers are NOT a permission check — they
 are a format check. Every mechanism above is load-bearing; weakening any one
@@ -338,6 +339,15 @@ See R-14 below — the enumeration test fails on additions or removals.
   - From `mail` (sandbox-stdlib): `__mail` — locked outer, frozen
     inner `{send}`. Backed by the private `$mail/send` descriptor
     captured by the plugin's IIFE and phase-3-deleted.
+  - From `queue` (sandbox-stdlib): `__queue` — locked outer, frozen
+    inner `{put, get}`. Backed by the private `$queue/do` descriptor
+    captured by the plugin's IIFE and phase-3-deleted. The plugin
+    config carries the per-sandbox `(owner, workflow, queuesRoot,
+    declaredQueues, schemas)`; the per-invocation `repo` arrives via
+    `RunInput.extras.queue.repo` and is captured in the plugin's
+    `onBeforeRunStarted` hook for the duration of the run. Worker-
+    side I/O uses `O_NOFOLLOW` and tmpfile + `rename(2)` for the
+    crash-atomic `get`.
 - From `secrets` (runtime/plugins/secrets.ts):
   - `workflow` — locked outer, frozen inner `{name, env}` (env values
     are strings, frozen shallowly). Populated by the plugin's Phase-2
@@ -439,7 +449,11 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
 | S12 | A private descriptor fails to auto-delete in phase 3 (descriptor marked `public: true` by mistake, or phase-3 iteration is skipped) and becomes reachable from guest code | Elevation of privilege (audit-log forging / bridge access) |
 | S13 | A plugin retains worker-side long-lived state (timers Map, pending `Callable`s, in-flight fetch handles) that is not captured by the per-run VM snapshot+restore — failing to clean up on `onRunFinished` leaks state across runs or fires callbacks after the run closed. Guest-visible state is structurally reset by snapshot-restore; S13 now covers only the host-side residue. | Tampering (cross-run state) / DoS |
 | S14 | A plugin emits events with hand-crafted `seq`/`ref`/`ts` values (via direct `bridge.*` mutation) that desync the event stream | Tampering (audit-log integrity) |
-| S15 | Guest code mutates a locked guest-visible global (`__sdk`, `__sql`, `__mail`, `$secrets`, `workflow`) to swap a dispatcher, alter a frozen view, or replace exports between runs. Mitigation: locked-outer + frozen-inner descriptor pattern uniformly applied at install time (parallels S11 for `__sdk`). For the lone unlocked surface `__wfe_exports__`, guests CAN rewrite it today; impact is bounded to the same run because the host reads exports once per `run()` (sister finding F-4 tracks descriptor locking). | Tampering (audit-log integrity / surface integrity) |
+| S15 | Guest code mutates a locked guest-visible global (`__sdk`, `__sql`, `__mail`, `__queue`, `$secrets`, `workflow`) to swap a dispatcher, alter a frozen view, or replace exports between runs. Mitigation: locked-outer + frozen-inner descriptor pattern uniformly applied at install time (parallels S11 for `__sdk`). For the lone unlocked surface `__wfe_exports__`, guests CAN rewrite it today; impact is bounded to the same run because the host reads exports once per `run()` (sister finding F-4 tracks descriptor locking). | Tampering (audit-log integrity / surface integrity) |
+| T-Q1 | Path traversal via queue name (e.g. `../../other-tenant/...`) reaching the queue plugin's worker. | Tampering / information disclosure |
+| T-Q2 | Symlink planted at `<queuesRoot>/<owner>/<repo>/<workflow>/<name>.ndjson` pointing into another tenant's tree, used by the worker to read or write that other tree on behalf of the current sandbox. | Tampering / information disclosure |
+| T-Q3 | Storage DoS via unbounded queue growth (a runaway producer fills the disk). | DoS |
+| T-Q4 | TOCTOU on the queue `get` tmpfile + rename pair — a concurrent writer clobbers the in-flight rename. | Tampering |
 
 ### Mitigations (current)
 
@@ -588,6 +602,30 @@ directly — only `ctx.emit(kind, name, extra, options?)` and
   trigger invocation at a time per workflow (cross-workflow invocations
   remain parallel). Combined with per-run cleanup, module-state race
   conditions across invocations are eliminated.
+- **Queue path safety (T-Q1, T-Q2).** The queue plugin's worker builds
+  paths from a sandbox-scoped, runtime-injected config carrying frozen
+  `(owner, workflow, queuesRoot)` plus a per-run `repo` captured in
+  `onBeforeRunStarted` from `RunInput.extras.queue.repo`. No path
+  segment originates in untrusted guest input. Queue names are
+  regex-validated at build time against `^[a-z][a-zA-Z0-9]*$` (the
+  shared identifier regex) AND re-validated at the host bridge entry
+  as defence-in-depth. The plugin opens every file with `O_NOFOLLOW`,
+  so a symlink planted at the canonical path causes `open()` to fail
+  with `ELOOP` — the worker maps this to `queue.gone` and refuses to
+  follow into another tree. The runtime owns the entire `<queuesRoot>`
+  subtree; no other process writes there.
+- **Queue storage caps (T-Q3).** Hard caps enforced at the host bridge
+  before any disk write: per-item ≤ 1 KB encoded JSON (rejected with
+  typed `queue.itemTooLarge`), per-queue ≤ 1k items (rejected with
+  typed `queue.full`). Total disk footprint per workflow is bounded
+  at `1 KB × 1k × |declared queues|`.
+- **Queue rename atomicity (T-Q4).** The single-writer deployment
+  contract (one Quadlet unit per env) eliminates inter-process races.
+  Per-workflow `runQueue` serialization eliminates intra-process races
+  on the same queue file. Tmpfile names include a `crypto.randomUUID()`
+  suffix as belt-and-braces against future relaxation of either
+  invariant. POSIX `rename(2)` is atomic; a SIGKILL between tmpfile
+  fsync and the rename leaves the original file intact.
 
 ### Residual risks
 
@@ -964,7 +1002,7 @@ Additional standing rules that predate the plugin rewrite:
 
 A "system-bridge plugin" is any sandbox-stdlib plugin that exposes a
 host-side I/O capability to the guest under the reserved `system.*`
-event prefix (R-7) — currently `fetch`, `mail`, `sql`. Adding a new one
+event prefix (R-7) — currently `fetch`, `mail`, `sql`, `queue`. Adding a new one
 (IMAP host-side, S3 client, gRPC, LDAP, etc.) is a high-impact change:
 each item below has been the subject of a prior security finding or
 spec refinement, so the checklist is review-mandatory, not aspirational.
