@@ -4,6 +4,11 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
+# This Quadlet runs as a user-mode systemd unit under the `wfe-caddy`
+# host user (linger-enabled). Podman runs rootless. Caddy's process
+# inside the container runs as the image's default UID (root inside
+# the alpine image, mapped via user namespace to the wfe-caddy host
+# user — so on-host escape lands the attacker on wfe-caddy, not root).
 Image=${caddy_image}
 # Host networking: Caddy shares the host's netns so it can reach the
 # wfe-{prod,staging} apps on 127.0.0.1:{8081,8082}. With bridge networking,

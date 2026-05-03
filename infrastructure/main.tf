@@ -91,18 +91,6 @@ resource "scaleway_instance_security_group" "vps" {
   }
 }
 
-# Tracks the rendered cloud-init content. Any change to the template (or its
-# inputs) flips the hash → forces VPS replacement via the lifecycle rule on
-# `scaleway_instance_server.vps`. Without this, the Scaleway provider would
-# update `user_data` in-place (API-mutable), but cloud-init only runs at
-# first boot — the new config would never take effect on the existing box.
-resource "terraform_data" "cloud_init" {
-  input = sha256(templatefile("${path.module}/cloud-init.yaml", {
-    ssh_port              = var.ssh_port
-    deploy_ssh_public_key = var.deploy_ssh_public_key
-  }))
-}
-
 resource "scaleway_instance_server" "vps" {
   name              = "wfe"
   type              = var.instance_type
@@ -110,35 +98,41 @@ resource "scaleway_instance_server" "vps" {
   ip_id             = scaleway_instance_ip.vps.id
   security_group_id = scaleway_instance_security_group.vps.id
 
-  # Force replacement when cloud-init template content changes.
-  lifecycle {
-    replace_triggered_by = [terraform_data.cloud_init]
-  }
-
   # Local SSD root volume (10 GB, included with STARDUST1-S, free).
   # Local SSDs are bound to the instance's lifecycle — they die on
-  # instance replacement. For data that should survive replacement,
-  # add a separate `scaleway_block_volume` SBS resource and mount it at
-  # /srv via cloud-init (additional volume, not root). Root volume on
-  # Scaleway is always bound to instance creation (the image is written
-  # at that point), so root-volume survival across replacement is not
-  # achievable via `delete_on_termination = false` alone — tofu would
-  # orphan the old volume and create a fresh one from the image anyway.
+  # instance replacement. With the in-place convergence mechanism
+  # (host.tf + the unified null_resources below), routine host-config
+  # edits no longer replace the VPS, so /srv data survives. Replacement
+  # still happens when the cloud-init bootstrap minimum changes (the
+  # provider sees user_data drift and applies it; cloud-init only runs
+  # at first boot, so a fresh boot is required) or when the Scaleway
+  # resource shape changes (instance_type, image).
   root_volume {
     size_in_gb            = 10
     volume_type           = "l_ssd"
     delete_on_termination = true
   }
 
-  # Any change to user_data triggers VPS replacement. Cloud-init only runs at
-  # first boot, so this is the only way to re-bake host config (sshd port,
-  # firewall rules, deploy user's SSH key, swapfile). Costs: local-disk data
-  # at /srv/wfe/* + /srv/caddy/data is lost on replacement; the IP survives
-  # (separate scaleway_instance_ip resource), so DNS need not change.
+  # Cloud-init runs only at first boot. The Scaleway provider treats
+  # user_data as API-mutable, so editing the rendered cloud-init here
+  # would update the field but not re-execute it on the existing box.
+  # That is fine — cloud-init now contains only the bootstrap minimum
+  # (deploy user, sudoers, sshd hardening, ufw baseline). All other
+  # host config converges in place via the unified null_resources below.
+  # If the bootstrap minimum genuinely needs to be re-baked (e.g., SSH
+  # port rotation), the operator runs `tofu taint scaleway_instance_server.vps`
+  # to force replacement explicitly.
   user_data = {
     cloud-init = templatefile("${path.module}/cloud-init.yaml", {
       ssh_port              = var.ssh_port
       deploy_ssh_public_key = var.deploy_ssh_public_key
+      # Single source of truth for sshd hardening + sudoers content: the
+      # same files the in-place convergence (host.tf) manages. Strings are
+      # pre-indented to 6 spaces (matching cloud-init's `content: |` block
+      # level) because tofu's `indent()` only prefixes lines 2+, leaving
+      # line 1 unindented and breaking the YAML literal block.
+      sshd_hardening_content = "      ${replace(templatefile("${path.module}/files/sshd_hardening.conf.tmpl", { ssh_port = var.ssh_port }), "\n", "\n      ")}"
+      sudoers_deploy_content = "      ${replace(file("${path.module}/files/sudoers_deploy"), "\n", "\n      ")}"
     })
   }
 }
@@ -155,6 +149,7 @@ locals {
       image_ref          = "${var.app_image}:release"
       data_dir           = "/srv/wfe/prod"
       memory_max         = "350M"
+      runtime_user       = "wfe-prod"
       gh_oauth_client_id = var.gh_oauth_client_id_prod
       gh_oauth_secret    = var.gh_oauth_client_secret_prod
       # NOTE: separator is `;` to match the currently-deployed :release/:main
@@ -169,6 +164,7 @@ locals {
       image_ref          = "${var.app_image}:main"
       data_dir           = "/srv/wfe/staging"
       memory_max         = "350M"
+      runtime_user       = "wfe-staging"
       gh_oauth_client_id = var.gh_oauth_client_id_staging
       gh_oauth_secret    = var.gh_oauth_client_secret_staging
       auth_allow         = "github:user:stefanhoelzl"
@@ -189,17 +185,17 @@ locals {
 # Block until cloud-init has finished. Every other provisioner depends on this
 # so we never race the bootstrap.
 resource "null_resource" "wait_cloud_init" {
-  triggers = {
+  triggers = merge(local.ssh_triggers, {
     server_id = scaleway_instance_server.vps.id
-  }
+  })
 
   connection {
-    type        = local.ssh.type
-    host        = local.ssh.host
-    user        = local.ssh.user
-    port        = local.ssh.port
-    private_key = local.ssh.private_key
-    timeout     = local.ssh.timeout
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
   }
 
   provisioner "remote-exec" {
@@ -210,5 +206,346 @@ resource "null_resource" "wait_cloud_init" {
       "cloud-init status --wait || [ $? -eq 2 ]",
       "cloud-init status | grep -q '^status: done$'",
     ]
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-place convergence mechanism
+#
+# Stage order: users → dirs → packages → files_pre → exec → ufw → files_post
+# Each stage's null_resource uses for_each over a typed map; replacement on
+# content/spec hash flip → destroy provisioner of OLD instance runs, then
+# create provisioner of NEW writes the new content + on-change hook fires.
+#
+# All resources share `local.ssh` for the SSH connection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+locals {
+  # Merge per-area file maps. Each entry's `stage` key (`pre` or `post`)
+  # selects which null_resource (managed_file_pre / managed_file_post) owns it.
+  managed_files = merge(
+    local.managed_files_host,
+    local.managed_files_apps,
+    local.managed_files_caddy,
+  )
+
+  managed_files_pre  = { for k, v in local.managed_files : k => v if v.stage == "pre" }
+  managed_files_post = { for k, v in local.managed_files : k => v if v.stage == "post" }
+
+  # SSH connection details that each convergence resource embeds in its
+  # `triggers` map. Destroy-time provisioners can only reference attributes
+  # of their own resource via `self.*`, so the connection block of any
+  # resource with a destroy provisioner must read SSH parameters from
+  # `self.triggers.*` rather than `local.ssh.*`. Keeping the values in
+  # state is fine — the state file is AES-GCM-encrypted at rest via the
+  # `encryption {}` block.
+  ssh_triggers = {
+    ssh_host        = local.ssh.host
+    ssh_user        = local.ssh.user
+    ssh_port        = tostring(local.ssh.port)
+    ssh_private_key = local.ssh.private_key
+  }
+}
+
+# Stage 1: per-tenant container-runtime users.
+# Sudoers (/etc/sudoers.d/deploy) is owned by cloud-init, NOT by this
+# convergence mechanism — managing the sudoers file in-place created a
+# destroy/create race (old destroy provisioner could delete the file
+# after the new create wrote it, leaving the box with no NOPASSWD rules
+# and no way to self-recover). Edits to the sudoers list now trigger
+# VPS replacement, which is acceptable at the expected edit frequency
+# (~1/year — adding a new converge primitive is rare).
+resource "null_resource" "managed_user" {
+  for_each   = local.managed_users
+  depends_on = [null_resource.wait_cloud_init]
+
+  triggers = merge(local.ssh_triggers, {
+    instance = null_resource.wait_cloud_init.id
+    spec     = "${each.value.shell}|${each.value.subuid}"
+    user     = each.key
+  })
+
+  lifecycle {
+    precondition {
+      # Subuid ranges across managed_users must not overlap. For each entry,
+      # count how many OTHER entries overlap with this one — must be zero.
+      # Two ranges [a1,b1] and [a2,b2] overlap iff max(a1,a2) <= min(b1,b2).
+      condition = length([
+        for k, v in local.managed_users :
+        k if k != each.key && (
+          tonumber(split("-", v.subuid)[0]) <= tonumber(split("-", each.value.subuid)[1]) &&
+          tonumber(split("-", v.subuid)[1]) >= tonumber(split("-", each.value.subuid)[0])
+        )
+      ]) == 0
+      error_message = "Subuid range for managed user '${each.key}' (${each.value.subuid}) overlaps another entry. Ranges must be non-overlapping; each entry needs a unique 65536-id slice."
+    }
+  }
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      # Idempotent create. useradd fails if user exists, so guard.
+      # --create-home so /home/<user> exists for the user-mode Quadlet
+      # drop-in (managed via managed_dirs and managed_files in later stages).
+      # Note: useradd auto-allocates subuids/subgids per /etc/login.defs.
+      # We deliberately overwrite those with our explicit ranges via the
+      # managed_files entries for /etc/subuid + /etc/subgid (rendered from
+      # local.managed_users) — usermod --add-subuids would STACK on top of
+      # the auto-allocated range, leaving each user with two ranges and
+      # opening cross-tenant overlaps.
+      "id ${each.key} >/dev/null 2>&1 || sudo /usr/sbin/useradd --create-home --shell ${each.value.shell} ${each.key}",
+      # Reconcile shell + lock state.
+      "sudo /usr/sbin/usermod --shell ${each.value.shell} --lock ${each.key}",
+      # Enable lingering so the user's systemd starts at boot — required
+      # for user-mode Quadlets to be picked up by the Quadlet generator
+      # without an interactive login. Idempotent.
+      "sudo /usr/bin/loginctl enable-linger ${each.key}",
+      # Wait for /run/user/<UID>/bus to exist (user systemd up).
+      "for i in $(seq 1 10); do test -S /run/user/$(id -u ${each.key})/bus && break; sleep 1; done",
+    ]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    # Disable linger first so the user's systemd stops, then userdel.
+    # userdel --remove fails if processes are still running — that's the
+    # desired fail-loud behavior (operator must remove the tenant's
+    # Quadlet first; tofu destroys dependents in reverse-dependency order
+    # so this should not happen for clean tenant removal).
+    inline = [
+      "sudo /usr/bin/loginctl disable-linger ${self.triggers.user} 2>/dev/null || true",
+      "sudo /usr/sbin/userdel --remove ${self.triggers.user}",
+    ]
+  }
+}
+
+# Stage 2: directories. install -d is idempotent and creates parents.
+resource "null_resource" "managed_dir" {
+  for_each = local.managed_dirs
+  depends_on = [
+    null_resource.wait_cloud_init,
+    null_resource.managed_user,
+  ]
+
+  triggers = merge(local.ssh_triggers, {
+    instance = null_resource.wait_cloud_init.id
+    spec     = "${each.value.mode}|${each.value.owner}|${each.value.group}"
+    path     = each.key
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo /usr/bin/install -d -m ${each.value.mode} -o ${each.value.owner} -g ${each.value.group} ${each.key}",
+    ]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    # rmdir fails on non-empty dirs — protects against accidental data
+    # loss if a /srv/* dir is removed from the map while data exists.
+    inline = ["sudo /usr/bin/rm -df ${self.triggers.path} 2>/dev/null || true"]
+  }
+}
+
+# Stage 3: apt packages. List-based; replaces when the joined-sorted hash
+# changes. No destroy provisioner — removing a package from the list does
+# NOT auto-purge (apt state is shared with the host's own history).
+resource "null_resource" "managed_packages" {
+  depends_on = [null_resource.wait_cloud_init]
+
+  triggers = merge(local.ssh_triggers, {
+    instance = null_resource.wait_cloud_init.id
+    list     = sha256(join(",", sort(local.managed_packages)))
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo /usr/bin/apt-get update -qq",
+      "sudo /usr/bin/apt-get install -y ${join(" ", local.managed_packages)}",
+    ]
+  }
+}
+
+# Stage 4: pre-stage managed files (host-level configs + env files +
+# Caddyfile). Pre-stage runs before exec/ufw/files_post.
+resource "null_resource" "managed_file_pre" {
+  for_each = local.managed_files_pre
+  depends_on = [
+    null_resource.managed_dir,
+    null_resource.managed_packages,
+  ]
+
+  triggers = merge(local.ssh_triggers, {
+    instance   = null_resource.wait_cloud_init.id
+    content    = sha256(each.value.content)
+    spec       = "${each.value.path}|${each.value.mode}|${each.value.owner}|${each.value.group}|${each.value.sudo}"
+    on_destroy = each.value.on_destroy
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = each.value.content
+    destination = "/tmp/mf-${each.key}"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "${each.value.sudo ? "sudo /usr/bin/" : ""}install -m ${each.value.mode} -o ${each.value.owner} -g ${each.value.group} /tmp/mf-${each.key} ${each.value.path}",
+      "rm -f /tmp/mf-${each.key}",
+      each.value.on_change != "" ? each.value.on_change : ":",
+    ]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    inline     = [self.triggers.on_destroy != "" ? self.triggers.on_destroy : ":"]
+  }
+}
+
+# Stage 5: imperative one-shots (subuid is folded into managed_user's
+# create; what remains is swapfile + service enables).
+resource "null_resource" "managed_exec" {
+  for_each   = local.managed_exec
+  depends_on = [null_resource.managed_file_pre]
+
+  triggers = merge(local.ssh_triggers, {
+    instance   = null_resource.wait_cloud_init.id
+    change_key = each.value.change_key
+    on_destroy = each.value.on_destroy
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [each.value.on_create]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    inline     = [self.triggers.on_destroy != "" ? self.triggers.on_destroy : ":"]
+  }
+}
+
+# Stage 6: app-side firewall rules. Additive on top of cloud-init's
+# ssh-only baseline.
+resource "null_resource" "managed_ufw" {
+  for_each   = local.managed_ufw
+  depends_on = [null_resource.managed_exec]
+
+  triggers = merge(local.ssh_triggers, {
+    instance = null_resource.wait_cloud_init.id
+    rule     = "${each.value.port}/${each.value.proto}"
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = ["sudo /usr/sbin/ufw allow ${each.value.port}/${each.value.proto}"]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    inline     = ["sudo /usr/sbin/ufw delete allow ${self.triggers.rule}"]
+  }
+}
+
+# Stage 7: post-stage managed files (Quadlet definitions). Post-stage
+# runs after pre-stage files exist (env files, Caddyfile) AND after
+# managed_exec (services enabled, swap on) AND after managed_ufw
+# (80/443 open before Caddy starts ACME).
+resource "null_resource" "managed_file_post" {
+  for_each = local.managed_files_post
+  depends_on = [
+    null_resource.managed_file_pre,
+    null_resource.managed_exec,
+    null_resource.managed_ufw,
+  ]
+
+  triggers = merge(local.ssh_triggers, {
+    instance   = null_resource.wait_cloud_init.id
+    content    = sha256(each.value.content)
+    spec       = "${each.value.path}|${each.value.mode}|${each.value.owner}|${each.value.group}|${each.value.sudo}"
+    on_destroy = each.value.on_destroy
+  })
+
+  connection {
+    type        = "ssh"
+    host        = self.triggers.ssh_host
+    user        = self.triggers.ssh_user
+    port        = self.triggers.ssh_port
+    private_key = self.triggers.ssh_private_key
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = each.value.content
+    destination = "/tmp/mf-${each.key}"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "${each.value.sudo ? "sudo /usr/bin/" : ""}install -m ${each.value.mode} -o ${each.value.owner} -g ${each.value.group} /tmp/mf-${each.key} ${each.value.path}",
+      "rm -f /tmp/mf-${each.key}",
+      each.value.on_change != "" ? each.value.on_change : ":",
+    ]
+  }
+
+  provisioner "remote-exec" {
+    when       = destroy
+    on_failure = continue
+    inline     = [self.triggers.on_destroy != "" ? self.triggers.on_destroy : ":"]
   }
 }

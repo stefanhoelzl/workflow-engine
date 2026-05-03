@@ -30,7 +30,11 @@ infrastructure/
   Dockerfile          # app image (built by GHA, not by tofu)
   main.tf             # backend, providers, server, IP, security group
   variables.tf
-  cloud-init.yaml     # bootstraps deploy user, podman, sshd, ufw, fail2ban, sysctls
+  cloud-init.yaml     # bootstrap minimum: deploy user, sudoers, sshd port, ufw allow-ssh, FORWARD policy
+  host.tf             # in-place host config: managed_users (wfe-prod/staging/caddy),
+                      # managed_dirs, managed_packages, managed_files (sshd hardening,
+                      # fail2ban jail, sysctl, podman timer override), managed_exec
+                      # (swap, service enables), managed_ufw (80/443)
   caddy.tf            # Caddy quadlet + Caddyfile
   apps.tf             # wfe-prod + wfe-staging quadlets + env-file delivery
   dns.tf              # Dynu A records
@@ -67,13 +71,55 @@ The VPS's `podman-auto-update.timer` (1-min interval) does the actual rotation: 
 
 ## Apply infra (operator-driven)
 
-`apply-infra.yml` runs only on `workflow_dispatch`. Operator triggers it via the GitHub Actions UI. The workflow:
+Tofu apply runs only on operator action (no scheduled or push-based mutation). All `TF_VAR_*` values are sourced from GHA secrets / the operator's local secret store; bytes never land on the runner's filesystem.
 
-1. Renders per-env env files at `/tmp/wfe-secrets/<env>.env` on the runner from GHA secrets (`GH_OAUTH_CLIENT_ID_PROD`, `GH_OAUTH_CLIENT_SECRET_PROD`, `AUTH_ALLOW_PROD`, etc.) via `umask 077` heredoc.
-2. Runs `tofu init && tofu apply` against `infrastructure/`.
-3. Always cleans up `/tmp/wfe-secrets/`.
+Per-env env-file content is rendered inline in `local.env_files` (apps.tf) from `TF_VAR_*` values, fed into the unified `managed_files_apps["wfe_env_<env>"]` map entry, and written to the host via `provisioner "file" { content = ... }`. The bytes do enter tofu state, but state is AES-GCM-encrypted at rest via `main.tf`'s `encryption {}` block (passphrase from `TF_VAR_state_passphrase`). The map entry's content-hash trigger flips on secret rotation → file is rewritten to `/etc/wfe/<env>.env` → `wfe-<env>.service` is restarted by the on-change hook.
 
-Tofu's `null_resource.wfe_env_file` uses `provisioner "file"` with `source = "/tmp/wfe-secrets/<env>.env"`. The bytes are read at apply time and streamed over SSH; only the file's md5 hash and the path string land in state. No plaintext secret ever enters tofu state.
+## Editing host config in place
+
+Most host-config edits — sshd hardening, fail2ban tuning, sysctl values, package list, dirs, swap, app-side ufw rules, Quadlet content, env files — converge on the running VPS via the typed maps in `host.tf`, `apps.tf`, and `caddy.tf`. Edit the relevant `local.managed_*` entry, run `tofu apply`, the change applies over SSH without VPS replacement. `/srv/wfe/<env>` data and `/srv/caddy/data` ACME state survive.
+
+Stage order (each stage's null_resource depends on the previous):
+
+```
+users → dirs → packages → files_pre → exec → ufw → files_post
+```
+
+Removal semantics:
+- **Auto-clean** entries (default): removing the declaration removes the host artifact on next apply.
+- **Pinned** entries (`on_destroy = ""`): per-env env files and Quadlets serving production traffic. Removing them from source does NOT remove them from the host — explicit operator teardown (manual rm + systemctl stop) is required.
+
+What still triggers VPS replacement:
+
+- Edits to the cloud-init bootstrap minimum (deploy user, deploy SSH key, sshd Port, ufw baseline, FORWARD policy, sudoers allowlist verbs).
+- Edits to the underlying Scaleway resource shape (`var.instance_type`, `var.instance_image`, root volume size).
+
+Adding a new tenant (e.g., `wfe-experimental`) is a tofu-only operation: add an entry to `local.managed_users` (with a non-overlapping subuid range), add data dirs to `local.managed_dirs` owned by the new user, add an env-file + Quadlet entry to `local.managed_files_apps`, apply.
+
+## Migration ritual: surviving a cloud-init edit
+
+When you do need to edit the cloud-init bootstrap minimum (rare — SSH key rotation, port change), the VPS is replaced and `/srv` is destroyed. To preserve data, use this ritual:
+
+```bash
+# 1. Backup before applying.
+rsync -aAX deploy@<host>:/srv/wfe/prod /tmp/prod-pre-apply-$(date +%F)
+rsync -aAX deploy@<host>:/srv/caddy/data /tmp/caddy-pre-apply-$(date +%F)
+
+# 2. Apply the change.
+tofu -chdir=infrastructure apply
+
+# 3. Wait for the new VPS to come up. ssh in as deploy.
+
+# 4. Restore data with correct ownership.
+rsync -aAX /tmp/prod-pre-apply-<date>/ deploy@<host>:/tmp/restore-prod/
+ssh deploy@<host> "sudo /usr/bin/install -d -m 0700 -o wfe-prod -g wfe-prod /srv/wfe/prod && sudo cp -a /tmp/restore-prod/. /srv/wfe/prod/ && sudo /usr/bin/chown -R wfe-prod:wfe-prod /srv/wfe/prod && rm -rf /tmp/restore-prod"
+
+# 5. Restart services. (Caddy will re-issue ACME certs from scratch unless
+# /srv/caddy/data was also restored.)
+ssh deploy@<host> "sudo /bin/systemctl restart wfe-prod.service caddy.service"
+```
+
+For staging, data loss is acceptable; skip the rsync.
 
 **When to run apply-infra.** Any PR touching `infrastructure/`. The pre-merge `plan (vps)` gate fails if the plan is non-empty, so the operator runs `apply-infra` from the feature branch *before* requesting review.
 
@@ -81,8 +127,7 @@ Tofu's `null_resource.wfe_env_file` uses `provisioner "file"` with `source = "/t
 
 `.github/workflows/plan-infra.yml` runs on every PR to `main`. Single job named `plan (vps)`:
 
-- Renders dummy empty env files at `/tmp/wfe-secrets/{prod,staging}.env` so `filemd5(...)` triggers can evaluate.
-- `tofu init && tofu plan -detailed-exitcode -lock=false -no-color`.
+- `tofu init && tofu plan -detailed-exitcode -lock=false -no-color` with all `TF_VAR_*` secrets piped from GHA secrets so the plan can render every `managed_files_*` entry's content-hash trigger.
 - Pipes the plan into `$GITHUB_STEP_SUMMARY`.
 - Exit 0 = pass; 1 (error) or 2 (changes pending) = fail.
 
@@ -112,7 +157,9 @@ Variables:
 ssh -p 2222 deploy@<vps-ip>
 ```
 
-The `deploy` user is the only SSH-able account. Root login is disabled. Password auth is disabled. `fail2ban` bans the IP after 5 failed auths in 10 min.
+The `deploy` user is the only SSH-able account (administrative role). Root login is disabled. Password auth is disabled. `fail2ban` bans the IP after 5 failed auths in 10 min.
+
+Container workloads run as separate per-tenant users (`wfe-prod`, `wfe-staging`, `wfe-caddy`) — none of them have SSH access (`AllowUsers deploy` only), no sudoers, no privileged group memberships. A successful sandbox+container escape lands the attacker on one of these unprivileged tenant users with no path to escalate to deploy.
 
 Once on the box:
 
@@ -121,9 +168,10 @@ Once on the box:
 - Check auto-update: `journalctl -u podman-auto-update.service` and `systemctl list-timers podman-auto-update.timer`
 - Force a deploy now: `sudo systemctl start podman-auto-update.service`
 - Inspect Caddy ACME state: `ls -la /srv/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/`
-- Inspect persistence: `ls /srv/wfe/{prod,staging}/`
+- Inspect persistence: `sudo ls /srv/wfe/{prod,staging}/` (mode 0700 owned by the corresponding `wfe-<env>` user — sudo needed to read as deploy)
+- Inspect a tenant's containers: `sudo -u wfe-prod podman ps` (deploy can sudo to any user via the broad allowlist)
 
-The `deploy` user has NOPASSWD sudo only for `systemctl <verb> <unit>.service` on the wfe / caddy / podman-auto-update units, and `systemctl daemon-reload`. Anything broader requires the root password.
+The `deploy` user has NOPASSWD sudo for the converge primitives the in-place mechanism needs: `install`, `tee`, `rm`, `chmod`, `chown`, `systemctl`, `useradd`/`usermod`/`userdel`, `ufw`, `apt-get`, `sysctl`, `swapon`/`swapoff`, `fallocate`, `mkswap` (full list in `infrastructure/files/sudoers_deploy`). This is effectively root-by-sudo. The trust boundary that protects this privilege from a host-side attacker is the **SSH-key boundary**: deploy's private key lives only off-host (operator's secret store + tofu state at rest, AES-GCM-encrypted). The post-S1/I11 attacker lands as `wfe-*` (unprivileged), not as deploy. See `SECURITY.md` §"Privilege isolation" and `openspec/specs/host-security-baseline/spec.md`.
 
 ## Secret rotation
 
@@ -131,14 +179,14 @@ GitHub OAuth client secret (or any other env-file value):
 
 1. Update the GHA secret in repo settings.
 2. Re-run `apply-infra` (workflow_dispatch).
-3. The `null_resource.wfe_env_file` `filemd5` trigger detects the change; tofu re-runs the file + remote-exec provisioners; the affected unit restarts.
+3. The `managed_files_apps["wfe_env_<env>"]` content-hash trigger detects the change; tofu rewrites `/etc/wfe/<env>.env`; the on-change hook restarts the affected unit.
 
 SSH deploy key:
 
 1. Generate a new keypair locally.
 2. Update `TF_VAR_DEPLOY_SSH_PUBLIC_KEY` and `TF_VAR_DEPLOY_SSH_PRIVATE_KEY` GHA secrets together.
-3. Re-run `apply-infra`. Cloud-init re-runs the deploy-user authorized_keys write; the new key takes effect immediately.
-4. Old key is invalidated as soon as the new authorized_keys file lands.
+3. Re-run `apply-infra`. Editing the deploy public key changes the cloud-init bootstrap content → VPS is replaced (cloud-init only runs at first boot, and the operator's authorized_keys is a bootstrap concern). Plan ahead with the rsync-and-restore migration ritual: `rsync -aAX deploy@<host>:/srv/wfe/<env> /tmp/<env>-pre-rotation` before applying; restore after the new VPS is up.
+4. Old key is invalidated as soon as the new VPS finishes cloud-init.
 
 ## Caddy upgrades
 
