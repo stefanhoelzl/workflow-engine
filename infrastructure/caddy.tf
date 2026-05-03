@@ -12,71 +12,35 @@ locals {
   caddy_quadlet = templatefile("${path.module}/files/caddy.container.tmpl", {
     caddy_image = var.caddy_image
   })
-}
 
-resource "null_resource" "caddyfile" {
-  triggers = {
-    instance = null_resource.wait_cloud_init.id
-    content  = sha256(local.caddyfile)
-  }
-
-  depends_on = [null_resource.wait_cloud_init]
-
-  connection {
-    type        = local.ssh.type
-    host        = local.ssh.host
-    user        = local.ssh.user
-    port        = local.ssh.port
-    private_key = local.ssh.private_key
-    timeout     = local.ssh.timeout
-  }
-
-  provisioner "file" {
-    content     = local.caddyfile
-    destination = "/tmp/Caddyfile"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      # /etc/caddy is owned by deploy (cloud-init), so no sudo needed.
-      "install -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile",
-      "rm -f /tmp/Caddyfile",
-      # Reload happens via the caddy_quadlet restart cascade; explicit
-      # reload here would need an extra sudoers entry for the `reload` verb.
-    ]
-  }
-}
-
-resource "null_resource" "caddy_quadlet" {
-  triggers = {
-    instance = null_resource.wait_cloud_init.id
-    content  = sha256(local.caddy_quadlet)
-  }
-
-  # Caddyfile must be in place before podman tries to bind-mount it.
-  depends_on = [null_resource.caddyfile]
-
-  connection {
-    type        = local.ssh.type
-    host        = local.ssh.host
-    user        = local.ssh.user
-    port        = local.ssh.port
-    private_key = local.ssh.private_key
-    timeout     = local.ssh.timeout
-  }
-
-  provisioner "file" {
-    content     = local.caddy_quadlet
-    destination = "/tmp/caddy.container"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      # /etc/containers/systemd is owned by deploy (cloud-init), so no sudo needed.
-      "install -m 0644 /tmp/caddy.container /etc/containers/systemd/caddy.container",
-      "rm -f /tmp/caddy.container",
-      "sudo systemctl daemon-reload",
-      "sudo systemctl restart caddy.service",
-    ]
+  # Caddy's two managed-file entries. Both auto-clean: removing the
+  # declaration stops Caddy and removes the file. Edit-induced replacement
+  # causes a brief HTTPS interruption (destroy stops + rm; create writes
+  # + restart). Removing Caddy from configuration is operator-intentional
+  # teardown, not a casual edit.
+  managed_files_caddy = {
+    caddyfile = {
+      path    = "/etc/caddy/Caddyfile"
+      content = local.caddyfile
+      mode    = "0644"
+      owner   = "deploy"
+      group   = "deploy"
+      sudo    = false
+      stage   = "pre"
+      # No reload here: caddy_quadlet's stage-post restart picks it up.
+      on_change  = ""
+      on_destroy = "rm -f /etc/caddy/Caddyfile"
+    }
+    caddy_quadlet = {
+      path       = "/home/wfe-caddy/.config/containers/systemd/caddy.container"
+      content    = local.caddy_quadlet
+      mode       = "0644"
+      owner      = "wfe-caddy"
+      group      = "wfe-caddy"
+      sudo       = true
+      stage      = "post"
+      on_change  = "uid=$(id -u wfe-caddy) && sudo /usr/sbin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user daemon-reload && sudo /usr/sbin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user restart caddy.service"
+      on_destroy = "uid=$(id -u wfe-caddy 2>/dev/null) && [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user stop caddy.service 2>/dev/null; sudo /usr/bin/rm -f /home/wfe-caddy/.config/containers/systemd/caddy.container; [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user daemon-reload 2>/dev/null || true"
+    }
   }
 }

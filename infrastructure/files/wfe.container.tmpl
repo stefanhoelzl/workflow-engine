@@ -4,6 +4,11 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
+# This Quadlet runs as a user-mode systemd unit under the per-tenant
+# `wfe-${env_name}` host user (linger-enabled). Podman runs rootless under
+# that user; in-container UID is 65532 (Dockerfile USER), which the user
+# namespace maps into the tenant's subuid range. Cross-tenant filesystem
+# isolation is enforced because each tenant's subuid space is disjoint.
 Image=${image_ref}
 # Tag-based auto-update — podman-auto-update.timer polls the registry and
 # restarts this unit when the manifest digest at the configured tag changes.

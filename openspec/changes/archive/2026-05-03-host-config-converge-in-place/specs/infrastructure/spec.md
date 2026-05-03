@@ -1,51 +1,4 @@
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- Local Stack (infrastructure/local/)                    -->
-<!-- ═══════════════════════════════════════════════════════ -->
-
-## Purpose
-
-Reusable Terraform modules for the local (kind) and production (UpCloud) stacks.
-## Requirements
-### Requirement: Single flat tofu project at infrastructure/
-
-The repository SHALL contain exactly one OpenTofu project at `infrastructure/` with no `envs/<name>/` subdirectories. The project owns the Scaleway VPS, both app Quadlet units, the Caddy unit, the Caddyfile, the Dynu CNAMEs for prod and staging, and the Scaleway Object Storage bucket reference for state. All operations run as `tofu -chdir=infrastructure {init|plan|apply}`.
-
-#### Scenario: Single project layout
-
-- **WHEN** the repository is inspected after the migration
-- **THEN** `infrastructure/main.tf`, `infrastructure/variables.tf`, and `infrastructure/cloud-init.yaml` SHALL exist
-- **AND** `infrastructure/envs/` SHALL NOT exist
-- **AND** `infrastructure/modules/{kubernetes,object-storage,app-instance,baseline,caddy}/` SHALL NOT exist
-
-### Requirement: Minimum OpenTofu version
-
-The `infrastructure/` project SHALL declare `required_version = ">= 1.11.0"` to ensure clients (operator + CI) use a tofu version that supports the encryption block and current provider features.
-
-#### Scenario: Older tofu refuses to init
-
-- **GIVEN** an operator runs `tofu version` returning `1.10.0`
-- **WHEN** they run `tofu -chdir=infrastructure init`
-- **THEN** tofu SHALL refuse with a version-constraint error
-
-### Requirement: Tofu state on Scaleway Object Storage
-
-The project SHALL configure the `s3` backend pointing at a Scaleway Object Storage bucket, with a custom `endpoint` (e.g. `https://s3.fr-par.scw.cloud`), `region` set to a Scaleway region, and `skip_credentials_validation = true` and `skip_region_validation = true` (Scaleway is S3-compatible but not AWS). Client-side state encryption SHALL be configured via the `encryption` block using a passphrase from `TF_VAR_state_passphrase` so state at rest never contains unencrypted secrets.
-
-#### Scenario: State backend is reachable
-
-- **GIVEN** valid `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for Scaleway Object Storage
-- **WHEN** the operator runs `tofu -chdir=infrastructure init`
-- **THEN** init SHALL succeed and acquire a lock against the Scaleway bucket
-
-### Requirement: Single Scaleway VPS
-
-The project SHALL provision exactly one `scaleway_instance_server` resource of type `STARDUST1-S` (or larger; configurable via a variable). The image SHALL be Debian 13 (Trixie) — Debian 12 (Bookworm) ships Podman 4.3.1 which lacks Quadlet (introduced in 4.4); Trixie ships Podman 5.x with Quadlet. A `scaleway_instance_ip` SHALL be attached so the public IP survives stop/start cycles. The root volume SHALL be declared explicitly with `size_in_gb`, `volume_type`, and `delete_on_termination` to avoid `(known after apply)` plan opacity.
-
-#### Scenario: Single VPS exists after apply
-
-- **WHEN** `tofu apply` completes successfully
-- **THEN** exactly one Scaleway instance SHALL be running with the configured commercial type and image
-- **AND** the instance's image SHALL be `debian_trixie` (or a label that ships Podman ≥ 4.4)
+## ADDED Requirements
 
 ### Requirement: Host configuration converges in place
 
@@ -133,6 +86,8 @@ Removing a `wfe-*` user from the configuration SHALL succeed only if all depende
 - **THEN** `userdel` SHALL fail because the container process is running as that user
 - **AND** the apply SHALL error out without modifying tenant state
 
+## MODIFIED Requirements
+
 ### Requirement: Cloud-init bootstraps the box
 
 The Scaleway server SHALL receive a cloud-init `user_data` payload limited to the first-boot operations required for tofu to SSH in and apply the in-place convergence mechanism. Specifically, cloud-init SHALL:
@@ -206,62 +161,6 @@ The Quadlet entries are managed entries with stage `post` and on-change hook tha
 - **AND** `wfe-prod.service` SHALL restart with the new content
 - **AND** `wfe-staging.service` and `caddy.service` SHALL be unaffected
 
-### Requirement: Tag-based auto-update
-
-Both app Quadlet units SHALL carry `Label=io.containers.autoupdate=registry`. The system-wide `podman-auto-update.timer` SHALL be overridden via a drop-in `/etc/systemd/system/podman-auto-update.timer.d/override.conf` to fire every 1 minute (`OnUnitActiveSec=1min`). Image references in Quadlet files SHALL be tag-based (`:release`, `:main`) and SHALL NOT pin a digest.
-
-#### Scenario: A new image push triggers a restart within 1 minute
-
-- **GIVEN** `wfe-prod.service` is running image `ghcr.io/.../workflow-engine:release@sha256:OLD`
-- **AND** a new image is pushed to `ghcr.io/.../workflow-engine:release@sha256:NEW`
-- **WHEN** `podman-auto-update.timer` fires (within 60 seconds)
-- **THEN** podman SHALL pull `:release@sha256:NEW`
-- **AND** `wfe-prod.service` SHALL be restarted on the new image
-
-### Requirement: Caddyfile renders one site block per env
-
-The Caddyfile SHALL be rendered by tofu (via `templatefile()`) with one site block per env:
-
-- `workflow-engine.webredirect.org { tls <acme-email> ; reverse_proxy 127.0.0.1:8081 }`
-- `staging.workflow-engine.webredirect.org { tls <acme-email> ; reverse_proxy 127.0.0.1:8082 }`
-
-Caddy's automatic HTTPS SHALL provide HTTP→HTTPS redirect, HSTS, and TLS termination via Let's Encrypt HTTP-01 ACME. ACME state SHALL persist on the host volume mounted at `/data` (i.e. `/srv/caddy/data` on the host).
-
-#### Scenario: Both hostnames serve a publicly-trusted cert
-
-- **GIVEN** the Dynu CNAMEs have propagated to the VPS IP and Caddy has completed ACME
-- **WHEN** an external client runs `curl -I https://workflow-engine.webredirect.org` and `curl -I https://staging.workflow-engine.webredirect.org`
-- **THEN** both SHALL return `200` (or whatever the app returns) with a valid Let's Encrypt-issued chain
-
-### Requirement: Caddy SHALL NOT enforce authentication
-
-Caddy SHALL act exclusively as TLS termination + reverse proxy + HTTPS redirect. It SHALL NOT mount any authentication module, forward-auth integration, or basic-auth directive. Per-route authentication is owned entirely by the app's `apiAuthMiddleware` and `sessionMiddleware` (see the `auth` capability).
-
-#### Scenario: Caddyfile contains no auth directives
-
-- **WHEN** the rendered Caddyfile is inspected
-- **THEN** it SHALL NOT contain `forward_auth`, `basicauth`, `jwt`, or any directive that authenticates incoming requests
-
-### Requirement: Apps bind only to loopback
-
-Each app Quadlet's `PublishPort` SHALL bind only on `127.0.0.1` (`PublishPort=127.0.0.1:<host>:<container>`). This requirement is duplicated in `host-security-baseline` for the security framing; it appears here for the deployment-shape framing.
-
-#### Scenario: Quadlet PublishPort is loopback-scoped
-
-- **WHEN** the rendered `wfe-prod.container` and `wfe-staging.container` are inspected
-- **THEN** every `PublishPort=` line SHALL begin with `127.0.0.1:`
-
-### Requirement: Local-disk persistence per env
-
-Each app SHALL run with `PERSISTENCE_PATH=/data` (via Quadlet `Environment=`) and a host bind mount at `/srv/wfe/<env>:/data:Z,U`. The `:U` flag is required: it makes Podman recursively chown the host directory to the container's UID 65532 at start time, otherwise the container process can't write to a host dir initially owned by `deploy`. The two envs SHALL NOT share a persistence directory. The S3 backend env vars (`PERSISTENCE_S3_*`) SHALL NOT be set on the new deployment.
-
-#### Scenario: Per-env directories exist and are isolated
-
-- **GIVEN** the VPS has been provisioned
-- **WHEN** the operator inspects `/srv/wfe/`
-- **THEN** `prod/` and `staging/` SHALL exist as separate subdirectories
-- **AND** each SHALL be owned by UID 65532 (chown'd by Podman's `:U` mount option on first container start)
-
 ### Requirement: Per-env secret env files
 
 Per-env env files at `/etc/wfe/<env>.env` SHALL contain ONLY values whose presence in tofu state is an acceptable trade-off (the `encryption {}` block AES-GCM-encrypts state at rest with `var.state_passphrase`). Currently those values are: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SECRETS_PRIVATE_KEYS` (auto-generated; see "Auto-generated workflow-secrets sealing key" below).
@@ -281,49 +180,10 @@ The implementation SHALL NOT use `local_file` or `local_sensitive_file` (those l
 - **AND** `wfe-prod.service` SHALL be restarted
 - **AND** the plan SHALL NOT show `scaleway_instance_server.vps` being replaced
 
-### Requirement: Auto-generated workflow-secrets sealing key
+## REMOVED Requirements
 
-The project SHALL declare `random_bytes.secrets_key` per env (32 bytes each, base64-encoded). The env file SHALL render `SECRETS_PRIVATE_KEYS=v1:${random_bytes.secrets_key[<env>].base64}` so the runtime's workflow-secrets feature has its sealing key. The key is generated once on first apply and preserved across applies (state-tracked). Rotation: `tofu taint 'random_bytes.secrets_key["<env>"]'` then apply.
+### Requirement: Cloud-init changes force VPS replacement
 
-Multi-key staged rotation (concurrent decrypt against retired key + seal against new) is NOT supported by this scheme — it would require manual `keyId:base64,keyId:base64` composition. Single-key auto-generation is sufficient until uploaded bundles reference older keyIds.
+**Reason**: This requirement codified the very behavior this change is removing. Host-config edits no longer require VPS replacement; the in-place convergence mechanism applies them on the running VPS. VPS replacement is now triggered only by changes to the cloud-init bootstrap minimum or to the Scaleway resource shape.
 
-#### Scenario: Key persists across applies
-
-- **GIVEN** an apply has generated `random_bytes.secrets_key["prod"]`
-- **WHEN** a subsequent apply runs without taint
-- **THEN** the key value SHALL be unchanged
-- **AND** the env file's `SECRETS_PRIVATE_KEYS` line SHALL be byte-identical
-
-### Requirement: Dynu CNAMEs owned by tofu
-
-The project SHALL manage two Dynu CNAME records:
-
-- `workflow-engine.webredirect.org` → VPS public IP (or its DNS name).
-- `staging.workflow-engine.webredirect.org` → same.
-
-Records SHALL be created via the existing dynu provider, parameterised by `var.dynu_api_key`. TTL SHALL be small enough (≤ 300 s) that DNS-level corrections during validation propagate quickly.
-
-#### Scenario: CNAMEs resolve to the VPS
-
-- **GIVEN** tofu apply has completed and Dynu propagation has occurred
-- **WHEN** `dig workflow-engine.webredirect.org` is run from an external resolver
-- **THEN** it SHALL resolve to the Scaleway VPS public IP
-
-### Requirement: Lock file committed and gitignore boundaries
-
-`infrastructure/.terraform.lock.hcl` SHALL be committed. `infrastructure/.terraform/` SHALL be gitignored. The runner-local `/tmp/wfe-secrets/` directory SHALL never be in the repository (created and removed by the GHA workflow).
-
-#### Scenario: Lock file is tracked
-
-- **WHEN** the operator runs `git ls-files infrastructure/`
-- **THEN** `.terraform.lock.hcl` SHALL appear
-
-### Requirement: kind-based local env removed
-
-The `infrastructure/envs/local/` directory, the `kind` provider usage, the `pnpm local:up*` scripts, the `local.secrets.auto.tfvars(.example)?` files, and any "Cluster smoke (human)" pattern in CLAUDE.md SHALL all be removed. `pnpm dev` SHALL be the only documented local mode.
-
-#### Scenario: kind is gone from the repo
-
-- **WHEN** the repo is grep'd for `kind` provider, `pnpm local:up`, or `infrastructure/envs/local`
-- **THEN** no occurrence SHALL remain
-
+**Migration**: Remove `terraform_data.cloud_init` and the `lifecycle { replace_triggered_by = [terraform_data.cloud_init] }` block from `infrastructure/main.tf`. Operators relying on "edit cloud-init → fresh VPS" for incidental host resets must use `tofu taint scaleway_instance_server.vps` instead. The new requirement "Cloud-init bootstraps the box" (modified above) defines the residual replacement-triggering surface.

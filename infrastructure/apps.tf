@@ -18,8 +18,6 @@ locals {
   # (AUTH_ALLOW, BASE_URL, AUTH_PROVIDER, PERSISTENCE_PATH, PORT) are
   # rendered into the Quadlet's `Environment=` directives — see comment
   # in wfe.container.tmpl for why we avoid Podman's --env-file for those.
-  # Bytes still land in tofu state but state is AES-GCM encrypted at rest
-  # via the `encryption {}` block in main.tf.
   env_files = {
     for name, cfg in local.envs : name => <<-EOT
       GITHUB_OAUTH_CLIENT_ID=${cfg.gh_oauth_client_id}
@@ -27,6 +25,53 @@ locals {
       SECRETS_PRIVATE_KEYS=v1:${random_bytes.secrets_key[name].base64}
     EOT
   }
+
+  # Per-env file entries fed into the unified managed_files map in main.tf.
+  # User-mode design:
+  # - Quadlets live in /home/wfe-<env>/.config/containers/systemd/ owned by
+  #   the tenant user (linger-enabled). Podman runs rootless under that user.
+  # - Env files live at /etc/wfe/<env>.env owned by the tenant user (mode
+  #   0600) so user-mode systemd can read them via EnvironmentFile=.
+  # - Both auto-clean: removing the declaration stops the tenant's service
+  #   and removes the file. Edit-induced replacement causes a brief service
+  #   interruption (destroy stops + rm; create writes + restart). Acceptable
+  #   per the convergence contract; intentional removal of a tenant requires
+  #   removing the user, dirs, env file AND Quadlet in the same apply (tofu
+  #   destroys dependents in reverse-dependency order so the Quadlet stops
+  #   before the user is removed).
+  managed_files_apps = merge(
+    {
+      for env, cfg in local.envs : "wfe_env_${env}" => {
+        path    = "/etc/wfe/${env}.env"
+        content = local.env_files[env]
+        mode    = "0600"
+        owner   = cfg.runtime_user
+        group   = cfg.runtime_user
+        sudo    = true
+        stage   = "pre"
+        # User-mode `systemctl --user restart` via runuser. The `|| true`
+        # swallow handles the first-apply case where the unit doesn't
+        # exist yet (Quadlet entry is stage `post`, lands later in the
+        # same apply); on subsequent secret rotations the unit exists
+        # and restarts cleanly.
+        on_change  = "uid=$(id -u ${cfg.runtime_user}) && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user restart wfe-${env}.service 2>/dev/null || true"
+        on_destroy = "uid=$(id -u ${cfg.runtime_user} 2>/dev/null) && [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user stop wfe-${env}.service 2>/dev/null; sudo /usr/bin/rm -f /etc/wfe/${env}.env"
+      }
+    },
+    {
+      for env, cfg in local.envs : "wfe_quadlet_${env}" => {
+        path       = "/home/${cfg.runtime_user}/.config/containers/systemd/wfe-${env}.container"
+        content    = local.quadlets[env]
+        mode       = "0644"
+        owner      = cfg.runtime_user
+        group      = cfg.runtime_user
+        sudo       = true
+        stage      = "post"
+        on_change  = "uid=$(id -u ${cfg.runtime_user}) && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user daemon-reload && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user restart wfe-${env}.service"
+        on_destroy = "uid=$(id -u ${cfg.runtime_user} 2>/dev/null) && [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user stop wfe-${env}.service 2>/dev/null; sudo /usr/bin/rm -f /home/${cfg.runtime_user}/.config/containers/systemd/wfe-${env}.container; [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u ${cfg.runtime_user} -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user daemon-reload 2>/dev/null || true"
+      }
+    },
+  )
 }
 
 # Per-env X25519 sealing key for the workflow-secrets feature. 32 random
@@ -37,82 +82,4 @@ locals {
 resource "random_bytes" "secrets_key" {
   for_each = local.envs
   length   = 32
-}
-
-# Quadlet unit files. Non-secret content (image ref, port, mem cap) — `content`
-# attribute is fine; the value is also discoverable from the Caddyfile.
-resource "null_resource" "wfe_quadlet" {
-  for_each = local.quadlets
-
-  triggers = {
-    instance = null_resource.wait_cloud_init.id
-    content  = sha256(each.value)
-  }
-
-  depends_on = [null_resource.wait_cloud_init]
-
-  connection {
-    type        = local.ssh.type
-    host        = local.ssh.host
-    user        = local.ssh.user
-    port        = local.ssh.port
-    private_key = local.ssh.private_key
-    timeout     = local.ssh.timeout
-  }
-
-  provisioner "file" {
-    content     = each.value
-    destination = "/tmp/wfe-${each.key}.container"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      # /etc/containers/systemd is owned by deploy (cloud-init), so no sudo needed.
-      "install -m 0644 /tmp/wfe-${each.key}.container /etc/containers/systemd/wfe-${each.key}.container",
-      "rm -f /tmp/wfe-${each.key}.container",
-      # daemon-reload makes Quadlet generate the .service unit. Restart
-      # itself is left to wfe_env_file once /etc/wfe/<env>.env exists —
-      # otherwise the unit's EnvironmentFile= would point at a missing path.
-      "sudo systemctl daemon-reload",
-    ]
-  }
-}
-
-# Per-env secret env files. Content rendered inline from TF_VAR_* values.
-# Bytes are part of state but state is AES-GCM encrypted at rest via the
-# `encryption {}` block in main.tf.
-resource "null_resource" "wfe_env_file" {
-  for_each = local.env_files
-
-  triggers = {
-    instance = null_resource.wait_cloud_init.id
-    content  = sha256(each.value)
-  }
-
-  depends_on = [
-    null_resource.wait_cloud_init,
-    null_resource.wfe_quadlet,
-  ]
-
-  connection {
-    type        = local.ssh.type
-    host        = local.ssh.host
-    user        = local.ssh.user
-    port        = local.ssh.port
-    private_key = local.ssh.private_key
-    timeout     = local.ssh.timeout
-  }
-
-  provisioner "file" {
-    content     = each.value
-    destination = "/tmp/wfe-${each.key}.env.new"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "install -m 0600 -o deploy -g deploy /tmp/wfe-${each.key}.env.new /etc/wfe/${each.key}.env",
-      "rm -f /tmp/wfe-${each.key}.env.new",
-      "sudo systemctl restart wfe-${each.key}.service",
-    ]
-  }
 }
