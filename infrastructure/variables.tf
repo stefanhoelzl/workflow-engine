@@ -48,17 +48,6 @@ variable "ssh_port" {
   description = "Non-default SSH port. Eliminates drive-by botnet noise on port 22."
 }
 
-variable "deploy_ssh_public_key" {
-  type        = string
-  description = "Public key authorized for the `deploy` user. Matches deploy_ssh_private_key."
-}
-
-variable "deploy_ssh_private_key" {
-  type        = string
-  sensitive   = true
-  description = "Private key used by tofu provisioners to SSH into the VPS as `deploy`."
-}
-
 variable "dynu_api_key" {
   type        = string
   sensitive   = true
