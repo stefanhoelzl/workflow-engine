@@ -91,6 +91,24 @@ resource "scaleway_instance_security_group" "vps" {
   }
 }
 
+# Hash of the cloud-init bootstrap content. The Scaleway provider treats
+# `scaleway_instance_server.user_data` as API-mutable, so editing the
+# template would update the metadata field on the existing box without
+# re-executing cloud-init (which runs only at first boot). Without an
+# explicit replace trigger, edits to the bootstrap minimum (deploy SSH
+# key, sshd hardening, sudoers, ssh_port) silently sit in user_data
+# without taking effect. This terraform_data captures the rendered
+# content's sha256; the lifecycle rule on `scaleway_instance_server.vps`
+# below replaces the VPS when this hash flips.
+resource "terraform_data" "cloud_init_bootstrap" {
+  input = sha256(templatefile("${path.module}/cloud-init.yaml", {
+    ssh_port               = var.ssh_port
+    deploy_ssh_public_key  = var.deploy_ssh_public_key
+    sshd_hardening_content = "      ${replace(templatefile("${path.module}/files/sshd_hardening.conf.tmpl", { ssh_port = var.ssh_port }), "\n", "\n      ")}"
+    sudoers_deploy_content = "      ${replace(file("${path.module}/files/sudoers_deploy"), "\n", "\n      ")}"
+  }))
+}
+
 resource "scaleway_instance_server" "vps" {
   name              = "wfe"
   type              = var.instance_type
@@ -98,30 +116,26 @@ resource "scaleway_instance_server" "vps" {
   ip_id             = scaleway_instance_ip.vps.id
   security_group_id = scaleway_instance_security_group.vps.id
 
+  # Replace the VPS when the cloud-init bootstrap content changes — see
+  # `terraform_data.cloud_init_bootstrap` rationale above. The bootstrap
+  # surface is small (deploy user + ssh key + sshd hardening + sudoers
+  # + ufw baseline + FORWARD policy), so this fires rarely; routine
+  # host-config edits flow through the in-place convergence mechanism
+  # (host.tf + null_resources below) which does NOT replace the VPS.
+  lifecycle {
+    replace_triggered_by = [terraform_data.cloud_init_bootstrap]
+  }
+
   # Local SSD root volume (10 GB, included with STARDUST1-S, free).
-  # Local SSDs are bound to the instance's lifecycle — they die on
-  # instance replacement. With the in-place convergence mechanism
-  # (host.tf + the unified null_resources below), routine host-config
-  # edits no longer replace the VPS, so /srv data survives. Replacement
-  # still happens when the cloud-init bootstrap minimum changes (the
-  # provider sees user_data drift and applies it; cloud-init only runs
-  # at first boot, so a fresh boot is required) or when the Scaleway
-  # resource shape changes (instance_type, image).
+  # Local SSDs die on instance replacement; the rsync-and-restore ritual
+  # in docs/infrastructure.md covers preserving `/srv` data across the
+  # rare bootstrap-content rebuild.
   root_volume {
     size_in_gb            = 10
     volume_type           = "l_ssd"
     delete_on_termination = true
   }
 
-  # Cloud-init runs only at first boot. The Scaleway provider treats
-  # user_data as API-mutable, so editing the rendered cloud-init here
-  # would update the field but not re-execute it on the existing box.
-  # That is fine — cloud-init now contains only the bootstrap minimum
-  # (deploy user, sudoers, sshd hardening, ufw baseline). All other
-  # host config converges in place via the unified null_resources below.
-  # If the bootstrap minimum genuinely needs to be re-baked (e.g., SSH
-  # port rotation), the operator runs `tofu taint scaleway_instance_server.vps`
-  # to force replacement explicitly.
   user_data = {
     cloud-init = templatefile("${path.module}/cloud-init.yaml", {
       ssh_port              = var.ssh_port
