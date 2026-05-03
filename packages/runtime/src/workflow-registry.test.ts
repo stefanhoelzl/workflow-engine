@@ -24,24 +24,16 @@ import {
 	vi,
 } from "vitest";
 import type { Executor } from "./executor/index.js";
-import type { Logger } from "./logger.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import { createFsStorage } from "./storage/fs.js";
+import { createTestLogger } from "./test-utils/logger.js";
+import { makeWorkflowManifest } from "./test-utils/manifest.js";
 import {
 	createWorkflowRegistry,
 	extractOwnerTarGz,
 	type WorkflowRegistry,
 } from "./workflow-registry.js";
-
-function makeLogger(): Logger {
-	return {
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-	} as unknown as Logger;
-}
 
 function makeExecutor(): Executor {
 	return {
@@ -66,11 +58,9 @@ function makeKeyStore(): SecretsKeyStore {
 	};
 }
 
-const VALID_WORKFLOW = {
+const VALID_WORKFLOW = makeWorkflowManifest({
 	name: "demo",
 	module: "demo.js",
-	sha: "0".repeat(64),
-	env: {},
 	actions: [
 		{
 			name: "doIt",
@@ -95,7 +85,7 @@ const VALID_WORKFLOW = {
 			outputSchema: { type: "object" },
 		},
 	],
-};
+});
 
 const VALID_OWNER_MANIFEST = { workflows: [VALID_WORKFLOW] };
 
@@ -132,7 +122,7 @@ describe("workflow registry", () => {
 	});
 
 	it("registers a owner and exposes its metadata via list()", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -154,7 +144,7 @@ describe("workflow registry", () => {
 	});
 
 	it("same workflow name in two owners is isolated by owner", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -169,7 +159,7 @@ describe("workflow registry", () => {
 	});
 
 	it("sibling repos under the same owner coexist and are independently addressable", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -203,7 +193,7 @@ describe("workflow registry", () => {
 	});
 
 	it("re-registering a owner atomically replaces its workflow set", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -220,7 +210,7 @@ describe("workflow registry", () => {
 	});
 
 	it("rejects upload when a referenced workflow module is missing (all-or-nothing)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -246,7 +236,7 @@ describe("workflow registry", () => {
 	});
 
 	it("rejects upload with missing manifest.json", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -257,7 +247,7 @@ describe("workflow registry", () => {
 	});
 
 	it("rejects upload with invalid manifest", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -276,7 +266,7 @@ describe("workflow registry", () => {
 		// runtime cron source's `cron-parser` is the authoritative parser
 		// (and surfaces malformed schedules via `cron.schedule-invalid`).
 		// The manifest layer still rejects an empty schedule string.
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -311,7 +301,7 @@ describe("workflow registry", () => {
 	});
 
 	it("rejects upload with cron trigger having an unknown timezone", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -346,7 +336,7 @@ describe("workflow registry", () => {
 	});
 
 	it("accepts upload with a valid cron trigger", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -385,7 +375,7 @@ describe("workflow registry", () => {
 		// Pre-rehydration is a load-time invariant: after register succeeds,
 		// every descriptor SHALL carry a Zod schema instance ready for
 		// safeParse — per-request rehydration is forbidden.
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -436,7 +426,7 @@ describe("workflow registry: persistence and recovery", () => {
 	});
 
 	it("persists the owner tarball to workflows/<owner>.tar.gz when tarballBytes are provided", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
 		registry = createWorkflowRegistry({
@@ -461,7 +451,7 @@ describe("workflow registry: persistence and recovery", () => {
 	});
 
 	it("recover() loads persisted owners from storage at startup", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
 
@@ -482,7 +472,7 @@ describe("workflow registry: persistence and recovery", () => {
 	});
 
 	it("recover() skips non-.tar.gz keys and handles unreadable tarballs gracefully", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const backend = createFsStorage(storageDir);
 		await backend.init();
 
@@ -559,7 +549,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	}
 
 	it("reconfigures every registered backend on a successful upload (even if a kind has no triggers)", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const http = stubBackend("http", "ok");
 		const cron = stubBackend("cron", "ok");
 		const registry = createWorkflowRegistry({
@@ -577,7 +567,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	});
 
 	it("returns 400-shaped failure when one backend returns {ok: false}", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const http = stubBackend("http", "userConfig");
 		const cron = stubBackend("cron", "ok");
 		const registry = createWorkflowRegistry({
@@ -597,7 +587,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	});
 
 	it("returns 500-shaped failure when one backend throws", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const http = stubBackend("http", "infra");
 		const cron = stubBackend("cron", "ok");
 		const registry = createWorkflowRegistry({
@@ -617,7 +607,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	});
 
 	it("returns both classes when a user-config error and an infra error occur together", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const http = stubBackend("http", "userConfig");
 		const cron = stubBackend("cron", "infra");
 		const registry = createWorkflowRegistry({
@@ -637,7 +627,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	});
 
 	it("rejects a manifest that references an unknown trigger kind before calling any backend", async () => {
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const http = stubBackend("http", "ok");
 		const registry = createWorkflowRegistry({
 			logger,
@@ -675,7 +665,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 	it("does not persist the tarball when a backend reports failure", async () => {
 		const storageDir = await mkdtemp(join(tmpdir(), "wf-no-persist-on-fail-"));
 		try {
-			const logger = makeLogger();
+			const logger = createTestLogger();
 			const storage = createFsStorage(storageDir);
 			await storage.init();
 			const http = stubBackend("http", "userConfig");
@@ -745,12 +735,9 @@ describe("registry — trigger-config secrets", () => {
 		secretsKeyId: string | undefined,
 		secrets: Record<string, string> | undefined,
 	): WorkflowManifest {
-		const wf: WorkflowManifest = {
+		return makeWorkflowManifest({
 			name,
 			module: `${name}.js`,
-			sha: "0".repeat(64),
-			env: {},
-			actions: [],
 			triggers: [
 				{
 					name: "tick",
@@ -761,12 +748,8 @@ describe("registry — trigger-config secrets", () => {
 					outputSchema: { type: "object" },
 				},
 			],
-		};
-		if (secretsKeyId && secrets) {
-			(wf as unknown as Record<string, unknown>).secretsKeyId = secretsKeyId;
-			(wf as unknown as Record<string, unknown>).secrets = secrets;
-		}
-		return wf;
+			...(secretsKeyId && secrets ? { secretsKeyId, secrets } : {}),
+		});
 	}
 
 	it("resolves a cron-schedule sentinel to plaintext before reconfigure", async () => {
@@ -781,7 +764,7 @@ describe("registry — trigger-config secrets", () => {
 			["manifest.json", JSON.stringify(manifest)],
 			["demo.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -815,7 +798,7 @@ describe("registry — trigger-config secrets", () => {
 			["manifest.json", JSON.stringify(manifest)],
 			["demo.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -856,7 +839,7 @@ describe("registry — trigger-config secrets", () => {
 			["manifest.json", JSON.stringify(manifest)],
 			["demo.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -891,7 +874,7 @@ describe("registry — trigger-config secrets", () => {
 			["wfA.js", BUNDLE_SOURCE],
 			["wfB.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -928,12 +911,9 @@ describe("registry — trigger-config secrets", () => {
 		secrets?: Record<string, string>;
 	}): WorkflowManifest {
 		const { name, user, password, secretsKeyId, secrets } = opts;
-		const wf: WorkflowManifest = {
+		return makeWorkflowManifest({
 			name,
 			module: `${name}.js`,
-			sha: "0".repeat(64),
-			env: {},
-			actions: [],
 			triggers: [
 				{
 					name: "inbound",
@@ -952,12 +932,8 @@ describe("registry — trigger-config secrets", () => {
 					outputSchema: { type: "object" },
 				},
 			],
-		};
-		if (secretsKeyId && secrets) {
-			(wf as unknown as Record<string, unknown>).secretsKeyId = secretsKeyId;
-			(wf as unknown as Record<string, unknown>).secrets = secrets;
-		}
-		return wf;
+			...(secretsKeyId && secrets ? { secretsKeyId, secrets } : {}),
+		});
 	}
 
 	it("resolves imap user + password sentinels to plaintext in descriptor", async () => {
@@ -977,7 +953,7 @@ describe("registry — trigger-config secrets", () => {
 			["manifest.json", JSON.stringify({ workflows: [workflow] })],
 			["demo.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		const registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -1018,7 +994,7 @@ describe("registry — trigger-config secrets", () => {
 			["manifest.json", JSON.stringify({ workflows: [workflow] })],
 			["demo.js", BUNDLE_SOURCE],
 		]);
-		const logger = makeLogger();
+		const logger = createTestLogger();
 		// Construct a registry whose backends explicitly exclude "imap".
 		const httpBackend: import("./triggers/source.js").TriggerSource = {
 			kind: "http",

@@ -1,11 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-	InvocationEvent,
-	SandboxEvent,
-	WorkflowManifest,
-} from "@workflow-engine/core";
+import type { InvocationEvent, SandboxEvent } from "@workflow-engine/core";
 import type { Sandbox } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import type { EventStore } from "../event-store.js";
@@ -13,7 +9,8 @@ import type { Logger } from "../logger.js";
 import type { SandboxStore } from "../sandbox-store.js";
 import { createTestEventStore } from "../test-utils/event-store.js";
 import { createTestLogger } from "../test-utils/logger.js";
-import { withZodSchemas } from "../triggers/test-descriptors.js";
+import { makeWorkflowManifest } from "../test-utils/manifest.js";
+import { makeHttpDescriptor } from "../triggers/test-descriptors.js";
 import { createExecutor } from "./index.js";
 import type { HttpTriggerDescriptor } from "./types.js";
 
@@ -21,34 +18,15 @@ const EVT_ID_RE = /^evt_/;
 
 const testLogger: Logger = createTestLogger();
 
-function makeManifest(name: string, sha = "0".repeat(64)): WorkflowManifest {
-	return {
-		name,
-		module: `${name}.js`,
-		sha,
-		env: {},
-		actions: [],
-		triggers: [],
-	};
+function makeManifest(name: string, sha = "0".repeat(64)) {
+	return makeWorkflowManifest({ name, module: `${name}.js`, sha });
 }
 
 function makeDescriptor(
 	name: string,
 	workflowName = "w",
 ): HttpTriggerDescriptor {
-	return withZodSchemas({
-		kind: "http",
-		type: "http",
-		name,
-		workflowName,
-		method: "POST",
-		request: {
-			body: { type: "object" },
-			headers: { type: "object", properties: {}, additionalProperties: false },
-		},
-		inputSchema: { type: "object" },
-		outputSchema: { type: "object" },
-	});
+	return makeHttpDescriptor({ name, workflowName });
 }
 
 interface FakeSandboxOptions {

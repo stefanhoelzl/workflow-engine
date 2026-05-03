@@ -10,11 +10,11 @@
 // MUST update both this file's inline const arrays AND `SECURITY.md` §2
 // "Globals surface (post-init guest-visible)" in the same change.
 
-import type { WorkflowManifest } from "@workflow-engine/core";
 import { type PluginDescriptor, sandbox } from "@workflow-engine/sandbox";
 import { describe, expect, it } from "vitest";
 import { buildPluginDescriptors } from "./sandbox-store.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
+import { makeWorkflowManifest } from "./test-utils/manifest.js";
 
 // --- Inline test fixtures -------------------------------------------------
 
@@ -40,11 +40,10 @@ const STUB_KEY_STORE: SecretsKeyStore = {
 	allKeyIds: () => ["0000000000000000"],
 };
 
-const WORKFLOW: WorkflowManifest = {
+const WORKFLOW = makeWorkflowManifest({
 	name: "globals-surface-fixture",
 	module: "globals-surface-fixture.js",
 	sha: "a".repeat(64),
-	env: {},
 	actions: [
 		{
 			name: "listGlobals",
@@ -57,8 +56,7 @@ const WORKFLOW: WorkflowManifest = {
 			output: { type: "string" },
 		},
 	],
-	triggers: [],
-};
+});
 
 // IIFE bundle: assigns exports onto `globalThis.__wfe_exports__` (the fixed
 // namespace the sandbox reads exports from — see IIFE_NAMESPACE in

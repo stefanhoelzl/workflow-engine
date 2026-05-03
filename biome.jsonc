@@ -104,7 +104,18 @@
 			// Test files: relaxed ergonomics — long arrange blocks, magic numbers
 			// in fixtures, non-null assertions on known-good test data, literal
 			// secrets in auth fixtures, empty mocks, `any` casts for edge cases.
-			"includes": ["**/*.test.ts"],
+			// Same relaxations apply to shared test-helper modules (test-utils,
+			// test-fakes, test-helpers, test-harness, test-descriptors) — they
+			// are test infrastructure, only imported from `*.test.ts`.
+			"includes": [
+				"**/*.test.ts",
+				"**/test-utils.ts",
+				"**/test-utils/**/*.ts",
+				"**/test-fakes.ts",
+				"**/test-helpers.ts",
+				"**/test-harness.ts",
+				"**/test-descriptors.ts"
+			],
 			"linter": {
 				"rules": {
 					"complexity": {

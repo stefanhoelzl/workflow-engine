@@ -1,42 +1,23 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../executor/index.js";
-import type {
-	CronTriggerDescriptor,
-	HttpTriggerDescriptor,
-} from "../executor/types.js";
-import type { Logger } from "../logger.js";
+import type { HttpTriggerDescriptor } from "../executor/types.js";
+import { createTestLogger } from "../test-utils/logger.js";
+import { makeWorkflowManifest as makeWorkflow } from "../test-utils/manifest.js";
 import { buildFire } from "./build-fire.js";
-import { withZodSchemas } from "./test-descriptors.js";
+import {
+	makeCronDescriptor as buildCronDescriptor,
+	makeHttpDescriptor,
+} from "./test-descriptors.js";
 
 // ---------------------------------------------------------------------------
 // buildFire unit tests
 // ---------------------------------------------------------------------------
 
-function makeWorkflow(): WorkflowManifest {
-	return {
-		name: "w",
-		module: "w.js",
-		sha: "0".repeat(64),
-		env: {},
-		actions: [],
-		triggers: [],
-	};
-}
-
 function makeDescriptor(
 	outputSchema: Record<string, unknown> = { type: "object" },
 ): HttpTriggerDescriptor {
-	return withZodSchemas({
-		kind: "http",
-		type: "http",
+	return makeHttpDescriptor({
 		name: "handler",
-		workflowName: "w",
-		method: "POST",
-		request: {
-			body: { type: "object" },
-			headers: { type: "object", properties: {}, additionalProperties: false },
-		},
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -52,40 +33,22 @@ function makeDescriptor(
 	});
 }
 
-function makeCronDescriptor(): CronTriggerDescriptor {
-	return withZodSchemas({
-		kind: "cron",
-		type: "cron",
+function makeCronDescriptor() {
+	return buildCronDescriptor({
 		name: "tick",
-		workflowName: "w",
-		schedule: "* * * * *",
-		tz: "UTC",
 		inputSchema: { type: "object" },
-		outputSchema: {}, // z.unknown() emits as empty schema — matches anything
 	});
 }
 
-function makeSilentLogger(): Logger & {
-	readonly warnings: Array<{ msg: string; data?: Record<string, unknown> }>;
-} {
-	const warnings: Array<{ msg: string; data?: Record<string, unknown> }> = [];
-	const base = {
-		info: vi.fn(),
-		warn: vi.fn((msg: string, data?: Record<string, unknown>) =>
-			warnings.push({ msg, ...(data ? { data } : {}) }),
-		),
-		error: vi.fn(),
-		debug: vi.fn(),
-		trace: vi.fn(),
-	};
-	const logger = {
-		...base,
-		child: vi.fn(() => logger),
-	} as unknown as Logger;
-	(logger as unknown as { warnings: typeof warnings }).warnings = warnings;
-	return logger as Logger & {
-		readonly warnings: typeof warnings;
-	};
+// Returns warn() invocations as `{ msg, data? }` records; reads `logger.warn`'s
+// mock state at call time so structured assertions stay terse.
+function warnings(
+	logger: ReturnType<typeof createTestLogger>,
+): Array<{ msg: string; data?: Record<string, unknown> }> {
+	return logger.warn.mock.calls.map(([msg, data]) => ({
+		msg,
+		...(data ? { data } : {}),
+	}));
 }
 
 describe("buildFire", () => {
@@ -95,7 +58,7 @@ describe("buildFire", () => {
 			.mockResolvedValue({ ok: true, output: { status: 200 } });
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
 		const descriptor = makeDescriptor();
-		const workflow = makeWorkflow();
+		const workflow = makeWorkflow({ name: "w", module: "w.js" });
 		const fire = buildFire(
 			executor,
 			"acme",
@@ -129,7 +92,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -154,7 +117,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -174,7 +137,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -207,12 +170,12 @@ describe("buildFire", () => {
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { status: 202 } });
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(outputSchema),
 			"bundle-src",
 			logger,
@@ -221,7 +184,7 @@ describe("buildFire", () => {
 		const result = await fire({ body: { name: "alice" } });
 
 		expect(result).toEqual({ ok: true, output: { status: 202 } });
-		expect(logger.warnings).toEqual([]);
+		expect(warnings(logger)).toEqual([]);
 	});
 
 	it("turns output-schema mismatch into a no-issues failure (routes to 500) and logs structured issues", async () => {
@@ -241,12 +204,12 @@ describe("buildFire", () => {
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: { statusCode: 202 } }); // typo for `status`
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(outputSchema),
 			"bundle-src",
 			logger,
@@ -263,8 +226,8 @@ describe("buildFire", () => {
 		// maps this to 500, not 422.
 		expect(result.error.issues).toBeUndefined();
 		// Structured issues survive through the logger path for observability.
-		expect(logger.warnings.length).toBe(1);
-		const warn = logger.warnings[0];
+		expect(warnings(logger).length).toBe(1);
+		const warn = warnings(logger)[0];
 		expect(warn?.msg).toBe("trigger.output-validation-failed");
 		expect(
 			(warn?.data as { issues?: unknown[] } | undefined)?.issues?.length ?? 0,
@@ -278,12 +241,12 @@ describe("buildFire", () => {
 			error: { message: "boom", stack: "trace" },
 		});
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(outputSchema),
 			"bundle-src",
 			logger,
@@ -295,7 +258,7 @@ describe("buildFire", () => {
 			ok: false,
 			error: { message: "boom", stack: "trace" },
 		});
-		expect(logger.warnings).toEqual([]);
+		expect(warnings(logger)).toEqual([]);
 	});
 
 	it("cron handler output validates trivially against z.unknown-style empty schema", async () => {
@@ -303,12 +266,12 @@ describe("buildFire", () => {
 			.fn<Executor["invoke"]>()
 			.mockResolvedValue({ ok: true, output: undefined });
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeCronDescriptor(),
 			"bundle-src",
 			logger,
@@ -317,7 +280,7 @@ describe("buildFire", () => {
 		const result = await fire({});
 
 		expect(result).toEqual({ ok: true, output: undefined });
-		expect(logger.warnings).toEqual([]);
+		expect(warnings(logger)).toEqual([]);
 	});
 
 	it("forwards dispatch arg to executor.invoke via the options bag", async () => {
@@ -329,7 +292,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -362,7 +325,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -383,7 +346,7 @@ describe("buildFire", () => {
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(),
 			"bundle-src",
 		);
@@ -426,12 +389,12 @@ describe("buildFire", () => {
 			},
 		});
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(outputSchema),
 			"bundle-src",
 			logger,
@@ -440,7 +403,7 @@ describe("buildFire", () => {
 		const result = await fire({ body: { name: "alice" } });
 
 		expect(result.ok).toBe(true);
-		expect(logger.warnings).toEqual([]);
+		expect(warnings(logger)).toEqual([]);
 	});
 
 	it("response.headers declared, handler returns wrong shape → no-issues failure (routes to 500) and logs structured issues", async () => {
@@ -468,12 +431,12 @@ describe("buildFire", () => {
 			},
 		});
 		const executor: Executor = { invoke, fail: vi.fn(async () => undefined) };
-		const logger = makeSilentLogger();
+		const logger = createTestLogger();
 		const fire = buildFire(
 			executor,
 			"acme",
 			"repo1",
-			makeWorkflow(),
+			makeWorkflow({ name: "w", module: "w.js" }),
 			makeDescriptor(outputSchema),
 			"bundle-src",
 			logger,
@@ -489,8 +452,8 @@ describe("buildFire", () => {
 		// IMPORTANT: no `issues` field on the error envelope → HTTP source
 		// maps this to 500 + trigger.error event, not 422.
 		expect(result.error.issues).toBeUndefined();
-		expect(logger.warnings.length).toBe(1);
-		const warn = logger.warnings[0];
+		expect(warnings(logger).length).toBe(1);
+		const warn = warnings(logger)[0];
 		expect(warn?.msg).toBe("trigger.output-validation-failed");
 	});
 });

@@ -4,7 +4,7 @@ vi.mock("node:dns/promises", () => ({
 	lookup: vi.fn(),
 }));
 
-import { lookup as mockLookup } from "node:dns/promises";
+import { dnsLookup as lookup, resetDnsMock } from "../test-utils/dns-mock.js";
 import {
 	assertHostIsPublic,
 	HostBlockedError,
@@ -12,15 +12,8 @@ import {
 	isBlockedAddress,
 } from "./index.js";
 
-const lookup = vi.mocked(mockLookup) as unknown as {
-	mockResolvedValueOnce: (
-		value: Array<{ address: string; family: 4 | 6 }>,
-	) => void;
-	mockReset: () => void;
-};
-
 beforeEach(() => {
-	lookup.mockReset();
+	resetDnsMock();
 });
 
 describe("net-guard — isBlockedAddress", () => {

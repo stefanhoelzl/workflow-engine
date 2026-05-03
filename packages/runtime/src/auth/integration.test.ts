@@ -3,34 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { githubProviderFactory } from "./providers/github.js";
 import { buildRegistry } from "./providers/index.js";
 import { localProviderFactory } from "./providers/local.js";
+import { createFakeGitHubFetch as fakeGitHub } from "./providers/test-fakes.js";
 import { authMiddleware, loginPageMiddleware } from "./routes.js";
 import { sessionMiddleware } from "./session-mw.js";
-
-interface FakeGitHubOpts {
-	readonly user?: { login: string; email: string | null };
-	readonly orgs?: Array<{ login: string }>;
-}
-
-function fakeGitHub(opts: FakeGitHubOpts = {}) {
-	return vi.fn(async (input: RequestInfo | URL) => {
-		const url = input.toString();
-		if (url.endsWith("/login/oauth/access_token")) {
-			return new Response(JSON.stringify({ access_token: "gho_fake" }), {
-				status: 200,
-			});
-		}
-		if (url.endsWith("/user/orgs")) {
-			return new Response(JSON.stringify(opts.orgs ?? []), { status: 200 });
-		}
-		if (url.endsWith("/user")) {
-			return new Response(
-				JSON.stringify(opts.user ?? { login: "alice", email: null }),
-				{ status: 200 },
-			);
-		}
-		return new Response("{}", { status: 404 });
-	});
-}
 
 function spinApp(opts: {
 	authAllow: string;

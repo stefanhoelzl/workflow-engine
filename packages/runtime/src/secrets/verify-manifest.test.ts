@@ -1,10 +1,11 @@
-import type { Manifest } from "@workflow-engine/core";
+import type { Manifest, WorkflowManifest } from "@workflow-engine/core";
 import {
 	derivePublicKey,
 	generateKeypair,
 	sealCiphertext,
 } from "@workflow-engine/core/secrets-crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { makeManifest, makeWorkflowManifest } from "../test-utils/manifest.js";
 import { createKeyStore, readyCrypto } from "./key-store.js";
 import { verifyManifestSecrets } from "./verify-manifest.js";
 
@@ -16,20 +17,10 @@ function makeCsv(sk: Uint8Array): string {
 	return `k1:${Buffer.from(sk).toString("base64")}`;
 }
 
-function baseManifest(workflowOverrides: Record<string, unknown>): Manifest {
-	return {
-		workflows: [
-			{
-				name: "wf",
-				module: "wf.js",
-				sha: "sha",
-				env: {},
-				actions: [],
-				triggers: [],
-				...workflowOverrides,
-			} as Manifest["workflows"][number],
-		],
-	};
+function baseManifest(workflowOverrides: Partial<WorkflowManifest>): Manifest {
+	return makeManifest({
+		workflows: [makeWorkflowManifest({ sha: "sha", ...workflowOverrides })],
+	});
 }
 
 describe("verifyManifestSecrets", () => {
@@ -110,30 +101,24 @@ describe("verifyManifestSecrets", () => {
 		const sk = generateKeypair().secretKey;
 		const store = createKeyStore(makeCsv(sk));
 		const primary = store.getPrimary();
-		const manifest: Manifest = {
+		const manifest = makeManifest({
 			workflows: [
-				{
+				makeWorkflowManifest({
 					name: "wf1",
 					module: "wf1.js",
 					sha: "s1",
-					env: {},
-					actions: [],
-					triggers: [],
 					secrets: { A: "AAAA" },
 					secretsKeyId: primary.keyId,
-				},
-				{
+				}),
+				makeWorkflowManifest({
 					name: "wf2",
 					module: "wf2.js",
 					sha: "s2",
-					env: {},
-					actions: [],
-					triggers: [],
 					secrets: { B: "BBBB" },
 					secretsKeyId: primary.keyId,
-				},
+				}),
 			],
-		};
+		});
 		const result = verifyManifestSecrets(manifest, store);
 		expect(result).toEqual({
 			kind: "secret_decrypt_failed",
