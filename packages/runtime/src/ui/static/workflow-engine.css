@@ -391,48 +391,49 @@ body {
 	flex-direction: column;
 }
 
-.nav-item {
+/* In-page surface tabs (Dashboard | Trigger), rendered between sidebar and
+   main content. Layout's `tabs?` slot is wrapped in `.page-tabs-slot`; the
+   shared <Tabs/> component emits `<nav class="page-tabs">` inside it. */
+.page-tabs-slot {
+	margin-left: var(--sidebar-width);
+	margin-top: var(--topbar-height);
+	background: var(--bg-elevated);
+	border-bottom: 1px solid var(--border);
+}
+
+.page-tabs {
 	display: flex;
-	align-items: center;
-	gap: var(--sp-2);
-	padding: var(--sp-2) var(--sp-4);
-	color: var(--text-secondary);
-	text-decoration: none;
-	font-size: var(--fs-base);
-	font-weight: 500;
-	transition: all 0.15s ease;
+	gap: var(--sp-1);
+	padding: 0 var(--sp-5);
 }
 
-.nav-item:hover {
-	color: var(--text);
-	background: var(--bg-surface);
-}
-
-.nav-item.active {
-	color: var(--accent);
-	background: var(--bg-surface);
-}
-
-.nav-icon {
-	width: 24px;
-	height: 24px;
-	border-radius: var(--radius-sm);
-	background: var(--bg-surface);
+.page-tabs-link {
 	display: inline-flex;
 	align-items: center;
-	justify-content: center;
+	padding: var(--sp-3) var(--sp-3);
 	color: var(--text-secondary);
-	flex-shrink: 0;
+	text-decoration: none;
+	font-size: var(--fs-sm);
+	font-weight: 500;
+	border-bottom: 2px solid transparent;
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease;
 }
 
-.nav-icon .icon {
-	width: 14px;
-	height: 14px;
+.page-tabs-link:hover {
+	color: var(--text);
 }
 
-.nav-item.active .nav-icon {
-	background: var(--accent);
-	color: var(--on-accent);
+.page-tabs-link.active {
+	color: var(--accent);
+	border-bottom-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.page-tabs-link {
+		transition: none;
+	}
 }
 
 /* Layout */
@@ -441,6 +442,12 @@ body {
 	margin-top: var(--topbar-height);
 	flex: 1;
 	min-width: 0;
+}
+
+/* When a tab strip is present (authenticated surfaces), it already
+   carries the topbar offset; main-content flows immediately beneath. */
+.page-tabs-slot ~ .main-content {
+	margin-top: 0;
 }
 
 /* Page header */
@@ -2044,17 +2051,9 @@ a.tree-row:hover .tree-label,
 	font-weight: 600;
 }
 
-/* ----- Sidebar nav + per-surface tree ---------------------------------- */
-
-.sidebar-nav {
-	display: flex;
-	flex-direction: column;
-	gap: var(--sp-1);
-	padding: 0 var(--sp-2) var(--sp-3);
-}
+/* ----- Sidebar tree (single unified owner→repo→workflow→trigger) ------- */
 
 .sidebar-tree-wrap {
-	border-top: 1px solid var(--border);
 	padding: var(--sp-3) var(--sp-2);
 	overflow-y: auto;
 	flex: 1 1 auto;
@@ -2078,7 +2077,8 @@ a.tree-row:hover .tree-label,
 }
 
 .sidebar-owner-link,
-.sidebar-repo-link {
+.sidebar-repo-link,
+.sidebar-workflow-link {
 	display: flex;
 	align-items: center;
 	gap: var(--sp-2);
@@ -2090,14 +2090,21 @@ a.tree-row:hover .tree-label,
 	text-decoration: none;
 }
 
+.sidebar-workflow-link {
+	font-weight: 500;
+	font-size: var(--fs-xs);
+}
+
 .sidebar-owner-link:hover,
-.sidebar-repo-link:hover {
+.sidebar-repo-link:hover,
+.sidebar-workflow-link:hover {
 	background: color-mix(in srgb, var(--text) 5%, transparent);
 	color: var(--text);
 }
 
 .sidebar-owner-link.active,
-.sidebar-repo-link.active {
+.sidebar-repo-link.active,
+.sidebar-workflow-link.active {
 	background: color-mix(in srgb, var(--accent) 14%, transparent);
 	color: var(--accent);
 }
@@ -2117,22 +2124,6 @@ a.tree-row:hover .tree-label,
 	background: none;
 }
 
-.sidebar-chevron,
-.sidebar-chevron-placeholder {
-	color: var(--text-muted);
-	display: inline-flex;
-	align-items: center;
-	transition: transform 0.15s ease;
-	flex-shrink: 0;
-	width: 14px;
-	height: 14px;
-}
-
-.sidebar-owner.open > .sidebar-owner-link .sidebar-chevron,
-.sidebar-repo-link.open .sidebar-chevron {
-	transform: rotate(90deg);
-}
-
 .sidebar-owner-label {
 	flex: 1 1 auto;
 	overflow: hidden;
@@ -2146,13 +2137,21 @@ a.tree-row:hover .tree-label,
 	font-style: italic;
 }
 
-.sidebar-repos {
+.sidebar-repos,
+.sidebar-workflows {
 	list-style: none;
 	margin: 0;
 	padding: 0 0 0 var(--sp-4);
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+}
+
+.sidebar-workflow-label {
+	flex: 1 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .sidebar-repo {
@@ -2176,32 +2175,6 @@ a.tree-row:hover .tree-label,
 	background: color-mix(in srgb, var(--accent) 14%, transparent);
 	color: var(--accent);
 	font-weight: 600;
-}
-
-.sidebar-section + .sidebar-section {
-	margin-top: var(--sp-4);
-	padding-top: var(--sp-3);
-	border-top: 1px solid var(--border);
-}
-
-.sidebar-section-title {
-	display: block;
-	padding: var(--sp-1) var(--sp-2) var(--sp-2);
-	font-size: var(--fs-xs);
-	font-weight: 700;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-	color: var(--text-muted);
-	text-decoration: none;
-}
-
-.sidebar-section-title:hover,
-.sidebar-section.active .sidebar-section-title {
-	color: var(--text);
-}
-
-.sidebar-section.active .sidebar-section-title {
-	color: var(--accent);
 }
 
 .sidebar-repo-label {
@@ -2242,18 +2215,6 @@ a.tree-row:hover .tree-label,
 .sidebar-trigger.active {
 	background: color-mix(in srgb, var(--accent) 14%, transparent);
 	color: var(--accent);
-}
-
-.sidebar-trigger-wf {
-	color: var(--text-muted);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	min-width: 0;
-}
-
-.sidebar-trigger-sep {
-	color: var(--text-muted);
-	flex-shrink: 0;
 }
 
 .sidebar-trigger-name {

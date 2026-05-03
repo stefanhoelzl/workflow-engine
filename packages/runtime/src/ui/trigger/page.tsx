@@ -292,6 +292,7 @@ interface RepoTriggerPageOptions {
 	readonly owner: string;
 	readonly repo: string;
 	readonly sidebarTree?: Child;
+	readonly tabs?: Child;
 }
 
 function RepoTriggerCards({ entries }: { entries: readonly WorkflowEntry[] }) {
@@ -335,11 +336,21 @@ interface SingleTriggerPageOptions {
 	readonly trigger: string;
 	readonly entries: readonly WorkflowEntry[];
 	readonly sidebarTree?: Child;
+	readonly tabs?: Child;
 }
 
 function SingleTriggerPage(options: SingleTriggerPageOptions) {
-	const { user, email, owner, repo, workflow, trigger, entries, sidebarTree } =
-		options;
+	const {
+		user,
+		email,
+		owner,
+		repo,
+		workflow,
+		trigger,
+		entries,
+		sidebarTree,
+		tabs,
+	} = options;
 	let card: TriggerCardData | undefined;
 	for (const entry of entries) {
 		if (entry.workflow.name !== workflow) {
@@ -362,6 +373,7 @@ function SingleTriggerPage(options: SingleTriggerPageOptions) {
 			user={user}
 			email={email}
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
+			{...(tabs === undefined ? {} : { tabs })}
 		>
 			<div class="page-header">
 				<nav class="breadcrumb" aria-label="Breadcrumb">
@@ -371,7 +383,9 @@ function SingleTriggerPage(options: SingleTriggerPageOptions) {
 					<span class="breadcrumb-sep">/</span>
 					<a href={`/trigger/${owner}/${repo}`}>{repo}</a>
 					<span class="breadcrumb-sep">/</span>
-					<span class="breadcrumb-current">{`${workflow} / ${trigger}`}</span>
+					<a href={`/trigger/${owner}/${repo}/${workflow}`}>{workflow}</a>
+					<span class="breadcrumb-sep">/</span>
+					<span class="breadcrumb-current">{trigger}</span>
 				</nav>
 				<h1>{`${workflow} / ${trigger}`}</h1>
 			</div>
@@ -386,239 +400,177 @@ function SingleTriggerPage(options: SingleTriggerPageOptions) {
 	);
 }
 
-function RepoTriggerPage(options: RepoTriggerPageOptions) {
-	const { entries, user, email, owner, repo, sidebarTree } = options;
-	return (
-		<Layout
-			title={`Trigger — ${owner}/${repo}`}
-			activePath="/trigger"
-			user={user}
-			email={email}
-			{...(sidebarTree === undefined ? {} : { sidebarTree })}
-		>
-			<div class="page-header">
-				<nav class="breadcrumb" aria-label="Breadcrumb">
-					<a href="/trigger">Trigger</a>
-					<span class="breadcrumb-sep">/</span>
-					<a href={`/trigger/${owner}`}>{owner}</a>
-					<span class="breadcrumb-sep">/</span>
-					<span class="breadcrumb-current">{repo}</span>
-				</nav>
-				<h1>{`${owner}/${repo}`}</h1>
-			</div>
-			<div class="trigger-content">
-				<RepoTriggerCards entries={entries} />
-			</div>
-		</Layout>
-	);
+// ---------------------------------------------------------------------------
+// Scope-filtered page — single component used at every multi-card scope:
+//   /trigger                                — every (owner, repo) the user has
+//   /trigger/:owner                         — every repo under :owner
+//   /trigger/:owner/:repo                   — single repo, every workflow
+//   /trigger/:owner/:repo/:workflow         — single workflow's cards
+// The single-trigger leaf (`/trigger/:owner/:repo/:workflow/:trigger`) keeps
+// its own focused page. Navigation between scopes is the sidebar tree's job
+// (`shared-layout`); no inline-expandable tree, no HTMX fragment lazy-load.
+
+interface ScopeTriggerPageOptions {
+	readonly user: string;
+	readonly email: string;
+	readonly owners: readonly string[];
+	readonly entries: readonly WorkflowEntry[];
+	readonly scope: {
+		readonly owner?: string;
+		readonly repo?: string;
+		readonly workflow?: string;
+	};
+	readonly sidebarTree?: Child;
+	readonly tabs?: Child;
 }
 
-const SKELETON_PLACEHOLDERS = 3;
-
-function TriggerSkeleton() {
-	const items = Array.from({ length: SKELETON_PLACEHOLDERS });
+function ScopeBreadcrumb({
+	scope,
+}: {
+	scope: ScopeTriggerPageOptions["scope"];
+}) {
+	if (!scope.owner) {
+		return <span class="breadcrumb-current">All</span>;
+	}
+	if (!scope.repo) {
+		return (
+			<>
+				<a href="/trigger">All</a>
+				<span class="breadcrumb-sep">/</span>
+				<span class="breadcrumb-current">{scope.owner}</span>
+			</>
+		);
+	}
+	if (!scope.workflow) {
+		return (
+			<>
+				<a href="/trigger">All</a>
+				<span class="breadcrumb-sep">/</span>
+				<a href={`/trigger/${scope.owner}`}>{scope.owner}</a>
+				<span class="breadcrumb-sep">/</span>
+				<span class="breadcrumb-current">{scope.repo}</span>
+			</>
+		);
+	}
 	return (
 		<>
-			{items.map(() => (
-				<div class="trigger-skeleton" aria-hidden="true" />
-			))}
+			<a href="/trigger">All</a>
+			<span class="breadcrumb-sep">/</span>
+			<a href={`/trigger/${scope.owner}`}>{scope.owner}</a>
+			<span class="breadcrumb-sep">/</span>
+			<a href={`/trigger/${scope.owner}/${scope.repo}`}>{scope.repo}</a>
+			<span class="breadcrumb-sep">/</span>
+			<span class="breadcrumb-current">{scope.workflow}</span>
 		</>
 	);
 }
 
-function RepoList({
-	owner,
-	repos,
-}: {
-	owner: string;
-	repos: readonly string[];
-}) {
-	if (repos.length === 0) {
-		return (
-			<div class="tree-empty" data-count="0">
-				No repos registered
-			</div>
-		);
+function scopeHeading(scope: ScopeTriggerPageOptions["scope"]): string {
+	if (!scope.owner) {
+		return "Trigger";
 	}
-	return (
-		<ul class="tree-repos" data-owner={owner}>
-			{repos.map((repo) => (
-				<li class="tree-repo">
-					<details
-						hx-get={`/trigger/${owner}/${repo}/cards`}
-						hx-trigger="toggle once"
-						hx-target="find .tree-trigger-cards"
-						hx-swap="innerHTML"
-					>
-						<summary class="tree-row">
-							<span class="tree-chevron" aria-hidden="true">
-								<ChevronIcon />
-							</span>
-							<span class="tree-label">{repo}</span>
-						</summary>
-						<div class="tree-trigger-cards">
-							<TriggerSkeleton />
-						</div>
-					</details>
-				</li>
-			))}
-		</ul>
-	);
+	if (!scope.repo) {
+		return scope.owner;
+	}
+	if (!scope.workflow) {
+		return `${scope.owner}/${scope.repo}`;
+	}
+	return `${scope.owner}/${scope.repo} · ${scope.workflow}`;
 }
 
-function TriggerRepoNode({
+function ScopeRepoSection({
 	owner,
 	repo,
-	autoExpand,
-	preloadedEntries,
+	entries,
+	showHeader,
 }: {
 	owner: string;
 	repo: string;
-	autoExpand: boolean;
-	preloadedEntries: readonly WorkflowEntry[] | undefined;
+	entries: readonly WorkflowEntry[];
+	showHeader: boolean;
 }) {
 	return (
-		<li class="tree-repo">
-			<details
-				open={autoExpand ? true : undefined}
-				hx-get={`/trigger/${owner}/${repo}/cards`}
-				hx-trigger="toggle once"
-				hx-target="find .tree-trigger-cards"
-				hx-swap="innerHTML"
-			>
-				<summary class="tree-row">
-					<span class="tree-chevron" aria-hidden="true">
-						<ChevronIcon />
-					</span>
-					<span class="tree-label">{repo}</span>
-				</summary>
-				<div class="tree-trigger-cards">
-					{autoExpand && preloadedEntries ? (
-						<RepoTriggerCards entries={preloadedEntries} />
-					) : (
-						<TriggerSkeleton />
-					)}
-				</div>
-			</details>
-		</li>
+		<section class="trigger-repo-section">
+			{showHeader ? (
+				<h2 class="trigger-repo-title">
+					<a href={`/trigger/${owner}/${repo}`}>{`${owner}/${repo}`}</a>
+				</h2>
+			) : null}
+			<RepoTriggerCards entries={entries} />
+		</section>
 	);
 }
 
-function TriggerOwnerNode({
-	owner,
-	repos,
-	autoExpand,
-	autoExpandRepo,
-	preloadedEntries,
-}: {
-	owner: string;
-	repos: readonly string[] | undefined;
-	autoExpand: string | undefined;
-	autoExpandRepo: string | undefined;
-	preloadedEntries: readonly WorkflowEntry[] | undefined;
-}) {
-	if (!repos || repos.length === 0) {
-		return (
-			<li class="tree-owner tree-owner--empty">
-				<div class="tree-row tree-row--flat">
-					<span class="tree-label">{owner}</span>
-					<span class="tree-note">no repos registered</span>
-				</div>
-			</li>
-		);
+function ScopeTriggerPage(options: ScopeTriggerPageOptions) {
+	const { user, email, scope, entries, sidebarTree, tabs } = options;
+	const heading = scopeHeading(scope);
+	// Group entries by (owner, repo) for the cross-repo views; show repo
+	// header only when more than one (owner, repo) section is present.
+	const byPair = new Map<string, WorkflowEntry[]>();
+	for (const entry of entries) {
+		const key = `${entry.owner}/${entry.repo}`;
+		const bucket = byPair.get(key) ?? [];
+		bucket.push(entry);
+		byPair.set(key, bucket);
 	}
-	const open = autoExpand === owner;
-	return (
-		<li class="tree-owner">
-			<details open={open ? true : undefined}>
-				<summary class="tree-row">
-					<span class="tree-chevron" aria-hidden="true">
-						<ChevronIcon />
-					</span>
-					<span class="tree-label">{owner}</span>
-				</summary>
-				<div class="tree-owner-body">
-					<ul class="tree-repos">
-						{repos.map((repo) => (
-							<TriggerRepoNode
-								owner={owner}
-								repo={repo}
-								autoExpand={autoExpand === owner && autoExpandRepo === repo}
-								preloadedEntries={
-									autoExpand === owner && autoExpandRepo === repo
-										? preloadedEntries
-										: undefined
-								}
-							/>
-						))}
-					</ul>
-				</div>
-			</details>
-		</li>
-	);
-}
-
-interface TriggerIndexPageOptions {
-	readonly user: string;
-	readonly email: string;
-	readonly owners: readonly string[];
-	readonly reposByOwner: Record<string, readonly string[]>;
-	readonly autoExpand?: string;
-	readonly autoExpandRepo?: string;
-	readonly preloadedEntries?: readonly WorkflowEntry[];
-	readonly sidebarTree?: Child;
-}
-
-function TriggerIndexPage(options: TriggerIndexPageOptions) {
-	const {
-		user,
-		email,
-		owners,
-		reposByOwner,
-		autoExpand,
-		autoExpandRepo,
-		preloadedEntries,
-		sidebarTree,
-	} = options;
+	const pairKeys = [...byPair.keys()].sort((a, b) => a.localeCompare(b));
+	const showRepoHeader = pairKeys.length > 1;
 	return (
 		<Layout
-			title="Trigger"
+			title={`Trigger — ${heading}`}
 			activePath="/trigger"
 			user={user}
 			email={email}
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
+			{...(tabs === undefined ? {} : { tabs })}
 		>
 			<div class="page-header">
-				<h1>Trigger</h1>
+				<nav class="breadcrumb" aria-label="Breadcrumb">
+					<ScopeBreadcrumb scope={scope} />
+				</nav>
+				<h1>{heading}</h1>
 			</div>
-			<div class="dashboard-tree">
-				{owners.length === 0 ? (
-					<div class="empty-state">No owners available</div>
+			<div class="trigger-content">
+				{pairKeys.length === 0 ? (
+					<div class="empty-state">No triggers registered</div>
 				) : (
-					<ul class="tree-owners">
-						{owners.map((owner) => (
-							<TriggerOwnerNode
+					pairKeys.map((key) => {
+						const bucket = byPair.get(key) ?? [];
+						const owner = bucket[0]?.owner ?? "";
+						const repo = bucket[0]?.repo ?? "";
+						return (
+							<ScopeRepoSection
 								owner={owner}
-								repos={reposByOwner[owner]}
-								autoExpand={autoExpand}
-								autoExpandRepo={autoExpandRepo}
-								preloadedEntries={preloadedEntries}
+								repo={repo}
+								entries={bucket}
+								showHeader={showRepoHeader}
 							/>
-						))}
-					</ul>
+						);
+					})
 				)}
 			</div>
 		</Layout>
 	);
 }
 
+function RepoTriggerPage(options: RepoTriggerPageOptions) {
+	const { entries, user, email, owner, repo, sidebarTree, tabs } = options;
+	return (
+		<ScopeTriggerPage
+			user={user}
+			email={email}
+			owners={options.owners}
+			entries={entries}
+			scope={{ owner, repo }}
+			{...(sidebarTree === undefined ? {} : { sidebarTree })}
+			{...(tabs === undefined ? {} : { tabs })}
+		/>
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Compat shims — return strings via .toString() so c.html() accepts directly.
 // ---------------------------------------------------------------------------
-
-function renderRepoTriggerCards(entries: readonly WorkflowEntry[]) {
-	return (<RepoTriggerCards entries={entries} />).toString();
-}
 
 function renderRepoTriggerPage(options: RepoTriggerPageOptions) {
 	return (<RepoTriggerPage {...options} />).toString();
@@ -628,27 +580,19 @@ function renderSingleTriggerPage(options: SingleTriggerPageOptions) {
 	return (<SingleTriggerPage {...options} />).toString();
 }
 
-function renderRepoList(owner: string, repos: readonly string[]) {
-	return (<RepoList owner={owner} repos={repos} />).toString();
+function renderScopeTriggerPage(options: ScopeTriggerPageOptions) {
+	return (<ScopeTriggerPage {...options} />).toString();
 }
 
-function renderTriggerIndexPage(options: TriggerIndexPageOptions) {
-	return (<TriggerIndexPage {...options} />).toString();
-}
-
-// Attach the repo-list fragment renderer as a static for the HTMX endpoint.
-renderTriggerIndexPage.repoListFragment = renderRepoList;
-
-export type { TriggerCardData };
+export type { ScopeTriggerPageOptions, TriggerCardData };
 export {
 	prepareSchema,
 	RepoTriggerCards,
 	RepoTriggerPage,
-	renderRepoTriggerCards,
 	renderRepoTriggerPage,
+	renderScopeTriggerPage,
 	renderSingleTriggerPage,
-	renderTriggerIndexPage,
+	ScopeTriggerPage,
 	SingleTriggerPage,
 	schemaHasNoInputs,
-	TriggerIndexPage,
 };

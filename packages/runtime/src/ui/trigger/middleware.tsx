@@ -10,27 +10,22 @@ import type {
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
-import { buildSidebarData, renderSidebarBoth } from "../sidebar-tree.js";
-import {
-	renderRepoTriggerCards,
-	renderRepoTriggerPage,
-	renderSingleTriggerPage,
-	renderTriggerIndexPage,
-} from "./page.js";
+import { buildSidebarData, SidebarTree } from "../sidebar-tree.js";
+import { Tabs } from "../tabs.js";
+import { renderScopeTriggerPage, renderSingleTriggerPage } from "./page.js";
 
 // ---------------------------------------------------------------------------
 // /trigger/* — operator UI for manually firing registered triggers
 // ---------------------------------------------------------------------------
 //
-// Mirrors the dashboard's three-level drill-down:
-//   GET /trigger                        — tree of owners
-//   GET /trigger/:owner                 — owner expanded; repos inline-
-//                                         expandable (HTMX-lazy trigger cards)
-//   GET /trigger/:owner/:repo           — focused leaf page (trigger cards)
-//   GET /trigger/:owner/repos           — HTMX fragment: repo list
-//   GET /trigger/:owner/:repo/cards     — HTMX fragment: trigger cards
-//   POST /trigger/:owner/:repo/:workflow/:trigger
-//                                       — kind-agnostic manual fire
+// Scope-filtered routes mirror the dashboard surface; navigation is driven
+// by the shared sidebar tree, not by inline-expansion in the main view.
+//   GET /trigger                              — every card across user's owners
+//   GET /trigger/:owner                       — every card under owner
+//   GET /trigger/:owner/:repo                 — repo's cards by workflow
+//   GET /trigger/:owner/:repo/:workflow       — workflow's cards
+//   GET /trigger/:owner/:repo/:workflow/:trigger — focused single card
+//   POST /trigger/:owner/:repo/:workflow/:trigger — kind-agnostic manual fire
 //
 // HTTP-trigger cards still submit to the kind-agnostic /trigger/* endpoint
 // so the session user is captured as dispatch provenance (the public
@@ -166,78 +161,93 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 		activeTrigger?: string,
 	) {
 		const data = buildSidebarData(deps.registry, owners);
-		return renderSidebarBoth(data, {
-			surface: "/trigger",
-			...(activeOwner ? { owner: activeOwner } : {}),
-			...(activeRepo ? { repo: activeRepo } : {}),
-			...(activeWorkflow ? { workflow: activeWorkflow } : {}),
-			...(activeTrigger ? { trigger: activeTrigger } : {}),
-		});
+		return (
+			<SidebarTree
+				surface="/trigger"
+				data={data}
+				active={{
+					...(activeOwner ? { owner: activeOwner } : {}),
+					...(activeRepo ? { repo: activeRepo } : {}),
+					...(activeWorkflow ? { workflow: activeWorkflow } : {}),
+					...(activeTrigger ? { trigger: activeTrigger } : {}),
+				}}
+			/>
+		);
+	}
+
+	function tabsFor(
+		activeOwner?: string,
+		activeRepo?: string,
+		activeWorkflow?: string,
+		activeTrigger?: string,
+	) {
+		const path = `/${[activeOwner, activeRepo, activeWorkflow, activeTrigger]
+			.filter((s): s is string => Boolean(s))
+			.join("/")}`;
+		const cleaned = path === "/" ? "" : path;
+		return <Tabs surface="/trigger" path={cleaned} />;
+	}
+
+	function entriesAcrossOwners(
+		owners: readonly string[],
+	): readonly import("../../workflow-registry.js").WorkflowEntry[] {
+		const out: import("../../workflow-registry.js").WorkflowEntry[] = [];
+		for (const o of owners) {
+			for (const repo of deps.registry.repos(o)) {
+				for (const entry of deps.registry.list(o, repo)) {
+					out.push(entry);
+				}
+			}
+		}
+		return out;
 	}
 
 	// -- Root: /trigger ----------------------------------------------------
 	const renderRoot = (c: Context) => {
 		const user = c.get("user");
 		const owners = sortedOwners(c);
-		const reposByOwner: Record<string, readonly string[]> = {};
-		for (const o of owners) {
-			reposByOwner[o] = deps.registry.repos(o);
-		}
-		// Auto-expand when the user has exactly one non-empty owner.
-		const nonEmpty = owners.filter((o) => reposByOwner[o]?.length);
-		const autoExpand = nonEmpty.length === 1 ? nonEmpty[0] : undefined;
+		const entries = entriesAcrossOwners(owners);
 		return c.html(
-			renderTriggerIndexPage({
+			renderScopeTriggerPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				reposByOwner,
-				...(autoExpand ? { autoExpand } : {}),
-				sidebarTree: buildSidebar(owners, autoExpand),
+				entries,
+				scope: {},
+				sidebarTree: buildSidebar(owners),
+				tabs: tabsFor(),
 			}),
 		);
 	};
 	app.get("/", renderRoot);
 	app.get("", renderRoot);
 
-	// -- /trigger/:owner -- owner expanded; repos show trigger cards inline
+	// -- /trigger/:owner -- every trigger card across owner's repos -------
 	app.get("/:owner", (c) => {
 		const owner = c.req.param("owner");
 		const user = c.get("user");
 		const owners = sortedOwners(c);
-		const reposByOwner: Record<string, readonly string[]> = {};
-		for (const o of owners) {
-			reposByOwner[o] = deps.registry.repos(o);
+		const repos = deps.registry.repos(owner);
+		const entries: import("../../workflow-registry.js").WorkflowEntry[] = [];
+		for (const repo of repos) {
+			for (const entry of deps.registry.list(owner, repo)) {
+				entries.push(entry);
+			}
 		}
-		const repos = reposByOwner[owner] ?? [];
-		// Pre-load the single-repo case so no skeleton flash.
-		const autoExpandRepo = repos.length === 1 ? repos[0] : undefined;
-		const preloadedEntries = autoExpandRepo
-			? deps.registry.list(owner, autoExpandRepo)
-			: undefined;
 		return c.html(
-			renderTriggerIndexPage({
+			renderScopeTriggerPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				reposByOwner,
-				autoExpand: owner,
-				...(autoExpandRepo ? { autoExpandRepo } : {}),
-				...(preloadedEntries ? { preloadedEntries } : {}),
+				entries,
+				scope: { owner },
 				sidebarTree: buildSidebar(owners, owner),
+				tabs: tabsFor(owner),
 			}),
 		);
 	});
 
-	// -- /trigger/:owner/repos -- HTMX fragment (repo list for owner) ----
-	app.get("/:owner/repos", (c) => {
-		const owner = c.req.param("owner");
-		const repos = deps.registry.repos(owner);
-		const fragment = renderTriggerIndexPage.repoListFragment(owner, repos);
-		return c.html(fragment);
-	});
-
-	// -- /trigger/:owner/:repo -- focused leaf page ----------------------
+	// -- /trigger/:owner/:repo -- repo's cards grouped by workflow --------
 	app.get("/:owner/:repo", (c) => {
 		const owner = c.req.param("owner");
 		const repo = c.req.param("repo");
@@ -245,24 +255,42 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 		const owners = sortedOwners(c);
 		const entries = deps.registry.list(owner, repo);
 		return c.html(
-			renderRepoTriggerPage({
-				entries,
+			renderScopeTriggerPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
-				owner,
-				repo,
+				entries,
+				scope: { owner, repo },
 				sidebarTree: buildSidebar(owners, owner, repo),
+				tabs: tabsFor(owner, repo),
 			}),
 		);
 	});
 
-	// -- /trigger/:owner/:repo/cards -- HTMX fragment (trigger cards) ----
-	app.get("/:owner/:repo/cards", (c) => {
+	// -- /trigger/:owner/:repo/:workflow -- one workflow's cards ----------
+	app.get("/:owner/:repo/:workflow", (c) => {
 		const owner = c.req.param("owner");
 		const repo = c.req.param("repo");
-		const entries = deps.registry.list(owner, repo);
-		return c.html(renderRepoTriggerCards(entries));
+		const workflow = c.req.param("workflow");
+		const user = c.get("user");
+		const owners = sortedOwners(c);
+		const entries = deps.registry
+			.list(owner, repo)
+			.filter((e) => e.workflow.name === workflow);
+		if (entries.length === 0) {
+			return c.notFound();
+		}
+		return c.html(
+			renderScopeTriggerPage({
+				user: user?.login ?? "",
+				email: user?.mail ?? "",
+				owners,
+				entries,
+				scope: { owner, repo, workflow },
+				sidebarTree: buildSidebar(owners, owner, repo, workflow),
+				tabs: tabsFor(owner, repo, workflow),
+			}),
+		);
 	});
 
 	// -- /trigger/:owner/:repo/:workflow/:trigger -- single-trigger page -
@@ -288,6 +316,7 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 				trigger,
 				entries,
 				sidebarTree: buildSidebar(owners, owner, repo, workflow, trigger),
+				tabs: tabsFor(owner, repo, workflow, trigger),
 			}),
 		);
 	});

@@ -606,3 +606,96 @@ describe("dashboard middleware — auth scoping", () => {
 		expect(res.status).toBe(404);
 	});
 });
+
+describe("dashboard middleware — unified scope routes + tabs", () => {
+	let store: EventStore;
+	let disposeStore: () => Promise<void>;
+
+	beforeEach(async () => {
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+
+	afterEach(async () => {
+		await disposeStore();
+	});
+
+	it("renders the tab strip with Dashboard active on every filter level", async () => {
+		const app = await mount(store);
+		const paths = ["/dashboard", "/dashboard/t0", "/dashboard/t0/r0"];
+		const results = await Promise.all(
+			paths.map(async (path) => {
+				const res = await app.request(path, { headers: AUTH_HEADERS });
+				const html = await res.text();
+				return { path, status: res.status, html };
+			}),
+		);
+		for (const { path, status, html } of results) {
+			expect(status).toBe(200);
+			expect(html).toContain('class="page-tabs"');
+			const restOfPath = path.replace(/^\/dashboard/, "");
+			expect(html).toContain(
+				`<a class="page-tabs-link active" href="/dashboard${restOfPath}">`,
+			);
+			expect(html).toContain(
+				`<a class="page-tabs-link" href="/trigger${restOfPath}">`,
+			);
+		}
+	});
+
+	it("renders /dashboard/:owner/:repo/:workflow filtered to that workflow", async () => {
+		await store.record(
+			event({
+				id: "evt_build_a",
+				kind: "trigger.request",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				workflow: "build",
+				name: "ci",
+			}),
+		);
+		await store.record(
+			event({
+				id: "evt_build_a",
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				ts: 1,
+				workflow: "build",
+				name: "ci",
+			}),
+		);
+		await store.record(
+			event({
+				id: "evt_deploy_a",
+				kind: "trigger.request",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				workflow: "deploy",
+				name: "rollout",
+			}),
+		);
+		await store.record(
+			event({
+				id: "evt_deploy_a",
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				ts: 1,
+				workflow: "deploy",
+				name: "rollout",
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/dashboard/t0/r0/build", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_build_a"');
+		expect(html).not.toContain('id="inv-evt_deploy_a"');
+	});
+});

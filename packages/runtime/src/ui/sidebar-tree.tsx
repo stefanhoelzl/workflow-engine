@@ -1,36 +1,47 @@
-import type { Child } from "hono/jsx";
 import type { WorkflowRegistry } from "../workflow-registry.js";
-import { ChevronIcon, TriggerKindIcon } from "./icons.js";
+import { TriggerKindIcon } from "./icons.js";
 
 // ---------------------------------------------------------------------------
-// Sidebar tree — persistent navigation for /dashboard/* and /trigger/*
+// Sidebar tree — single unified navigator for /dashboard/* and /trigger/*
 // ---------------------------------------------------------------------------
 //
-// Both surfaces share the same `owner → repo → trigger` shape. The leaf
-// URL differs by surface:
-//   - Dashboard: /dashboard/:owner/:repo/:workflow/:trigger
-//       → filters the invocation list to that trigger
-//   - Trigger:   /trigger/:owner/:repo/:workflow/:trigger
-//       → renders the single pre-expanded trigger card
+// One tree per page (no per-surface duplication). Tree links inherit the
+// active surface so lateral navigation stays on the same surface; switching
+// surface is the in-page tab strip's job, not the sidebar.
 //
-// Expansion is derived from the active URL — ancestors of the current
-// route unfold, siblings stay collapsed — so there is no client-side
-// toggle state and a reload always shows the tree in the same shape.
-
-interface TriggerRef {
-	readonly workflow: string;
-	readonly trigger: string;
-	readonly kind: string;
-}
+// Tree depth is 4 levels: owner → repo → workflow → trigger. Every node is
+// a real anchor link to its scope page. Expansion is derived from the active
+// URL — ancestors of the current route unfold, siblings stay collapsed —
+// so there is no client-side toggle state.
 
 type Surface = "/dashboard" | "/trigger";
 
 interface ActiveState {
-	readonly surface: Surface;
 	readonly owner?: string;
 	readonly repo?: string;
 	readonly workflow?: string;
 	readonly trigger?: string;
+}
+
+interface TriggerRef {
+	readonly trigger: string;
+	readonly kind: string;
+}
+
+interface WorkflowGroup {
+	readonly workflow: string;
+	readonly triggers: readonly TriggerRef[];
+}
+
+interface SidebarData {
+	readonly owners: readonly string[];
+	readonly reposByOwner: Record<string, readonly string[]>;
+	readonly workflowsByPair: Record<string, readonly WorkflowGroup[]>;
+}
+
+interface NodeCtx {
+	readonly surface: Surface;
+	readonly active: ActiveState;
 }
 
 function pairKey(owner: string, repo: string): string {
@@ -48,49 +59,81 @@ function itemClass(base: string, active: boolean, open: boolean): string {
 	return parts.join(" ");
 }
 
-interface SectionCtx {
-	readonly surface: Surface;
-	readonly active: ActiveState;
-}
-
-interface SidebarData {
-	readonly owners: readonly string[];
-	readonly reposByOwner: Record<string, readonly string[]>;
-	readonly triggersByPair: Record<string, readonly TriggerRef[]>;
-}
-
 // ---------------------------------------------------------------------------
-// Trigger leaf (shared: leads to filter-by-trigger on dashboard, single card
-// view on trigger)
+// Trigger leaf
 // ---------------------------------------------------------------------------
 
 function TriggerLeaf({
 	ctx,
 	owner,
 	repo,
+	workflow,
 	t,
 }: {
-	ctx: SectionCtx;
+	ctx: NodeCtx;
 	owner: string;
 	repo: string;
+	workflow: string;
 	t: TriggerRef;
 }) {
 	const isActive =
-		ctx.active.surface === ctx.surface &&
 		ctx.active.owner === owner &&
 		ctx.active.repo === repo &&
-		ctx.active.workflow === t.workflow &&
+		ctx.active.workflow === workflow &&
 		ctx.active.trigger === t.trigger;
 	return (
 		<li>
 			<a
 				class={itemClass("sidebar-trigger", isActive, false)}
-				href={`${ctx.surface}/${owner}/${repo}/${t.workflow}/${t.trigger}`}
-				title={`${t.workflow} / ${t.trigger} (${t.kind})`}
+				href={`${ctx.surface}/${owner}/${repo}/${workflow}/${t.trigger}`}
+				title={`${workflow} / ${t.trigger} (${t.kind})`}
 			>
 				<TriggerKindIcon kind={t.kind} />
 				<span class="sidebar-trigger-name">{t.trigger}</span>
 			</a>
+		</li>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Workflow row
+// ---------------------------------------------------------------------------
+
+function WorkflowNode({
+	ctx,
+	owner,
+	repo,
+	group,
+}: {
+	ctx: NodeCtx;
+	owner: string;
+	repo: string;
+	group: WorkflowGroup;
+}) {
+	const isActive =
+		ctx.active.owner === owner &&
+		ctx.active.repo === repo &&
+		ctx.active.workflow === group.workflow &&
+		!ctx.active.trigger;
+	return (
+		<li>
+			<a
+				class={itemClass("sidebar-workflow-link", isActive, true)}
+				href={`${ctx.surface}/${owner}/${repo}/${group.workflow}`}
+			>
+				<span class="sidebar-workflow-label">{group.workflow}</span>
+			</a>
+			<ul class="sidebar-triggers">
+				{group.triggers.map((t) => (
+					<TriggerLeaf
+						ctx={ctx}
+						owner={owner}
+						repo={repo}
+						workflow={group.workflow}
+						t={t}
+					/>
+				))}
+			</ul>
 		</li>
 	);
 }
@@ -103,22 +146,18 @@ function RepoNode({
 	ctx,
 	owner,
 	repo,
-	triggers,
+	workflows,
 }: {
-	ctx: SectionCtx;
+	ctx: NodeCtx;
 	owner: string;
 	repo: string;
-	triggers: readonly TriggerRef[];
+	workflows: readonly WorkflowGroup[];
 }) {
-	const isActiveSurface = ctx.active.surface === ctx.surface;
 	const isActive =
-		isActiveSurface &&
 		ctx.active.owner === owner &&
 		ctx.active.repo === repo &&
-		!ctx.active.trigger;
-	const isOpen =
-		isActiveSurface && ctx.active.owner === owner && ctx.active.repo === repo;
-	if (triggers.length === 0) {
+		!ctx.active.workflow;
+	if (workflows.length === 0) {
 		return (
 			<li>
 				<a
@@ -134,21 +173,16 @@ function RepoNode({
 	return (
 		<li>
 			<a
-				class={itemClass("sidebar-repo-link", isActive, isOpen)}
+				class={itemClass("sidebar-repo-link", isActive, true)}
 				href={`${ctx.surface}/${owner}/${repo}`}
 			>
-				<span class="sidebar-chevron" aria-hidden="true">
-					<ChevronIcon />
-				</span>
 				<span class="sidebar-repo-label">{repo}</span>
 			</a>
-			{isOpen && (
-				<ul class="sidebar-triggers">
-					{triggers.map((t) => (
-						<TriggerLeaf ctx={ctx} owner={owner} repo={repo} t={t} />
-					))}
-				</ul>
-			)}
+			<ul class="sidebar-workflows">
+				{workflows.map((g) => (
+					<WorkflowNode ctx={ctx} owner={owner} repo={repo} group={g} />
+				))}
+			</ul>
 		</li>
 	);
 }
@@ -161,17 +195,14 @@ function OwnerNode({
 	ctx,
 	owner,
 	repos,
-	triggersByPair,
+	workflowsByPair,
 }: {
-	ctx: SectionCtx;
+	ctx: NodeCtx;
 	owner: string;
 	repos: readonly string[];
-	triggersByPair: Record<string, readonly TriggerRef[]>;
+	workflowsByPair: Record<string, readonly WorkflowGroup[]>;
 }) {
-	const isActiveSurface = ctx.active.surface === ctx.surface;
-	const isActive =
-		isActiveSurface && ctx.active.owner === owner && !ctx.active.repo;
-	const isOpen = isActiveSurface && ctx.active.owner === owner;
+	const isActive = ctx.active.owner === owner && !ctx.active.repo;
 	if (repos.length === 0) {
 		return (
 			<li class="sidebar-owner sidebar-owner--empty">
@@ -179,7 +210,6 @@ function OwnerNode({
 					class={itemClass("sidebar-owner-link", isActive, false)}
 					href={`${ctx.surface}/${owner}`}
 				>
-					<span class="sidebar-chevron-placeholder" />
 					<span class="sidebar-owner-label">{owner}</span>
 				</a>
 				<span class="sidebar-note">no repos</span>
@@ -187,38 +217,42 @@ function OwnerNode({
 		);
 	}
 	return (
-		<li class={itemClass("sidebar-owner", false, isOpen)}>
+		<li class={itemClass("sidebar-owner", false, true)}>
 			<a
-				class={itemClass("sidebar-owner-link", isActive, isOpen)}
+				class={itemClass("sidebar-owner-link", isActive, true)}
 				href={`${ctx.surface}/${owner}`}
 			>
-				<span class="sidebar-chevron" aria-hidden="true">
-					<ChevronIcon />
-				</span>
 				<span class="sidebar-owner-label">{owner}</span>
 			</a>
-			{isOpen && (
-				<ul class="sidebar-repos">
-					{repos.map((r) => (
-						<RepoNode
-							ctx={ctx}
-							owner={owner}
-							repo={r}
-							triggers={triggersByPair[pairKey(owner, r)] ?? []}
-						/>
-					))}
-				</ul>
-			)}
+			<ul class="sidebar-repos">
+				{repos.map((r) => (
+					<RepoNode
+						ctx={ctx}
+						owner={owner}
+						repo={r}
+						workflows={workflowsByPair[pairKey(owner, r)] ?? []}
+					/>
+				))}
+			</ul>
 		</li>
 	);
 }
 
 // ---------------------------------------------------------------------------
-// Section — full tree for a single surface
+// Top-level: render the unified tree for the active surface.
 // ---------------------------------------------------------------------------
 
-function Section({ ctx, data }: { ctx: SectionCtx; data: SidebarData }) {
-	const { owners, reposByOwner, triggersByPair } = data;
+function SidebarTree({
+	surface,
+	data,
+	active,
+}: {
+	surface: Surface;
+	data: SidebarData;
+	active: ActiveState;
+}) {
+	const { owners, reposByOwner, workflowsByPair } = data;
+	const ctx: NodeCtx = { surface, active };
 	if (owners.length === 0) {
 		return <div class="sidebar-tree-empty">No owners available</div>;
 	}
@@ -229,7 +263,7 @@ function Section({ ctx, data }: { ctx: SectionCtx; data: SidebarData }) {
 					ctx={ctx}
 					owner={o}
 					repos={reposByOwner[o] ?? []}
-					triggersByPair={triggersByPair}
+					workflowsByPair={workflowsByPair}
 				/>
 			))}
 		</ul>
@@ -237,48 +271,7 @@ function Section({ ctx, data }: { ctx: SectionCtx; data: SidebarData }) {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level: render both sections
-// ---------------------------------------------------------------------------
-
-function SidebarBoth({
-	data,
-	active,
-}: {
-	data: SidebarData;
-	active: ActiveState;
-}) {
-	const dashboardActive = active.surface === "/dashboard";
-	const triggerActive = active.surface === "/trigger";
-	return (
-		<>
-			<div class={`sidebar-section${dashboardActive ? " active" : ""}`}>
-				<a class="sidebar-section-title" href="/dashboard">
-					Dashboard
-				</a>
-				<Section ctx={{ surface: "/dashboard", active }} data={data} />
-			</div>
-			<div class={`sidebar-section${triggerActive ? " active" : ""}`}>
-				<a class="sidebar-section-title" href="/trigger">
-					Trigger
-				</a>
-				<Section ctx={{ surface: "/trigger", active }} data={data} />
-			</div>
-		</>
-	);
-}
-
-// Compat shim — un-migrated middleware (dashboard/middleware.ts,
-// trigger/middleware.ts) calls renderSidebarBoth(data, active) and threads
-// the result into renderLayout's sidebarTree slot. The returned value is a
-// JSX node passed as a prop, so it's not stringified yet — the parent
-// Layout's render walks it. To delete once those middleware files switch
-// to <SidebarBoth ...> directly.
-function renderSidebarBoth(data: SidebarData, active: ActiveState): Child {
-	return <SidebarBoth data={data} active={active} />;
-}
-
-// ---------------------------------------------------------------------------
-// Data collector — single source for both middlewares
+// Data collector — single source for both surfaces
 // ---------------------------------------------------------------------------
 
 function buildSidebarData(
@@ -286,26 +279,24 @@ function buildSidebarData(
 	owners: readonly string[],
 ): SidebarData {
 	const reposByOwner: Record<string, readonly string[]> = {};
-	const triggersByPair: Record<string, TriggerRef[]> = {};
+	const workflowsByPair: Record<string, WorkflowGroup[]> = {};
 	for (const owner of owners) {
 		const repos = registry.repos(owner);
 		reposByOwner[owner] = repos;
 		for (const repo of repos) {
-			const bucket: TriggerRef[] = [];
+			const groups: WorkflowGroup[] = [];
 			for (const entry of registry.list(owner, repo)) {
-				for (const descriptor of entry.triggers) {
-					bucket.push({
-						workflow: entry.workflow.name,
-						trigger: descriptor.name,
-						kind: descriptor.kind,
-					});
-				}
+				const triggers: TriggerRef[] = entry.triggers.map((d) => ({
+					trigger: d.name,
+					kind: d.kind,
+				}));
+				groups.push({ workflow: entry.workflow.name, triggers });
 			}
-			triggersByPair[pairKey(owner, repo)] = bucket;
+			workflowsByPair[pairKey(owner, repo)] = groups;
 		}
 	}
-	return { owners, reposByOwner, triggersByPair };
+	return { owners, reposByOwner, workflowsByPair };
 }
 
-export type { ActiveState, SidebarData, TriggerRef };
-export { buildSidebarData, renderSidebarBoth, SidebarBoth };
+export type { ActiveState, SidebarData, TriggerRef, WorkflowGroup };
+export { buildSidebarData, SidebarTree };

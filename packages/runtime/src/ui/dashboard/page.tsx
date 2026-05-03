@@ -424,6 +424,7 @@ interface DashboardPageOptions {
 	// the user has access to.
 	readonly filter?: DashboardFilter;
 	readonly sidebarTree?: Child;
+	readonly tabs?: Child;
 }
 
 function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
@@ -439,7 +440,7 @@ function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
 			</>
 		);
 	}
-	if (!(filter.workflow && filter.trigger)) {
+	if (!filter.workflow) {
 		return (
 			<>
 				<a href="/dashboard">All</a>
@@ -447,6 +448,19 @@ function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
 				<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
 				<span class="breadcrumb-sep">/</span>
 				<span class="breadcrumb-current">{filter.repo}</span>
+			</>
+		);
+	}
+	if (!filter.trigger) {
+		return (
+			<>
+				<a href="/dashboard">All</a>
+				<span class="breadcrumb-sep">/</span>
+				<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
+				<span class="breadcrumb-sep">/</span>
+				<a href={`/dashboard/${filter.owner}/${filter.repo}`}>{filter.repo}</a>
+				<span class="breadcrumb-sep">/</span>
+				<span class="breadcrumb-current">{filter.workflow}</span>
 			</>
 		);
 	}
@@ -458,9 +472,11 @@ function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
 			<span class="breadcrumb-sep">/</span>
 			<a href={`/dashboard/${filter.owner}/${filter.repo}`}>{filter.repo}</a>
 			<span class="breadcrumb-sep">/</span>
-			<span class="breadcrumb-current">
-				{`${filter.workflow} / ${filter.trigger}`}
-			</span>
+			<a href={`/dashboard/${filter.owner}/${filter.repo}/${filter.workflow}`}>
+				{filter.workflow}
+			</a>
+			<span class="breadcrumb-sep">/</span>
+			<span class="breadcrumb-current">{filter.trigger}</span>
 		</>
 	);
 }
@@ -471,6 +487,7 @@ function DashboardPage({
 	rows,
 	filter,
 	sidebarTree,
+	tabs,
 }: DashboardPageOptions) {
 	return (
 		<Layout
@@ -479,6 +496,7 @@ function DashboardPage({
 			user={user}
 			email={email}
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
+			{...(tabs === undefined ? {} : { tabs })}
 		>
 			<div class="page-header">
 				<nav class="breadcrumb" aria-label="Breadcrumb">

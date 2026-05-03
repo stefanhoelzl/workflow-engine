@@ -43,7 +43,8 @@ Tokens are CSS custom properties on `:root`. Light theme is the default; dark th
 - Topbar wordmark (universal topbar, `.topbar-brand` text colour)
 - Primary CTA buttons (`.btn--primary`, `.error-link`, `.submit-btn`) via `--btn-bg`
 - Focus ring (`--focus-ring`'s outer layer)
-- Sidebar-active text (`.sidebar-section.active`, `.sidebar-owner-link.active`, etc.)
+- Sidebar-active text (`.sidebar-owner-link.active`, `.sidebar-repo-link.active`, `.sidebar-workflow-link.active`, `.sidebar-trigger.active`)
+- Active page-tab underline (`.page-tabs-link.active`)
 - Success status indicator (`.badge.succeeded` border/foreground via `--green` which is the same hex as `--accent` in light mode)
 
 Reviewers SHOULD reject PRs that introduce `--accent` outside the allowlist without a strong justification. Adding a new allowlist slot is fine; using `--accent` everywhere defeats the green-as-signal contract.

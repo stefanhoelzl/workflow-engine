@@ -9,7 +9,8 @@ import type { Logger } from "../../logger.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
-import { buildSidebarData, renderSidebarBoth } from "../sidebar-tree.js";
+import { buildSidebarData, SidebarTree } from "../sidebar-tree.js";
+import { Tabs } from "../tabs.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
 import { renderDashboardPage } from "./page.js";
@@ -166,7 +167,7 @@ function parseJsonField(value: unknown): unknown {
 }
 
 // Fetch trigger.request + terminal rows across every `(owner, repo)` scope
-// the caller has access to. An optional `triggerFilter` narrows further to
+// the caller has access to. An optional `narrow` narrows further to
 // a specific (workflow, trigger) — this is what the per-trigger filter URL
 // exposes. Terminal rows are merged in memory; the page renderer applies
 // the "pending-first, then newest-completed" sort.
@@ -185,7 +186,7 @@ async function fetchInvocationRowsForScopes(
 	registry: WorkflowRegistry,
 	scopes: readonly Scope[],
 	limit: number,
-	triggerFilter?: { workflow: string; trigger: string },
+	narrow?: { workflow: string; trigger?: string },
 ): Promise<InvocationRow[]> {
 	if (scopes.length === 0) {
 		return [];
@@ -193,11 +194,13 @@ async function fetchInvocationRowsForScopes(
 	const baseQuery = eventStore
 		.query(scopes)
 		.where("kind", "=", "trigger.request");
-	const filtered = triggerFilter
-		? baseQuery
-				.where("workflow", "=", triggerFilter.workflow)
-				.where("name", "=", triggerFilter.trigger)
-		: baseQuery;
+	let filtered = baseQuery;
+	if (narrow) {
+		filtered = filtered.where("workflow", "=", narrow.workflow);
+		if (narrow.trigger) {
+			filtered = filtered.where("name", "=", narrow.trigger);
+		}
+	}
 	const requests = (await filtered
 		.select(["id", "owner", "repo", "workflow", "name", "at", "ts", "meta"])
 		.orderBy("at", "desc")
@@ -252,7 +255,7 @@ async function fetchInvocationRowsForScopes(
 		registry,
 		scopes,
 		limit,
-		triggerFilter,
+		narrow,
 	);
 
 	const merged = [...handlerRows, ...exceptionRows];
@@ -353,7 +356,7 @@ async function fetchSyntheticRows(
 	registry: WorkflowRegistry,
 	scopes: readonly Scope[],
 	limit: number,
-	triggerFilter?: { workflow: string; trigger: string },
+	narrow?: { workflow: string; trigger?: string },
 ): Promise<InvocationRow[]> {
 	const base = eventStore
 		.query(scopes)
@@ -362,9 +365,7 @@ async function fetchSyntheticRows(
 			"trigger.rejection",
 			"system.upload",
 		]);
-	const filtered = triggerFilter
-		? base.where("workflow", "=", triggerFilter.workflow)
-		: base;
+	const filtered = narrow ? base.where("workflow", "=", narrow.workflow) : base;
 	const rows = (await filtered
 		.select([
 			"id",
@@ -388,7 +389,7 @@ async function fetchSyntheticRows(
 	for (const r of rows) {
 		if (r.kind === "system.upload") {
 			// per-trigger filter URLs do not surface upload rows.
-			if (triggerFilter) {
+			if (narrow) {
 				continue;
 			}
 			out.push(buildUploadRow(r));
@@ -401,7 +402,7 @@ async function fetchSyntheticRows(
 		if (trigger === undefined) {
 			continue;
 		}
-		if (triggerFilter && trigger !== triggerFilter.trigger) {
+		if (narrow?.trigger && trigger !== narrow.trigger) {
 			continue;
 		}
 		out.push(buildSyntheticTriggerRow(r, registry, trigger));
@@ -534,13 +535,18 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		},
 	) {
 		const data = buildSidebarData(deps.registry, owners);
-		return renderSidebarBoth(data, {
-			surface: "/dashboard",
-			...(active.owner ? { owner: active.owner } : {}),
-			...(active.repo ? { repo: active.repo } : {}),
-			...(active.workflow ? { workflow: active.workflow } : {}),
-			...(active.trigger ? { trigger: active.trigger } : {}),
-		});
+		return (
+			<SidebarTree
+				surface="/dashboard"
+				data={data}
+				active={{
+					...(active.owner ? { owner: active.owner } : {}),
+					...(active.repo ? { repo: active.repo } : {}),
+					...(active.workflow ? { workflow: active.workflow } : {}),
+					...(active.trigger ? { trigger: active.trigger } : {}),
+				}}
+			/>
+		);
 	}
 
 	interface Filter {
@@ -550,9 +556,27 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		readonly trigger?: string;
 	}
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: shared 5-level filter handler — owner/repo/workflow/trigger validation, scope narrow, sidebar+tabs build; splitting fragments the request flow
 	async function renderListFiltered(c: Context, filter?: Filter) {
 		const user = c.get("user");
 		const owners = userOwners(c);
+
+		// Validate :workflow segment when the registry has any entries for
+		// (owner, repo) — a missing workflow under a populated repo is a 404
+		// per the dashboard-list-view spec. When the registry has no entries
+		// at all (e.g. all workflows deleted, or synthetic events live on),
+		// skip validation: trigger.exception / system.upload rows may still
+		// be meaningful and we surface them via the EventStore.
+		if (filter?.workflow && filter.repo) {
+			const entries = deps.registry.list(filter.owner, filter.repo);
+			if (entries.length > 0) {
+				const hit = entries.some((e) => e.workflow.name === filter.workflow);
+				if (!hit) {
+					return c.notFound();
+				}
+			}
+		}
+
 		const scopes = resolveQueryScopes(
 			user,
 			deps.registry,
@@ -565,10 +589,18 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 			deps.registry,
 			scopes,
 			limit,
-			filter?.workflow && filter?.trigger
-				? { workflow: filter.workflow, trigger: filter.trigger }
+			filter?.workflow
+				? {
+						workflow: filter.workflow,
+						...(filter.trigger ? { trigger: filter.trigger } : {}),
+					}
 				: undefined,
 		);
+		const path = filter
+			? `/${[filter.owner, filter.repo, filter.workflow, filter.trigger]
+					.filter((s): s is string => Boolean(s))
+					.join("/")}`
+			: "";
 		return c.html(
 			renderDashboardPage({
 				user: user?.login ?? "",
@@ -577,6 +609,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 				rows,
 				...(filter ? { filter } : {}),
 				sidebarTree: buildSidebarTree(owners, filter ?? {}),
+				tabs: <Tabs surface="/dashboard" path={path} />,
 			}),
 		);
 	}
@@ -596,6 +629,15 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		renderListFiltered(c, {
 			owner: c.req.param("owner"),
 			repo: c.req.param("repo"),
+		}),
+	);
+
+	// -- /dashboard/:owner/:repo/:workflow -- filter to one workflow ------
+	app.get("/:owner/:repo/:workflow", (c) =>
+		renderListFiltered(c, {
+			owner: c.req.param("owner"),
+			repo: c.req.param("repo"),
+			workflow: c.req.param("workflow"),
 		}),
 	);
 
