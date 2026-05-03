@@ -967,7 +967,7 @@ function TriggeredBy({ name }: { name: string }) {
 // `trigger.request`, no frame, no paired bars to lay out. Render an instant
 // marker carrying the failure cause so the author sees "imap.poll-failed:
 // ECONNREFUSED" (or similar) without expanding further. Per
-// `dashboard-list-view` spec "Single-leaf invocation flamegraph renders
+// `invocations-list-view` spec "Single-leaf invocation flamegraph renders
 // the leaf event".
 function TriggerExceptionFragment({ event }: { event: InvocationEvent }) {
 	// `event.name` carries the failure-category discriminator

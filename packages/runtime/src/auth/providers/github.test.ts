@@ -92,17 +92,19 @@ describe("create", () => {
 describe("renderLoginSection", () => {
 	it("returns markup containing Sign in with GitHub and the url-encoded returnTo", async () => {
 		const provider = githubProviderFactory.create(["user:alice"], DEPS);
-		const section = await provider.renderLoginSection("/dashboard/foo");
+		const section = await provider.renderLoginSection("/invocations/foo");
 		const markup = String(section);
 		expect(markup).toContain("Sign in with GitHub");
-		expect(markup).toContain("/auth/github/signin?returnTo=%2Fdashboard%2Ffoo");
+		expect(markup).toContain(
+			"/auth/github/signin?returnTo=%2Finvocations%2Ffoo",
+		);
 	});
 });
 
 describe("mountAuthRoutes", () => {
-	it("GET /signin?returnTo=/dashboard redirects to github and sets state cookie", async () => {
+	it("GET /signin?returnTo=/invocations redirects to github and sets state cookie", async () => {
 		const sub = mountProvider(["user:alice"]);
-		const res = await sub.request("/signin?returnTo=/dashboard");
+		const res = await sub.request("/signin?returnTo=/invocations");
 		expect(res.status).toBe(302);
 		const loc = res.headers.get("location") ?? "";
 		expect(loc).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize\?/);
@@ -119,12 +121,15 @@ describe("mountAuthRoutes", () => {
 			orgs: [{ login: "acme" }],
 		});
 		const sub = mountProvider(["user:alice"], depsWith(fetchFn));
-		const sealed = await sealState({ state: "S", returnTo: "/dashboard/foo" });
+		const sealed = await sealState({
+			state: "S",
+			returnTo: "/invocations/foo",
+		});
 		const res = await sub.request("/callback?code=c&state=S", {
 			headers: { cookie: `${STATE_COOKIE}=${sealed}` },
 		});
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toBe("/dashboard/foo");
+		expect(res.headers.get("location")).toBe("/invocations/foo");
 		const session = findCookie(getSetCookies(res), SESSION_COOKIE);
 		expect(session).toBeDefined();
 		const rawValue =

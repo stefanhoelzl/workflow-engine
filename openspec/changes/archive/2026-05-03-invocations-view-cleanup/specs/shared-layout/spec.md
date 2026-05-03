@@ -1,9 +1,5 @@
-# Shared Layout Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Provide a shared HTML layout with navigation sidebar reused across dashboard and trigger UI pages.
-## Requirements
 ### Requirement: Shared layout API
 
 Every authenticated UI surface (`/invocations/*`, `/trigger/*`) SHALL render with four regions: a topbar (delegated to the universal topbar contract in `ui-foundation`), a navigation sidebar, an in-page tab strip that switches between Invocations and Trigger surfaces, and a content area for the page-specific body. The runtime SHALL expose a single shared mechanism that authenticated route handlers use to compose these regions; surface-specific handlers SHALL NOT reimplement the shell layout.
@@ -124,4 +120,3 @@ The tab strip SHALL be a shared component used by both surfaces; surface-specifi
 - **WHEN** the tab strip is rendered
 - **THEN** the `Invocations` tab's `href` SHALL be `/invocations`
 - **AND** the `Trigger` tab's `href` SHALL be `/trigger`
-

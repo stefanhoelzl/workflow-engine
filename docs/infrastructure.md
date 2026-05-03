@@ -19,7 +19,7 @@ DNS: Dynu A records owned by tofu, point at the VPS public IP (`scaleway_instanc
 
 ## Authentication
 
-Caddy is a pure TLS terminator + reverse proxy. It performs no authentication, no forward-auth, no header injection. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (`/dashboard/*`, `/trigger/*`) and `apiAuthMiddleware` (`/api/*`) in-process. See `openspec/specs/auth/spec.md` and `SECURITY.md §4`.
+Caddy is a pure TLS terminator + reverse proxy. It performs no authentication, no forward-auth, no header injection. The workflow-engine app owns every URL prefix and mounts `sessionMiddleware` (`/invocations/*`, `/trigger/*`) and `apiAuthMiddleware` (`/api/*`) in-process. See `openspec/specs/auth/spec.md` and `SECURITY.md §4`.
 
 ## Tofu layout
 

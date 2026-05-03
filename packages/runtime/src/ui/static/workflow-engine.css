@@ -274,6 +274,12 @@ body {
 .trigger-kind-icon--manual {
 	color: var(--kind-action);
 }
+/* `upload` is not a trigger kind on the wire — it's the leading icon on
+   synthetic system.upload invocation rows. Painted in the accent token so
+   upload rows read as a distinct event class from regular triggers. */
+.trigger-kind-icon--upload {
+	color: var(--accent);
+}
 
 .topbar-right {
 	display: flex;
@@ -505,28 +511,6 @@ body {
 	margin-top: calc(var(--topbar-height) + var(--tabs-height));
 }
 
-/* Page header */
-.page-header {
-	background: var(--bg-elevated);
-	border-bottom: 1px solid var(--border);
-	padding: var(--sp-4) var(--sp-5);
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	position: sticky;
-	top: var(--topbar-height);
-	z-index: 100;
-	backdrop-filter: blur(8px);
-}
-
-.page-header h1 {
-	font-size: var(--fs-lg);
-	font-weight: 600;
-	display: flex;
-	align-items: center;
-	gap: var(--sp-2);
-}
-
 /* Filters */
 .filters {
 	padding: var(--sp-3) var(--sp-5);
@@ -737,8 +721,10 @@ body {
 }
 
 /* Dispatch provenance chip — rendered on invocation rows whose trigger.request
- * carries meta.dispatch.source === "manual". Sits between the identity block
- * and the status badge. Blue/info styling distinguishes manual fires from
+ * carries meta.dispatch.source === "manual" or "upload". Sits between the
+ * identity block and the status badge for manual; on upload rows the chip is
+ * the only right-side element and is pushed to the far right (no status
+ * badge sits beside it). Blue/info styling distinguishes provenance from
  * the success/warn/error status badges without competing with them. */
 .entry-dispatch {
 	padding: 2px var(--sp-2);
@@ -752,6 +738,11 @@ body {
 	max-width: 14em;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.entry-header .entry-dispatch--upload {
+	margin-left: auto;
+	letter-spacing: 0.5px;
 }
 
 /* Tooltip */
@@ -2076,34 +2067,6 @@ a.tree-row:hover .tree-label,
 	color: var(--text-muted);
 	font-size: var(--fs-sm);
 	font-style: italic;
-}
-
-.breadcrumb {
-	display: flex;
-	align-items: center;
-	gap: var(--sp-2);
-	font-size: var(--fs-sm);
-	color: var(--text-secondary);
-	margin-bottom: var(--sp-2);
-}
-
-.breadcrumb a {
-	color: var(--text-secondary);
-	text-decoration: none;
-}
-
-.breadcrumb a:hover {
-	color: var(--accent);
-	text-decoration: underline;
-}
-
-.breadcrumb-sep {
-	color: var(--text-muted);
-}
-
-.breadcrumb-current {
-	color: var(--text);
-	font-weight: 600;
 }
 
 /* ----- Sidebar tree (single unified owner→repo→workflow→trigger) ------- */

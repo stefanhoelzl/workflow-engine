@@ -13,21 +13,21 @@ import { buildSidebarData, SidebarTree } from "../sidebar-tree.js";
 import { Tabs } from "../tabs.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
-import { renderDashboardPage } from "./page.js";
+import { renderInvocationsPage } from "./page.js";
 
 const DEFAULT_LIMIT = 500;
 // Length of the workflowSha prefix surfaced in the upload-row tooltip —
 // long enough to disambiguate at a glance, short enough to read.
 const SHA_SHORT_LEN = 8;
 
-interface DashboardMiddlewareDeps {
+interface InvocationsMiddlewareDeps {
 	readonly eventStore: EventStore;
 	readonly registry: WorkflowRegistry;
 	readonly limit?: number;
 	readonly logger?: Logger;
-	// Session middleware mounted before the dashboard handlers. Required
+	// Session middleware mounted before the invocations handlers. Required
 	// per `auth/spec.md` "sessionMw mount points": every route under
-	// `/dashboard/*` SHALL enforce session auth. Tests that do not
+	// `/invocations/*` SHALL enforce session auth. Tests that do not
 	// exercise the real `sessionMiddleware` inject a stub that seeds
 	// `UserContext` on the request context via `c.set("user", …)`.
 	readonly sessionMw: MiddlewareHandler;
@@ -170,14 +170,14 @@ function parseJsonField(value: unknown): unknown {
 // the caller has access to. An optional `narrow` narrows further to
 // a specific (workflow, trigger) — this is what the per-trigger filter URL
 // exposes. Terminal rows are merged in memory; the page renderer applies
-// the "pending-first, then newest-completed" sort.
+// the "pending-first, then newest-started" sort.
 //
 // Single-leaf `trigger.exception` invocations (author-fixable pre-dispatch
 // failures emitted via `executor.fail` — e.g. "imap.poll-failed") are
 // fetched in parallel and merged into the result as synthetic `failed`
 // rows. They have no `trigger.request` to derive the trigger name from;
 // the trigger declaration name is read from `event.input.trigger` (stamped
-// by `executor.fail`'s primitive). See dashboard-list-view spec
+// by `executor.fail`'s primitive). See invocations-list-view spec
 // "Single-leaf trigger.exception invocations render inline".
 // biome-ignore lint/complexity/useMaxParams: orthogonal inputs already packaged by the caller
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: sequential DB fetch → merge → row shape; splitting hurts readability
@@ -307,6 +307,7 @@ function buildUploadRow(r: RawSyntheticRow): InvocationRow {
 		completedAt: r.at,
 		startedTs: ts,
 		completedTs: ts,
+		triggerKind: "upload",
 		synthetic: true,
 		syntheticKind: "system.upload",
 		uploadShaShort: r.workflowSha.slice(0, SHA_SHORT_LEN),
@@ -511,11 +512,11 @@ function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure wires three list routes + flamegraph fragment + shared scope/sidebar helpers; splitting fragments the request pipeline
-function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
-	const app = new Hono().basePath("/dashboard");
+function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
+	const app = new Hono().basePath("/invocations");
 	app.use("*", deps.sessionMw);
 	// Guard every sub-route that names an :owner (with optional :repo). The
-	// root /dashboard is intentionally unguarded: it just renders the shell
+	// root /invocations is intentionally unguarded: it just renders the shell
 	// scoped to the user's owner allow-set.
 	app.use("/:owner/*", requireOwnerMember());
 	app.use("/:owner", requireOwnerMember());
@@ -537,7 +538,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		const data = buildSidebarData(deps.registry, owners);
 		return (
 			<SidebarTree
-				surface="/dashboard"
+				surface="/invocations"
 				data={data}
 				active={{
 					...(active.owner ? { owner: active.owner } : {}),
@@ -563,7 +564,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 
 		// Validate :workflow segment when the registry has any entries for
 		// (owner, repo) — a missing workflow under a populated repo is a 404
-		// per the dashboard-list-view spec. When the registry has no entries
+		// per the invocations-list-view spec. When the registry has no entries
 		// at all (e.g. all workflows deleted, or synthetic events live on),
 		// skip validation: trigger.exception / system.upload rows may still
 		// be meaningful and we surface them via the EventStore.
@@ -602,29 +603,28 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 					.join("/")}`
 			: "";
 		return c.html(
-			renderDashboardPage({
+			renderInvocationsPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
 				rows,
-				...(filter ? { filter } : {}),
 				sidebarTree: buildSidebarTree(owners, filter ?? {}),
-				tabs: <Tabs surface="/dashboard" path={path} scope={filter ?? {}} />,
+				tabs: <Tabs surface="/invocations" path={path} scope={filter ?? {}} />,
 			}),
 		);
 	}
 
-	// -- Root: /dashboard -- all scopes the user has access to ------------
+	// -- Root: /invocations -- all scopes the user has access to ------------
 	const renderRoot = (c: Context) => renderListFiltered(c);
 	app.get("/", renderRoot);
 	app.get("", renderRoot);
 
-	// -- /dashboard/:owner -- scoped to owner -----------------------------
+	// -- /invocations/:owner -- scoped to owner -----------------------------
 	app.get("/:owner", (c) =>
 		renderListFiltered(c, { owner: c.req.param("owner") }),
 	);
 
-	// -- /dashboard/:owner/:repo -- scoped to (owner, repo) --------------
+	// -- /invocations/:owner/:repo -- scoped to (owner, repo) --------------
 	app.get("/:owner/:repo", (c) =>
 		renderListFiltered(c, {
 			owner: c.req.param("owner"),
@@ -632,7 +632,7 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		}),
 	);
 
-	// -- /dashboard/:owner/:repo/:workflow -- filter to one workflow ------
+	// -- /invocations/:owner/:repo/:workflow -- filter to one workflow ------
 	app.get("/:owner/:repo/:workflow", (c) =>
 		renderListFiltered(c, {
 			owner: c.req.param("owner"),
@@ -641,22 +641,15 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		}),
 	);
 
-	// -- /dashboard/:owner/:repo/:workflow/:trigger -- filter to one trigger
-	app.get("/:owner/:repo/:workflow/:trigger", (c) =>
-		renderListFiltered(c, {
-			owner: c.req.param("owner"),
-			repo: c.req.param("repo"),
-			workflow: c.req.param("workflow"),
-			trigger: c.req.param("trigger"),
-		}),
-	);
-
 	// -- Flamegraph fragment ---------------------------------------------
-	app.get("/:owner/:repo/invocations/:id/flamegraph", async (c) => {
+	// Registered before the 4-segment trigger filter so Hono's matcher
+	// resolves `/<owner>/<repo>/<id>/flamegraph` to this literal-tail route
+	// rather than to `/:owner/:repo/:workflow/:trigger`.
+	app.get("/:owner/:repo/:id/flamegraph", async (c) => {
 		const owner = c.req.param("owner");
 		const repo = c.req.param("repo");
 		const id = c.req.param("id");
-		logger?.debug("dashboard.flamegraph.request", { id, owner, repo });
+		logger?.debug("invocations.flamegraph.request", { id, owner, repo });
 		const events = await fetchInvocationEvents(
 			deps.eventStore,
 			id,
@@ -666,11 +659,21 @@ function dashboardMiddleware(deps: DashboardMiddlewareDeps): Middleware {
 		return c.html(renderFlamegraph(events));
 	});
 
+	// -- /invocations/:owner/:repo/:workflow/:trigger -- filter to one trigger
+	app.get("/:owner/:repo/:workflow/:trigger", (c) =>
+		renderListFiltered(c, {
+			owner: c.req.param("owner"),
+			repo: c.req.param("repo"),
+			workflow: c.req.param("workflow"),
+			trigger: c.req.param("trigger"),
+		}),
+	);
+
 	return {
-		match: "/dashboard/*",
+		match: "/invocations/*",
 		handler: async (c) => app.fetch(c.req.raw),
 	};
 }
 
-export type { DashboardMiddlewareDeps };
-export { dashboardMiddleware };
+export type { InvocationsMiddlewareDeps };
+export { invocationsMiddleware };

@@ -40,7 +40,7 @@ export const ping = httpTrigger({
 				auth: { user: "bob", via: "api-header" },
 				label: "bobApi",
 			})
-			.fetch("/dashboard/acme", {
+			.fetch("/invocations/acme", {
 				auth: { user: "bob", via: "cookie" },
 				label: "bobDash",
 			})

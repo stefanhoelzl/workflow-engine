@@ -96,9 +96,9 @@ describe("renderLoginSection", () => {
 
 	it("contains the hidden returnTo input carrying the passed-in value", async () => {
 		const provider = localProviderFactory.create(["dev"], DEPS);
-		const markup = String(await provider.renderLoginSection("/dashboard"));
+		const markup = String(await provider.renderLoginSection("/invocations"));
 		expect(markup).toContain(
-			'<input type="hidden" name="returnTo" value="/dashboard"/>',
+			'<input type="hidden" name="returnTo" value="/invocations"/>',
 		);
 	});
 });
@@ -108,10 +108,10 @@ describe("mountAuthRoutes", () => {
 		const sub = mountProvider(["dev"]);
 		const res = await sub.request("/signin", {
 			method: "POST",
-			body: new URLSearchParams({ user: "dev", returnTo: "/dashboard" }),
+			body: new URLSearchParams({ user: "dev", returnTo: "/invocations" }),
 		});
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toBe("/dashboard");
+		expect(res.headers.get("location")).toBe("/invocations");
 		const session = findCookie(getSetCookies(res), SESSION_COOKIE);
 		expect(session).toBeDefined();
 		const payload = await unsealSession(cookieValue(session ?? ""));
@@ -126,7 +126,7 @@ describe("mountAuthRoutes", () => {
 		const sub = mountProvider(["dev"]);
 		const res = await sub.request("/signin", {
 			method: "POST",
-			body: new URLSearchParams({ user: "mallory", returnTo: "/dashboard" }),
+			body: new URLSearchParams({ user: "mallory", returnTo: "/invocations" }),
 		});
 		expect(res.status).toBe(400);
 		expect(findCookie(getSetCookies(res), SESSION_COOKIE)).toBeUndefined();

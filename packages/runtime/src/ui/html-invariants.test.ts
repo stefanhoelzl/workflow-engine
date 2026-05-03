@@ -5,13 +5,13 @@ import { makeWorkflowManifest } from "../test-utils/manifest.js";
 import { withZodSchemas } from "../triggers/test-descriptors.js";
 import type { WorkflowEntry } from "../workflow-registry.js";
 import { LoginPage } from "./auth/login-page.js";
-import { renderFlamegraph } from "./dashboard/flamegraph.js";
+import { ErrorPage, NotFoundPage } from "./error-pages.js";
+import { renderFlamegraph } from "./invocations/flamegraph.js";
 import {
 	type InvocationRow,
-	renderDashboardPage,
 	renderInvocationList,
-} from "./dashboard/page.js";
-import { ErrorPage, NotFoundPage } from "./error-pages.js";
+	renderInvocationsPage,
+} from "./invocations/page.js";
 import { renderRepoTriggerPage } from "./trigger/page.js";
 
 const notFoundHtml = String(NotFoundPage());
@@ -111,9 +111,9 @@ const sampleRows: readonly InvocationRow[] = [
 // ---------------------------------------------------------------------------
 
 describe("HTML CSP invariants", () => {
-	it("renderDashboardPage (shell) output has no forbidden inline patterns", async () => {
+	it("renderInvocationsPage (shell) output has no forbidden inline patterns", async () => {
 		const html = (
-			await renderDashboardPage({
+			await renderInvocationsPage({
 				user: "user",
 				email: "user@example.com",
 				owners: ["acme"],
@@ -225,9 +225,9 @@ describe("HTML CSP invariants", () => {
 		expect(html).toContain("Workflow Engine");
 	});
 
-	it("renderDashboardPage with user renders the user section", async () => {
+	it("renderInvocationsPage with user renders the user section", async () => {
 		const html = (
-			await renderDashboardPage({
+			await renderInvocationsPage({
 				user: "alice",
 				email: "alice@example.com",
 				owners: ["acme"],

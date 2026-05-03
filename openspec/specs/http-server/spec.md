@@ -108,7 +108,7 @@ The HTML page is rendered per-request via `c.html(<NotFoundPage/>, 404)` — the
 
 #### Scenario: Every sub-app uses the shared notFound factory
 
-- **GIVEN** the runtime mounts sub-apps at `/api`, `/trigger`, and `/dashboard`
+- **GIVEN** the runtime mounts sub-apps at `/api`, `/trigger`, and `/invocations`
 - **WHEN** each sub-app is constructed
 - **THEN** it SHALL call `app.notFound(createNotFoundHandler())` so that unmatched paths within the sub-app return the same Accept-branched body as unmatched paths at the parent level
 
@@ -138,7 +138,7 @@ The server SHALL redirect `GET /` to `/trigger` with a `302` status. The redirec
 - **AND** the `Location` header SHALL be `/trigger`
 
 #### Scenario: Non-root paths are not redirected
-- **WHEN** a `GET /dashboard` request is received
+- **WHEN** a `GET /invocations` request is received
 - **THEN** the response SHALL NOT be a redirect produced by the root-redirect handler
 
 #### Scenario: Redirect precedes the static middleware

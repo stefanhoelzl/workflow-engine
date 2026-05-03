@@ -1162,7 +1162,7 @@ describe("triggerMiddleware: unified scope routes + tabs + removed fragments", (
 			// Trigger tab href preserves the URL path; Dashboard tab swaps prefix.
 			const restOfPath = path.replace(/^\/trigger/, "");
 			expect(body).toContain(
-				`<a class="page-tabs-link" href="/dashboard${restOfPath}">`,
+				`<a class="page-tabs-link" href="/invocations${restOfPath}">`,
 			);
 			expect(body).toContain(
 				`<a class="page-tabs-link active" href="/trigger${restOfPath}">`,

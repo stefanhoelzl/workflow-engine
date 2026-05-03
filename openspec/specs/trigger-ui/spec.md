@@ -434,7 +434,7 @@ When the user submits a manual-trigger card, the UI SHALL POST the Jedison form 
 
 ### Requirement: Shared kind registry registers the manual kind
 
-The shared trigger-kind registry at `packages/runtime/src/ui/triggers.ts` (consumed by both `/trigger` and `/dashboard` UIs) SHALL contain entries for `"manual"` in BOTH of the following maps:
+The shared trigger-kind registry at `packages/runtime/src/ui/triggers.ts` (consumed by both `/trigger` and `/invocations` UIs) SHALL contain entries for `"manual"` in BOTH of the following maps:
 
 - `KIND_ICONS.manual` — a person-themed glyph (e.g., `"\u{1F464}"` — BUST IN SILHOUETTE).
 - `KIND_LABELS.manual` — a short human-readable label (e.g., `"Manual"`).

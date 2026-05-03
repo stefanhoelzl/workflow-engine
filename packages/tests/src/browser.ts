@@ -47,7 +47,7 @@ async function runBrowserStep(args: RunBrowserStepArgs): Promise<void> {
 }
 
 async function loginViaForm(page: Page, user: string): Promise<void> {
-	const returnTo = "/dashboard";
+	const returnTo = "/invocations";
 	await page.goto(`/login?returnTo=${encodeURIComponent(returnTo)}`);
 	await page.locator("details.auth-local > summary").click();
 	await Promise.all([

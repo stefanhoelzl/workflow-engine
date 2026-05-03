@@ -25,7 +25,7 @@ import { createImapTriggerSource } from "./triggers/imap.js";
 import { createManualTriggerSource } from "./triggers/manual.js";
 import { isUpgradeProvider, type UpgradeProvider } from "./triggers/source.js";
 import { createWsTriggerSource } from "./triggers/ws.js";
-import { dashboardMiddleware } from "./ui/dashboard/middleware.js";
+import { invocationsMiddleware } from "./ui/invocations/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
@@ -174,7 +174,7 @@ async function init() {
 	// 8. (No recovery scan in the new model — `pending/` is gone, in-flight
 	//    invocations live in RAM, SIGKILL deliberately loses them.)
 
-	// Auth wiring. sessionMw gates `/dashboard/*` and `/trigger/*`;
+	// Auth wiring. sessionMw gates `/invocations/*` and `/trigger/*`;
 	// loginPageMiddleware renders the login card; authMiddleware mounts
 	// per-provider routes under /auth/<id>/* and /auth/logout.
 	const sessionMw = sessionMiddleware({
@@ -188,9 +188,9 @@ async function init() {
 
 	// 9. Wire the HTTP server. Order matters: secure-headers → logger →
 	//    health → static → webhooks (httpTrigger) → /auth (login + per-provider
-	//    routes, unprotected) → /dashboard (UI, session-guarded) → /trigger
+	//    routes, unprotected) → /invocations (UI, session-guarded) → /trigger
 	//    (UI, session-guarded) → /api. The session middleware is mounted
-	//    inside the dashboard/trigger middleware factories.
+	//    inside the invocations/trigger middleware factories.
 	const upgradeProviders: UpgradeProvider[] = [];
 	for (const backend of triggerBackends) {
 		if (isUpgradeProvider(backend)) {
@@ -212,7 +212,7 @@ async function init() {
 		staticMiddleware(),
 		httpSource.middleware,
 		...authRoutes,
-		dashboardMiddleware({ eventStore, registry, sessionMw }),
+		invocationsMiddleware({ eventStore, registry, sessionMw }),
 		triggerMiddleware({ registry, sessionMw }),
 		apiMiddleware({
 			authRegistry,

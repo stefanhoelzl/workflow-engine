@@ -8,10 +8,10 @@ import {
 
 describe("state-cookie", () => {
 	it("seals and unseals a state+returnTo payload", async () => {
-		const sealed = await sealState({ state: "abc", returnTo: "/dashboard" });
+		const sealed = await sealState({ state: "abc", returnTo: "/invocations" });
 		const out = await unsealState(sealed);
 		expect(out.state).toBe("abc");
-		expect(out.returnTo).toBe("/dashboard");
+		expect(out.returnTo).toBe("/invocations");
 	});
 
 	it("rejects tampered cookie", async () => {
@@ -23,8 +23,8 @@ describe("state-cookie", () => {
 describe("isSafeReturnTo", () => {
 	it.each([
 		"/",
-		"/dashboard",
-		"/dashboard/invocations?owner=acme",
+		"/invocations",
+		"/invocations/invocations?owner=acme",
 		"/trigger/#fragment",
 	])("accepts %s", (v) => {
 		expect(isSafeReturnTo(v)).toBe(true);
@@ -53,6 +53,6 @@ describe("sanitizeReturnTo", () => {
 	});
 
 	it("passes through safe paths", () => {
-		expect(sanitizeReturnTo("/dashboard")).toBe("/dashboard");
+		expect(sanitizeReturnTo("/invocations")).toBe("/invocations");
 	});
 });

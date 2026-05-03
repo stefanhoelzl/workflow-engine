@@ -6,7 +6,7 @@ import type { UserContext } from "../../auth/user-context.js";
 import type { EventStore } from "../../event-store.js";
 import { createRealEventStoreForTest } from "../../test-utils/event-store.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
-import { dashboardMiddleware } from "./middleware.js";
+import { invocationsMiddleware } from "./middleware.js";
 
 const emptyRegistry: WorkflowRegistry = {
 	get size(): number {
@@ -56,7 +56,7 @@ async function mount(
 		c.set("user", user);
 		await next();
 	};
-	const m = dashboardMiddleware({
+	const m = invocationsMiddleware({
 		eventStore,
 		registry: emptyRegistry,
 		sessionMw: injectUser,
@@ -101,13 +101,17 @@ describe("dashboard middleware — root (unfiltered flat list)", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard", { headers: AUTH_HEADERS });
+		const res = await app.request("/invocations", { headers: AUTH_HEADERS });
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		// Root page shows the flat invocation list (not a drill-down tree)
 		expect(html).toContain("on-push");
-		// Breadcrumb for the unfiltered view
-		expect(html).toContain("All invocations");
+		// List-header subtitle conveys ordering
+		expect(html).toContain("pending first, then newest-started");
+		// Sticky page header was removed; the page must not render an h1
+		// titled "Dashboard"/"Invocations" or a div.page-header.
+		expect(html).not.toMatch(/class="page-header"/);
+		expect(html).not.toMatch(/<h1>Dashboard<\/h1>/);
 	});
 });
 
@@ -126,7 +130,7 @@ describe("dashboard middleware — scoped flat list", () => {
 
 	it("renders an empty state when there are no invocations", async () => {
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(200);
@@ -152,7 +156,7 @@ describe("dashboard middleware — scoped flat list", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -172,7 +176,7 @@ describe("dashboard middleware — scoped flat list", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -211,7 +215,7 @@ describe("dashboard middleware — scoped flat list", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -234,14 +238,12 @@ describe("dashboard middleware — scoped flat list", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
 		expect(html).toMatch(DETAILS_OK_RE);
-		expect(html).toContain(
-			'hx-get="/dashboard/t0/r0/invocations/evt_ok/flamegraph"',
-		);
+		expect(html).toContain('hx-get="/invocations/t0/r0/evt_ok/flamegraph"');
 		expect(html).toContain('hx-trigger="toggle once"');
 		expect(html).toContain('hx-target="find .flame-slot"');
 		expect(html).toContain('class="flame-slot"');
@@ -263,14 +265,12 @@ describe("dashboard middleware — scoped flat list", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
 		expect(html).toMatch(DETAILS_ERR_RE);
-		expect(html).toContain(
-			'hx-get="/dashboard/t0/r0/invocations/evt_err/flamegraph"',
-		);
+		expect(html).toContain('hx-get="/invocations/t0/r0/evt_err/flamegraph"');
 	});
 
 	// "pending row has no expand affordance" — removed alongside the pending
@@ -308,7 +308,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -342,7 +342,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -375,7 +375,7 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/wf/inbound", {
+		const res = await app.request("/invocations/t0/r0/wf/inbound", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -415,7 +415,7 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -427,9 +427,7 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 		expect(html).toContain("name: Required");
 		// No dispatch chip and no flamegraph expand affordance for rejection
 		expect(html).not.toContain('id="inv-evt_reject"></details>');
-		expect(html).not.toContain(
-			'hx-get="/dashboard/t0/r0/invocations/evt_reject',
-		);
+		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_reject');
 	});
 });
 
@@ -467,25 +465,28 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_upload"');
 		expect(html).toMatch(/<span class="entry-trigger">upload<\/span>/);
-		expect(html).toMatch(/<span class="badge uploaded">uploaded<\/span>/);
-		expect(html).toContain('aria-label="workflow uploaded"');
-		// sha-short surfaced in tooltip
-		expect(html).toContain("sha=abcdef01");
-		// dispatch chip shows uploader login + mail
+		// Status badge is dropped for upload rows — leading icon + chip carry
+		// the visual identity.
+		expect(html).not.toMatch(/<span class="badge uploaded">/);
+		// Leading kind-icon in the accent-coloured upload variant
 		expect(html).toMatch(
-			/class="entry-dispatch"[^>]*title="alice &lt;alice@acme&gt;"/,
+			/<span class="trigger-kind-icon trigger-kind-icon--upload"[^>]*aria-label="workflow uploaded"/,
 		);
-		expect(html).toContain(">upload</span>");
+		// sha-short surfaced in the leading icon's title
+		expect(html).toContain("sha=abcdef01");
+		// dispatch chip is uppercase UPLOAD, far-right via the upload modifier
+		expect(html).toMatch(
+			/class="entry-dispatch entry-dispatch--upload"[^>]*title="alice &lt;alice@acme&gt;"/,
+		);
+		expect(html).toContain(">UPLOAD</span>");
 		// no flamegraph expand affordance
-		expect(html).not.toContain(
-			'hx-get="/dashboard/t0/r0/invocations/evt_upload',
-		);
+		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_upload');
 	});
 });
 
@@ -528,7 +529,7 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -553,7 +554,7 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -569,7 +570,7 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 			event({ id: "evt_ok", kind: "trigger.response", seq: 1, ref: 0 }),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0", {
+		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
@@ -592,7 +593,7 @@ describe("dashboard middleware — auth scoping", () => {
 
 	it("returns 404 for an owner the user is not a member of", async () => {
 		const app = await mount(store);
-		const res = await app.request("/dashboard/other/r0", {
+		const res = await app.request("/invocations/other/r0", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(404);
@@ -600,7 +601,7 @@ describe("dashboard middleware — auth scoping", () => {
 
 	it("returns 404 for a malformed repo identifier", async () => {
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/bad%20repo", {
+		const res = await app.request("/invocations/t0/bad%20repo", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(404);
@@ -623,7 +624,7 @@ describe("dashboard middleware — unified scope routes + tabs", () => {
 
 	it("renders the tab strip with Dashboard active on every filter level", async () => {
 		const app = await mount(store);
-		const paths = ["/dashboard", "/dashboard/t0", "/dashboard/t0/r0"];
+		const paths = ["/invocations", "/invocations/t0", "/invocations/t0/r0"];
 		const results = await Promise.all(
 			paths.map(async (path) => {
 				const res = await app.request(path, { headers: AUTH_HEADERS });
@@ -634,9 +635,9 @@ describe("dashboard middleware — unified scope routes + tabs", () => {
 		for (const { path, status, html } of results) {
 			expect(status).toBe(200);
 			expect(html).toContain('class="page-tabs"');
-			const restOfPath = path.replace(/^\/dashboard/, "");
+			const restOfPath = path.replace(/^\/invocations/, "");
 			expect(html).toContain(
-				`<a class="page-tabs-link active" href="/dashboard${restOfPath}">`,
+				`<a class="page-tabs-link active" href="/invocations${restOfPath}">`,
 			);
 			expect(html).toContain(
 				`<a class="page-tabs-link" href="/trigger${restOfPath}">`,
@@ -644,7 +645,7 @@ describe("dashboard middleware — unified scope routes + tabs", () => {
 		}
 	});
 
-	it("renders /dashboard/:owner/:repo/:workflow filtered to that workflow", async () => {
+	it("renders /invocations/:owner/:repo/:workflow filtered to that workflow", async () => {
 		await store.record(
 			event({
 				id: "evt_build_a",
@@ -690,7 +691,7 @@ describe("dashboard middleware — unified scope routes + tabs", () => {
 			}),
 		);
 		const app = await mount(store);
-		const res = await app.request("/dashboard/t0/r0/build", {
+		const res = await app.request("/invocations/t0/r0/build", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(200);

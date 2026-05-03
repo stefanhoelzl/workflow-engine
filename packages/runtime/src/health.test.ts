@@ -211,7 +211,7 @@ describe("passthrough", () => {
 	it("does not intercept unrelated routes", async () => {
 		const app = createApp(defaultDeps());
 
-		const res = await app.request("/dashboard/", { method: "GET" });
+		const res = await app.request("/invocations/", { method: "GET" });
 
 		expect(res.status).toBe(constants.HTTP_STATUS_NOT_FOUND);
 	});
