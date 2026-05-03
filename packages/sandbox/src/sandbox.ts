@@ -193,6 +193,16 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			dispatchLog(logger, msg);
 			return;
 		}
+		if (msg.type === "restore-failed") {
+			// Worker reported a structured snapshot-restore failure — typed
+			// MessagePort message, ordered AFTER `done` for the just-finished
+			// run. Route through termination so `onTerminated` fires with
+			// `kind:"restore-failed"`. The in-flight `sb.run()` (if any) has
+			// already resolved via `done`; subsequent runs reject through the
+			// `terminatedCause` guard.
+			termination.markRestoreFailed(errorFromSerialized(msg.error));
+			return;
+		}
 	};
 	worker.on("message", onPersistentMessage);
 
@@ -267,10 +277,14 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 			return Promise.reject(new Error("Sandbox is disposed"));
 		}
 		if (terminatedCause) {
-			const msg =
-				terminatedCause.kind === "crash"
-					? terminatedCause.err.message
-					: `limit ${terminatedCause.dim}`;
+			let msg: string;
+			if (terminatedCause.kind === "crash") {
+				msg = terminatedCause.err.message;
+			} else if (terminatedCause.kind === "restore-failed") {
+				msg = `restore-failed: ${terminatedCause.err.message}`;
+			} else {
+				msg = `limit ${terminatedCause.dim}`;
+			}
 			return Promise.reject(new Error(`Sandbox worker has died: ${msg}`));
 		}
 		if (runInFlight) {
@@ -344,10 +358,14 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 					finalize(synth, () => reject(limitErr));
 					return;
 				}
-				const closeReason =
-					cause?.kind === "crash"
-						? `crash:${cause.err.message}`
-						: fallbackErr.message;
+				let closeReason: string;
+				if (cause?.kind === "crash") {
+					closeReason = `crash:${cause.err.message}`;
+				} else if (cause?.kind === "restore-failed") {
+					closeReason = `restore-failed:${cause.err.message}`;
+				} else {
+					closeReason = fallbackErr.message;
+				}
 				finalize(sequencer.finish({ closeReason }), () => reject(fallbackErr));
 			}
 

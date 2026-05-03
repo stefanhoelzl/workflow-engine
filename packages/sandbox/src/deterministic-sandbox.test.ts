@@ -77,8 +77,8 @@ describe("deterministic sandbox — restore failure marks sandbox dead", () => {
 		const firstRun = await sb.run("ping", {});
 		expect(firstRun.ok).toBe(true);
 		const cause = await died;
-		expect(cause.kind).toBe("crash");
-		if (cause.kind === "crash") {
+		expect(cause.kind).toBe("restore-failed");
+		if (cause.kind === "restore-failed") {
 			expect(String(cause.err.message)).toContain("injected restore failure");
 		}
 		await expect(sb.run("ping", {})).rejects.toThrow();

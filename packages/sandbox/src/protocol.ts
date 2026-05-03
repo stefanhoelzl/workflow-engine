@@ -78,6 +78,7 @@ type WorkerToMain =
 	| { type: "init-error"; error: SerializedError }
 	| { type: "event"; event: WireEvent }
 	| { type: "done"; payload: RunResultPayload }
+	| { type: "restore-failed"; error: SerializedError }
 	| {
 			type: "log";
 			level: "debug" | "info" | "warn" | "error";

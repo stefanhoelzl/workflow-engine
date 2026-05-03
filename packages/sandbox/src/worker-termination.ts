@@ -34,12 +34,19 @@ type LimitDim = "cpu" | "output" | "pending";
 
 type TerminationCause =
 	| { kind: "limit"; dim: LimitDim; observed?: number }
-	| { kind: "crash"; err: Error };
+	| { kind: "crash"; err: Error }
+	| { kind: "restore-failed"; err: Error };
 
 interface WorkerTermination {
 	armCpuBudget(ms: number): void;
 	disarmCpuBudget(): void;
 	markDisposing(): void;
+	// Worker reported a structured snapshot-restore failure via the typed
+	// `restore-failed` MessagePort message. Dispatches `onTerminated` with
+	// `{kind:"restore-failed"}` exactly-once; subsequent `worker.on("exit")`
+	// after a follow-up `worker.terminate()` is suppressed by the same
+	// `fired` guard as `crash`/`limit`.
+	markRestoreFailed(err: Error): void;
 	onTerminated(cb: (cause: TerminationCause) => void): void;
 	// Synchronous getter consumed by `sandbox.ts`'s `onError` / `onExit`
 	// handlers inside `sb.run()` so the run promise can settle with
@@ -77,6 +84,7 @@ function createWorkerTermination(worker: Worker): WorkerTermination {
 	let fired = false;
 	let startedAt = 0;
 	let watchdog: ReturnType<typeof setTimeout> | null = null;
+	let restoreFailedErr: Error | null = null;
 	let terminatedCb: ((cause: TerminationCause) => void) | null = null;
 
 	function dispatch(cause: TerminationCause): void {
@@ -91,6 +99,9 @@ function createWorkerTermination(worker: Worker): WorkerTermination {
 
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: classify reads three flags (cpuBudgetExpired / lastError / isSandboxLimitError) into a discriminated union — the cascade IS the specification, not accidental branching.
 	function classify(): TerminationCause {
+		if (restoreFailedErr) {
+			return { kind: "restore-failed", err: restoreFailedErr };
+		}
 		if (cpuBudgetExpired) {
 			const cause: TerminationCause = {
 				kind: "limit",
@@ -165,6 +176,15 @@ function createWorkerTermination(worker: Worker): WorkerTermination {
 				watchdog = null;
 			}
 		},
+		markRestoreFailed(err: Error): void {
+			if (disposing) {
+				return;
+			}
+			if (!restoreFailedErr) {
+				restoreFailedErr = err;
+			}
+			dispatch(classify());
+		},
 		onTerminated(cb: (cause: TerminationCause) => void): void {
 			terminatedCb = cb;
 		},
@@ -172,7 +192,7 @@ function createWorkerTermination(worker: Worker): WorkerTermination {
 			if (disposing) {
 				return null;
 			}
-			if (!(cpuBudgetExpired || lastError)) {
+			if (!(cpuBudgetExpired || lastError || restoreFailedErr)) {
 				return null;
 			}
 			return classify();

@@ -481,13 +481,19 @@ function startRestore(currentState: WorkerState): Promise<void> {
 		currentState.runState = "ready";
 		currentState.restorePromise = null;
 	})();
-	// Surface failures through Node's uncaught-error pathway so the worker
-	// dies and main fires onTerminated. The awaiting handleRun will also see the
-	// rejection, but the rethrow is what terminates the worker.
+	// Surface failures via a typed `restore-failed` MessagePort message —
+	// posted AFTER the `done` from the just-finished run, so MessagePort
+	// ordering guarantees `done` reaches main first and `sb.run()` resolves
+	// with the guest result. Main routes `restore-failed` through
+	// `termination.markRestoreFailed` to fire `onTerminated` with the
+	// `restore-failed` cause kind. The worker stays alive until main
+	// `worker.terminate()`s on dispose; `runState=dead` rejects any further
+	// `run` messages worker-side as defence-in-depth.
 	promise.catch((err) => {
 		currentState.runState = "dead";
-		queueMicrotask(() => {
-			throw err;
+		post({
+			type: "restore-failed",
+			error: serializeError(err),
 		});
 	});
 	currentState.restorePromise = promise;
@@ -710,9 +716,11 @@ async function handleRun(
 	}
 
 	// If a previous run's async restore is still in flight, wait for it.
-	// Errors in the restore propagate here and out through the outer
-	// try/catch in the message handler — which also rethrows via
-	// queueMicrotask, terminating the worker so main's `onTerminated` fires.
+	// On success the restore transitions runState to "ready"; on failure
+	// `startRestore`'s catch posts a typed `restore-failed` and sets
+	// runState="dead". In the failure case main rejects subsequent
+	// `sb.run()` calls via `terminatedCause` before they reach the worker,
+	// so this branch effectively only awaits successful restores.
 	if (state.runState === "restoring" && state.restorePromise) {
 		await state.restorePromise;
 	}
@@ -756,8 +764,8 @@ async function handleRun(
 	post({ type: "done", payload });
 
 	// Fire-and-forget async restore so the next run sees fresh guest state.
-	// Errors within `startRestore` are surfaced via queueMicrotask to
-	// terminate the worker (see rationale in startRestore's comment).
+	// Errors within `startRestore` are surfaced as a typed `restore-failed`
+	// MessagePort message ordered AFTER `done` (see startRestore's comment).
 	state.runState = "restoring";
 	startRestore(state);
 }
