@@ -1,98 +1,78 @@
-import { stat } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import type { EventFilter, InvocationEvent } from "./types.js";
 
 // Source-of-truth for events emitted by the spawned child runtime.
 //
-// The runtime persists invocation events through DuckLake (see
-// `packages/runtime/src/event-store.ts`):
+// The runtime persists invocation events through plain DuckDB at
+// `<persistencePath>/events.duckdb` (see `packages/runtime/src/event-store.ts`).
+// DuckDB takes an exclusive file lock on the database while the runtime is
+// alive, so the framework cannot open the live file (read-only mode is also
+// blocked once a writer holds the lock).
 //
-//   <persistencePath>/events.duckdb           — DuckLake catalog (DuckDB file)
-//   <persistencePath>/events/main/events/...  — Parquet data files
-//
-// DuckDB takes an exclusive file lock on the catalog while the runtime is
-// alive, so the framework cannot ATTACH the live catalog. Instead the
-// framework reads the immutable Parquet data files via `read_parquet(...)`
-// — no attach, no lock — and relies on the runtime spawning with
-// `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS=1` so every commit flushes its
-// inlined rows to disk-resident Parquet immediately.
-//
-// In-flight events live only in the runtime's in-memory accumulator and
-// are NOT visible to this reader; only terminal-committed invocations
-// appear here. The `archived: false` filter therefore returns no rows.
+// To observe committed events without contending for the lock, each poll
+// snapshots the DB file and its WAL to a fresh tmpdir, then opens the copy
+// with default mode (no other process holds a lock on the copy). DuckDB's
+// open replays the WAL into the copy automatically, so the snapshot reflects
+// every committed terminal up to the moment of cp. In-flight events live
+// only in the runtime's in-memory accumulator and are NOT visible here;
+// `archived: false` therefore returns no rows.
 
-const EVENTS_GLOB_SUFFIX = "events/main/events/**/*.parquet";
-
-interface ParquetReader {
-	close(): void;
-	readEvents(): Promise<InvocationEvent[]>;
-}
-
-async function openParquetReader(
+async function snapshotEventsDb(
 	persistencePath: string,
-): Promise<ParquetReader | null> {
-	// At least one Parquet file must exist before read_parquet can resolve
-	// the glob. Stat the events root and bail early if it has not been
-	// created yet (early in the runtime's life, or the test has not fired
-	// any invocation yet).
-	const eventsRoot = join(persistencePath, "events");
+): Promise<{ dbPath: string; cleanup: () => Promise<void> } | null> {
+	const livePath = join(persistencePath, "events.duckdb");
 	try {
-		await stat(eventsRoot);
+		await stat(livePath);
 	} catch {
 		return null;
 	}
-	const instance = await DuckDBInstance.create();
-	const conn = await instance.connect();
-	const glob = join(persistencePath, EVENTS_GLOB_SUFFIX);
+	const dir = await mkdtemp(join(tmpdir(), "wfe-events-snap-"));
+	const dbPath = join(dir, "events.duckdb");
+	const walPath = join(dir, "events.duckdb.wal");
+	await copyFile(livePath, dbPath);
+	try {
+		await copyFile(`${livePath}.wal`, walPath);
+	} catch {
+		// WAL absent is fine — main file is the full state.
+	}
 	return {
-		close() {
-			conn.disconnectSync();
-		},
-		async readEvents(): Promise<InvocationEvent[]> {
-			// DuckLake CHECKPOINTs append new Parquet files without removing
-			// the previously-written ones (snapshot retention). The same
-			// logical (id, seq) row can therefore appear in multiple files;
-			// DISTINCT ON dedupes to the latest copy per primary-key tuple.
-			//
-			// The glob can occasionally hit a Parquet file that is still
-			// being written by the runtime (the write is not atomic from
-			// an external observer's POV). Retry a few times on
-			// "too small to be a Parquet file"; the next poll iteration
-			// gets a complete file.
-			const sql = `SELECT DISTINCT ON (id, seq) * FROM read_parquet('${glob}', union_by_name = true) ORDER BY id, seq`;
-			for (let attempt = 0; attempt < 3; attempt += 1) {
-				try {
-					const reader = await conn.runAndReadAll(sql);
-					return reader.getRowObjects() as unknown as InvocationEvent[];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					if (msg.includes("No files found that match the pattern")) {
-						return [];
-					}
-					if (attempt < 2 && msg.includes("too small to be a Parquet file")) {
-						await new Promise((r) => setTimeout(r, 50));
-						continue;
-					}
-					throw err;
-				}
-			}
-			return [];
-		},
+		dbPath,
+		cleanup: () => rm(dir, { recursive: true, force: true }),
 	};
 }
 
 async function readArchivedEvents(
 	persistencePath: string,
 ): Promise<InvocationEvent[]> {
-	const reader = await openParquetReader(persistencePath);
-	if (!reader) {
+	const snap = await snapshotEventsDb(persistencePath);
+	if (!snap) {
 		return [];
 	}
 	try {
-		return await reader.readEvents();
+		const instance = await DuckDBInstance.create(snap.dbPath);
+		const conn = await instance.connect();
+		try {
+			const reader = await conn.runAndReadAll(
+				"SELECT * FROM events ORDER BY id, seq",
+			);
+			return reader.getRowObjects() as unknown as InvocationEvent[];
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			// Schema may not exist yet on a freshly-spawned runtime that has
+			// not initialised EventStore. Treat as no events.
+			if (msg.includes("does not exist") || msg.includes("Catalog Error")) {
+				return [];
+			}
+			throw err;
+		} finally {
+			conn.disconnectSync();
+			instance.closeSync();
+		}
 	} finally {
-		reader.close();
+		await snap.cleanup();
 	}
 }
 
