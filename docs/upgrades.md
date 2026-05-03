@@ -2,6 +2,20 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **Manifest schema canonicalization (2026-05-03).** **BREAKING (tenant).** `workflowManifestSchema` becomes the canonical validation tier for several rules, with new and migrated checks. Uploads that violate any of these are now rejected with HTTP 422; pre-existing registered workflows continue running until their next upload attempt.
+
+    **New rules** (rejected at upload):
+    - Each workflow MUST declare at least one trigger. Workflows with `triggers: []` were silently registered before; they now fail with `Workflow "<name>": must declare at least one trigger`.
+    - Trigger names MUST be unique within a workflow.
+    - Action names MUST be unique within a workflow.
+
+    **Migrated rule** (was build-only; now also enforced at the upload boundary):
+    - HTTP trigger `response.headers` MUST NOT declare reserved headers (`set-cookie`, `location`, `content-security-policy`, etc. — see `RESERVED_RESPONSE_HEADERS`).
+
+    **Wire format.** The 422 response body's `issues[]` array is augmented (non-breaking): each entry now carries an additional `formatted: string` field rendered via `formatIssue` from `@workflow-engine/core`, alongside the pre-existing `path` and `message` fields. CLI consumers should prefer `formatted`.
+
+    **Operator action.** None expected for healthy bundles. If an environment hosts a workflow with zero triggers, duplicate trigger/action names, or reserved-header declarations on `response.headers`, surface the failure to the bundle owner; the workflow keeps running until they re-upload, at which point the upload fails until fixed.
+
 - **EventStore: DuckLake → plain DuckDB (2026-05-03).** **BREAKING (operator).** The DuckLake lakehouse is replaced by a plain DuckDB database file at `<PERSISTENCE_PATH>/events.duckdb`. The events table now declares `PRIMARY KEY (id, seq)` and a secondary index on `(owner, repo)`. Three operator-tunable env vars are removed (`EVENT_STORE_CHECKPOINT_INTERVAL_MS`, `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS`, `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES`); WAL/checkpoint is implicit (DuckDB auto-checkpoints when WAL exceeds `wal_autocheckpoint` and folds it on graceful close). Five S3-related env vars (`PERSISTENCE_S3_BUCKET`, `PERSISTENCE_S3_ACCESS_KEY_ID`, `PERSISTENCE_S3_SECRET_ACCESS_KEY`, `PERSISTENCE_S3_ENDPOINT`, `PERSISTENCE_S3_REGION`) are removed; `PERSISTENCE_PATH` is now mandatory.
 
     **Pre-deploy steps (optional, per environment):**

@@ -265,6 +265,26 @@ const httpTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
+function findReservedHeader(headersJson: unknown): string | undefined {
+	if (
+		typeof headersJson !== "object" ||
+		headersJson === null ||
+		Array.isArray(headersJson)
+	) {
+		return;
+	}
+	const props = (headersJson as { properties?: unknown }).properties;
+	if (typeof props !== "object" || props === null || Array.isArray(props)) {
+		return;
+	}
+	for (const declared of Object.keys(props)) {
+		if (isReservedResponseHeader(declared)) {
+			return declared;
+		}
+	}
+	return;
+}
+
 // `Intl.supportedValuesOf('timeZone')` returns only the "preferred" IANA zones
 // and omits aliases like `UTC`, `Etc/UTC`, `GMT`. The authoritative validator
 // is `new Intl.DateTimeFormat({timeZone: v})`, which accepts anything the ICU
@@ -467,7 +487,34 @@ const workflowManifestSchema = z
 				"workflow `secrets` key names must be disjoint from `env` key names",
 			path: ["secrets"],
 		},
-	);
+	)
+	.refine((w) => w.triggers.length > 0, {
+		error: "must declare at least one trigger",
+	})
+	.refine(
+		(w) => new Set(w.triggers.map((t) => t.name)).size === w.triggers.length,
+		{ error: "trigger names must be unique within a workflow" },
+	)
+	.refine(
+		(w) => new Set(w.actions.map((a) => a.name)).size === w.actions.length,
+		{ error: "action names must be unique within a workflow" },
+	)
+	.superRefine((w, ctx) => {
+		for (let i = 0; i < w.triggers.length; i++) {
+			const t = w.triggers[i];
+			if (t === undefined || t.type !== "http") {
+				continue;
+			}
+			const reserved = findReservedHeader(t.response?.headers);
+			if (reserved !== undefined) {
+				ctx.addIssue({
+					code: "custom",
+					message: `response.headers declares reserved header "${reserved}"; the platform owns this header on /webhooks/* responses`,
+					path: ["triggers", i, "response", "headers"],
+				});
+			}
+		}
+	});
 
 const ManifestSchema = z
 	.object({
@@ -489,6 +536,120 @@ const ManifestSchema = z
 
 type Manifest = z.infer<typeof ManifestSchema>;
 type WorkflowManifest = z.infer<typeof workflowManifestSchema>;
+
+// ---------------------------------------------------------------------------
+// formatIssue — render a single Zod issue from a workflowManifestSchema
+// (or ManifestSchema) parse failure into a single-line, author-facing string.
+//
+// Path-walking contract:
+//   path = []                            → `Workflow "<name>": <message>`
+//   path = ["triggers", i, ...rest]      → `Workflow "<name>": <type> trigger "<name>": [<rest>: ]<message>`
+//   path = ["actions", i, ...rest]       → `Workflow "<name>": action "<name>": [<rest>: ]<message>`
+//   path = ["workflows", j, ...rest]     → recurse into parsedValue.workflows[j]
+//   anything else                        → `Workflow "<name>": <path-string>: <message>`
+//
+// Schema-author convention: rule messages are written as suffixes (e.g.
+// `must declare at least one trigger`, `must match …`) and formatIssue
+// supplies the prefix.
+// ---------------------------------------------------------------------------
+
+function pathToString(path: readonly PropertyKey[]): string {
+	let out = "";
+	for (const seg of path) {
+		if (typeof seg === "number") {
+			out += `[${String(seg)}]`;
+		} else if (out === "") {
+			out = String(seg);
+		} else {
+			out += `.${String(seg)}`;
+		}
+	}
+	return out;
+}
+
+interface WorkflowLike {
+	name?: unknown;
+	triggers?: unknown[];
+	actions?: unknown[];
+}
+
+function descendIntoWorkflow(
+	path: readonly PropertyKey[],
+	parsedValue: unknown,
+): { wf: WorkflowLike | undefined; remaining: readonly PropertyKey[] } {
+	if (
+		path[0] === "workflows" &&
+		typeof path[1] === "number" &&
+		typeof parsedValue === "object" &&
+		parsedValue !== null
+	) {
+		const workflows = (parsedValue as { workflows?: unknown[] }).workflows;
+		if (Array.isArray(workflows)) {
+			return {
+				wf: workflows[path[1]] as WorkflowLike | undefined,
+				remaining: path.slice(2),
+			};
+		}
+	}
+	return { wf: parsedValue as WorkflowLike | undefined, remaining: path };
+}
+
+interface CollectionItemContext {
+	wfName: string;
+	wf: WorkflowLike | undefined;
+	idx: number;
+	rest: readonly PropertyKey[];
+	message: string;
+}
+
+function formatTriggerIssue(ctx: CollectionItemContext): string {
+	const trigger = ctx.wf?.triggers?.[ctx.idx] as
+		| { name?: unknown; type?: unknown }
+		| undefined;
+	const tName =
+		typeof trigger?.name === "string" ? trigger.name : `[${ctx.idx}]`;
+	const tType = typeof trigger?.type === "string" ? trigger.type : "trigger";
+	const prefix = `Workflow "${ctx.wfName}": ${tType} trigger "${tName}"`;
+	return ctx.rest.length === 0
+		? `${prefix}: ${ctx.message}`
+		: `${prefix}: ${pathToString(ctx.rest)}: ${ctx.message}`;
+}
+
+function formatActionIssue(ctx: CollectionItemContext): string {
+	const action = ctx.wf?.actions?.[ctx.idx] as { name?: unknown } | undefined;
+	const aName = typeof action?.name === "string" ? action.name : `[${ctx.idx}]`;
+	const prefix = `Workflow "${ctx.wfName}": action "${aName}"`;
+	return ctx.rest.length === 0
+		? `${prefix}: ${ctx.message}`
+		: `${prefix}: ${pathToString(ctx.rest)}: ${ctx.message}`;
+}
+
+function formatIssue(
+	issue: { path: readonly PropertyKey[]; message: string },
+	parsedValue: unknown,
+): string {
+	const { wf, remaining } = descendIntoWorkflow(issue.path, parsedValue);
+	const wfName = typeof wf?.name === "string" ? wf.name : "<unknown>";
+
+	if (remaining.length === 0) {
+		return `Workflow "${wfName}": ${issue.message}`;
+	}
+	const head = remaining[0];
+	const idx = remaining[1];
+	if (typeof idx === "number" && (head === "triggers" || head === "actions")) {
+		const ctx: CollectionItemContext = {
+			wfName,
+			wf,
+			idx,
+			rest: remaining.slice(2),
+			message: issue.message,
+		};
+		return head === "triggers"
+			? formatTriggerIssue(ctx)
+			: formatActionIssue(ctx);
+	}
+	return `Workflow "${wfName}": ${pathToString(remaining)}: ${issue.message}`;
+}
 
 // ---------------------------------------------------------------------------
 // IIFE namespace
@@ -644,6 +805,7 @@ export {
 	computeKeyId,
 	dispatchAction,
 	encodeSentinel,
+	formatIssue,
 	IIFE_NAMESPACE,
 	installGuestGlobals,
 	isReservedResponseHeader,
@@ -654,5 +816,6 @@ export {
 	SECRETS_KEY_ID_BYTES,
 	SENTINEL_SUBSTRING_RE,
 	TRIGGER_NAME_RE,
+	workflowManifestSchema,
 	z,
 };

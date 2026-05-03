@@ -3,11 +3,13 @@ import { IIFE_NAMESPACE as IIFE_NAMESPACE_FROM_CONSTANTS } from "./constants.js"
 import type { EventKind, InvocationEvent } from "./index.js";
 import {
 	computeKeyId,
+	formatIssue,
 	IIFE_NAMESPACE,
 	isReservedResponseHeader,
 	ManifestSchema,
 	RESERVED_RESPONSE_HEADERS,
 	SECRETS_KEY_ID_BYTES,
+	workflowManifestSchema,
 } from "./index.js";
 import { makeEvent } from "./test-utils.js";
 
@@ -459,6 +461,16 @@ describe("ManifestSchema ws trigger", () => {
 });
 
 describe("ManifestSchema secrets + secretsKeyId", () => {
+	const minimalTrigger = {
+		name: "rerun",
+		type: "manual" as const,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
 	const base = (overrides: Record<string, unknown> = {}) => ({
 		workflows: [
 			{
@@ -467,7 +479,7 @@ describe("ManifestSchema secrets + secretsKeyId", () => {
 				sha: "sha",
 				env: { REGION: "us-east-1" },
 				actions: [],
-				triggers: [],
+				triggers: [minimalTrigger],
 				...overrides,
 			},
 		],
@@ -550,6 +562,266 @@ describe("ManifestSchema secrets + secretsKeyId", () => {
 		expect(() =>
 			ManifestSchema.parse(base({ secretBindings: ["TOKEN"] })),
 		).toThrow(/secretBindings/);
+	});
+});
+
+describe("workflowManifestSchema additional refines", () => {
+	const minimalTrigger = {
+		name: "rerun",
+		type: "manual" as const,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
+	const baseWorkflow = (overrides: Record<string, unknown> = {}) => ({
+		name: "demo",
+		module: "demo.js",
+		sha: "sha",
+		env: {},
+		actions: [],
+		triggers: [minimalTrigger],
+		...overrides,
+	});
+
+	it("rejects a workflow with zero triggers", () => {
+		const result = workflowManifestSchema.safeParse(
+			baseWorkflow({ triggers: [] }),
+		);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find(
+				(i) => i.message === "must declare at least one trigger",
+			);
+			expect(issue).toBeDefined();
+			if (issue !== undefined) {
+				expect(formatIssue(issue, baseWorkflow({ triggers: [] }))).toBe(
+					'Workflow "demo": must declare at least one trigger',
+				);
+			}
+		}
+	});
+
+	it("accepts a workflow with at least one trigger", () => {
+		const result = workflowManifestSchema.safeParse(baseWorkflow());
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects duplicate trigger names within a workflow", () => {
+		const dup = baseWorkflow({
+			triggers: [minimalTrigger, { ...minimalTrigger }],
+		});
+		const result = workflowManifestSchema.safeParse(dup);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find((i) =>
+				i.message.includes("trigger names must be unique"),
+			);
+			expect(issue).toBeDefined();
+		}
+	});
+
+	it("accepts the same trigger name across different workflows", () => {
+		const result = ManifestSchema.safeParse({
+			workflows: [
+				{ ...baseWorkflow(), name: "wfa" },
+				{ ...baseWorkflow(), name: "wfb" },
+			],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects duplicate action names within a workflow", () => {
+		const action = {
+			name: "doIt",
+			input: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			output: {},
+		};
+		const result = workflowManifestSchema.safeParse(
+			baseWorkflow({ actions: [action, { ...action }] }),
+		);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find((i) =>
+				i.message.includes("action names must be unique"),
+			);
+			expect(issue).toBeDefined();
+		}
+	});
+
+	it("rejects an http trigger declaring a reserved response header", () => {
+		const httpTrigger = {
+			name: "webhook",
+			type: "http" as const,
+			method: "POST",
+			request: {
+				body: {},
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				},
+			},
+			response: {
+				headers: {
+					type: "object",
+					properties: { "set-cookie": { type: "string" } },
+					additionalProperties: false,
+				},
+			},
+			inputSchema: {},
+			outputSchema: {},
+		};
+		const result = workflowManifestSchema.safeParse(
+			baseWorkflow({ triggers: [httpTrigger] }),
+		);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find((i) =>
+				i.message.includes('reserved header "set-cookie"'),
+			);
+			expect(issue).toBeDefined();
+			if (issue !== undefined) {
+				const wf = baseWorkflow({ triggers: [httpTrigger] });
+				expect(formatIssue(issue, wf)).toBe(
+					'Workflow "demo": http trigger "webhook": response.headers: response.headers declares reserved header "set-cookie"; the platform owns this header on /webhooks/* responses',
+				);
+			}
+		}
+	});
+
+	it("accepts an http trigger with a non-reserved response header", () => {
+		const httpTrigger = {
+			name: "webhook",
+			type: "http" as const,
+			method: "POST",
+			request: {
+				body: {},
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				},
+			},
+			response: {
+				headers: {
+					type: "object",
+					properties: { "x-app-version": { type: "string" } },
+					additionalProperties: false,
+				},
+			},
+			inputSchema: {},
+			outputSchema: {},
+		};
+		const result = workflowManifestSchema.safeParse(
+			baseWorkflow({ triggers: [httpTrigger] }),
+		);
+		expect(result.success).toBe(true);
+	});
+});
+
+describe("formatIssue", () => {
+	const minimalTrigger = {
+		name: "rerun",
+		type: "manual" as const,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+		outputSchema: {},
+	};
+	const baseWorkflow = (overrides: Record<string, unknown> = {}) => ({
+		name: "demo",
+		module: "demo.js",
+		sha: "sha",
+		env: {},
+		actions: [],
+		triggers: [minimalTrigger],
+		...overrides,
+	});
+
+	it("renders a cron schedule violation with full type/name context", () => {
+		const cronTrigger = {
+			name: "everyFiveMinutes",
+			type: "cron" as const,
+			schedule: "",
+			tz: "UTC",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				additionalProperties: false,
+			},
+			outputSchema: {},
+		};
+		const wf = baseWorkflow({ triggers: [cronTrigger] });
+		const result = workflowManifestSchema.safeParse(wf);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find((i) => i.path[2] === "schedule");
+			expect(issue).toBeDefined();
+			if (issue !== undefined) {
+				const formatted = formatIssue(issue, wf);
+				expect(formatted).toContain(
+					'Workflow "demo": cron trigger "everyFiveMinutes":',
+				);
+			}
+		}
+	});
+
+	it("renders a workflow-root violation with workflow name only", () => {
+		const wf = baseWorkflow({ triggers: [] });
+		const result = workflowManifestSchema.safeParse(wf);
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			const issue = result.error.issues.find(
+				(i) => i.message === "must declare at least one trigger",
+			);
+			expect(issue).toBeDefined();
+			if (issue !== undefined) {
+				expect(formatIssue(issue, wf)).toBe(
+					'Workflow "demo": must declare at least one trigger',
+				);
+			}
+		}
+	});
+
+	it("renders an action violation with action name", () => {
+		const issue = {
+			path: ["actions", 0, "input"],
+			message: "must be a JSON Schema",
+		};
+		const wf = baseWorkflow({
+			actions: [{ name: "sendMail", input: {}, output: {} }],
+		});
+		expect(formatIssue(issue, wf)).toBe(
+			'Workflow "demo": action "sendMail": input: must be a JSON Schema',
+		);
+	});
+
+	it("renders a path outside known collections via path-string fallback", () => {
+		const issue = { path: ["module"], message: "is required" };
+		const wf = baseWorkflow();
+		expect(formatIssue(issue, wf)).toBe('Workflow "demo": module: is required');
+	});
+
+	it("recurses into ManifestSchema's workflows[i] wrapper", () => {
+		const issue = { path: ["workflows", 0, "module"], message: "is required" };
+		const m = { workflows: [baseWorkflow()] };
+		expect(formatIssue(issue, m)).toBe('Workflow "demo": module: is required');
+	});
+
+	it("falls back to <unknown> when workflow name is missing", () => {
+		const issue = { path: [], message: "must declare at least one trigger" };
+		expect(formatIssue(issue, {})).toBe(
+			'Workflow "<unknown>": must declare at least one trigger',
+		);
 	});
 });
 
