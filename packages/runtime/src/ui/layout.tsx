@@ -1,29 +1,6 @@
 import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
-import { DashboardIcon, TopBar, TriggerIcon } from "./icons.js";
-
-const NAV_ITEMS = [
-	{ href: "/dashboard", label: "Dashboard", Icon: DashboardIcon },
-	{ href: "/trigger", label: "Trigger", Icon: TriggerIcon },
-] as const;
-
-function Nav({ activePath }: { activePath: string }) {
-	return (
-		<>
-			{NAV_ITEMS.map(({ href, label, Icon }) => (
-				<a
-					class={`nav-item${activePath === href ? " active" : ""}`}
-					href={href}
-				>
-					<span class="nav-icon">
-						<Icon />
-					</span>
-					<span class="nav-label">{label}</span>
-				</a>
-			))}
-		</>
-	);
-}
+import { TopBar } from "./icons.js";
 
 interface LayoutProps {
 	title: string;
@@ -31,15 +8,16 @@ interface LayoutProps {
 	user: string;
 	email: string;
 	sidebarTree?: Child;
+	tabs?: Child;
 	children: Child;
 }
 
 function Layout({
 	title,
-	activePath,
 	user,
 	email,
 	sidebarTree,
+	tabs,
 	children,
 }: LayoutProps) {
 	return (
@@ -66,15 +44,13 @@ function Layout({
 				<body>
 					<TopBar user={user} email={email} />
 
-					<nav class="sidebar">
-						{sidebarTree ? (
+					{sidebarTree ? (
+						<nav class="sidebar">
 							<div class="sidebar-tree-wrap">{sidebarTree}</div>
-						) : (
-							<div class="sidebar-nav">
-								<Nav activePath={activePath} />
-							</div>
-						)}
-					</nav>
+						</nav>
+					) : null}
+
+					{tabs ? <div class="page-tabs-slot">{tabs}</div> : null}
 
 					<div class="main-content">{children}</div>
 				</body>
@@ -106,6 +82,7 @@ interface LayoutOptions {
 	user: string;
 	email: string;
 	sidebarTree?: Child;
+	tabs?: Child;
 	// Legacy props — silently ignored. Kept for backward compat during
 	// per-file migration; will be removed in cleanup.
 	head?: Child;
@@ -114,13 +91,14 @@ interface LayoutOptions {
 }
 
 function renderLayout(options: LayoutOptions, content: Child) {
-	const { title, activePath, user, email, sidebarTree } = options;
+	const { title, activePath, user, email, sidebarTree, tabs } = options;
 	const props = {
 		title,
 		activePath,
 		user,
 		email,
 		...(sidebarTree === undefined ? {} : { sidebarTree }),
+		...(tabs === undefined ? {} : { tabs }),
 	};
 	return <Layout {...props}>{content}</Layout>;
 }

@@ -1113,3 +1113,105 @@ describe("prepareSchema", () => {
 		]);
 	});
 });
+
+describe("triggerMiddleware: unified scope routes + tabs + removed fragments", () => {
+	it("renders the workflow-scoped page filtered to one workflow's cards", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "build", { name: "ci", method: "POST" }),
+			makeHttpStub("t0", "deploy", { name: "rollout", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/build", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		expect(body).toContain('class="trigger-group-title">build</h2>');
+		expect(body).not.toContain('class="trigger-group-title">deploy</h2>');
+	});
+
+	it("returns 404 for a nonexistent workflow under a registered repo", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "build", { name: "ci", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/no-such-workflow", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("removed HTMX fragment endpoints no longer return bare fragments", async () => {
+		// `/trigger/:owner/repos` and `/trigger/:owner/:repo/cards` were
+		// HTMX-only fragment endpoints. They are gone: those URLs now fall
+		// through to the regular scope routes (`/trigger/:owner/:repo` and
+		// `/trigger/:owner/:repo/:workflow`), so they emit the full page
+		// shell instead of the bare card-list fragment.
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "wf", { name: "x", method: "POST" }),
+		]);
+		const app = mount(registry);
+
+		const repos = await app.request("/trigger/t0/repos", {
+			headers: AUTH_HEADERS,
+		});
+		const reposBody = await repos.text();
+		// Full page, not a bare card-list fragment.
+		expect(reposBody).toContain("<!DOCTYPE html>");
+		expect(reposBody).toContain('class="page-tabs"');
+
+		// `/trigger/t0/r0/cards` reads as workflow=`cards`. The registry has
+		// no workflow named `cards`, so the workflow-validation 404 fires.
+		const cards = await app.request("/trigger/t0/r0/cards", {
+			headers: AUTH_HEADERS,
+		});
+		expect(cards.status).toBe(404);
+	});
+
+	it("renders the tab strip with Trigger active on every scope", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "wf", { name: "x", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const paths = [
+			"/trigger",
+			"/trigger/t0",
+			"/trigger/t0/r0",
+			"/trigger/t0/r0/wf",
+			"/trigger/t0/r0/wf/x",
+		];
+		const results = await Promise.all(
+			paths.map(async (path) => {
+				const res = await app.request(path, { headers: AUTH_HEADERS });
+				const body = await res.text();
+				return { path, status: res.status, body };
+			}),
+		);
+		for (const { path, status, body } of results) {
+			expect(status).toBe(200);
+			expect(body).toContain('class="page-tabs"');
+			// Trigger tab href preserves the URL path; Dashboard tab swaps prefix.
+			const restOfPath = path.replace(/^\/trigger/, "");
+			expect(body).toContain(
+				`<a class="page-tabs-link" href="/dashboard${restOfPath}">`,
+			);
+			expect(body).toContain(
+				`<a class="page-tabs-link active" href="/trigger${restOfPath}">`,
+			);
+		}
+	});
+
+	it("owner view renders flat cards with no HTMX hx-get attribute", async () => {
+		const registry = makeStubRegistry([
+			makeHttpStub("t0", "wf", { name: "x", method: "POST" }),
+		]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0", { headers: AUTH_HEADERS });
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		// The trigger card itself must render (flat); no HTMX inline-expansion.
+		expect(body).toContain('<span class="trigger-name">x</span>');
+		expect(body).not.toContain("hx-get=");
+		expect(body).not.toContain('hx-trigger="toggle');
+	});
+});
