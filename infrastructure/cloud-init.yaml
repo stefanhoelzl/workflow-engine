@@ -29,16 +29,21 @@ write_files:
       net.ipv4.ip_unprivileged_port_start=80
     permissions: "0644"
 
-  # Allow `deploy` to linger so its user-mode systemd persists across logouts
-  # (rootless Podman with system Quadlet). We use system-mode quadlets here so
-  # this is only relevant if we ever pivot to user-mode.
+  # Wall-clock trigger for podman-auto-update. The package default fires every
+  # 24h; we want ~minute-granularity rotation after a CI image push. Earlier
+  # versions used OnBootSec=2min + OnUnitActiveSec=1min, but cloud-init starts
+  # this timer late in boot — by then OnBootSec has already elapsed, so the
+  # timer reaches `active (elapsed)` with `Trigger: n/a` and the service is
+  # never invoked. OnCalendar is wall-clock-relative (immune to start-time
+  # ordering) and Persistent=true fires the missed tick on activation and
+  # after every reboot.
   - path: /etc/systemd/system/podman-auto-update.timer.d/override.conf
     content: |
       [Timer]
-      OnUnitActiveSec=
       OnBootSec=
-      OnUnitActiveSec=1min
-      OnBootSec=2min
+      OnUnitActiveSec=
+      OnCalendar=minutely
+      Persistent=true
     permissions: "0644"
 
   # Scoped NOPASSWD sudo for the deploy user. No wildcards, no ALL.
