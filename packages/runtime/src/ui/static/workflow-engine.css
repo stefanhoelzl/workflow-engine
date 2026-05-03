@@ -93,6 +93,7 @@
 		"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", monospace;
 	--sidebar-width: 240px;
 	--topbar-height: 40px;
+	--tabs-height: 44px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -396,20 +397,69 @@ body {
 	flex-direction: column;
 }
 
-/* In-page surface tabs (Dashboard | Trigger), rendered between sidebar and
-   main content. Layout's `tabs?` slot is wrapped in `.page-tabs-slot`; the
-   shared <Tabs/> component emits `<nav class="page-tabs">` inside it. */
+/* In-page surface tabs (Dashboard | Trigger). Layout's `tabs?` slot is
+   wrapped in `.page-tabs-slot`; the shared <Tabs/> component emits a
+   `.page-tabs-bar` flex row carrying the left-aligned scope breadcrumb and
+   right-aligned `<nav class="page-tabs">`. The slot is fixed under the
+   global topbar (out of the page scroll area entirely) so both bars stay
+   visible at all times. `.main-content` reserves space for it via
+   `--tabs-height` margin-top. */
 .page-tabs-slot {
-	margin-left: var(--sidebar-width);
-	margin-top: var(--topbar-height);
+	position: fixed;
+	top: var(--topbar-height);
+	left: var(--sidebar-width);
+	right: 0;
+	height: var(--tabs-height);
 	background: var(--bg-elevated);
 	border-bottom: 1px solid var(--border);
+	z-index: 5;
+}
+
+.page-tabs-bar {
+	display: flex;
+	align-items: stretch;
+	justify-content: space-between;
+	gap: var(--sp-4);
+	padding: 0 var(--sp-5);
+	height: 100%;
+}
+
+.page-tabs-breadcrumb {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	font-size: var(--fs-sm);
+	color: var(--text-secondary);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.page-tabs-breadcrumb-link {
+	color: var(--text-secondary);
+	text-decoration: none;
+}
+
+.page-tabs-breadcrumb-link:hover,
+.page-tabs-breadcrumb-link:focus-visible {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+.page-tabs-breadcrumb-current {
+	color: var(--text);
+	font-weight: 500;
+}
+
+.page-tabs-breadcrumb-sep {
+	color: var(--text-secondary);
+	opacity: 0.6;
 }
 
 .page-tabs {
 	display: flex;
 	gap: var(--sp-1);
-	padding: 0 var(--sp-5);
 }
 
 .page-tabs-link {
@@ -449,10 +499,10 @@ body {
 	min-width: 0;
 }
 
-/* When a tab strip is present (authenticated surfaces), it already
-   carries the topbar offset; main-content flows immediately beneath. */
+/* When a tab strip is present (authenticated surfaces), the fixed tabbar
+   sits beneath the topbar; main-content reserves the combined offset. */
 .page-tabs-slot ~ .main-content {
-	margin-top: 0;
+	margin-top: calc(var(--topbar-height) + var(--tabs-height));
 }
 
 /* Page header */

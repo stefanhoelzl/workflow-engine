@@ -1091,8 +1091,12 @@ describe("triggerMiddleware: unified scope routes + tabs + removed fragments", (
 		});
 		expect(res.status).toBe(200);
 		const body = await res.text();
-		expect(body).toContain('class="trigger-group-title">build</h2>');
-		expect(body).not.toContain('class="trigger-group-title">deploy</h2>');
+		// At workflow scope the relative-path heading collapses to nothing —
+		// the tabbar breadcrumb already names the workflow. Assert via the
+		// included/excluded trigger cards instead.
+		expect(body).not.toContain('class="trigger-group-title"');
+		expect(body).toContain('id="trigger-t0-r0-build-ci"');
+		expect(body).not.toContain('id="trigger-t0-r0-deploy-rollout"');
 	});
 
 	it("returns 404 for a nonexistent workflow under a registered repo", async () => {
