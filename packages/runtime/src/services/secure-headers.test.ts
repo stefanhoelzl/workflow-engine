@@ -136,7 +136,7 @@ describe("secureHeadersMiddleware: per-route integration", () => {
 		{ name: "livez", path: "/livez" },
 		{ name: "webhook", path: "/webhooks/order" },
 		{ name: "api", path: "/api/events" },
-		{ name: "dashboard", path: "/dashboard" },
+		{ name: "dashboard", path: "/invocations" },
 		{ name: "trigger", path: "/trigger" },
 		{ name: "static", path: "/static/alpine.js" },
 	] as const;
@@ -177,7 +177,7 @@ describe("secureHeadersMiddleware: per-route integration", () => {
 			stubMiddleware("/livez", "ok"),
 			stubMiddleware("/webhooks/*", "{}"),
 			stubMiddleware("/api/*", "{}"),
-			stubMiddleware("/dashboard/*", "<html></html>"),
+			stubMiddleware("/invocations/*", "<html></html>"),
 			stubMiddleware("/trigger/*", "<html></html>"),
 			stubMiddleware("/static/*", "/* js */"),
 		);

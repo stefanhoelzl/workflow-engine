@@ -2,7 +2,7 @@ import type { WorkflowRegistry } from "../workflow-registry.js";
 import { TriggerKindIcon } from "./icons.js";
 
 // ---------------------------------------------------------------------------
-// Sidebar tree — single unified navigator for /dashboard/* and /trigger/*
+// Sidebar tree — single unified navigator for /invocations/* and /trigger/*
 // ---------------------------------------------------------------------------
 //
 // One tree per page (no per-surface duplication). Tree links inherit the
@@ -14,7 +14,7 @@ import { TriggerKindIcon } from "./icons.js";
 // URL — ancestors of the current route unfold, siblings stay collapsed —
 // so there is no client-side toggle state.
 
-type Surface = "/dashboard" | "/trigger";
+type Surface = "/invocations" | "/trigger";
 
 interface ActiveState {
 	readonly owner?: string;

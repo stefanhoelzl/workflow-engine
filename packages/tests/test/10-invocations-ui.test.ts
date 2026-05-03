@@ -1,14 +1,14 @@
 import { describe, expect, test } from "@workflow-engine/tests";
 
-// Test #10 — dashboard UI under chromium. Fires a webhook to produce a
-// real invocation, then drives the browser through `/dashboard/dev/e2e`,
+// Test #10 — invocations UI under chromium. Fires a webhook to produce a
+// real invocation, then drives the browser through `/invocations/dev/e2e`,
 // finds the invocation row for the registered workflow, expands it, and
 // asserts the htmx-loaded flamegraph fragment contains the `kind-trigger`
-// SVG class. Exercises the dashboard's full server-render → htmx swap →
+// SVG class. Exercises the invocations view's full server-render → htmx swap →
 // flamegraph render pipeline that the in-process integration layer can't
 // see (no real browser, no htmx runtime, no SVG layout).
 
-describe("dashboard UI", () => {
+describe("invocations UI", () => {
 	test("invocation row renders for the fired workflow and expands to flamegraph", (s) =>
 		s
 			.workflow(
@@ -27,7 +27,7 @@ export const ping = httpTrigger({
 			.browser(async ({ page, state, login }) => {
 				await login("dev");
 				const wf = state.workflows.byIndex(0).name;
-				await page.goto("/dashboard/dev/e2e");
+				await page.goto("/invocations/dev/e2e");
 				const entry = page
 					.locator(".entry")
 					.filter({ has: page.locator(`.entry-workflow:text-is("${wf}")`) })

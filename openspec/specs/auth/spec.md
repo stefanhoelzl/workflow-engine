@@ -172,8 +172,8 @@ The local provider SHALL NOT mint a GitHub access token or attempt to call `api.
 #### Scenario: POST /signin seals a local session and redirects to returnTo
 
 - **GIVEN** a local provider constructed with entry `alice:acme`
-- **WHEN** `POST /auth/local/signin` is invoked with form body `user=alice&returnTo=%2Fdashboard`
-- **THEN** the response SHALL be `302 Found` with `Location: /dashboard`
+- **WHEN** `POST /auth/local/signin` is invoked with form body `user=alice&returnTo=%2Finvocations`
+- **THEN** the response SHALL be `302 Found` with `Location: /invocations`
 - **AND** the response SHALL include `Set-Cookie: session=<sealed>` whose payload contains `provider: "local"`, `name: "alice"`, `mail: "alice@dev.local"`, `orgs: ["acme"]`, `accessToken: ""`
 
 #### Scenario: POST /signin with unknown user returns 400
@@ -679,9 +679,9 @@ The `GET /login` handler SHALL NOT consult any provider-specific hook to render 
 #### Scenario: Renders github section when only github is registered
 
 - **GIVEN** registry contains only the github provider
-- **WHEN** `GET /login?returnTo=/dashboard` is requested without a flash cookie
+- **WHEN** `GET /login?returnTo=/invocations` is requested without a flash cookie
 - **THEN** the handler SHALL respond `200 OK`
-- **AND** the body SHALL contain a "Sign in with GitHub" link to `/auth/github/signin?returnTo=%2Fdashboard`
+- **AND** the body SHALL contain a "Sign in with GitHub" link to `/auth/github/signin?returnTo=%2Finvocations`
 - **AND** the body SHALL NOT contain a local-provider form
 
 #### Scenario: Renders local section when only local is registered
@@ -761,7 +761,7 @@ Behaviour:
 
 #### Scenario: Redirects to GitHub with a state cookie
 
-- **WHEN** `GET /auth/github/signin?returnTo=/dashboard` is requested
+- **WHEN** `GET /auth/github/signin?returnTo=/invocations` is requested
 - **THEN** the handler SHALL respond `302 Found`
 - **AND** the `Location` header SHALL start with `https://github.com/login/oauth/authorize?`
 - **AND** the response SHALL include `Set-Cookie: auth_state=...`
@@ -809,9 +809,9 @@ The handler SHALL NOT read any cookie other than `auth_state`. The handler SHALL
 - **THEN** the handler SHALL respond `502 Bad Gateway`
 - **AND** no session cookie SHALL be set
 
-### Requirement: Session middleware on /dashboard/* and /trigger/*
+### Requirement: Session middleware on /invocations/* and /trigger/*
 
-The runtime SHALL mount a `sessionMw` middleware on every route under `/dashboard/*` and `/trigger/*`. `sessionMw` SHALL:
+The runtime SHALL mount a `sessionMw` middleware on every route under `/invocations/*` and `/trigger/*`. `sessionMw` SHALL:
 
 1. Read the `session` cookie. If absent or unsealing fails (including pre-migration payloads lacking `provider`), respond `302 Found` with `Location: /login?returnTo=<encoded-current-path>`.
 2. If `now >= payload.exp` (hard TTL exceeded), clear the session cookie and 302 to `/login?returnTo=<encoded-current-path>`.
@@ -821,33 +821,33 @@ The runtime SHALL mount a `sessionMw` middleware on every route under `/dashboar
 
 The middleware SHALL NOT read the `Authorization` header. The middleware SHALL NOT read any `X-Auth-Request-*` header. The middleware SHALL NOT branch on auth modes (`disabled`/`open`/`restricted`); those modes SHALL NOT exist.
 
-The `DashboardMiddlewareDeps` and `TriggerMiddlewareDeps` shapes SHALL declare `sessionMw` as a required field (not optional). Callers that omit it are rejected by the type system. Tests that exercise the handlers without the real `sessionMiddleware` SHALL inject a stub `MiddlewareHandler` that seeds `UserContext` on the request context via `c.set("user", …)` — there is no "dev / no sessionMw" path.
+The `InvocationsMiddlewareDeps` and `TriggerMiddlewareDeps` shapes SHALL declare `sessionMw` as a required field (not optional). Callers that omit it are rejected by the type system. Tests that exercise the handlers without the real `sessionMiddleware` SHALL inject a stub `MiddlewareHandler` that seeds `UserContext` on the request context via `c.set("user", …)` — there is no "dev / no sessionMw" path.
 
 For the local provider, `refreshSession` SHALL return immediately with the payload's identity (no external call). For the github provider, `refreshSession` SHALL fetch `GET /user` and `GET /user/orgs`, evaluate the github allowlist, and return `undefined` on any non-OK response or allowlist miss.
 
 #### Scenario: No cookie redirects to login
 
 - **GIVEN** registry contains the github provider
-- **WHEN** `GET /dashboard/foo` is requested with no `session` cookie
-- **THEN** `sessionMw` SHALL respond `302 Found` with `Location: /login?returnTo=%2Fdashboard%2Ffoo`
+- **WHEN** `GET /invocations/foo` is requested with no `session` cookie
+- **THEN** `sessionMw` SHALL respond `302 Found` with `Location: /login?returnTo=%2Finvocations%2Ffoo`
 
 #### Scenario: Fresh github session passes through without external call
 
 - **GIVEN** a valid session cookie with `provider: "github"`, `resolvedAt = now - 2min`
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL call `next()` with `UserContext` set from the payload
 - **AND** no outbound call to `api.github.com` SHALL be made
 
 #### Scenario: Fresh local session passes through
 
 - **GIVEN** a valid session cookie with `provider: "local"`, `resolvedAt = now - 2min`
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL call `next()` with `UserContext` set from the payload
 
 #### Scenario: Stale local session refreshes immediately without external call
 
 - **GIVEN** a valid session cookie with `provider: "local"`, `resolvedAt = now - 15min`
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL call `localProvider.refreshSession(payload)`
 - **AND** the call SHALL complete synchronously without any outbound network request
 - **AND** SHALL re-seal the cookie with `resolvedAt = now`
@@ -856,14 +856,14 @@ For the local provider, `refreshSession` SHALL return immediately with the paylo
 #### Scenario: Stale github session with GitHub 5xx fails closed
 
 - **GIVEN** a valid session cookie with `provider: "github"`, `resolvedAt = now - 15min`, GitHub returns 500
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL respond `302 Found` with `Location: /login?returnTo=...`
 - **AND** clear the session cookie
 
 #### Scenario: Stale github session with allowlist now rejecting
 
 - **GIVEN** a valid session cookie with `provider: "github"`, GitHub responses OK, but `githubProvider.refreshSession(payload)` returns `undefined` because the user is no longer on the allowlist
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL 302 to `/login`
 - **AND** set `Set-Cookie: auth_flash=<sealed>; Path=/auth; Max-Age=60`
 - **AND** clear the session cookie
@@ -871,21 +871,21 @@ For the local provider, `refreshSession` SHALL return immediately with the paylo
 #### Scenario: Expired session redirects to login
 
 - **GIVEN** a session cookie whose `exp` is in the past
-- **WHEN** `GET /dashboard/` is requested
+- **WHEN** `GET /invocations/` is requested
 - **THEN** `sessionMw` SHALL 302 to `/login` and clear the session cookie
 - **AND** SHALL NOT call `refreshSession`
 
 #### Scenario: Empty registry redirects every request to login
 
 - **GIVEN** the provider registry is empty
-- **WHEN** any request reaches `/dashboard/*` or `/trigger/*`
+- **WHEN** any request reaches `/invocations/*` or `/trigger/*`
 - **THEN** `sessionMw` SHALL respond `302 Found` with `Location: /login?returnTo=...`
 - **AND** the rendered login page SHALL have no provider sections
 
 #### Scenario: Session payload references unregistered provider
 
 - **GIVEN** a valid session cookie with `provider: "local"` but `LOCAL_DEPLOYMENT` is now unset (so the local provider is not registered)
-- **WHEN** any request reaches `/dashboard/*`
+- **WHEN** any request reaches `/invocations/*`
 - **THEN** `sessionMw` SHALL clear the session cookie and 302 to `/login`
 
 ### Requirement: Logout route
@@ -972,7 +972,7 @@ This requirement SHALL be enforced structurally by the `infrastructure` capabili
 
 The implementation SHALL conform to the threat model documented at `/SECURITY.md §4 Authentication`, which enumerates the trust level, entry points, threats, current mitigations, residual risks, and rules governing this capability. This capability owns the entire authentication surface: the session cookie transport for UI routes, the Bearer transport for `/api/*`, the OAuth handshake routes, the allowlist predicate, and the `isMember` tenant predicate.
 
-The implementation SHALL additionally conform to the tenant isolation invariant documented at `/SECURITY.md §1 "Tenant isolation invariants"` (I-T2). The `/api/workflows/:tenant` route and every `/dashboard/*` or `/trigger/*` handler that reads workflow or invocation-event data SHALL constrain reads to the caller's active tenant. Identifier-based lookups (by invocation id, workflow name, event id) SHALL NOT substitute for a tenant scope.
+The implementation SHALL additionally conform to the tenant isolation invariant documented at `/SECURITY.md §1 "Tenant isolation invariants"` (I-T2). The `/api/workflows/:tenant` route and every `/invocations/*` or `/trigger/*` handler that reads workflow or invocation-event data SHALL constrain reads to the caller's active tenant. Identifier-based lookups (by invocation id, workflow name, event id) SHALL NOT substitute for a tenant scope.
 
 Changes to this capability that introduce new threats, weaken or remove a documented mitigation, alter the transport surface (add cookie auth to `/api/*`, remove the Bearer path, add new authenticated route prefixes, change sealing parameters or TTLs), alter the tenant-membership check, or conflict with the rules listed in `/SECURITY.md §4` or `/SECURITY.md §1` MUST update the corresponding sections of `/SECURITY.md` in the same change proposal.
 
@@ -987,6 +987,5 @@ Changes to this capability that introduce new threats, weaken or remove a docume
 
 - **GIVEN** a change proposal that modifies this capability
 - **WHEN** the change does not affect any item enumerated in `/SECURITY.md §4` or `/SECURITY.md §1`
-- **THEN** no update to `/SECURITY.md` is required
-- **AND** the proposal SHALL note that threat-model alignment was checked
+- **THEN** the proposal MAY proceed without modifying `/SECURITY.md`
 

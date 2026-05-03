@@ -1,4 +1,4 @@
-// Shared in-page surface tabs (Dashboard | Trigger), rendered by Layout's
+// Shared in-page surface tabs (Invocations | Trigger), rendered by Layout's
 // `tabs?` slot on every authenticated UI surface. The active tab matches
 // the current URL prefix; both tab hrefs swap the prefix while preserving
 // the rest of the path, so a click is a pure surface swap that keeps the
@@ -9,7 +9,7 @@
 // current surface, the current segment is plain text. Navigation up the
 // hierarchy stays inside the active surface.
 
-type Surface = "/dashboard" | "/trigger";
+type Surface = "/invocations" | "/trigger";
 
 interface TabsScope {
 	readonly owner?: string;
@@ -25,7 +25,7 @@ interface TabsProps {
 }
 
 const TABS: readonly { surface: Surface; label: string }[] = [
-	{ surface: "/dashboard", label: "Dashboard" },
+	{ surface: "/invocations", label: "Invocations" },
 	{ surface: "/trigger", label: "Trigger" },
 ];
 

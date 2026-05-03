@@ -2,6 +2,8 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **Invocations view rename (2026-05-03).** **BREAKING (URL).** `/dashboard/*` → `/invocations/*` (hard cutover, no redirect). The flamegraph fragment endpoint collapses its redundant segment: `/dashboard/:owner/:repo/invocations/:id/flamegraph` → `/invocations/:owner/:repo/:id/flamegraph`. The in-page tab label changes from "Dashboard" to "Invocations". Identifiers rename in lockstep (`DashboardPage` → `InvocationsPage`, `dashboardMiddleware` → `invocationsMiddleware`, file paths `ui/dashboard/` → `ui/invocations/`); out-of-tree code that imports these names must update. The OpenSpec capability `dashboard-list-view` is renamed to `invocations-list-view` in the same pass; cross-spec references update accordingly. Bundled in the same change: the sticky page header (breadcrumb + h1) is removed; synthetic `system.upload` rows now render with a leading accent-coloured upload-arrow icon and a right-side `UPLOAD` chip (the redundant `UPLOADED` status badge is dropped); terminal invocation rows now sort by `startedTs` descending so the visible timestamp on each row matches the sort order. No tenant rebuild or re-upload required.
+
 - **Manifest schema canonicalization (2026-05-03).** **BREAKING (tenant).** `workflowManifestSchema` becomes the canonical validation tier for several rules, with new and migrated checks. Uploads that violate any of these are now rejected with HTTP 422; pre-existing registered workflows continue running until their next upload attempt.
 
     **New rules** (rejected at upload):

@@ -220,7 +220,7 @@ The `.manual(triggerName, input?, opts?)` method SHALL issue an HTTP POST to `/a
 
 ### Requirement: Fetch step
 
-The `.fetch(path, opts?)` method SHALL issue an HTTP request to the spawned child for paths that are not workflow triggers (e.g. `/health`, `/api/workflows/<owner>`, `/dashboard/<owner>`) and capture the response into `state.fetches`.
+The `.fetch(path, opts?)` method SHALL issue an HTTP request to the spawned child for paths that are not workflow triggers (e.g. `/health`, `/api/workflows/<owner>`, `/invocations/<owner>`) and capture the response into `state.fetches`.
 
 #### Scenario: Plain fetch
 
@@ -230,7 +230,7 @@ The `.fetch(path, opts?)` method SHALL issue an HTTP request to the spawned chil
 
 #### Scenario: Fetch with auth via cookie
 
-- **WHEN** `.fetch("/dashboard/dev", {auth: {user: "dev", via: "cookie"}})` is called
+- **WHEN** `.fetch("/invocations/dev", {auth: {user: "dev", via: "cookie"}})` is called
 - **THEN** the framework SHALL POST `name=dev` to `/auth/local/signin` (cached per child+user+via), capture the sealed `session` cookie, and attach it to the fetch
 - **AND** subsequent fetches with the same `(user, via)` SHALL reuse the cached cookie
 
@@ -337,7 +337,7 @@ The `.browser(callback)` method SHALL invoke the callback with a configured Play
 #### Scenario: Login helper
 
 - **WHEN** the callback calls `login("dev")`
-- **THEN** the framework SHALL drive the login form (`/login` → select `name=dev` → submit) and return when the page reaches `/dashboard`
+- **THEN** the framework SHALL drive the login form (`/login` → select `name=dev` → submit) and return when the page reaches `/invocations`
 
 ### Requirement: ScenarioState shape
 
@@ -513,9 +513,9 @@ The framework SHALL ship the following end-to-end tests, each testing one invari
 5. Workflow re-upload + sandbox eviction log line
 6. Multi-backend reconfigure (one workflow registers http + cron)
 7. Sandbox LRU eviction under count pressure (`SANDBOX_MAX_COUNT=2`)
-8. Cross-owner 404 isolation (API + dashboard)
+8. Cross-owner 404 isolation (API + invocations view)
 9. Local login + signout (Playwright)
-10. Dashboard renders invocation row (Playwright)
+10. Invocations view renders invocation row (Playwright)
 11. Trigger UI manual-fire (Playwright)
 12. SQL TLS handshake against embedded-postgres
 13. SQL `statement_timeout` cancellation
@@ -540,7 +540,6 @@ The previous "SIGKILL crash recovery (engine_crashed event after respawn)" test 
 
 - **WHEN** a test is added to the suite
 - **THEN** the test SHALL exercise exactly one runtime invariant whose failure mode requires the spawn → upload → fire → archive lifecycle
-- **AND** the assertion SHALL be on the resulting `state.events` (or `state.fetches` / `state.responses`) shape — not on an in-process detail that would be cheaper to unit-test
 
 ### Requirement: WS chain step
 

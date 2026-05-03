@@ -4,7 +4,7 @@ Recipes agents use to verify changes against `pnpm dev` (see `CLAUDE.md` §Dev v
 
 ## HTTP
 
-`curl` against `POST /webhooks/local-user/demo-repo/<trigger>` (public webhooks), `/dashboard/local-user/demo-repo` (session cookie), `/trigger/local-user/demo-repo` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the dashboard HTML — there is no `GET /api/workflows/<owner>` JSON listing.
+`curl` against `POST /webhooks/local-user/demo-repo/<trigger>` (public webhooks), `/invocations/local-user/demo-repo` (session cookie), `/trigger/local-user/demo-repo` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the invocations view HTML — there is no `GET /api/workflows/<owner>` JSON listing.
 
 ## EventStore (DuckLake)
 
@@ -23,7 +23,7 @@ Cold-start is constant-time: the DuckLake catalog opens directly, no per-invocat
   ```
   Useful for verifying owner scoping, event-shape changes, or post-mortem of a specific terminal.
 
-## Dashboard HTML scraping
+## Invocations view HTML scraping
 
 Grep rendered output for expected classes (`kind-trigger`, `kind-action`, `kind-rest`, `.entry.skeleton`) — cheap UI regression check without a browser.
 
@@ -39,7 +39,7 @@ Not in `pnpm test` / `pnpm validate`. Use for Alpine-driven interactivity, focus
 
 `scripts/dev.ts` sets `AUTH_ALLOW=local:local-user,local:alice:acme,local:bob` and `LOCAL_DEPLOYMENT=1`. Gotchas:
 
-- `/api/*`: `X-Auth-Provider: local` + `Authorization: User <name>`. The only API routes are `POST /api/workflows/<owner>/<repo>` and `GET /api/workflows/<owner>/public-key` — there is no `GET /api/workflows/<owner>` listing; scrape `/dashboard/<owner>` instead.
+- `/api/*`: `X-Auth-Provider: local` + `Authorization: User <name>`. The only API routes are `POST /api/workflows/<owner>/<repo>` and `GET /api/workflows/<owner>/public-key` — there is no `GET /api/workflows/<owner>` listing; scrape `/invocations/<owner>` instead.
 - `/webhooks/*` is public.
 - UI routes: `POST /auth/local/signin` form field is `user=` (NOT `name=` — handler reads `body.user`); reuse the sealed `session` cookie. For Alpine interactivity, use Playwright.
 

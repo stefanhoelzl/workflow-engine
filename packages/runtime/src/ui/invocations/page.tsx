@@ -28,7 +28,7 @@ interface InvocationRow {
 	//   "trigger.exception" → wrench (author-fixable trigger setup failure)
 	//   "trigger.rejection" → shield-cross (HTTP body schema rejection)
 	//   "system.upload"     → upload-arrow + status="uploaded"
-	// See `dashboard-list-view` spec "Single-leaf trigger.exception
+	// See `invocations-list-view` spec "Single-leaf trigger.exception
 	// invocations render inline" (extended by `track-non-invocation-events`).
 	readonly synthetic?: boolean;
 	readonly syntheticKind?:
@@ -51,7 +51,18 @@ interface InvocationRow {
 
 // Flat-list sort order:
 //   1. pending rows first (newest-started on top)
-//   2. terminal rows after (newest-completed on top)
+//   2. terminal rows after (newest-started on top)
+// Sort by `startedAt` (ISO wall-clock) rather than `startedTs` — `ts` is
+// per-invocation monotonic (~0 at every trigger.request) so it is useless
+// for cross-invocation ordering. Using `startedAt` keeps the visible
+// per-row timestamp aligned with the sort order.
+function startedAtMs(row: InvocationRow): number {
+	const d =
+		row.startedAt instanceof Date ? row.startedAt : new Date(row.startedAt);
+	const t = d.getTime();
+	return Number.isNaN(t) ? 0 : t;
+}
+
 function sortInvocationRows(rows: readonly InvocationRow[]): InvocationRow[] {
 	return rows.slice().sort((a, b) => {
 		const aPending = a.status === "pending";
@@ -59,10 +70,7 @@ function sortInvocationRows(rows: readonly InvocationRow[]): InvocationRow[] {
 		if (aPending !== bPending) {
 			return aPending ? -1 : 1;
 		}
-		if (aPending) {
-			return b.startedTs - a.startedTs;
-		}
-		return (b.completedTs ?? 0) - (a.completedTs ?? 0);
+		return startedAtMs(b) - startedAtMs(a);
 	});
 }
 
@@ -139,29 +147,6 @@ function RejectedIcon() {
 	);
 }
 
-// Upload-arrow for `system.upload` rows.
-function UploadIcon() {
-	return (
-		<svg
-			class="icon icon-upload"
-			viewBox="0 0 24 24"
-			width="14"
-			height="14"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			role="img"
-		>
-			<title>workflow uploaded</title>
-			<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-			<polyline points="17 8 12 3 7 8" />
-			<line x1="12" y1="3" x2="12" y2="15" />
-		</svg>
-	);
-}
-
 const EXHAUSTION_LABELS: Record<
 	NonNullable<InvocationRow["exhaustion"]>["dim"],
 	string
@@ -224,8 +209,8 @@ function DispatchChip({ dispatch }: { dispatch: InvocationRow["dispatch"] }) {
 		const mail = dispatch.user?.mail ?? "";
 		const tooltip = mail ? `${login} <${mail}>` : login;
 		return (
-			<span class="entry-dispatch" title={tooltip}>
-				upload
+			<span class="entry-dispatch entry-dispatch--upload" title={tooltip}>
+				UPLOAD
 			</span>
 		);
 	}
@@ -252,19 +237,10 @@ function SyntheticGlyph({ row }: { row: InvocationRow }) {
 		);
 	}
 	if (row.syntheticKind === "system.upload") {
-		const title = row.uploadShaShort
-			? `workflow uploaded sha=${row.uploadShaShort}`
-			: "workflow uploaded";
-		return (
-			<span
-				class="entry-upload"
-				role="img"
-				aria-label="workflow uploaded"
-				title={title}
-			>
-				<UploadIcon />
-			</span>
-		);
+		// Visual identity moves to the leading TriggerKindIcon (kind="upload"
+		// in accent colour) plus the right-side UPLOAD dispatch chip; no
+		// extra glyph is rendered in the right gutter.
+		return null;
 	}
 	// Default: trigger.exception / legacy synthetic.
 	return (
@@ -276,6 +252,25 @@ function SyntheticGlyph({ row }: { row: InvocationRow }) {
 			<SetupFailedIcon />
 		</span>
 	);
+}
+
+function LeadingKindIcon({ row }: { row: InvocationRow }) {
+	if (!row.triggerKind) {
+		return null;
+	}
+	if (row.syntheticKind === "system.upload") {
+		const title = row.uploadShaShort
+			? `workflow uploaded sha=${row.uploadShaShort}`
+			: "workflow uploaded";
+		return (
+			<TriggerKindIcon
+				kind={row.triggerKind}
+				title={title}
+				label="workflow uploaded"
+			/>
+		);
+	}
+	return <TriggerKindIcon kind={row.triggerKind} />;
 }
 
 function CardSummary({
@@ -290,6 +285,7 @@ function CardSummary({
 	// Synthetic trigger.exception / trigger.rejection rows have no dispatch
 	// metadata. system.upload rows DO carry a dispatch chip.
 	const showDispatch = !row.synthetic || row.syntheticKind === "system.upload";
+	const isUpload = row.syntheticKind === "system.upload";
 	return (
 		<>
 			<div class="entry-header">
@@ -304,7 +300,7 @@ function CardSummary({
 					/>
 				)}
 				<div class="entry-identity">
-					{row.triggerKind ? <TriggerKindIcon kind={row.triggerKind} /> : null}
+					<LeadingKindIcon row={row} />
 					<span class="entry-scope">{`${row.owner}/${row.repo}`}</span>
 					<span class="entry-identity-sep">›</span>
 					<span class="entry-workflow">{row.workflow}</span>
@@ -313,7 +309,9 @@ function CardSummary({
 				</div>
 				{showDispatch ? <DispatchChip dispatch={row.dispatch} /> : null}
 				<SyntheticGlyph row={row} />
-				<span class={`badge ${row.status}`}>{row.status}</span>
+				{isUpload ? null : (
+					<span class={`badge ${row.status}`}>{row.status}</span>
+				)}
 				<ExhaustionPill exhaustion={row.exhaustion} />
 			</div>
 			<div class="entry-meta">
@@ -346,7 +344,7 @@ function Card({ row }: { row: InvocationRow }) {
 		);
 	}
 
-	const flamegraphUrl = `/dashboard/${row.owner}/${row.repo}/invocations/${row.id}/flamegraph`;
+	const flamegraphUrl = `/invocations/${row.owner}/${row.repo}/${row.id}/flamegraph`;
 	return (
 		<details
 			class="entry entry-expandable"
@@ -384,7 +382,7 @@ function InvocationList({
 			<section class="list-header" aria-label="Invocation list summary">
 				<span class="list-header-count">{`${count} invocation${count === 1 ? "" : "s"}`}</span>
 				<span class="entry-sep">·</span>
-				<span>pending first, then newest-completed</span>
+				<span>pending first, then newest-started</span>
 				<span class="entry-sep">·</span>
 				<span>
 					updated <Time ts={nowIso} class="list-header-updated" />
@@ -405,105 +403,34 @@ function renderInvocationList(invocations: readonly InvocationRow[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level page — always a flat list, titled by the active filter
+// Top-level page — always a flat list scoped via the URL prefix
 // ---------------------------------------------------------------------------
 
-interface DashboardFilter {
-	readonly owner: string;
-	readonly repo?: string;
-	readonly workflow?: string;
-	readonly trigger?: string;
-}
-
-interface DashboardPageOptions {
+interface InvocationsPageOptions {
 	readonly user: string;
 	readonly email: string;
 	readonly owners: readonly string[];
 	readonly rows: readonly InvocationRow[];
-	// The active filter, derived from the URL. `undefined` = show all scopes
-	// the user has access to.
-	readonly filter?: DashboardFilter;
 	readonly sidebarTree?: Child;
 	readonly tabs?: Child;
 }
 
-function ScopeLabel({ filter }: { filter: DashboardPageOptions["filter"] }) {
-	if (!filter) {
-		return <span class="scope-all">All invocations</span>;
-	}
-	if (!filter.repo) {
-		return (
-			<>
-				<a href="/dashboard">All</a>
-				<span class="breadcrumb-sep">/</span>
-				<span class="breadcrumb-current">{filter.owner}</span>
-			</>
-		);
-	}
-	if (!filter.workflow) {
-		return (
-			<>
-				<a href="/dashboard">All</a>
-				<span class="breadcrumb-sep">/</span>
-				<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
-				<span class="breadcrumb-sep">/</span>
-				<span class="breadcrumb-current">{filter.repo}</span>
-			</>
-		);
-	}
-	if (!filter.trigger) {
-		return (
-			<>
-				<a href="/dashboard">All</a>
-				<span class="breadcrumb-sep">/</span>
-				<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
-				<span class="breadcrumb-sep">/</span>
-				<a href={`/dashboard/${filter.owner}/${filter.repo}`}>{filter.repo}</a>
-				<span class="breadcrumb-sep">/</span>
-				<span class="breadcrumb-current">{filter.workflow}</span>
-			</>
-		);
-	}
-	return (
-		<>
-			<a href="/dashboard">All</a>
-			<span class="breadcrumb-sep">/</span>
-			<a href={`/dashboard/${filter.owner}`}>{filter.owner}</a>
-			<span class="breadcrumb-sep">/</span>
-			<a href={`/dashboard/${filter.owner}/${filter.repo}`}>{filter.repo}</a>
-			<span class="breadcrumb-sep">/</span>
-			<a href={`/dashboard/${filter.owner}/${filter.repo}/${filter.workflow}`}>
-				{filter.workflow}
-			</a>
-			<span class="breadcrumb-sep">/</span>
-			<span class="breadcrumb-current">{filter.trigger}</span>
-		</>
-	);
-}
-
-function DashboardPage({
+function InvocationsPage({
 	user,
 	email,
 	rows,
-	filter,
 	sidebarTree,
 	tabs,
-}: DashboardPageOptions) {
+}: InvocationsPageOptions) {
 	return (
 		<Layout
-			title="Dashboard"
-			activePath="/dashboard"
+			title="Invocations"
+			activePath="/invocations"
 			user={user}
 			email={email}
 			{...(sidebarTree === undefined ? {} : { sidebarTree })}
 			{...(tabs === undefined ? {} : { tabs })}
 		>
-			<div class="page-header">
-				<nav class="breadcrumb" aria-label="Breadcrumb">
-					<ScopeLabel filter={filter} />
-				</nav>
-				<h1>Dashboard</h1>
-			</div>
 			<div class="list">
 				<InvocationList invocations={rows} />
 			</div>
@@ -513,16 +440,16 @@ function DashboardPage({
 
 // Compat-shaped function export for un-migrated middleware. Calls
 // .toString() so the returned value is a string c.html() accepts directly.
-function renderDashboardPage(options: DashboardPageOptions) {
-	return (<DashboardPage {...options} />).toString();
+function renderInvocationsPage(options: InvocationsPageOptions) {
+	return (<InvocationsPage {...options} />).toString();
 }
 
-export type { DashboardPageOptions, InvocationRow };
+export type { InvocationRow, InvocationsPageOptions };
 export {
-	DashboardPage,
 	formatDurationUs,
 	InvocationList,
-	renderDashboardPage,
+	InvocationsPage,
 	renderInvocationList,
+	renderInvocationsPage,
 	sortInvocationRows,
 };

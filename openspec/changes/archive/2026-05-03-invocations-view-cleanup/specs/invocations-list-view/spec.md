@@ -1,38 +1,41 @@
-# Dashboard List View Specification
+## ADDED Requirements
 
-## Purpose
+### Requirement: Invocations view lists invocations
 
-Provide a simple invocation list view for the dashboard, showing recent trigger invocations with their status and duration.
-## Requirements
-### Requirement: Dashboard lists invocations
+The invocations view SHALL render a single flat list of invocations from the EventStore. The view is always a flat list — there is no drill-down tree, no lazy-loaded fragment per scope, and no per-repo nesting. Filtering is driven by the URL path: `/invocations/:owner` narrows the list to that owner, `/invocations/:owner/:repo` narrows to that repo, and `/invocations/:owner/:repo/:workflow/:trigger` narrows to a single trigger's invocations. The root `/invocations` view renders invocations across every `(owner, repo)` the caller has access to.
 
-The dashboard SHALL render a single flat list of invocations from the EventStore. The view is always a flat list — there is no drill-down tree, no lazy-loaded fragment per scope, and no per-repo nesting. Filtering is driven by the URL path: `/dashboard/:owner` narrows the list to that owner, `/dashboard/:owner/:repo` narrows to that repo, and `/dashboard/:owner/:repo/:workflow/:trigger` narrows to a single trigger's invocations. The root `/dashboard` view renders invocations across every `(owner, repo)` the caller has access to.
-
-Each rendered invocation SHALL display: `owner/repo`, workflow, trigger, status (`pending` / `succeeded` / `failed`), `startedAt`, duration, and a dispatch indicator. The `owner/repo` prefix is rendered on every row at every filter level so an operator looking at the cross-scope view can attribute each invocation to its scope.
+Each rendered invocation SHALL display: a leading kind-icon, `owner/repo`, workflow, trigger, status (`pending` / `succeeded` / `failed` / `uploaded`), `startedAt`, duration, and a dispatch indicator. The `owner/repo` prefix is rendered on every row at every filter level so an operator looking at the cross-scope view can attribute each invocation to its scope.
 
 Rows SHALL be sorted in two groups:
 
 1. Pending rows first, ordered by `startedTs` descending (live invocations stay on top).
-2. Completed rows after, ordered by `completedTs` descending (most recently finished first, without mixing pending rows in between).
+2. Terminal rows after, ordered by `startedTs` descending (most recently started first, without mixing pending rows in between).
 
-This "pending-first, then newest-completed" ordering is enforced by the page renderer (`sortInvocationRows`); the SQL query orders by `at` descending purely to bound the result set.
+This "pending-first, then newest-started" ordering is enforced by the page renderer (`sortInvocationRows`); the SQL query orders by `at` descending purely to bound the result set. Sorting terminal rows by `startedTs` (rather than `completedTs`) ensures the visible per-row timestamp matches the visible sort order.
 
-The dispatch indicator SHALL render as a text chip whose visible label is always `"manual"` when `meta.dispatch.source === "manual"`. The chip's `title` attribute SHALL carry the dispatching user's login (`meta.dispatch.user.login`) when present. The chip SHALL NOT be rendered when `source === "trigger"` or when the `trigger.request` event carries no `meta.dispatch`.
+The dispatch indicator SHALL render as a text chip whose visible label is `"manual"` when `meta.dispatch.source === "manual"` and `"UPLOAD"` (uppercase) when `meta.dispatch.source === "upload"`. The chip's `title` attribute SHALL carry the dispatching user's login (`meta.dispatch.user.login`) when present; for upload rows the title SHALL additionally include the uploader's mail when present (formatted as `login <mail>`). The chip SHALL NOT be rendered when `source === "trigger"` or when the `trigger.request` event carries no `meta.dispatch`.
 
 Duration SHALL be computed as `completedTs - startedTs` when both are available, formatted via the existing smart-unit formatter.
 
 #### Scenario: Root renders invocations from every scope the user has
 
 - **GIVEN** a user whose `orgs = ["acme", "alice"]` with registered bundles `(acme, foo)`, `(acme, bar)`, `(alice, utils)`, each with invocations
-- **WHEN** `GET /dashboard` is requested
+- **WHEN** `GET /invocations` is requested
 - **THEN** rows SHALL include invocations from all three `(owner, repo)` pairs
 - **AND** each row SHALL display its `owner/repo` prefix
 
-#### Scenario: Pending row sorted above completed row regardless of started-at
+#### Scenario: Pending row sorted above terminal row regardless of started-at
 
-- **GIVEN** a completed invocation that started at 12:00:00 and finished at 12:00:02, and a pending invocation that started at 11:59:50
+- **GIVEN** a terminal invocation that started at 12:00:00 and finished at 12:00:02, and a pending invocation that started at 11:59:50
 - **WHEN** the list is rendered
-- **THEN** the pending row SHALL appear above the completed row
+- **THEN** the pending row SHALL appear above the terminal row
+
+#### Scenario: Terminal rows sorted by startedTs descending
+
+- **GIVEN** terminal invocation A started at 12:00:00 (completed 12:00:10) and terminal invocation B started at 12:00:05 (completed 12:00:06)
+- **WHEN** the list is rendered
+- **THEN** invocation B SHALL appear above invocation A
+- **AND** the visible timestamp on the leading row (B) SHALL be later than the visible timestamp on the trailing row (A)
 
 #### Scenario: Manual dispatch renders chip with user login in tooltip
 
@@ -41,13 +44,23 @@ Duration SHALL be computed as `completedTs - startedTs` when both are available,
 - **THEN** the row SHALL render a chip whose visible label is `"manual"`
 - **AND** the chip SHALL carry `title="alice"` for on-hover attribution
 
+### Requirement: Invocations view has no sticky page header
+
+The invocations view SHALL NOT render a sticky page header (no breadcrumb bar, no `<h1>` element above the list). View identity is conveyed by the in-page tab strip and by the list-header subtitle (count + ordering); scope navigation is conveyed by the sidebar tree.
+
+#### Scenario: Page omits the sticky header
+
+- **WHEN** any `/invocations/*` URL is requested
+- **THEN** the response body SHALL NOT contain an element with class `page-header`
+- **AND** the response body SHALL NOT contain an `<h1>` whose text is `"Dashboard"` or `"Invocations"`
+
 ### Requirement: Deferred list loading
 
-The dashboard SHALL render a user-visible loading state before invocation data is available, and SHALL serve invocation data from an endpoint distinct from the page shell. The loading state SHALL be replaced by the invocation list (or the empty-state message) once data is received.
+The invocations view SHALL render a user-visible loading state before invocation data is available, and SHALL serve invocation data from an endpoint distinct from the page shell. The loading state SHALL be replaced by the invocation list (or the empty-state message) once data is received.
 
 #### Scenario: Loading state visible before data arrives
 
-- **WHEN** the dashboard page shell is first requested
+- **WHEN** the invocations page shell is first requested
 - **THEN** the initial response SHALL contain a visible loading-state placeholder in place of the invocation list
 - **AND** the initial response SHALL NOT contain any rendered invocation entries
 
@@ -55,7 +68,7 @@ The dashboard SHALL render a user-visible loading state before invocation data i
 
 - **WHEN** the invocation list endpoint is requested
 - **THEN** the response SHALL contain entries for the most recent invocations ordered by `startedAt` descending (subject to the list bound)
-- **AND** the response SHALL NOT contain the page shell (topbar, sidebar, page header)
+- **AND** the response SHALL NOT contain the page shell (topbar, sidebar)
 
 #### Scenario: Empty-state replaces the loading state when no invocations exist
 
@@ -72,13 +85,13 @@ The dashboard SHALL render a user-visible loading state before invocation data i
 
 ### Requirement: Invocation rows are expandable into an inline flamegraph
 
-Each rendered invocation row whose status is `succeeded` or `failed` SHALL provide an expand affordance that, when activated by the user, reveals an inline flamegraph fragment for that invocation. Pending invocations SHALL NOT provide an expand affordance. Multiple rows MAY be expanded simultaneously (no accordion coordination).
+Each rendered invocation row whose status is `succeeded` or `failed` SHALL provide an expand affordance that, when activated by the user, reveals an inline flamegraph fragment for that invocation. Pending rows, `uploaded` rows (synthetic `system.upload`), and synthetic `trigger.rejection` rows SHALL NOT provide an expand affordance. Multiple rows MAY be expanded simultaneously (no accordion coordination).
 
 The flamegraph fragment SHALL be loaded on demand the first time a row is expanded, scoped to that row's own `(owner, repo)` rather than to the page-level filter — so a cross-scope view still resolves each row's flamegraph correctly. Subsequent toggles on a row that has already loaded its fragment SHALL NOT trigger a re-fetch.
 
-#### Scenario: Completed row's flamegraph is fetched from its own scope
+#### Scenario: Terminal row's flamegraph is fetched from its own scope
 
-- **GIVEN** a cross-scope `/dashboard` request and a succeeded invocation `evt_abc` belonging to `(alice, utils)`
+- **GIVEN** a cross-scope `/invocations` request and a succeeded invocation `evt_abc` belonging to `(alice, utils)`
 - **WHEN** the user expands the row for `evt_abc`
 - **THEN** the runtime SHALL request the flamegraph fragment for `evt_abc` scoped to `(alice, utils)`, not to the page's current filter scope
 
@@ -91,20 +104,20 @@ The flamegraph fragment SHALL be loaded on demand the first time a row is expand
 
 ### Requirement: Flamegraph fragment endpoint
 
-The runtime SHALL expose `GET /dashboard/:owner/:repo/invocations/:id/flamegraph` under the `/dashboard` path prefix. The endpoint SHALL validate `:owner` and `:repo` against their respective regexes, enforce owner-membership via the shared authorization middleware, and read the invocation's events via `eventStore.query([{owner, repo}]).where('id', '=', id).orderBy('seq', 'asc').execute()` and return an HTML fragment (not a full page shell).
+The runtime SHALL expose `GET /invocations/:owner/:repo/:id/flamegraph`. The endpoint SHALL validate `:owner` and `:repo` against their respective regexes, enforce owner-membership via the shared authorization middleware, and read the invocation's events via `eventStore.query([{owner, repo}]).where('id', '=', id).orderBy('seq', 'asc').execute()` and return an HTML fragment (not a full page shell).
 
 The endpoint SHALL return `404 Not Found` when the supplied `(owner, repo)` is not registered or the user is not a member of `owner`, using the same fail-closed pattern as other scoped routes.
 
 #### Scenario: Flamegraph fragment requires scope in URL
 
-- **WHEN** a request arrives at `GET /dashboard/acme/foo/invocations/evt_abc/flamegraph` with a valid session for a member of `acme`
+- **WHEN** a request arrives at `GET /invocations/acme/foo/evt_abc/flamegraph` with a valid session for a member of `acme`
 - **THEN** the endpoint SHALL return the flamegraph HTML fragment for invocation `evt_abc` scoped to `(acme, foo)`
 - **AND** the response SHALL NOT include the page shell
 
 #### Scenario: Flamegraph endpoint scoped by (owner, repo), not just owner
 
 - **GIVEN** invocations `evt_abc` under `(acme, foo)` and `evt_abc` under `(acme, bar)` (same id, different scope — hypothetical)
-- **WHEN** `GET /dashboard/acme/foo/invocations/evt_abc/flamegraph` is requested
+- **WHEN** `GET /invocations/acme/foo/evt_abc/flamegraph` is requested
 - **THEN** only the events belonging to `(acme, foo)` SHALL be rendered
 - **AND** events from `(acme, bar)` SHALL NOT appear in the fragment
 
@@ -118,7 +131,7 @@ Layout SHALL NOT rely on a stretched `viewBox` for horizontal responsiveness; ba
 
 #### Scenario: Fragment carries width and height hooks
 
-- **WHEN** a flamegraph fragment is rendered for any completed invocation
+- **WHEN** a flamegraph fragment is rendered for any terminal invocation
 - **THEN** its `<svg>` element SHALL have `width="100%"`
 - **AND** a numeric `height` attribute in pixel units
 
@@ -321,7 +334,7 @@ The spec requires only the DOM hooks; actual modal-open behavior (dialog animati
 
 ### Requirement: Summary line and ruler above the flamegraph
 
-The flamegraph fragment is always consumed inside the dashboard's invocation card, which surfaces the invocation's workflow name, trigger name, started timestamp, total duration and status. To avoid duplication, the flamegraph fragment SHALL NOT repeat those identity/status fields; it SHALL emit only what the card does not: per-kind counts (actions, host calls, timers), a legend explaining the bar-kind colour coding and the meaning of marker glyphs, a horizontal time ruler, and the SVG itself.
+The flamegraph fragment is always consumed inside the invocations card, which surfaces the invocation's workflow name, trigger name, started timestamp, total duration and status. To avoid duplication, the flamegraph fragment SHALL NOT repeat those identity/status fields; it SHALL emit only what the card does not: per-kind counts (actions, host calls, timers), a legend explaining the bar-kind colour coding and the meaning of marker glyphs, a horizontal time ruler, and the SVG itself.
 
 The time ruler SHALL contain at least four tick labels whose values span from `0` to the invocation's total duration monotonically and whose formatting uses the existing smart-unit formatter (µs / ms / s / min).
 
@@ -344,7 +357,7 @@ Counts of zero SHALL be omitted from the fragment entirely. When all counts are 
 
 #### Scenario: Fragment does not duplicate card identity
 
-- **GIVEN** an invocation rendered as a dashboard card whose summary already shows `workflow › trigger`, started timestamp, duration, and a status badge
+- **GIVEN** an invocation rendered as a card whose summary already shows `workflow › trigger`, started timestamp, duration, and a status badge
 - **WHEN** the card is expanded and the flamegraph fragment is swapped in beneath the summary
 - **THEN** the fragment SHALL NOT carry a separate identity line (workflow + trigger), a separate duration label, or a separate status badge
 
@@ -380,40 +393,40 @@ No flamegraph fragment (SVG variant or empty-state variant) SHALL contain inline
 
 #### Scenario: Fragment contains no inline styling or scripting
 
-- **WHEN** any flamegraph fragment is rendered for any invocation (completed, failed, unknown id, or pending id)
+- **WHEN** any flamegraph fragment is rendered for any invocation (terminal, failed, unknown id, or pending id)
 - **THEN** the HTML body SHALL NOT contain any occurrence of `style="`, `<style`, `<script`, `onclick=`, `onmouseover=`, or `:style="`
 
 ### Requirement: No filters or detail page in v1
 
-The v1 dashboard SHALL NOT support filters (by status, time range), detail pages per invocation, replay/retry buttons, or live-streaming updates. Scope-based filtering by URL path (owner / repo / workflow / trigger) is supported per "Filter routes"; this requirement excludes only orthogonal filters such as time-range or status pickers.
+The v1 invocations view SHALL NOT support filters (by status, time range), detail pages per invocation, replay/retry buttons, or live-streaming updates. Scope-based filtering by URL path (owner / repo / workflow / trigger) is supported per "Filter routes"; this requirement excludes only orthogonal filters such as time-range or status pickers.
 
-#### Scenario: List is the only top-level dashboard view
+#### Scenario: List is the only top-level invocations view
 
-- **WHEN** the user navigates to any dashboard URL other than the list (at any filter level) or the per-invocation flamegraph fragment endpoint
+- **WHEN** the user navigates to any invocations URL other than the list (at any filter level) or the per-invocation flamegraph fragment endpoint
 - **THEN** the response SHALL be `404` (or the request SHALL be redirected to the list)
 
 ### Requirement: Timestamps rendered in the user's local timezone
 
-Timestamp values surfaced in the dashboard UI (e.g. invocation started-at) SHALL be rendered in the viewer's local timezone on the client. The server SHALL emit timestamps as `<time datetime="<ISO>">` elements with the ISO string as both the `datetime` attribute and the initial text content, so that a client without JavaScript sees a legible UTC fallback. A client-side script served from `/static/local-time.js` SHALL, on DOM ready, find every such `<time>` element and replace its text content with a locale-formatted rendering produced from `new Date(datetime).toLocaleString(...)`.
+Timestamp values surfaced in the invocations UI (e.g. invocation started-at) SHALL be rendered in the viewer's local timezone on the client. The server SHALL emit timestamps as `<time datetime="<ISO>">` elements with the ISO string as both the `datetime` attribute and the initial text content, so that a client without JavaScript sees a legible UTC fallback. A client-side script served from `/static/local-time.js` SHALL, on DOM ready, find every such `<time>` element and replace its text content with a locale-formatted rendering produced from `new Date(datetime).toLocaleString(...)`.
 
 The client-side rewrite SHALL NOT mutate the `datetime` attribute itself, so that machine-readable consumers of the DOM continue to see the ISO value.
 
 #### Scenario: Server emits ISO fallback in both attribute and text content
 
-- **WHEN** the dashboard list is rendered
+- **WHEN** the invocations list is rendered
 - **THEN** every invocation's started-at timestamp SHALL appear inside a `<time>` element whose `datetime` attribute contains the ISO-8601 UTC string
 - **AND** the element's initial text content SHALL contain the same ISO-8601 string (so JS-disabled clients remain legible)
 
 #### Scenario: Client rewrites text content to the viewer's locale
 
-- **GIVEN** a rendered dashboard list containing `<time datetime="2026-04-22T13:45:00Z">2026-04-22T13:45:00Z</time>`
+- **GIVEN** a rendered invocations list containing `<time datetime="2026-04-22T13:45:00Z">2026-04-22T13:45:00Z</time>`
 - **WHEN** `/static/local-time.js` has loaded and run
 - **THEN** the `<time>` element's text content SHALL be the result of `new Date("2026-04-22T13:45:00Z").toLocaleString(undefined, ...)`
 - **AND** the `datetime` attribute SHALL still equal `"2026-04-22T13:45:00Z"`
 
 ### Requirement: Expandable invocation rows carry an expand affordance
 
-Invocation rows that are expandable (those with terminal status, i.e. `succeeded` or `failed`) SHALL carry a visible expand affordance (e.g. a chevron glyph) that transitions to an "open" state when the row is expanded. Pending rows, which are not expandable, SHALL NOT carry this affordance.
+Invocation rows that are expandable (those with terminal status, i.e. `succeeded` or `failed`, excluding synthetic `trigger.rejection` and `system.upload`) SHALL carry a visible expand affordance (e.g. a chevron glyph) that transitions to an "open" state when the row is expanded. Pending rows, `uploaded` rows, and rejected rows, which are not expandable, SHALL NOT carry this affordance.
 
 The affordance SHALL be driven by the native `[open]` state of the `<details>` element, so that no client-side JavaScript is required to keep it in sync with the row's open/closed state.
 
@@ -437,30 +450,30 @@ The affordance SHALL be driven by the native `[open]` state of the `<details>` e
 
 ### Requirement: Invocation list header surfaces count and ordering
 
-The dashboard invocation list SHALL render, above the list itself, a header surface that communicates (a) the count of invocations visible and (b) the ordering direction. The count SHALL come from a machine-readable source in the list fragment (e.g. a `data-count` attribute on the list root) so the header can be populated without re-rendering the fragment.
+The invocations list SHALL render, above the list itself, a header surface that communicates (a) the count of invocations visible and (b) the ordering direction. The count SHALL come from a machine-readable source in the list fragment (e.g. a `data-count` attribute on the list root) so the header can be populated without re-rendering the fragment. The ordering hint SHALL read `"pending first, then newest-started"`.
 
 #### Scenario: Header reports count and ordering
 
-- **GIVEN** a dashboard list fragment containing N invocation rows with `data-count="N"` on its root
+- **GIVEN** a list fragment containing N invocation rows with `data-count="N"` on its root
 - **WHEN** the list is rendered
-- **THEN** a header region above the list SHALL surface the text `N` (the count) and a phrase communicating the newest-first ordering
+- **THEN** a header region above the list SHALL surface the text `N` (the count) and the phrase `"pending first, then newest-started"`
 
 #### Scenario: Empty list does not conceal the ordering hint
 
-- **GIVEN** a dashboard list fragment for a tenant with zero invocations
+- **GIVEN** a list fragment for a tenant with zero invocations
 - **WHEN** the list is rendered
 - **THEN** the header region MAY be omitted or MAY be present with a zero-count rendering; either is acceptable
 - **AND** the empty-state message SHALL remain user-visible per the existing "Empty list shows an empty-state message" scenario
 
 ### Requirement: Filter routes
 
-The dashboard SHALL expose five filter levels, each of which renders the same flat-list shape with the filter's scope applied:
+The invocations view SHALL expose five filter levels, each of which renders the same flat-list shape with the filter's scope applied:
 
-- `GET /dashboard` — every `(owner, repo)` the user has access to
-- `GET /dashboard/:owner` — every repo under `:owner`
-- `GET /dashboard/:owner/:repo` — that repo only
-- `GET /dashboard/:owner/:repo/:workflow` — invocations produced by triggers belonging to that workflow within `(owner, repo)`
-- `GET /dashboard/:owner/:repo/:workflow/:trigger` — invocations produced by that specific trigger
+- `GET /invocations` — every `(owner, repo)` the user has access to
+- `GET /invocations/:owner` — every repo under `:owner`
+- `GET /invocations/:owner/:repo` — that repo only
+- `GET /invocations/:owner/:repo/:workflow` — invocations produced by triggers belonging to that workflow within `(owner, repo)`
+- `GET /invocations/:owner/:repo/:workflow/:trigger` — invocations produced by that specific trigger
 
 All routes SHALL require an authenticated session. `:owner` and `:repo` path parameters SHALL be validated against their regexes and SHALL enforce owner-membership via the shared authorization middleware; membership failure SHALL respond `404 Not Found` using the enumeration-prevention pattern. The `:workflow` segment SHALL be validated against the `WorkflowRegistry` for the authorised `(owner, repo)` **only when the registry has any entries for that `(owner, repo)`**: if entries exist and none of them carry the supplied workflow name, the route SHALL respond `404 Not Found` matching the response shape used for non-existent owner/repo. When the registry has no entries for `(owner, repo)` (e.g. all workflows have been deleted), the workflow segment SHALL NOT 404 — historical synthetic events (`trigger.exception`, `system.upload`) under that scope remain visible via the EventStore.
 
@@ -469,50 +482,43 @@ Scope resolution is identical at every filter level — `resolveQueryScopes(user
 #### Scenario: Per-workflow filter narrows by workflow
 
 - **GIVEN** `(acme, foo)` has workflows `build` and `deploy`, each with multiple triggers and invocations
-- **WHEN** a member of `acme` requests `GET /dashboard/acme/foo/build`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/build`
 - **THEN** rows SHALL include only invocations whose workflow is `build`
 - **AND** rows belonging to workflow `deploy` SHALL NOT appear
 
 #### Scenario: Per-trigger filter narrows by workflow + trigger
 
 - **GIVEN** `(acme, foo)` has triggers `build/webhook` and `deploy/webhook`, each with multiple invocations
-- **WHEN** a member of `acme` requests `GET /dashboard/acme/foo/build/webhook`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/build/webhook`
 - **THEN** rows SHALL include only `build/webhook` invocations
 - **AND** rows for `deploy/webhook` SHALL NOT appear
 
 #### Scenario: Non-member request at any filter level returns 404
 
-- **WHEN** a user who is NOT a member of `evil-corp` requests `GET /dashboard/evil-corp` or `GET /dashboard/evil-corp/foo` or `GET /dashboard/evil-corp/foo/build` or `GET /dashboard/evil-corp/foo/build/webhook`
+- **WHEN** a user who is NOT a member of `evil-corp` requests `GET /invocations/evil-corp` or `GET /invocations/evil-corp/foo` or `GET /invocations/evil-corp/foo/build` or `GET /invocations/evil-corp/foo/build/webhook`
 - **THEN** every route SHALL respond `404 Not Found`
 - **AND** the response body SHALL be identical in shape to the response for a non-existent owner
 
 #### Scenario: Nonexistent workflow under a populated repo returns 404
 
 - **GIVEN** `(acme, foo)` is registered with workflows `build` and `deploy` only
-- **WHEN** a member of `acme` requests `GET /dashboard/acme/foo/no-such-workflow`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/no-such-workflow`
 - **THEN** the response status SHALL be `404 Not Found`
-- **AND** the response body SHALL be identical in shape to the response for a non-existent owner or repo
 
 #### Scenario: Workflow URL under an empty registry does not 404
 
 - **GIVEN** `(acme, foo)` has no registered workflows but the EventStore holds historical `trigger.exception` events for workflow `imap-poll`
-- **WHEN** a member of `acme` requests `GET /dashboard/acme/foo/imap-poll`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/imap-poll`
 - **THEN** the response status SHALL be `200 OK`
 - **AND** rows SHALL include the historical synthetic events
 
-#### Scenario: Breadcrumb reflects filter level
-
-- **WHEN** the dashboard page is rendered at each filter level
-- **THEN** the breadcrumb SHALL show the path from root to the active filter (`All`, `All / owner`, `All / owner / repo`, `All / owner / repo / workflow`, `All / owner / repo / workflow / trigger`)
-- **AND** each segment above the current level SHALL be a link to that broader filter
-
 ### Requirement: Single-leaf trigger.exception invocations render inline
 
-The dashboard invocation list SHALL render synthetic invocations consisting of a single leaf event (`trigger.exception`, `trigger.rejection`, or `system.upload`) inline alongside real handler-driven invocations, in the same flat list and obeying the same `(owner, repo)` filtering and pending-first / completed-newest sort order. Single-leaf invocations have no pending phase and SHALL be sorted under the completed-rows group, ordered by their `at` timestamp (which equals both `startedAt` and `completedAt` for synthetic invocations).
+The invocations list SHALL render synthetic invocations consisting of a single leaf event (`trigger.exception`, `trigger.rejection`, or `system.upload`) inline alongside real handler-driven invocations, in the same flat list and obeying the same `(owner, repo)` filtering and pending-first / newest-started sort order. Single-leaf invocations have no pending phase and SHALL be sorted under the terminal-rows group, ordered by their `at` timestamp (which equals both `startedAt` and `completedAt` for synthetic invocations).
 
 A synthetic-`trigger.exception` row SHALL display:
 
-- The standard `owner/repo`, workflow, and trigger fields.
+- The standard leading kind-icon, `owner/repo`, workflow, and trigger fields.
 - A status of `"failed"`.
 - The `at` timestamp under `startedAt`.
 - An empty/zero duration.
@@ -521,7 +527,7 @@ A synthetic-`trigger.exception` row SHALL display:
 
 A synthetic-`trigger.rejection` row SHALL display:
 
-- The standard `owner/repo`, workflow, and trigger fields.
+- The standard leading kind-icon, `owner/repo`, workflow, and trigger fields.
 - A status of `"failed"`.
 - The `at` timestamp under `startedAt`.
 - An empty/zero duration.
@@ -531,18 +537,19 @@ A synthetic-`trigger.rejection` row SHALL display:
 A synthetic-`system.upload` row SHALL display:
 
 - The standard `owner/repo`, workflow, and trigger fields. The `trigger` field SHALL render as the literal `"upload"`.
-- A status of `"uploaded"` (a third row status alongside `pending`/`succeeded`/`failed`).
+- A leading kind-icon (upload arrow) rendered in the accent colour, occupying the same row slot every other invocation row uses for its trigger-kind icon. The leading icon SHALL be the only upload-kind glyph on the row — there SHALL NOT be a second upload glyph rendered on the right side of the row.
+- NO `succeeded`/`failed`/`pending`/`uploaded` status badge. The leading kind-icon plus the right-side dispatch chip together convey the kind and outcome.
 - The `at` timestamp under `startedAt`.
 - An empty/zero duration.
-- An upload-arrow glyph and the label `"workflow uploaded"` accessible via `<title>`. The `<title>` SHALL additionally include `sha=<workflowSha-short>` for at-a-glance version identification.
-- The dispatch chip SHALL render with visible label `"upload"` and `<title>` carrying the uploader's name and mail (from `meta.dispatch.user`).
+- A `<title>` accessible on the leading kind-icon SHALL include `"workflow uploaded"` and `sha=<workflowSha-short>` for at-a-glance version identification.
+- A dispatch chip with visible label `"UPLOAD"` (uppercase) positioned at the row's far right (replacing the status-badge slot). The chip's `<title>` SHALL carry the uploader's name and mail (from `meta.dispatch.user`).
 
 For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-leaf events have no paired-bar layout to graph) and SHALL NOT carry a dimension pill.
 
 #### Scenario: trigger.exception synthetic row renders wrench glyph
 
 - **GIVEN** an `(owner, repo)` whose IMAP trigger has produced one synthetic invocation (single `trigger.exception` event with `name: "imap.poll-failed"`)
-- **WHEN** `GET /dashboard/<owner>/<repo>` is requested
+- **WHEN** `GET /invocations/<owner>/<repo>` is requested
 - **THEN** the row SHALL render the wrench/settings glyph with `<title>` text including `"trigger setup failed"`
 - **AND** the row SHALL NOT render a dispatch chip
 - **AND** the row SHALL NOT render a flamegraph expand affordance
@@ -550,19 +557,22 @@ For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-le
 #### Scenario: trigger.rejection synthetic row renders shield-cross glyph
 
 - **GIVEN** an `(owner, repo)` whose HTTP trigger has produced one synthetic invocation (single `trigger.rejection` event with `name: "http.body-validation"` and one issue `{path: ["name"], message: "Required"}`)
-- **WHEN** the dashboard is requested
+- **WHEN** the invocations view is requested
 - **THEN** the row SHALL render the shield-cross glyph with `<title>` text including `"trigger rejected"` and a summary of the first issue
 - **AND** the row SHALL NOT render a dispatch chip
 - **AND** the row SHALL NOT render a flamegraph expand affordance
 
-#### Scenario: system.upload synthetic row renders upload-arrow glyph and dispatch chip
+#### Scenario: system.upload synthetic row renders accent leading icon and right-side UPLOAD chip
 
 - **GIVEN** an `(owner, repo)` with one `system.upload` event for workflow `demo` at sha `abc12345`, dispatched by user `{name: "alice", mail: "alice@acme"}`
-- **WHEN** the dashboard is requested
-- **THEN** the row SHALL render the upload-arrow glyph with `<title>` text including `"workflow uploaded"` and `sha=abc12345`
-- **AND** the row's status SHALL render as `"uploaded"`
-- **AND** the row SHALL render a dispatch chip with visible label `"upload"` and `<title>` containing `alice` and `alice@acme`
+- **WHEN** the invocations view is requested
+- **THEN** the row's leading icon slot SHALL render an upload-arrow glyph styled in the accent colour
+- **AND** the leading icon SHALL carry a `<title>` containing `"workflow uploaded"` and `sha=abc12345`
+- **AND** the row SHALL NOT render a `succeeded`/`failed`/`pending`/`uploaded` status badge
+- **AND** the row SHALL render a dispatch chip with visible label `"UPLOAD"` (uppercase) positioned at the row's far right
+- **AND** the dispatch chip's `<title>` SHALL contain `alice` and `alice@acme`
 - **AND** the row SHALL NOT render a flamegraph expand affordance
+- **AND** the row SHALL NOT render a second upload glyph anywhere outside the leading icon slot
 
 #### Scenario: All three synthetic kinds have zero duration
 
@@ -590,7 +600,7 @@ In the current implementation, `trigger.rejection` and `system.upload` rows do N
 
 When a `failed` invocation row is rendered, the renderer SHALL look up an associated `system.exhaustion` event (single row, matched by `invocationId`) and, if found, render a small dimension pill next to the `failed` status indicator. The pill SHALL display one of `CPU`, `MEM`, `OUT`, or `PEND` corresponding to the event's `name` field (`"cpu" | "memory" | "output" | "pending"`). The pill's `<title>` SHALL contain `budget=<value>` and (when present) `observed=<value>` from the event's `input` field, with units appropriate to the dimension (`ms` for cpu, `bytes` for memory/output, no unit for pending).
 
-If no `system.exhaustion` event is associated with the invocation, the row SHALL render exactly as today (failed status only, no pill). The pill SHALL NOT be rendered for `succeeded` or `pending` rows.
+If no `system.exhaustion` event is associated with the invocation, the row SHALL render exactly as today (failed status only, no pill). The pill SHALL NOT be rendered for `succeeded`, `pending`, or `uploaded` rows.
 
 The lookup SHALL be implemented as a LEFT JOIN against the `events` table on `(invocationId, kind = 'system.exhaustion')`, fetching at most one row per invocation. Memory-class breaches do not produce `system.exhaustion` events (per `invocations/spec.md`) and SHALL therefore not produce a pill — though the dimension `MEM` is reserved for forward compatibility if memory ever becomes a terminal-class breach.
 
@@ -618,4 +628,3 @@ The lookup SHALL be implemented as a LEFT JOIN against the `events` table on `(i
 - **GIVEN** a failed invocation whose terminal `trigger.error` has no preceding `system.exhaustion` event
 - **WHEN** the row is rendered
 - **THEN** NO dimension pill SHALL appear
-

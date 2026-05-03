@@ -136,6 +136,19 @@ function WsIcon({ class: cls = "icon" }: IconProps = {}) {
 	);
 }
 
+// upload arrow — `system.upload` synthetic invocation rows. Coloured via
+// the `.trigger-kind-icon--upload` CSS rule (accent token), distinct from
+// the trigger-kind palette so upload rows read as a separate event class.
+function UploadIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" />
+			<polyline points="17 8 12 3 7 8" fill="none" />
+			<line x1="12" y1="3" x2="12" y2="15" />
+		</Svg>
+	);
+}
+
 function kindGlyph(kind: string): Child {
 	switch (kind) {
 		case "cron":
@@ -148,6 +161,8 @@ function kindGlyph(kind: string): Child {
 			return <ImapIcon />;
 		case "ws":
 			return <WsIcon />;
+		case "upload":
+			return <UploadIcon />;
 		default:
 			// Unknown kind — neutral dot so layout stays stable without leaking
 			// emoji or `?` glyphs. Author-visible only when a new kind is
@@ -160,10 +175,25 @@ function kindGlyph(kind: string): Child {
 	}
 }
 
-function TriggerKindIcon({ kind }: { kind: string }) {
+function TriggerKindIcon({
+	kind,
+	title,
+	label,
+}: {
+	kind: string;
+	title?: string;
+	label?: string;
+}) {
 	const cls = `trigger-kind-icon trigger-kind-icon--${kind}`;
+	const resolvedTitle = title ?? kind;
+	const resolvedLabel = label ?? kind;
 	return (
-		<span class={cls} role="img" title={kind} aria-label={kind}>
+		<span
+			class={cls}
+			role="img"
+			title={resolvedTitle}
+			aria-label={resolvedLabel}
+		>
 			{kindGlyph(kind)}
 		</span>
 	);

@@ -59,7 +59,7 @@ const GH_ALLOW = "github:user:alice";
 describe("GET /login", () => {
 	it("renders the sign-in page without redirecting", async () => {
 		const app = mount({ authAllow: GH_ALLOW });
-		const res = await app.request("/login?returnTo=/dashboard");
+		const res = await app.request("/login?returnTo=/invocations");
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain("Sign in with GitHub");
@@ -71,7 +71,7 @@ describe("GET /login", () => {
 		expect(html).toContain('class="auth-card__brand"');
 		expect(html).toContain("Workflow Engine");
 		expect(html).not.toContain("sidebar");
-		expect(html).toContain("/auth/github/signin?returnTo=%2Fdashboard");
+		expect(html).toContain("/auth/github/signin?returnTo=%2Finvocations");
 	});
 
 	it("renders an empty card when registry is empty", async () => {
@@ -150,7 +150,7 @@ describe("GET /login", () => {
 describe("GET /auth/github/signin", () => {
 	it("redirects to GitHub authorize with a state cookie", async () => {
 		const app = mount({ authAllow: GH_ALLOW });
-		const res = await app.request("/auth/github/signin?returnTo=/dashboard");
+		const res = await app.request("/auth/github/signin?returnTo=/invocations");
 		expect(res.status).toBe(302);
 		const loc = res.headers.get("location");
 		expect(loc).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize\?/);
@@ -172,7 +172,7 @@ describe("GET /auth/github/signin", () => {
 });
 
 describe("GET /auth/github/callback", () => {
-	async function stateCookie(state: string, returnTo = "/dashboard") {
+	async function stateCookie(state: string, returnTo = "/invocations") {
 		const sealed = await sealState({ state, returnTo });
 		return `${STATE_COOKIE}=${sealed}`;
 	}
@@ -205,7 +205,7 @@ describe("GET /auth/github/callback", () => {
 	});
 
 	it("sets session cookie and redirects to returnTo on allowed user", async () => {
-		const cookie = await stateCookie("S", "/dashboard/foo");
+		const cookie = await stateCookie("S", "/invocations/foo");
 		const app = mount({
 			authAllow: GH_ALLOW,
 			fetchFn: fakeGitHub({
@@ -217,7 +217,7 @@ describe("GET /auth/github/callback", () => {
 			headers: { cookie },
 		});
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toBe("/dashboard/foo");
+		expect(res.headers.get("location")).toBe("/invocations/foo");
 		const session = findCookie(getSetCookies(res), SESSION_COOKIE);
 		expect(session).toBeDefined();
 		expect(session ?? "").not.toContain("Max-Age=0");
@@ -250,10 +250,10 @@ describe("POST /auth/local/signin", () => {
 		const app = mount({ authAllow: "local:dev" });
 		const res = await app.request("/auth/local/signin", {
 			method: "POST",
-			body: new URLSearchParams({ user: "dev", returnTo: "/dashboard" }),
+			body: new URLSearchParams({ user: "dev", returnTo: "/invocations" }),
 		});
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toBe("/dashboard");
+		expect(res.headers.get("location")).toBe("/invocations");
 		const session = findCookie(getSetCookies(res), SESSION_COOKIE);
 		expect(session).toBeDefined();
 		expect(session ?? "").not.toContain("Max-Age=0");

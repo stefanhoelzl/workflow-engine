@@ -88,7 +88,7 @@ The login page is explicitly exempt from this requirement. The login page is a s
 #### Scenario: Authenticated surface shows user identity
 
 - **GIVEN** a user with a valid session cookie
-- **WHEN** any authenticated UI surface (e.g. `/dashboard`, `/trigger`) is rendered
+- **WHEN** any authenticated UI surface (e.g. `/invocations`, `/trigger`) is rendered
 - **THEN** the topbar SHALL display the brand wordmark
 - **AND** the topbar SHALL display the user's username and (if available) email address
 - **AND** the topbar SHALL include a sign-out control
@@ -144,11 +144,11 @@ The runtime SHALL serve UI assets at URL paths beginning with `/static/`. Respon
 
 ### Requirement: Cross-surface kind colour mapping
 
-Top-level event prefixes (`trigger`, `action`, `system`) SHALL each have a distinct colour token used consistently across every surface that visualises kinds. The dashboard invocation list, the events log, the sidebar tree, and the flamegraph slices SHALL all derive kind colour from the same prefix-keyed palette. The runtime SHALL NOT use one palette for the dashboard list and a different palette for the flamegraph.
+Top-level event prefixes (`trigger`, `action`, `system`) SHALL each have a distinct colour token used consistently across every surface that visualises kinds. The invocations list, the events log, the sidebar tree, and the flamegraph slices SHALL all derive kind colour from the same prefix-keyed palette. The runtime SHALL NOT use one palette for the invocations list and a different palette for the flamegraph.
 
-#### Scenario: Dashboard and flamegraph use the same trigger colour
+#### Scenario: Invocations view and flamegraph use the same trigger colour
 
-- **GIVEN** an invocation whose `trigger.request` is rendered both as a row in the dashboard list and as a slice in the flamegraph
+- **GIVEN** an invocation whose `trigger.request` is rendered both as a row in the invocations list and as a slice in the flamegraph
 - **WHEN** both surfaces are rendered
 - **THEN** the trigger-prefix colour applied to the row indicator SHALL match the colour applied to the flamegraph slice
 
@@ -164,7 +164,7 @@ Invocation status SHALL use a single vocabulary across every surface that surfac
 
 #### Scenario: Status vocabulary is consistent
 
-- **WHEN** an invocation appears on the dashboard list and (if expanded) in the flamegraph header
+- **WHEN** an invocation appears on the invocations list and (if expanded) in the flamegraph header
 - **THEN** the status label rendered in both places SHALL be drawn from the same vocabulary set (`pending` / `running` / `succeeded` / `failed`)
 
 #### Scenario: Exhaustion pill alongside failed status
@@ -209,4 +209,24 @@ Each trigger kind (`cron`, `http`, `manual`, `imap`, plus any future kind) SHALL
 - **WHEN** the sidebar tree renders a trigger leaf whose kind is `cron`
 - **THEN** the leaf SHALL display the cron-kind indicator
 - **AND** the same indicator SHALL appear on dashboard row gutters and trigger cards for the same kind
+
+### Requirement: Upload kind icon registered in the trigger-kind registry
+
+The cross-surface trigger-kind icon registry SHALL include an `upload` kind whose glyph is an upload-arrow shape and whose colour token is the active accent token (distinct from the `trigger` / `action` / `system` prefix palette). The `upload` kind is consumed by the invocations list to render the leading icon for synthetic `system.upload` rows.
+
+The accent treatment SHALL be applied via a CSS rule selecting the `upload` variant of the trigger-kind icon container (e.g. `.trigger-kind-icon--upload`), so the colour follows the active theme's accent token rather than `currentColor` of the surrounding row.
+
+#### Scenario: Synthetic upload row leading icon uses accent colour
+
+- **GIVEN** an invocation row for a synthetic `system.upload` event
+- **WHEN** the invocations list is rendered
+- **THEN** the row's leading icon SHALL render the upload-arrow glyph
+- **AND** the rendered icon's resolved colour SHALL be the active theme's accent colour (matching `var(--accent)`)
+- **AND** the colour SHALL NOT match the `trigger` / `action` / `system` prefix palette
+
+#### Scenario: Upload kind icon is registered alongside other kinds
+
+- **WHEN** the trigger-kind registry is consulted for the kind string `"upload"`
+- **THEN** the registry SHALL return a glyph component
+- **AND** the glyph SHALL render as inline SVG following the icon-rendering invariants
 

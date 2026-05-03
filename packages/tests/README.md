@@ -48,7 +48,7 @@ The ten methods (frozen):
 | --- | --- |
 | `.workflow(name, source, opts?)` | Register an inline workflow source. Multiple calls per `(owner, repo)` queue together; flushed on next `.upload()` or implicitly before any fire step. |
 | `.upload(opts?)` | Explicit flush of queued workflows. One upload per `(owner, repo)`. |
-| `.fetch(path, opts?)` | Authenticated request against the runtime (`/api/*`, `/dashboard`, `/trigger`). Use `auth: {user, via: "cookie" \| "api-header"}`. |
+| `.fetch(path, opts?)` | Authenticated request against the runtime (`/api/*`, `/invocations`, `/trigger`). Use `auth: {user, via: "cookie" \| "api-header"}`. |
 | `.webhook(triggerName, opts?)` | Public `POST /webhooks/<owner>/<repo>/<trigger>`. Captures response into `state.responses`. |
 | `.manual(triggerName, input?, opts?)` | Authenticated manual-trigger fire. |
 | `.waitForEvent(filter, opts?)` | Polls the spawned child's `pending/*.json` and `archive/*.json` until a match. |

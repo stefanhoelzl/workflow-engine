@@ -685,7 +685,7 @@ The plugin SHALL NOT install any local `try/catch` or `.catch` around the `ctx.r
 
 ### Requirement: timers correlate via timerId
 
-The `timer.set` leaf's `input.timerId` SHALL match the `timer.request`'s `input.timerId` for the same scheduled callback. `clearTimeout` / `clearInterval` leaf events SHALL carry `input.timerId` matching the cleared timer. This correlation is the basis for the dashboard's "Timer connectors" flamegraph rendering (see `dashboard-list-view`).
+The `timer.set` leaf's `input.timerId` SHALL match the `timer.request`'s `input.timerId` for the same scheduled callback. `clearTimeout` / `clearInterval` leaf events SHALL carry `input.timerId` matching the cleared timer. This correlation is the basis for the invocations view's "Timer connectors" flamegraph rendering (see `invocations-list-view`).
 
 #### Scenario: Matching timerIds across events
 
@@ -693,7 +693,6 @@ The `timer.set` leaf's `input.timerId` SHALL match the `timer.request`'s `input.
 - **WHEN** the event stream is inspected
 - **THEN** the `timer.set` and `timer.request` events SHALL share a single `timerId`
 - **AND** that `timerId` SHALL equal `id`
-
 
 ### Requirement: createSqlPlugin factory
 
@@ -860,6 +859,7 @@ the same change.
 - **THEN** the enumeration test in
   `packages/runtime/src/globals-surface.test.ts` SHALL fail and block
   the merge
+
 ### Requirement: Queue plugin
 
 The sandbox-stdlib package SHALL provide a `queue` plugin under `packages/sandbox-stdlib/src/queue/` that follows the existing system-bridge pattern (parallel to `sql` and `mail`):
@@ -917,3 +917,4 @@ The queue plugin SHALL hold no per-run host state — no timers, no in-flight ca
 - **WHEN** the sandbox is inspected after `onRunFinished`
 - **THEN** no file handles SHALL be held open by the worker
 - **AND** no scheduled callbacks SHALL be pending
+

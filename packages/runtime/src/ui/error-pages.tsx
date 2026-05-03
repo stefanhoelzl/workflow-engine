@@ -87,8 +87,8 @@ function NotFoundPage({ user, email }: ErrorPageProps = {}) {
 			title="Not Found - Workflow Engine"
 			heading="Page not found"
 			message="The page you're looking for doesn't exist."
-			linkText="Go to dashboard"
-			linkHref="/dashboard/"
+			linkText="Go to invocations"
+			linkHref="/invocations/"
 			bodyClass="error-page"
 			{...userProps}
 		/>
