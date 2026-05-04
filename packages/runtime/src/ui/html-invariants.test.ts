@@ -12,6 +12,7 @@ import {
 	renderInvocationList,
 	renderInvocationsPage,
 } from "./invocations/page.js";
+import { ItemsFragment, renderScopeQueuePage } from "./queue/page.js";
 import { renderRepoTriggerPage } from "./trigger/page.js";
 
 const notFoundHtml = String(NotFoundPage());
@@ -295,5 +296,52 @@ describe("HTML CSP invariants", () => {
 		expect(html).toMatch(DATA_TIMER_ID_7_RE);
 		// Paired bars carry data-event-pair
 		expect(html).toMatch(DATA_EVENT_PAIR_0_6_RE);
+	});
+
+	it("renderScopeQueuePage output has no forbidden inline patterns", () => {
+		const html = renderScopeQueuePage({
+			user: "user",
+			email: "user@example.com",
+			cards: [
+				{
+					owner: "t0",
+					repo: "r0",
+					workflow: "w",
+					queue: "q",
+					count: 3,
+					title: "t0/r0/w/q",
+					itemsUrl: "/queue/t0/r0/w/q/items",
+				},
+			],
+			scope: {},
+		});
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+		// Alpine binding uses a registered component name, not an inline literal.
+		expect(html).toContain('x-data="wfeQueueCard"');
+		expect(html).not.toMatch(/x-data="\{/);
+	});
+
+	it("queue ItemsFragment has no forbidden inline patterns", () => {
+		const html = ItemsFragment({
+			owner: "t0",
+			repo: "r0",
+			workflow: "w",
+			queue: "q",
+			items: [{ a: 1 }, { b: 2 }],
+			offset: 0,
+			total: 60,
+		});
+		expect(html).not.toMatch(INLINE_SCRIPT_RE);
+		expect(html).not.toMatch(EVENT_HANDLER_RE);
+		expect(html).not.toMatch(INLINE_STYLE_RE);
+		expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+		expect(html).toContain('x-data="wfeJsonTree"');
+		expect(html).not.toMatch(/x-data="\{/);
+		// Load-more present when more remain.
+		expect(html).toContain("queue-load-more");
+		expect(html).toContain("offset=2");
 	});
 });

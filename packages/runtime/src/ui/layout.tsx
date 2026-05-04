@@ -33,6 +33,12 @@ function Layout({
 					<title>{title}</title>
 					<link rel="stylesheet" href="/static/workflow-engine.css" />
 					<link rel="stylesheet" href="/static/trigger.css" />
+					{/* json-tree.js MUST load before alpine.js so it can attach
+					the `alpine:init` listener that registers `wfeJsonTree` /
+					`wfeQueueCard`. Alpine's CSP build walks the DOM as soon as
+					alpine.js finishes loading; any later registration is too
+					late. */}
+					<script defer={true} src="/static/json-tree.js" />
 					<script defer={true} src="/static/alpine.js" />
 					<script src="/static/htmx.js" />
 					<script src="/static/jedison.js" />

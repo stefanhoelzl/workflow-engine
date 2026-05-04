@@ -14,7 +14,7 @@ import { TriggerKindIcon } from "./icons.js";
 // URL — ancestors of the current route unfold, siblings stay collapsed —
 // so there is no client-side toggle state.
 
-type Surface = "/invocations" | "/trigger";
+type Surface = "/invocations" | "/trigger" | "/queue";
 
 interface ActiveState {
 	readonly owner?: string;
@@ -123,17 +123,19 @@ function WorkflowNode({
 			>
 				<span class="sidebar-workflow-label">{group.workflow}</span>
 			</a>
-			<ul class="sidebar-triggers">
-				{group.triggers.map((t) => (
-					<TriggerLeaf
-						ctx={ctx}
-						owner={owner}
-						repo={repo}
-						workflow={group.workflow}
-						t={t}
-					/>
-				))}
-			</ul>
+			{ctx.surface === "/queue" ? null : (
+				<ul class="sidebar-triggers">
+					{group.triggers.map((t) => (
+						<TriggerLeaf
+							ctx={ctx}
+							owner={owner}
+							repo={repo}
+							workflow={group.workflow}
+							t={t}
+						/>
+					))}
+				</ul>
+			)}
 		</li>
 	);
 }
