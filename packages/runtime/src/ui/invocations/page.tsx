@@ -1,5 +1,5 @@
 import type { Child } from "hono/jsx";
-import { ChevronIcon, TriggerKindIcon } from "../icons.js";
+import { ChevronIcon, ManualIcon, TriggerKindIcon } from "../icons.js";
 import { Layout } from "../layout.js";
 
 const US_PER_MS = 1000;
@@ -23,25 +23,13 @@ interface InvocationRow {
 		readonly source: "manual" | "trigger" | "upload";
 		readonly user?: { readonly login: string; readonly mail?: string };
 	};
-	// Marks rows reconstructed from a single leaf event with no paired
-	// trigger.request. The discriminator drives the per-row glyph + chip:
-	//   "trigger.exception" → wrench (author-fixable trigger setup failure)
-	//   "trigger.rejection" → shield-cross (HTTP body schema rejection)
-	//   "system.upload"     → upload-arrow + status="uploaded"
-	// See `invocations-list-view` spec "Single-leaf trigger.exception
-	// invocations render inline" (extended by `track-non-invocation-events`).
 	readonly synthetic?: boolean;
 	readonly syntheticKind?:
 		| "trigger.exception"
 		| "trigger.rejection"
 		| "system.upload";
-	// trigger.rejection: short summary of the first zod issue, surfaced in
-	// the row's `<title>` tooltip.
 	readonly rejectionSummary?: string;
-	// system.upload: short workflowSha (first 8 hex chars) for the tooltip.
 	readonly uploadShaShort?: string;
-	// Set when a `system.exhaustion` event was associated with a failed
-	// invocation. Drives the dimension pill next to the status badge.
 	readonly exhaustion?: {
 		readonly dim: "cpu" | "memory" | "output" | "pending";
 		readonly budget?: number;
@@ -49,13 +37,6 @@ interface InvocationRow {
 	};
 }
 
-// Flat-list sort order:
-//   1. pending rows first (newest-started on top)
-//   2. terminal rows after (newest-started on top)
-// Sort by `startedAt` (ISO wall-clock) rather than `startedTs` — `ts` is
-// per-invocation monotonic (~0 at every trigger.request) so it is useless
-// for cross-invocation ordering. Using `startedAt` keeps the visible
-// per-row timestamp aligned with the sort order.
 function startedAtMs(row: InvocationRow): number {
 	const d =
 		row.startedAt instanceof Date ? row.startedAt : new Date(row.startedAt);
@@ -79,15 +60,6 @@ function toIsoString(ts: string | Date): string {
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString();
 }
 
-function Time({ ts, class: cls }: { ts: string | Date; class: string }) {
-	const iso = toIsoString(ts);
-	return (
-		<time class={cls} datetime={iso}>
-			{iso}
-		</time>
-	);
-}
-
 function formatDurationUs(us: number): string {
 	const d = Math.max(0, us);
 	if (d < US_PER_MS) {
@@ -100,51 +72,6 @@ function formatDurationUs(us: number): string {
 		return `${(d / US_PER_SECOND).toFixed(DURATION_FRACTION_DIGITS)} s`;
 	}
 	return `${(d / US_PER_MINUTE).toFixed(DURATION_FRACTION_DIGITS)} min`;
-}
-
-// Wrench glyph for synthetic `trigger.exception` invocations — author-
-// fixable trigger setup failure.
-function SetupFailedIcon() {
-	return (
-		<svg
-			class="icon icon-setup-failed"
-			viewBox="0 0 24 24"
-			width="14"
-			height="14"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			role="img"
-		>
-			<title>trigger setup failed</title>
-			<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-		</svg>
-	);
-}
-
-// Shield-cross for `trigger.rejection` (HTTP body schema rejection).
-function RejectedIcon() {
-	return (
-		<svg
-			class="icon icon-rejected"
-			viewBox="0 0 24 24"
-			width="14"
-			height="14"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			role="img"
-		>
-			<title>trigger rejected</title>
-			<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-			<path d="m9 9 6 6" />
-			<path d="m15 9-6 6" />
-		</svg>
-	);
 }
 
 const EXHAUSTION_LABELS: Record<
@@ -192,34 +119,22 @@ function ExhaustionPill({
 	);
 }
 
-function DispatchChip({ dispatch }: { dispatch: InvocationRow["dispatch"] }) {
-	if (!dispatch) {
-		return null;
-	}
-	if (dispatch.source === "manual") {
-		const tooltip = dispatch.user?.login ?? "";
+// Single-cell metadata column. For manual dispatch, render the manual-trigger
+// icon (person silhouette) — same glyph the manual trigger kind uses, so the
+// dispatch source is shown with the same vocabulary as a trigger kind. Upload
+// rows render no chip here: the leading kind icon already conveys upload.
+// Synthetic exception/rejection rows render their distinguishing glyph here.
+function MetaCell({ row }: { row: InvocationRow }) {
+	if (row.syntheticKind === "trigger.exception") {
 		return (
-			<span class="entry-dispatch" title={tooltip}>
-				manual
+			<span
+				class="entry-meta-cell entry-setup-failed"
+				role="img"
+				aria-label="trigger setup failed"
+			>
+				<span class="entry-meta-label">trigger setup failed</span>
 			</span>
 		);
-	}
-	if (dispatch.source === "upload") {
-		const login = dispatch.user?.login ?? "";
-		const mail = dispatch.user?.mail ?? "";
-		const tooltip = mail ? `${login} <${mail}>` : login;
-		return (
-			<span class="entry-dispatch entry-dispatch--upload" title={tooltip}>
-				UPLOAD
-			</span>
-		);
-	}
-	return null;
-}
-
-function SyntheticGlyph({ row }: { row: InvocationRow }) {
-	if (!row.synthetic) {
-		return null;
 	}
 	if (row.syntheticKind === "trigger.rejection") {
 		const title = row.rejectionSummary
@@ -227,36 +142,54 @@ function SyntheticGlyph({ row }: { row: InvocationRow }) {
 			: "trigger rejected";
 		return (
 			<span
-				class="entry-rejected"
+				class="entry-meta-cell entry-rejected"
 				role="img"
 				aria-label="trigger rejected"
 				title={title}
 			>
-				<RejectedIcon />
+				<span class="entry-meta-label">trigger rejected</span>
 			</span>
 		);
 	}
-	if (row.syntheticKind === "system.upload") {
-		// Visual identity moves to the leading TriggerKindIcon (kind="upload"
-		// in accent colour) plus the right-side UPLOAD dispatch chip; no
-		// extra glyph is rendered in the right gutter.
-		return null;
+	if (row.exhaustion) {
+		return (
+			<span class="entry-meta-cell">
+				<ExhaustionPill exhaustion={row.exhaustion} />
+			</span>
+		);
 	}
-	// Default: trigger.exception / legacy synthetic.
-	return (
-		<span
-			class="entry-setup-failed"
-			role="img"
-			aria-label="trigger setup failed"
-		>
-			<SetupFailedIcon />
-		</span>
-	);
+	if (row.dispatch?.source === "manual") {
+		const tooltip = row.dispatch.user?.login ?? "manual";
+		return (
+			<span
+				class="entry-meta-cell entry-dispatch entry-dispatch--manual"
+				title={tooltip}
+				role="img"
+				aria-label="manual dispatch"
+			>
+				<ManualIcon class="icon" />
+			</span>
+		);
+	}
+	if (row.dispatch?.source === "upload") {
+		const login = row.dispatch.user?.login ?? "";
+		const mail = row.dispatch.user?.mail ?? "";
+		const tooltip = mail ? `${login} <${mail}>` : login;
+		return (
+			<span
+				class="entry-meta-cell entry-dispatch entry-dispatch--upload"
+				title={tooltip}
+				role="img"
+				aria-label="uploaded"
+			/>
+		);
+	}
+	return <span class="entry-meta-cell" />;
 }
 
 function LeadingKindIcon({ row }: { row: InvocationRow }) {
 	if (!row.triggerKind) {
-		return null;
+		return <span class="trigger-kind-icon" aria-hidden="true" />;
 	}
 	if (row.syntheticKind === "system.upload") {
 		const title = row.uploadShaShort
@@ -273,81 +206,99 @@ function LeadingKindIcon({ row }: { row: InvocationRow }) {
 	return <TriggerKindIcon kind={row.triggerKind} />;
 }
 
-function CardSummary({
-	row,
-	duration,
-	expandable,
-}: {
-	row: InvocationRow;
-	duration: string;
-	expandable: boolean;
-}) {
-	// Synthetic trigger.exception / trigger.rejection rows have no dispatch
-	// metadata. system.upload rows DO carry a dispatch chip.
-	const showDispatch = !row.synthetic || row.syntheticKind === "system.upload";
-	const isUpload = row.syntheticKind === "system.upload";
+function Identity({ row }: { row: InvocationRow }) {
+	// Upload rows show repo › workflow only (no trigger leg).
+	if (row.syntheticKind === "system.upload") {
+		return (
+			<span class="entry-identity">
+				<span class="entry-scope">{`${row.owner}/${row.repo}`}</span>
+				<span class="entry-identity-sep">›</span>
+				<span class="entry-workflow">{row.workflow}</span>
+			</span>
+		);
+	}
 	return (
-		<>
-			<div class="entry-header">
-				{expandable ? (
-					<span class="entry-expand-chevron" aria-hidden="true">
-						<ChevronIcon />
-					</span>
-				) : (
-					<span
-						class="entry-expand-chevron entry-expand-chevron--placeholder"
-						aria-hidden="true"
-					/>
-				)}
-				<div class="entry-identity">
-					<LeadingKindIcon row={row} />
-					<span class="entry-scope">{`${row.owner}/${row.repo}`}</span>
-					<span class="entry-identity-sep">›</span>
-					<span class="entry-workflow">{row.workflow}</span>
-					<span class="entry-identity-sep">›</span>
-					<span class="entry-trigger">{row.trigger}</span>
-				</div>
-				{showDispatch ? <DispatchChip dispatch={row.dispatch} /> : null}
-				<SyntheticGlyph row={row} />
-				{isUpload ? null : (
-					<span class={`badge ${row.status}`}>{row.status}</span>
-				)}
-				<ExhaustionPill exhaustion={row.exhaustion} />
-			</div>
-			<div class="entry-meta">
-				<Time ts={row.startedAt} class="entry-started" />
-				<span class="entry-sep">·</span>
-				<span class="entry-duration">{duration}</span>
-			</div>
-		</>
+		<span class="entry-identity">
+			<span class="entry-scope">{`${row.owner}/${row.repo}`}</span>
+			<span class="entry-identity-sep">›</span>
+			<span class="entry-workflow">{row.workflow}</span>
+			<span class="entry-identity-sep">›</span>
+			<span class="entry-trigger">{row.trigger}</span>
+		</span>
 	);
 }
 
-function Card({ row }: { row: InvocationRow }) {
+function StatusClass(row: InvocationRow): string {
+	if (row.syntheticKind === "system.upload") {
+		return "s-upload";
+	}
+	if (row.status === "succeeded") {
+		return "s-succeeded";
+	}
+	if (row.status === "failed") {
+		return "s-failed";
+	}
+	if (row.status === "pending") {
+		return "s-pending";
+	}
+	return "";
+}
+
+function RowCells({
+	row,
+	expandable,
+}: {
+	row: InvocationRow;
+	expandable: boolean;
+}) {
 	const duration =
 		row.completedTs === null
 			? "—"
 			: formatDurationUs(row.completedTs - row.startedTs);
+	const startedIso = toIsoString(row.startedAt);
+	return (
+		<>
+			{expandable ? (
+				<span class="entry-expand-chevron" aria-hidden="true">
+					<ChevronIcon />
+				</span>
+			) : (
+				<span
+					class="entry-expand-chevron entry-expand-chevron--placeholder"
+					aria-hidden="true"
+				/>
+			)}
+			<LeadingKindIcon row={row} />
+			<Identity row={row} />
+			<MetaCell row={row} />
+			<span class="entry-duration">{duration}</span>
+			<time
+				class="entry-age"
+				datetime={startedIso}
+				title={startedIso}
+				data-relative="true"
+			/>
+		</>
+	);
+}
 
-	// Pending and trigger.rejection / system.upload rows render as flat
-	// non-expandable cards. Only handler-driven invocations and the legacy
-	// synthetic trigger.exception path expose a flamegraph affordance.
+function Row({ row }: { row: InvocationRow }) {
 	const noFlamegraph =
 		row.status === "pending" ||
 		row.syntheticKind === "trigger.rejection" ||
 		row.syntheticKind === "system.upload";
+	const statusCls = StatusClass(row);
 	if (noFlamegraph) {
 		return (
-			<div class="entry" id={`inv-${row.id}`}>
-				<CardSummary row={row} duration={duration} expandable={false} />
+			<div class={`entry ${statusCls}`} id={`inv-${row.id}`}>
+				<RowCells row={row} expandable={false} />
 			</div>
 		);
 	}
-
 	const flamegraphUrl = `/invocations/${row.owner}/${row.repo}/${row.id}/flamegraph`;
 	return (
 		<details
-			class="entry entry-expandable"
+			class={`entry entry-expandable ${statusCls}`}
 			id={`inv-${row.id}`}
 			hx-get={flamegraphUrl}
 			hx-trigger="toggle once"
@@ -355,7 +306,7 @@ function Card({ row }: { row: InvocationRow }) {
 			hx-swap="innerHTML"
 		>
 			<summary class="entry-summary" aria-label="Expand invocation details">
-				<CardSummary row={row} duration={duration} expandable={true} />
+				<RowCells row={row} expandable={true} />
 			</summary>
 			<div class="flame-slot" />
 		</details>
@@ -374,37 +325,30 @@ function InvocationList({
 			</div>
 		);
 	}
-	const nowIso = new Date().toISOString();
 	const sorted = sortInvocationRows(invocations);
 	const count = sorted.length;
 	return (
 		<div data-count={String(count)}>
-			<section class="list-header" aria-label="Invocation list summary">
-				<span class="list-header-count">{`${count} invocation${count === 1 ? "" : "s"}`}</span>
-				<span class="entry-sep">·</span>
-				<span>pending first, then newest-started</span>
-				<span class="entry-sep">·</span>
-				<span>
-					updated <Time ts={nowIso} class="list-header-updated" />
-				</span>
-			</section>
-			{sorted.map((row) => (
-				<Card row={row} />
-			))}
+			<div class="entry-table">
+				<div class="entry-thead">
+					<span aria-hidden="true" />
+					<span aria-hidden="true" />
+					<span class="entry-thead-cell">repo · workflow · trigger</span>
+					<span aria-hidden="true" />
+					<span class="entry-thead-cell entry-thead-cell--right">duration</span>
+					<span class="entry-thead-cell entry-thead-cell--right">age</span>
+				</div>
+				{sorted.map((row) => (
+					<Row row={row} />
+				))}
+			</div>
 		</div>
 	);
 }
 
-// Compat shim — exported for tests / current call sites. Calls .toString()
-// internally so the returned value is a string Hono's c.html() accepts and
-// tests can await+stringify harmlessly.
 function renderInvocationList(invocations: readonly InvocationRow[]) {
 	return (<InvocationList invocations={invocations} />).toString();
 }
-
-// ---------------------------------------------------------------------------
-// Top-level page — always a flat list scoped via the URL prefix
-// ---------------------------------------------------------------------------
 
 interface InvocationsPageOptions {
 	readonly user: string;
@@ -438,8 +382,6 @@ function InvocationsPage({
 	);
 }
 
-// Compat-shaped function export for un-migrated middleware. Calls
-// .toString() so the returned value is a string c.html() accepts directly.
 function renderInvocationsPage(options: InvocationsPageOptions) {
 	return (<InvocationsPage {...options} />).toString();
 }

@@ -589,42 +589,83 @@ body {
 	padding: var(--sp-4) var(--sp-5);
 }
 
-/* Invocation list header */
-.list-header {
-	display: flex;
-	align-items: center;
-	gap: var(--sp-3);
-	padding: 0 0 var(--sp-3);
-	font-size: var(--fs-sm);
-	color: var(--text-muted);
-}
-.list-header-count {
-	font-weight: 600;
-	color: var(--text-secondary);
-}
-
-/* Entry cards. Hover uses a background lift only (no shadow) per the
-   ui-foundation density rule: rows stay calm visually until interacted
-   with, then surface via colour rather than depth. */
-.entry {
+/* Invocation table. Single bordered container with hairline rows — no
+   per-invocation card chrome. Status sits in a 3 px coloured strip on the
+   row's left edge; identity (repo › workflow › trigger) collapses into one
+   ellipsising column; meta cell carries dispatch glyph or status label;
+   duration + age live in fixed tabular columns at the right. */
+.entry-table {
 	background: var(--bg-elevated);
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
-	margin-bottom: var(--sp-2);
 	overflow: hidden;
-	transition: background-color 0.08s ease;
 }
 
+.entry-thead,
+.entry,
+.entry-summary {
+	display: grid;
+	grid-template-columns:
+		16px /* chevron */
+		20px /* kind icon */
+		minmax(0, 1fr) /* identity */
+		auto /* meta cell (dispatch glyph / status label) */
+		5em /* duration */
+		7.5em; /* age */
+	align-items: center;
+	gap: var(--sp-3);
+	padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 3px);
+}
+
+.entry-thead {
+	background: var(--bg-surface);
+	border-bottom: 1px solid var(--border);
+	min-height: 28px;
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--text-muted);
+}
+.entry-thead-cell--right {
+	text-align: right;
+}
+
+.entry {
+	min-height: 36px;
+	border-bottom: 1px solid var(--border);
+	transition: background-color 0.08s ease;
+	position: relative;
+	overflow: hidden;
+}
+.entry:last-child {
+	border-bottom: 0;
+}
 .entry:hover {
 	background: var(--bg-hover);
 }
 
-.entry-header {
-	padding: var(--sp-2) var(--sp-3);
-	display: flex;
-	align-items: center;
-	gap: var(--sp-3);
-	min-height: 32px;
+/* Status strip — 3 px coloured bar flush to the row's left edge. */
+.entry::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 3px;
+	background: var(--grey);
+}
+.entry.s-succeeded::before {
+	background: var(--green);
+}
+.entry.s-failed::before {
+	background: var(--red);
+}
+.entry.s-pending::before {
+	background: var(--yellow);
+}
+.entry.s-upload::before {
+	background: var(--blue);
 }
 
 .entry-expand-chevron {
@@ -632,6 +673,7 @@ body {
 	transition: transform 0.2s ease;
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
 	flex-shrink: 0;
 	width: 16px;
 	height: 16px;
@@ -716,33 +758,31 @@ body {
 	border: 1px solid var(--red-border);
 }
 
-.entry-header .badge {
-	margin-left: auto;
-}
-
-/* Dispatch provenance chip — rendered on invocation rows whose trigger.request
- * carries meta.dispatch.source === "manual" or "upload". Sits between the
- * identity block and the status badge for manual; on upload rows the chip is
- * the only right-side element and is pushed to the far right (no status
- * badge sits beside it). Blue/info styling distinguishes provenance from
- * the success/warn/error status badges without competing with them. */
-.entry-dispatch {
-	padding: 2px var(--sp-2);
-	border-radius: var(--radius-pill);
-	font-size: var(--fs-xs);
-	font-weight: 500;
-	color: var(--blue);
-	background: var(--blue-bg);
-	border: 1px solid var(--blue-border);
+/* Meta cell — dispatch glyph or status label, depending on row kind.
+ * - manual dispatch: person silhouette icon (same as manual trigger kind),
+ *   tinted blue to distinguish provenance from a manual trigger. Tooltip
+ *   carries the user identity.
+ * - upload dispatch: empty in the meta column (kind icon already conveys it).
+ * - synthetic exception/rejection: short status label.
+ * Cell is grid column 5; collapses to nothing when empty. */
+.entry-meta-cell {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: var(--fs-sm);
+	color: var(--text-muted);
 	white-space: nowrap;
-	max-width: 14em;
-	overflow: hidden;
-	text-overflow: ellipsis;
 }
-
-.entry-header .entry-dispatch--upload {
-	margin-left: auto;
-	letter-spacing: 0.5px;
+.entry-dispatch--manual {
+	color: var(--blue);
+}
+.entry-setup-failed,
+.entry-rejected {
+	color: var(--red);
+	font-weight: 600;
+}
+.entry-meta-label {
+	font-size: var(--fs-sm);
 }
 
 /* Tooltip */
@@ -1102,21 +1142,29 @@ body {
 }
 
 .entry-identity {
-	display: flex;
-	align-items: center;
+	display: inline-flex;
+	align-items: baseline;
 	gap: var(--sp-2);
-	flex: 1;
 	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.entry-scope {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	color: var(--text-muted);
 }
 
 .entry-workflow {
-	font-weight: 600;
-	font-size: var(--fs-md);
-	color: var(--text);
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	color: var(--text-muted);
 }
 
 .entry-identity-sep {
-	color: var(--text-muted);
+	color: var(--border-strong);
 }
 
 .entry-trigger {
@@ -1125,18 +1173,13 @@ body {
 	color: var(--text-secondary);
 }
 
-.entry-meta {
-	padding: 0 var(--sp-4) var(--sp-3);
-	display: flex;
-	gap: var(--sp-2);
-	font-size: var(--fs-sm);
-	color: var(--text-muted);
-	align-items: center;
-}
-
-.entry-started,
-.entry-duration {
+.entry-duration,
+.entry-age {
 	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--text-muted);
+	font-size: var(--fs-sm);
+	text-align: right;
 }
 
 .entry-sep {
@@ -1496,20 +1539,23 @@ body {
 	opacity: 0.22;
 }
 
-/* Expandable invocation row (<details>) styling */
+/* Expandable invocation row (<details>) styling. The grid layout for the
+   row's summary already comes from the shared `.entry-summary` rule above
+   (matched against `.entry-thead, .entry, .entry-summary`). */
 .entry-expandable {
 	cursor: default;
+	/* The grid lives on `<summary>`, not on `<details>`. Disable the inherited
+	   grid so the details element is just a stack of summary + flame-slot. */
+	display: block;
+	padding: 0;
 }
 .entry-expandable > summary {
 	list-style: none;
 	cursor: pointer;
-	padding: 0;
+	min-height: 36px;
 }
 .entry-expandable > summary::-webkit-details-marker {
 	display: none;
-}
-.entry-summary {
-	display: block;
 }
 
 /* Dialog result blocks (request + response, each with its own copy button) */
