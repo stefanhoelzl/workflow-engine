@@ -106,12 +106,13 @@ describe("dashboard middleware — root (unfiltered flat list)", () => {
 		const html = await res.text();
 		// Root page shows the flat invocation list (not a drill-down tree)
 		expect(html).toContain("on-push");
-		// List-header subtitle conveys ordering
-		expect(html).toContain("pending first, then newest-started");
 		// Sticky page header was removed; the page must not render an h1
 		// titled "Dashboard"/"Invocations" or a div.page-header.
 		expect(html).not.toMatch(/class="page-header"/);
 		expect(html).not.toMatch(/<h1>Dashboard<\/h1>/);
+		// The list-header subtitle was removed; the table now stands on its
+		// own with just a column-header row.
+		expect(html).not.toMatch(/class="list-header"/);
 	});
 });
 
@@ -316,9 +317,11 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 		// declaration name parsed from input.trigger.
 		expect(html).toContain('id="inv-evt_setup"');
 		expect(html).toMatch(/<span class="entry-trigger">inbound<\/span>/);
-		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
-		// The wrench glyph + accessible "trigger setup failed" tooltip
-		// distinguish the row from a handler-throw failure.
+		// Status is carried by the row's `s-failed` class (drives the left-edge
+		// status strip) — no badge element is rendered.
+		expect(html).toMatch(/class="entry entry-expandable s-failed"/);
+		// The setup-failed label + accessible tooltip distinguish the row
+		// from a handler-throw failure.
 		expect(html).toContain('aria-label="trigger setup failed"');
 		expect(html).toContain("trigger setup failed");
 		// No dispatch chip on synthetic invocations — they have no
@@ -421,7 +424,8 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_reject"');
 		expect(html).toMatch(/<span class="entry-trigger">ingest<\/span>/);
-		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
+		// Status is carried by the row's `s-failed` class.
+		expect(html).toMatch(/class="entry s-failed"/);
 		expect(html).toContain('aria-label="trigger rejected"');
 		// First-issue summary surfaces in the title attribute
 		expect(html).toContain("name: Required");
@@ -470,21 +474,26 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 		});
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_upload"');
-		expect(html).toMatch(/<span class="entry-trigger">upload<\/span>/);
-		// Status badge is dropped for upload rows — leading icon + chip carry
-		// the visual identity.
-		expect(html).not.toMatch(/<span class="badge uploaded">/);
+		// Upload rows render only repo › workflow (no trigger leg) — the kind
+		// icon already conveys "upload"; "trigger" would be redundant.
+		expect(html).toMatch(/<span class="entry-workflow">demo<\/span>/);
+		expect(html).not.toMatch(/<span class="entry-trigger">/);
+		// Row status is conveyed by the `s-upload` class (drives the accent
+		// left-edge strip); no status badge is rendered.
+		expect(html).toMatch(/class="entry s-upload"/);
+		expect(html).not.toMatch(/<span class="badge/);
 		// Leading kind-icon in the accent-coloured upload variant
 		expect(html).toMatch(
 			/<span class="trigger-kind-icon trigger-kind-icon--upload"[^>]*aria-label="workflow uploaded"/,
 		);
 		// sha-short surfaced in the leading icon's title
 		expect(html).toContain("sha=abcdef01");
-		// dispatch chip is uppercase UPLOAD, far-right via the upload modifier
+		// Dispatch attribution lives on the meta cell as a tooltip — no
+		// "UPLOAD" pill (the kind icon already conveys it).
 		expect(html).toMatch(
-			/class="entry-dispatch entry-dispatch--upload"[^>]*title="alice &lt;alice@acme&gt;"/,
+			/class="entry-meta-cell entry-dispatch entry-dispatch--upload"[^>]*title="alice &lt;alice@acme&gt;"/,
 		);
-		expect(html).toContain(">UPLOAD</span>");
+		expect(html).not.toContain(">UPLOAD</span>");
 		// no flamegraph expand affordance
 		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_upload');
 	});
@@ -534,7 +543,8 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 		});
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_cpu"');
-		expect(html).toMatch(/<span class="badge failed">failed<\/span>/);
+		// Status carried by row class (drives the left-edge strip).
+		expect(html).toMatch(/class="entry entry-expandable s-failed"/);
 		expect(html).toMatch(
 			/class="entry-exhaustion" title="budget=60000ms observed=60002ms">CPU<\/span>/,
 		);
