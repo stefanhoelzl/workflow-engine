@@ -26,6 +26,7 @@ import { createManualTriggerSource } from "./triggers/manual.js";
 import { isUpgradeProvider, type UpgradeProvider } from "./triggers/source.js";
 import { createWsTriggerSource } from "./triggers/ws.js";
 import { invocationsMiddleware } from "./ui/invocations/middleware.js";
+import { queueMiddleware } from "./ui/queue/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
@@ -214,6 +215,11 @@ async function init() {
 		...authRoutes,
 		invocationsMiddleware({ eventStore, registry, sessionMw }),
 		triggerMiddleware({ registry, sessionMw }),
+		queueMiddleware({
+			registry,
+			sessionMw,
+			queuesRoot: `${config.persistencePath}/queues`,
+		}),
 		apiMiddleware({
 			authRegistry,
 			registry,

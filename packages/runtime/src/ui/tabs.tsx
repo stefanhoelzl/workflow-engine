@@ -1,6 +1,6 @@
-// Shared in-page surface tabs (Invocations | Trigger), rendered by Layout's
-// `tabs?` slot on every authenticated UI surface. The active tab matches
-// the current URL prefix; both tab hrefs swap the prefix while preserving
+// Shared in-page surface tabs (Invocations | Trigger | Queues), rendered by
+// Layout's `tabs?` slot on every authenticated UI surface. The active tab
+// matches the current URL prefix; tab hrefs swap the prefix while preserving
 // the rest of the path, so a click is a pure surface swap that keeps the
 // user's selected scope intact.
 //
@@ -8,8 +8,11 @@
 // (`All / owner / repo / workflow / trigger`); parent segments link to the
 // current surface, the current segment is plain text. Navigation up the
 // hierarchy stays inside the active surface.
+//
+// The Trigger label stays singular while Queues/Invocations are plural —
+// asymmetry is deliberate per `shared-layout/spec.md`.
 
-type Surface = "/invocations" | "/trigger";
+type Surface = "/invocations" | "/trigger" | "/queue";
 
 interface TabsScope {
 	readonly owner?: string;
@@ -27,6 +30,7 @@ interface TabsProps {
 const TABS: readonly { surface: Surface; label: string }[] = [
 	{ surface: "/invocations", label: "Invocations" },
 	{ surface: "/trigger", label: "Trigger" },
+	{ surface: "/queue", label: "Queues" },
 ];
 
 function Breadcrumb({
@@ -90,11 +94,19 @@ function Breadcrumb({
 }
 
 function Tabs({ surface, path, scope }: TabsProps) {
+	// Trigger-leaf URLs (`/<surface>/:owner/:repo/:workflow/:trigger`) have no
+	// counterpart on `/queue` — queue identity is `(owner, repo, workflow,
+	// queue)`, not trigger-keyed. The Queues tab is hidden at this scope so
+	// users don't follow a tab into a 404. The Invocations and Trigger tabs
+	// still render because both surfaces have valid trigger-leaf views.
+	const visibleTabs = scope?.trigger
+		? TABS.filter((tab) => tab.surface !== "/queue")
+		: TABS;
 	return (
 		<div class="page-tabs-bar">
 			<Breadcrumb surface={surface} scope={scope ?? {}} />
 			<nav class="page-tabs" aria-label="Surface">
-				{TABS.map((tab) => {
+				{visibleTabs.map((tab) => {
 					const cls =
 						tab.surface === surface
 							? "page-tabs-link active"

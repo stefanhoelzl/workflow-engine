@@ -2321,3 +2321,315 @@ a.tree-row:hover .tree-label,
 	padding: var(--sp-3) var(--sp-4);
 	border-top: 1px solid var(--border);
 }
+
+/* ---------------------------------------------------------------------------
+   Queue cards (/queue surface). Mirrors trigger card density. The card body
+   lazy-loads server-rendered HTML fragments via the wfeQueueCard Alpine
+   component (defined in /static/json-tree.js).
+   --------------------------------------------------------------------------- */
+
+.queue-content {
+	padding: var(--sp-3) var(--sp-4);
+}
+
+.queue-details {
+	background: var(--bg-elevated);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	margin-bottom: var(--sp-2);
+	overflow: hidden;
+	transition: background-color 0.08s ease;
+}
+
+.queue-details:not(.queue-details-empty):hover {
+	background: var(--bg-hover);
+}
+
+.queue-details[open] {
+	background: var(--bg-elevated);
+}
+
+.queue-details-empty {
+	opacity: 0.7;
+}
+
+.queue-summary-empty {
+	cursor: default;
+	user-select: text;
+}
+
+.queue-summary {
+	padding: var(--sp-2) var(--sp-3);
+	cursor: pointer;
+	user-select: none;
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+	min-height: 32px;
+}
+
+.queue-summary::-webkit-details-marker {
+	display: none;
+}
+
+.queue-summary-chevron {
+	color: var(--text-muted);
+	transition: transform 0.2s ease;
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+}
+
+.queue-details[open] > .queue-summary .queue-summary-chevron {
+	transform: rotate(90deg);
+}
+
+.queue-name {
+	font-weight: 600;
+	font-size: var(--fs-md);
+	font-family: var(--font-mono);
+}
+
+.queue-meta {
+	margin-left: auto;
+	display: inline-flex;
+	gap: var(--sp-1);
+	color: var(--text-muted);
+	font-size: var(--fs-sm);
+	font-variant-numeric: tabular-nums;
+}
+
+.queue-count {
+	font-weight: 600;
+	color: var(--text-secondary);
+}
+
+.queue-body {
+	padding: var(--sp-3);
+	border-top: 1px solid var(--border);
+}
+
+.queue-items[data-loading="true"]::after {
+	content: "Loading…";
+	color: var(--text-muted);
+	font-size: var(--fs-sm);
+}
+
+.queue-empty {
+	color: var(--text-muted);
+	font-style: italic;
+	padding: var(--sp-2) 0;
+}
+
+.queue-item {
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: var(--sp-2) var(--sp-3);
+	margin-bottom: var(--sp-2);
+}
+
+.queue-item:last-child {
+	margin-bottom: 0;
+}
+
+.queue-load-more {
+	margin-top: var(--sp-2);
+	padding: var(--sp-2) var(--sp-3);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	color: var(--text);
+	cursor: pointer;
+	font-size: var(--fs-sm);
+}
+
+.queue-load-more:hover {
+	background: var(--bg-hover);
+}
+
+.queue-load-more[disabled] {
+	opacity: 0.6;
+	cursor: progress;
+}
+
+.queue-load-error {
+	color: var(--text-secondary);
+	background: color-mix(in srgb, currentColor 10%, transparent);
+	border-radius: var(--radius-sm);
+	padding: var(--sp-1) var(--sp-2);
+	margin-top: var(--sp-2);
+	font-size: var(--fs-sm);
+}
+
+/* ---------------------------------------------------------------------------
+   Shared interactive JSON tree (wfeJsonTree). Used inline by queue items and
+   embedded inside the trigger result dialog.
+   --------------------------------------------------------------------------- */
+
+.json-tree {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	line-height: 1.5;
+	color: var(--text);
+}
+
+.json-tree-container {
+	display: block;
+}
+
+.json-tree-row {
+	display: flex;
+	align-items: flex-start;
+	flex-wrap: wrap;
+	gap: 0;
+}
+
+.json-tree-body {
+	/* Indent comes entirely from per-depth padding-left on each row, so the
+	body wrapper is purely a structural collapse target with no extra
+	horizontal offset. */
+	padding-left: 0;
+	margin-left: 0;
+}
+
+/* Per-depth indent — exactly two characters per level in the monospace tree
+font. Hardcoded up to 15 levels because (a) `attr(... number)` is not
+universally supported and (b) `style="--depth:N"` violates CSP-clean
+rendering. Anyone hitting depth > 15 has a bigger problem than indent. */
+.json-tree-row[data-depth="0"] {
+	padding-left: 0;
+}
+.json-tree-row[data-depth="1"] {
+	padding-left: 2ch;
+}
+.json-tree-row[data-depth="2"] {
+	padding-left: 4ch;
+}
+.json-tree-row[data-depth="3"] {
+	padding-left: 6ch;
+}
+.json-tree-row[data-depth="4"] {
+	padding-left: 8ch;
+}
+.json-tree-row[data-depth="5"] {
+	padding-left: 10ch;
+}
+.json-tree-row[data-depth="6"] {
+	padding-left: 12ch;
+}
+.json-tree-row[data-depth="7"] {
+	padding-left: 14ch;
+}
+.json-tree-row[data-depth="8"] {
+	padding-left: 16ch;
+}
+.json-tree-row[data-depth="9"] {
+	padding-left: 18ch;
+}
+.json-tree-row[data-depth="10"] {
+	padding-left: 20ch;
+}
+.json-tree-row[data-depth="11"] {
+	padding-left: 22ch;
+}
+.json-tree-row[data-depth="12"] {
+	padding-left: 24ch;
+}
+.json-tree-row[data-depth="13"] {
+	padding-left: 26ch;
+}
+.json-tree-row[data-depth="14"] {
+	padding-left: 28ch;
+}
+.json-tree-row[data-depth="15"] {
+	padding-left: 30ch;
+}
+
+.json-tree-collapsed-hint {
+	color: var(--text-muted);
+	font-style: italic;
+	margin: 0 0.4em;
+}
+
+.json-tree-close-block {
+	display: block;
+}
+
+.json-tree-container[data-collapsed="true"] > .json-tree-body {
+	display: none;
+}
+
+.json-tree-container[data-collapsed="true"] > .json-tree-close-block {
+	display: none;
+}
+
+.json-tree-container[data-collapsed="false"]
+	> .json-tree-row
+	> .json-tree-collapsed-hint {
+	display: none;
+}
+
+.json-tree-container[data-collapsed="false"]
+	> .json-tree-row
+	> .json-tree-close-inline {
+	display: none;
+}
+
+.json-tree-disclosure {
+	background: transparent;
+	border: 0;
+	padding: 0 0.3em 0 0;
+	cursor: pointer;
+	color: var(--text-muted);
+	font-family: inherit;
+	font-size: inherit;
+	line-height: 1;
+	transition: color 0.08s ease;
+}
+
+.json-tree-disclosure:hover {
+	color: var(--text);
+}
+
+.json-tree-disclosure:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+	border-radius: var(--radius-sm);
+}
+
+.json-tree-key {
+	color: var(--text-secondary);
+}
+
+.json-tree-punct {
+	color: var(--text-muted);
+}
+
+.json-tree-string {
+	color: color-mix(in srgb, currentColor 70%, var(--success, #5a9a5a));
+}
+
+.json-tree-number {
+	color: color-mix(in srgb, currentColor 70%, var(--info, #4a7fb5));
+}
+
+.json-tree-boolean {
+	color: color-mix(in srgb, currentColor 70%, var(--warning, #b58a4a));
+}
+
+.json-tree-null,
+.json-tree-undefined {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.queue-summary-chevron {
+		transition: none;
+	}
+	.json-tree-disclosure {
+		transition: none;
+	}
+}

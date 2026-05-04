@@ -78,10 +78,19 @@
 		const codeWrap = document.createElement("div");
 		codeWrap.classList.add("trigger-result-code");
 
-		const pre = document.createElement("pre");
-		pre.classList.add("trigger-result-body");
-		pre.textContent = JSON.stringify(block.payload, null, 2);
-		codeWrap.appendChild(pre);
+		// JSON renders via the shared collapsible tree (json-tree.js). Falls
+		// back to <pre>+JSON.stringify if the renderer hasn't loaded yet (e.g.
+		// in tests that don't load /static/json-tree.js).
+		const body = document.createElement("div");
+		body.classList.add("trigger-result-body");
+		if (typeof window.wfeRenderJsonTree === "function") {
+			body.appendChild(window.wfeRenderJsonTree(block.payload));
+		} else {
+			const pre = document.createElement("pre");
+			pre.textContent = JSON.stringify(block.payload, null, 2);
+			body.appendChild(pre);
+		}
+		codeWrap.appendChild(body);
 
 		const copyBtn = document.createElement("button");
 		copyBtn.type = "button";
@@ -95,8 +104,11 @@
 		live.setAttribute("role", "status");
 		live.setAttribute("aria-live", "polite");
 
+		// Copy preserves payload fidelity: stringify the original payload, not
+		// the rendered tree's textContent (which would lose JSON formatting).
+		const copyText = JSON.stringify(block.payload, null, 2);
 		copyBtn.addEventListener("click", () => {
-			navigator.clipboard.writeText(pre.textContent).then(() => {
+			navigator.clipboard.writeText(copyText).then(() => {
 				replaceIcon(copyBtn, createCheckIcon());
 				copyBtn.classList.add("trigger-result-copy--copied");
 				live.textContent = "Copied";
