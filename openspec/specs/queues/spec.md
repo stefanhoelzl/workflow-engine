@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide per-workflow durable FIFO queues identified by `(owner, repo, workflow, queueName)` (sha-independent so re-uploads preserve data). Queue contents live as NDJSON files at `<PERSISTENCE_PATH>/queues/<owner>/<repo>/<workflow>/<queueName>.ndjson`, owned exclusively by the runtime. Semantics are FIFO + at-most-once: a successful `get` atomically removes the item via tmpfile + rename and never re-delivers on crash. Items are validated against the queue's JSON Schema both on `put` (reject) and on `get` (drop the bad head and surface it in the typed error). Caps are 1024 UTF-8 bytes per item and 1000 items per queue. Durability is fsync-per-op (append+fsync on put; fsync(tmp)+rename+fsync(parent) on get). The workflow registry creates and unlinks queue files atomically with manifest persistence on upload, and a boot reconciliation sweep brings the on-disk subtree back in sync with the current manifest after crash-resume. There are no inspection or peek operations — `put` and `get` are the only surface.
+Provide per-workflow durable FIFO queues identified by `(owner, repo, workflow, queueName)` (sha-independent so re-uploads preserve data). Queue contents live as NDJSON files at `<PERSISTENCE_PATH>/queues/<owner>/<repo>/<workflow>/<queueName>.ndjson`, owned exclusively by the runtime. Semantics are FIFO + at-most-once: a successful `get` atomically removes the item via tmpfile + rename and never re-delivers on crash. Items are validated against the queue's JSON Schema both on `put` (reject) and on `get` (drop the bad head and surface it in the typed error). Caps are 1024 UTF-8 bytes per item and 1000 items per queue. Durability is fsync-per-op (append+fsync on put; fsync(tmp)+rename+fsync(parent) on get). The workflow registry creates and unlinks queue files atomically with manifest persistence on upload, and a boot reconciliation sweep brings the on-disk subtree back in sync with the current manifest after crash-resume. Workflow code SHALL have no inspection or peek operations — `put` and `get` are the only guest-facing surface. The runtime MAY read queue files from the host side for read-only inspection (e.g. the `/queue` UI); see the "Host-side read-only inspection" requirement below for the non-mutating, non-blocking, partial-line-tolerant contract.
 
 ## Requirements
 
@@ -236,3 +236,46 @@ The host bridge SHALL re-validate `name` against the queue-name regex `^[a-z][a-
 - **WHEN** the queue plugin attempts to `open` that path
 - **THEN** the `open` SHALL fail with `ELOOP` due to `O_NOFOLLOW`
 - **AND** the bridge SHALL surface the failure as `QueueGone` (the file did not open) rather than silently following the symlink
+
+### Requirement: Host-side read-only inspection
+
+The runtime MAY read queue files for host-side inspection (e.g. the `/queue` UI surface). Such reads SHALL be the only host-side path that observes queue contents outside of the `put`/`get` lifecycle code, and SHALL conform to the following invariants:
+
+- **Read-only**: the inspection path SHALL NOT modify file contents, file metadata, or filesystem state. It SHALL NOT use `appendFile`, `writeFile`, `rename`, `unlink`, `truncate`, or any other mutating syscall against `<PERSISTENCE_PATH>/queues/`.
+- **Non-blocking**: the inspection path SHALL NOT acquire any advisory or exclusive lock that could block a concurrent guest `put` or `get`. The reader SHALL open files for read only.
+- **Partial-line tolerant**: when reading a queue file concurrently with a `put` (which appends one line per call), the reader MAY observe a partial trailing line. The inspection path SHALL skip any line whose `JSON.parse` throws and SHALL surface the remaining valid items to the caller. Items that fail schema validation are out of scope for this requirement (they are dropped by `get` per the existing "Schema validation on get" requirement before they could appear in inspection results).
+- **Rename-safe**: when reading a queue file concurrently with a `get` (which performs `writeFile(tmp) + rename`), POSIX `open()` semantics guarantee the reader observes either the pre-rename or post-rename inode in full. The inspection path SHALL rely on this guarantee and SHALL NOT introduce coordination beyond it.
+
+The guest workflow code SHALL NOT have access to any inspection or peek operation. The guest-facing `Queue<T>` interface SHALL expose exactly `put` and `get`; no `peek`, `list`, `count`, `inspect`, or equivalent operation SHALL be added to the SDK or to the queue plugin's host-call surface.
+
+#### Scenario: Guest code has no peek API
+
+- **GIVEN** a workflow declaring `const jobs = defineQueue({name: "jobs", schema})`
+- **WHEN** workflow code attempts to call `jobs.peek()`, `jobs.list()`, `jobs.count()`, or any inspection method
+- **THEN** the operation SHALL fail at TypeScript compile time (no such method on `Queue<T>`)
+- **AND** at runtime no such method SHALL exist on the handle
+
+#### Scenario: Host inspection observes committed lines during concurrent put
+
+- **GIVEN** a queue file containing two committed lines `{"a":1}\n{"b":2}\n`
+- **WHEN** a guest `put({"c":3})` is in flight (the appendFile syscall has not yet returned)
+- **AND** a host-side inspection read is issued concurrently
+- **THEN** the inspection SHALL observe at least the two committed items `{a:1}` and `{b:2}`
+- **AND** the inspection SHALL NOT throw or surface a parse error if the file contains a partial trailing line — the partial line SHALL be silently dropped
+- **AND** the guest `put` SHALL complete normally without delay attributable to the inspection read
+
+#### Scenario: Host inspection during concurrent get observes consistent inode
+
+- **GIVEN** a queue file containing items `[A, B, C]`
+- **WHEN** a guest `get()` performs its `writeFile(tmp) + rename` sequence
+- **AND** a host-side inspection read is issued concurrently
+- **THEN** the inspection SHALL observe either the pre-rename file (containing `[A, B, C]`) or the post-rename file (containing `[B, C]`), in full
+- **AND** the inspection SHALL NOT observe a torn mix of the two states
+
+#### Scenario: Inspection read does not modify the queue file
+
+- **GIVEN** a queue file containing items `[A, B, C]` with mtime `T0`
+- **WHEN** a host-side inspection read completes
+- **THEN** the file's content SHALL still be `[A, B, C]`
+- **AND** the file's mtime SHALL still be `T0` (no write occurred)
+- **AND** a subsequent guest `get()` SHALL pop `A`

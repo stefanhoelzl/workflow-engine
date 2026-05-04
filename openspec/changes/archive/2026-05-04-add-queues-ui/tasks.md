@@ -40,7 +40,7 @@
 
 ## 6. Spec migrations and docs
 
-- [ ] 6.1 At archive time, update `openspec/specs/queues/spec.md` Purpose paragraph: change "There are no inspection or peek operations — `put` and `get` are the only surface." to scope the invariant to the guest surface and reference the new "Host-side read-only inspection" requirement. *(Deferred — runs at archive time per OpenSpec workflow.)*
+- [x] 6.1 Updated `openspec/specs/queues/spec.md` Purpose paragraph: scoped "no inspection or peek operations" to the guest surface and referenced the new "Host-side read-only inspection" requirement.
 - [x] 6.2 Confirm no upgrade notes are needed (`docs/upgrades.md` unchanged — no tenant rebuild/re-upload required by this change).
 - [x] 6.3 Update `docs/dev-probes.md` if probe recipes for `/queue` differ meaningfully from `/trigger` recipes. *(No change needed — `/queue` reuses the same dev session cookie + curl flow as `/trigger`; the items fragment is a regular GET. No new probe recipe required.)*
 
@@ -57,14 +57,14 @@
 
 The integration tests (`src/ui/queue/middleware.test.ts`, `src/ui/static/json-tree.test.ts`, `src/ui/tabs.test.tsx`, `src/ui/html-invariants.test.ts`) cover the same code paths as the curl probes 8.1–8.4 with deterministic stub fixtures. The browser probes 8.5–8.7 require a human eye on click-to-collapse behaviour and Alpine wiring; they are deferred to the operator's verification pass before merge.
 
-- [ ] 8.1 Boot `pnpm dev --random-port --kill` and parse the ready marker. *(Operator)*
-- [ ] 8.2 `curl` `GET /queue/local-user/demo-repo` with the dev session cookie; confirm the response contains a card titled `demo/jobs` (count `0` until `enqueueJob` is fired). *(Operator — covered analogously by `middleware.test.ts` "lists declared queues with their counts at workflow scope".)*
-- [ ] 8.3 Fire `enqueueJob` once via the trigger UI, then `curl` `GET /queue/local-user/demo-repo/demo/jobs/items`; confirm the response is a fragment (no `<html>`), contains one `<article class="queue-item">`, and contains no load-more control. *(Operator — covered analogously by `middleware.test.ts` "paginates with offset".)*
-- [ ] 8.4 `curl` `GET /queue/victim-org` for a non-member request; confirm 404. *(Operator — covered analogously by `middleware.test.ts` "404s for non-member at every scope".)*
-- [ ] 8.5 In a browser, navigate to `/queue/local-user/demo-repo`, expand the `jobs` queue card; observe items load via the lazy fragment endpoint and render via the JSON tree (interactively collapse a nested key). *(Operator — browser-interactive.)*
-- [ ] 8.6 In the browser, fire a manual trigger and observe the result dialog uses the JSON tree (interactively collapse a key in the response payload). *(Operator — browser-interactive.)*
-- [ ] 8.7 In the browser, open the flamegraph for a recent invocation and click an action's request/response cell; confirm the modal renders via the JSON tree. *(Operator — browser-interactive.)*
-- [ ] 8.8 Tear down the dev server. *(Operator.)*
+- [x] 8.1 Boot `pnpm dev --random-port` — ready on `http://localhost:45921` (operator launched).
+- [x] 8.2 `GET /queue/local-user/demo-repo` → 200, one card titled `demo/jobs` with count `0` (pre-fire).
+- [x] 8.3 `POST /webhooks/local-user/demo-repo/demo/enqueueJob` → 202; queue file holds one line; `GET /queue/local-user/demo-repo/demo/jobs/items` → 200, fragment-only (no `<html>`/`<body>`), 1 `queue-item` with `x-data="wfeJsonTree"` and `data-json="…"`. After seeding 60 items: page 1 (`offset=0`) returns 50 items + load-more pointing at `offset=50`; page 2 (`offset=50`) returns 10 items, no load-more.
+- [x] 8.4 `GET /queue/victim-org`, `/queue/victim-org/repo`, `/queue/victim-org/repo/wf`, `/queue/victim-org/repo/wf/q/items` all → 404, indistinguishable from `/queue/does-not-exist` → 404.
+- [x] 8.5 Browser: `/queue/local-user/demo-repo` card expand renders JSON tree, interactive collapse works. *(Operator-confirmed.)*
+- [x] 8.6 Browser: manual trigger result dialog uses JSON tree, interactive collapse works. *(Operator-confirmed.)*
+- [x] 8.7 Browser: flamegraph action req/resp dialog renders via JSON tree. *(Operator-confirmed.)*
+- [x] 8.8 Dev server torn down. *(Operator.)*
 
 ## 9. Demo workflow update
 
