@@ -2480,10 +2480,12 @@ a.tree-row:hover .tree-label,
 }
 
 .json-tree-row {
-	display: flex;
-	align-items: flex-start;
-	flex-wrap: wrap;
-	gap: 0;
+	/* Block-with-inline-children so the key + primitive + trailing comma flow
+	on a single visible line. `display: flex` is wrong here because each flex
+	item is treated as a block by `innerText`, which breaks "key": "value"
+	apart in copy/paste and in DOM-level text assertions. */
+	display: block;
+	white-space: nowrap;
 }
 
 .json-tree-body {
