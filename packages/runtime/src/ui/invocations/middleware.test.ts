@@ -318,12 +318,17 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 		expect(html).toContain('id="inv-evt_setup"');
 		expect(html).toMatch(/<span class="entry-trigger">inbound<\/span>/);
 		// Status is carried by the row's `s-failed` class (drives the left-edge
-		// status strip) — no badge element is rendered.
-		expect(html).toMatch(/class="entry entry-expandable s-failed"/);
+		// status strip) — no badge element is rendered. trigger.exception rows
+		// are non-expandable: there is no flamegraph to show, just the
+		// composed setup-failure tooltip on the meta cell.
+		expect(html).toMatch(/class="entry s-failed"/);
+		expect(html).not.toMatch(/class="entry entry-expandable s-failed"/);
 		// The setup-failed label + accessible tooltip distinguish the row
-		// from a handler-throw failure.
+		// from a handler-throw failure. The composed cause+stage+message
+		// surfaces as the native browser tooltip on hover.
 		expect(html).toContain('aria-label="trigger setup failed"');
 		expect(html).toContain("trigger setup failed");
+		expect(html).toContain('title="imap.poll-failed (connect): ECONNREFUSED"');
 		// No dispatch chip on synthetic invocations — they have no
 		// trigger.request to carry meta.dispatch.
 		expect(html).not.toMatch(/class="entry-dispatch"/);

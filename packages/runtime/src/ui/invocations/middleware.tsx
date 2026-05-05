@@ -61,6 +61,7 @@ interface RawExceptionRow {
 	at: string;
 	ts: number | bigint;
 	input: unknown;
+	error: unknown;
 }
 
 interface RawSyntheticRow extends RawExceptionRow {
@@ -333,6 +334,16 @@ function buildSyntheticTriggerRow(
 		syntheticKind === "trigger.rejection"
 			? summarizeIssues(r.input)
 			: undefined;
+	// trigger.exception rows are non-expandable in the list, so the
+	// failure detail (cause + optional stage + optional error message)
+	// surfaces only as a hover tooltip on the row's "trigger setup
+	// failed" pill. Compose the same string that the legacy
+	// flame-fragment--exception view used to render so authors recognise
+	// it from the in-fragment view they may have seen previously.
+	const setupFailureMessage =
+		syntheticKind === "trigger.exception"
+			? composeSetupFailureMessage(r)
+			: undefined;
 	return {
 		id: r.id,
 		owner: r.owner,
@@ -348,7 +359,29 @@ function buildSyntheticTriggerRow(
 		syntheticKind,
 		...(kind ? { triggerKind: kind } : {}),
 		...(rejectionSummary ? { rejectionSummary } : {}),
+		...(setupFailureMessage ? { setupFailureMessage } : {}),
 	};
+}
+
+function composeSetupFailureMessage(r: RawSyntheticRow): string {
+	const cause = r.name;
+	const input = parseJsonField(r.input);
+	const stage =
+		input &&
+		typeof input === "object" &&
+		typeof (input as { stage?: unknown }).stage === "string"
+			? ((input as { stage: string }).stage as string)
+			: "";
+	const errorObj = parseJsonField(r.error);
+	const message =
+		errorObj &&
+		typeof errorObj === "object" &&
+		typeof (errorObj as { message?: unknown }).message === "string"
+			? ((errorObj as { message: string }).message as string)
+			: "";
+	const stageSuffix = stage ? ` (${stage})` : "";
+	const messageSuffix = message ? `: ${message}` : "";
+	return `${cause}${stageSuffix}${messageSuffix}`;
 }
 
 // biome-ignore lint/complexity/useMaxParams: orthogonal inputs mirror fetchInvocationRowsForScopes
@@ -380,6 +413,7 @@ async function fetchSyntheticRows(
 			"ts",
 			"input",
 			"meta",
+			"error",
 		])
 		.orderBy("at", "desc")
 		.orderBy("id", "desc")

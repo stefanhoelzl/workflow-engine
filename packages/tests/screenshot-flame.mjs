@@ -1,5 +1,7 @@
+// biome-ignore-all lint/style/noMagicNumbers: ad-hoc Playwright probe — zoom levels, viewport sizes, and cursor positions are inline literals tuned for visual inspection, not symbolic values.
+// biome-ignore-all lint/performance/noAwaitInLoops: sequential probes (each iteration depends on the previous frame having committed) — Promise.all is wrong here.
+// biome-ignore-all lint/suspicious/noConsole: console.log is the entire output channel of this dev tool.
 import { chromium } from "@playwright/test";
-import { writeFileSync } from "node:fs";
 
 const BASE = "http://localhost:8080";
 
@@ -23,7 +25,9 @@ const candidates = [
 	),
 ].map((m) => ({ repo: m[1], id: m[2] }));
 
-// Pick the first invocation whose flamegraph has > 5 bars.
+// Pick the first invocation whose flamegraph has more than the minimum bar
+// count — we want a non-trivial fixture for the screenshots.
+const MinBarCount = 5;
 let chosen = null;
 for (const c of candidates) {
 	const r = await ctx.request.get(
@@ -31,7 +35,7 @@ for (const c of candidates) {
 	);
 	const t = await r.text();
 	const bars = (t.match(/<rect class="flame-bar/g) || []).length;
-	if (bars > 5) {
+	if (bars > MinBarCount) {
 		chosen = { ...c, html: t, bars };
 		break;
 	}
@@ -52,10 +56,13 @@ const wrapper = `<!doctype html><html><head>
 await page.setContent(wrapper, { waitUntil: "networkidle" });
 await page.waitForSelector(".flame-graph", { timeout: 5000 });
 
-await page.locator(".flame-container").first().screenshot({ path: "/tmp/flame.png" });
+await page
+	.locator(".flame-container")
+	.first()
+	.screenshot({ path: "/tmp/flame.png" });
 console.log("saved /tmp/flame.png (zoom 100%)");
 
-for (const z of [200, 500, 800, 1500, 10000, 100000]) {
+for (const z of [200, 500, 800, 1500, 10_000, 100_000]) {
 	await page.evaluate((zoom) => {
 		const c = document.querySelector(".flame-container");
 		// Drive through applyZoom so the ruler refreshes (real users always
@@ -90,8 +97,7 @@ const result = await page.evaluate(() => {
 	const rect = c.getBoundingClientRect();
 	// Cursor at 600px from container's left edge.
 	const cursorViewportX = 600;
-	const tsAt = (cw, sl) =>
-		((sl + cursorViewportX) / cw) * totalTs;
+	const tsAt = (cw, sl) => ((sl + cursorViewportX) / cw) * totalTs;
 	const before = {
 		zoom: 100,
 		canvasW: canvas.getBoundingClientRect().width,

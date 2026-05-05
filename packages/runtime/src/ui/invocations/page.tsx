@@ -29,6 +29,11 @@ interface InvocationRow {
 		| "trigger.rejection"
 		| "system.upload";
 	readonly rejectionSummary?: string;
+	// Composed `cause(stage): message` for trigger.exception rows. Used as
+	// the hover tooltip on the "trigger setup failed" pill — those rows
+	// are non-expandable, so the tooltip is the only place the message
+	// surfaces in the list view.
+	readonly setupFailureMessage?: string;
 	readonly uploadShaShort?: string;
 	readonly exhaustion?: {
 		readonly dim: "cpu" | "memory" | "output" | "pending";
@@ -126,11 +131,13 @@ function ExhaustionPill({
 // Synthetic exception/rejection rows render their distinguishing glyph here.
 function MetaCell({ row }: { row: InvocationRow }) {
 	if (row.syntheticKind === "trigger.exception") {
+		const tooltip = row.setupFailureMessage ?? "trigger setup failed";
 		return (
 			<span
 				class="entry-meta-cell entry-setup-failed"
 				role="img"
 				aria-label="trigger setup failed"
+				title={tooltip}
 			>
 				<span class="entry-meta-label">trigger setup failed</span>
 			</span>
@@ -286,6 +293,7 @@ function Row({ row }: { row: InvocationRow }) {
 	const noFlamegraph =
 		row.status === "pending" ||
 		row.syntheticKind === "trigger.rejection" ||
+		row.syntheticKind === "trigger.exception" ||
 		row.syntheticKind === "system.upload";
 	const statusCls = StatusClass(row);
 	if (noFlamegraph) {
