@@ -1373,11 +1373,12 @@ body {
 		color-mix(in srgb, var(--kind-rest) 40%, transparent) 4px 8px
 	);
 }
-.flame-legend-glyph {
-	font-family: var(--font-mono);
-	font-weight: 700;
-	width: 12px;
-	text-align: center;
+.flame-legend-icon {
+	color: var(--text-secondary);
+	flex: none;
+}
+.flame-legend-item--danger .flame-legend-icon {
+	color: var(--red);
 }
 
 .flame-ruler {
@@ -1399,10 +1400,20 @@ body {
 
 .flame-container {
 	max-height: 40vh;
+	overflow-x: auto;
 	overflow-y: auto;
-	overflow-x: hidden;
 	border-top: 1px solid var(--border);
 	border-bottom: 1px solid var(--border);
+	/* Hint to browsers that ctrl+wheel will be intercepted; without this
+	   Firefox/Chromium may scroll the page on zoom intent. */
+	overscroll-behavior-x: contain;
+}
+.flame-canvas {
+	width: 100%;
+	display: block;
+	/* Inline `style="width:<zoom>%"` is set by static/flamegraph.js on
+	   ctrl+wheel; the ruler + graph share this canvas so they zoom and
+	   scroll together. */
 }
 
 .flame-graph {
@@ -1434,27 +1445,29 @@ body {
 	fill: url(#flame-hatched);
 }
 
+/* Bar text. Each label is positioned in the OUTER SVG's user space using
+ * percentage `x` (anchored to the bar's left or right edge); the small
+ * fixed-pixel insets are applied via the SVG `transform="translate(N 0)"`
+ * attribute on the element (set in flamegraph.tsx). All labels carry
+ * `clip-path="url(#bc-N)"` referencing the bar's clipPath, which is the
+ * one rendering primitive that every browser engine honours uniformly. */
 .bar-label {
 	font-family: var(--font-mono);
 	font-size: var(--fs-xs);
 	fill: var(--on-accent);
 	dominant-baseline: middle;
-	pointer-events: none;
 }
 .bar-label-dim {
 	font-family: var(--font-mono);
 	font-size: var(--fs-micro);
 	fill: color-mix(in srgb, var(--on-accent) 78%, transparent);
 	dominant-baseline: middle;
-	pointer-events: none;
 }
-
 .bar-error-icon {
 	font-size: var(--fs-xs);
 	fill: var(--red);
 	font-weight: 700;
 	dominant-baseline: middle;
-	pointer-events: none;
 }
 
 .bar-orphan-glyph {
@@ -1467,32 +1480,42 @@ body {
 	pointer-events: none;
 }
 
-.marker-set {
-	fill: var(--kind-rest);
-	stroke: var(--on-accent);
-	stroke-width: 1;
+/* Leaf markers — wrapper <g> per marker carrying the click target +
+   tooltip; visible glyph rendered via inner <use href="#fi-<name>">.
+   All icons render white so the glyph reads uniformly against any
+   bar/marker fill; severity is conveyed by glyph shape (triangle-alert
+   / circle-x), not colour. */
+.flame-marker {
+	color: #fff;
 	cursor: pointer;
 }
-.marker-clear-bg {
-	fill: var(--kind-rest);
-	stroke: var(--on-accent);
-	stroke-width: 1;
-	cursor: pointer;
+/* Transparent hit rect under the icon so clicks anywhere in the marker's
+   bbox register, not just on the icon's stroked pixels. fill="transparent"
+   (vs none) is required so the rect is hit-testable. */
+.flame-marker-hit {
+	fill: transparent;
 }
-.marker-x {
-	stroke: var(--on-accent);
-	stroke-width: 1.5;
-	stroke-linecap: round;
+
+/* Cluster count badge — appears next to a representative marker icon when
+   2+ leaf events fall within icon-width of each other. The full per-event
+   list is in the marker's <title> tooltip (multi-line). */
+.flame-marker-badge {
+	font-family: var(--font-mono);
+	font-size: var(--fs-micro);
+	font-weight: 700;
+	fill: #fff;
+	dominant-baseline: middle;
 	pointer-events: none;
 }
-.marker-auto {
+.flame-marker--auto {
 	opacity: 0.55;
 }
-.marker-call {
-	fill: var(--kind-rest);
-	stroke: var(--on-accent);
-	stroke-width: 1;
-	cursor: pointer;
+
+/* Per-bar icon at the bar's left edge — white over the bar's coloured
+   fill. Positioned at x="0" inside the per-bar nested SVG; CSS only sets
+   colour. */
+.flame-bar-icon {
+	color: #fff;
 }
 
 .timer-connector {
