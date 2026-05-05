@@ -5,8 +5,6 @@ import { renderFlamegraph } from "./flamegraph.js";
 
 const ACTION_20_40_RE =
 	/kind-action[^"]*"[^>]* x="20\.\d+%"[^>]* width="40\.\d+%"/;
-const REST_MIN_WIDTH_RE =
-	/kind-rest[^"]*"[^>]* x="10\.\d+%"[^>]* width="(\d+\.\d+)%"/;
 const ACTION_ORPHAN_RE =
 	/kind-action[^"]*orphan[^"]*"[^>]* x="20\.\d+%"[^>]* width="80\.\d+%"/;
 const CONNECTOR_RE = /class="timer-connector"/g;
@@ -161,7 +159,9 @@ describe("renderFlamegraph — canonical tree", () => {
 		// bars out to a minimum width — padding caused adjacent sequential
 		// bars to visibly overlap. A zero-duration bar simply renders with
 		// width=0% (sub-pixel, invisible at low zoom).
-		expect(out).toMatch(/kind-rest[^"]*"[^>]* x="10\.\d+%"[^>]* width="0\.0+%"/);
+		expect(out).toMatch(
+			/kind-rest[^"]*"[^>]* x="10\.\d+%"[^>]* width="0\.0+%"/,
+		);
 	});
 });
 

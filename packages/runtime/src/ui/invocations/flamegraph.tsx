@@ -35,6 +35,15 @@ const RULER_HEIGHT_PX = 18;
 const PERCENT_MULTIPLIER = 100;
 const PERCENT_FRACTION_DIGITS = 4;
 const HALF = 2;
+// Pixel insets for bar labels (applied via SVG `transform="translate(N 0)"`
+// — the root SVG has no viewBox so user units = device pixels, and these
+// offsets stay constant across zoom levels).
+const BAR_LABEL_NO_ICON_DX = 4;
+const BAR_LABEL_WITH_ICON_DX = 22;
+const BAR_DIM_DX = -4;
+// Wider left shift on errored bars so the duration clears the ⚠ glyph
+// (~14 px wide at fs-xs) anchored at the bar's right edge.
+const BAR_DIM_DX_ERRORED = -22;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -667,7 +676,8 @@ function buildSvgPieces(
 				`<use class="flame-bar-icon" href="#fi-${iconId}" x="${xPct}" y="${yIcon}" width="${MARKER_WIDTH_PX}" height="${ICON_SIZE_PX}" transform="translate(4 0)"/>`,
 			);
 		}
-		const labelDx = iconId === null ? 4 : 22;
+		const labelDx =
+			iconId === null ? BAR_LABEL_NO_ICON_DX : BAR_LABEL_WITH_ICON_DX;
 		inner.push(
 			`<text class="bar-label" x="${xPct}" y="${yMid}" transform="translate(${labelDx} 0)">${escapeHtml(shortLabelFor(bar.name))}</text>`,
 		);
@@ -679,7 +689,7 @@ function buildSvgPieces(
 		// (toggleBarLabels in flamegraph.js) when the bar's actual pixel
 		// width can't fit both name + duration without overlap.
 		const duration = formatDurationUs(bar.endTs - bar.startTs);
-		const dimDx = bar.errored ? -22 : -4;
+		const dimDx = bar.errored ? BAR_DIM_DX_ERRORED : BAR_DIM_DX;
 		inner.push(
 			`<text class="bar-label-dim" x="${fmtPct(x + width)}" y="${yMid}" text-anchor="end" transform="translate(${dimDx} 0)">${escapeHtml(duration)}</text>`,
 		);
@@ -996,25 +1006,6 @@ function TriggeredBy({ name }: { name: string }) {
 	);
 }
 
-function TriggerExceptionFragment({ event }: { event: InvocationEvent }) {
-	const stage = (event.input as { stage?: unknown } | undefined)?.stage;
-	const cause = event.name;
-	const message = event.error?.message ?? "";
-	const stageSuffix = typeof stage === "string" && stage ? ` (${stage})` : "";
-	const title = message
-		? `${cause}${stageSuffix}: ${message}`
-		: `${cause}${stageSuffix}`;
-	return (
-		<div class="flame-fragment flame-fragment--exception">
-			<div class="flame-exception" role="img" aria-label={title}>
-				<span class="flame-exception-name">{`${cause}${stageSuffix}`}</span>
-				<span class="flame-exception-sep">·</span>
-				<span class="flame-exception-message">{message}</span>
-			</div>
-		</div>
-	);
-}
-
 function Flamegraph({
 	events,
 	triggerKind,
@@ -1024,9 +1015,6 @@ function Flamegraph({
 }) {
 	if (events.length === 0) {
 		return <FlameEmpty />;
-	}
-	if (events.length === 1 && events[0]?.kind === "trigger.exception") {
-		return <TriggerExceptionFragment event={events[0]} />;
 	}
 	const layout = computeLayout(events);
 	if (!layout) {

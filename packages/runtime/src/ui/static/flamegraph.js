@@ -186,7 +186,7 @@
 	// SVG element width (1600 px × 1e6 ≈ 1.6e9 px, near layout-integer
 	// overflow).
 	const ZoomBase = 100;
-	const ZoomMax = 1000000;
+	const ZoomMax = 1_000_000;
 	// Per-input-device zoom-speed coefficients.
 	//   - DOM_DELTA_PIXEL (trackpad, deltaY ≈ ±5 to ±50 per pulse, often
 	//     dozens of pulses per gesture): slow, otherwise momentum scrolling
@@ -196,13 +196,9 @@
 	//     since notches are discrete.
 	// Each event's ratio is also clamped to ±10% so a single accidental
 	// fast pulse cannot leap multiple zoom levels.
-	// biome-ignore lint/style/noMagicNumbers: per-device zoom-speed coefficients.
 	const ZoomSpeedTrackpad = 0.0006;
-	// biome-ignore lint/style/noMagicNumbers: per-device zoom-speed coefficients.
 	const ZoomSpeedWheel = 0.0015;
-	// biome-ignore lint/style/noMagicNumbers: per-event zoom-ratio cap.
 	const ZoomRatioMin = 0.97;
-	// biome-ignore lint/style/noMagicNumbers: per-event zoom-ratio cap.
 	const ZoomRatioMax = 1.031;
 	const ZoomAttr = "data-flame-zoom";
 	const CanvasSelector = ".flame-canvas";
@@ -265,6 +261,8 @@
 	// width (~16 px for "12×") so the next marker's icon doesn't land on
 	// top of the badge text.
 	const ClusterExtendGapPx = 36;
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: marker clustering is one logical pass — group-by-lane, sort, walk groups, decide cluster vs singleton — and inlining keeps the per-marker shared-state (head px, last px, gap thresholds) on one stack frame.
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: same — single sequential pipeline, splitting just shuffles bytes.
 	function updateMarkerClusters(container) {
 		const canvas = container.querySelector(CanvasSelector);
 		const ruler = canvas?.querySelector(RulerSelector);
@@ -296,8 +294,7 @@
 		for (const lane of byLane.values()) {
 			// Sort lane by pixel x (= ts). data-marker-ts comes from SSR.
 			lane.sort(
-				(a, b) =>
-					Number(a.dataset.markerTs) - Number(b.dataset.markerTs),
+				(a, b) => Number(a.dataset.markerTs) - Number(b.dataset.markerTs),
 			);
 			let i = 0;
 			while (i < lane.length) {
@@ -306,8 +303,7 @@
 				let lastPx = headPx;
 				let j = i + 1;
 				while (j < lane.length) {
-					const candPx =
-						(Number(lane[j].dataset.markerTs) / totalTs) * canvasW;
+					const candPx = (Number(lane[j].dataset.markerTs) / totalTs) * canvasW;
 					// While building a cluster (≥ 2 members), the next
 					// marker must be ≥ ClusterExtendGapPx away from the
 					// REP (head) — not just the last member — because the
@@ -358,6 +354,7 @@
 		}
 	}
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: per-cluster collapse — hide siblings, compose multi-line title, place badge — kept inline so the per-rep state (icon ref, title backup, badge node) lives on one frame.
 	function applyCluster(rep, members, totalTs, canvasW) {
 		// Collapse: hide every member except the representative, and
 		// stamp the rep with an Nx badge + a multi-line tooltip.
@@ -402,8 +399,15 @@
 		const iconY = Number(rep.getAttribute("data-marker-row-y") ?? "0");
 		// The icon is hidden, so place the badge AT the icon's left edge
 		// (text-anchor="start"), vertically centred on the row.
+		// Icon is 14 px tall; badge baseline sits at icon-mid + a 4-px
+		// optical adjust so capital glyphs centre visually.
+		const IconHalfHeightPx = 7;
+		const BadgeBaselineNudgePx = 4;
 		badge.setAttribute("x", String(iconLeftPx));
-		badge.setAttribute("y", String(iconY + 14 / 2 + 4));
+		badge.setAttribute(
+			"y",
+			String(iconY + IconHalfHeightPx + BadgeBaselineNudgePx),
+		);
 		badge.textContent = `${members.length}×`;
 	}
 
@@ -424,11 +428,15 @@
 			// clip-path <g>; query it via the kind class to avoid coupling
 			// to DOM order.
 			const seq = bar.getAttribute("data-event-pair")?.split("-")[0];
-			if (!seq) continue;
+			if (!seq) {
+				continue;
+			}
 			const dim = container.querySelector(
 				`g[clip-path="url(#bc-${seq})"] text.bar-label-dim`,
 			);
-			if (!dim) continue;
+			if (!dim) {
+				continue;
+			}
 			dim.style.display = widthPx < MinWidthForDurationPx ? "none" : "";
 		}
 	}
@@ -447,9 +455,14 @@
 	// totalDurationTs is in µs per the InvocationEvent timestamp scale).
 	const NiceSteps = (() => {
 		const out = [];
-		for (const exp of [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7]) {
-			const base = 10 ** exp;
-			out.push(base, 2 * base, 5 * base);
+		// biome-ignore lint/style/noMagicNumbers: powers-of-10 exponents covering ns → seconds.
+		const exponents = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7];
+		const Two = 2;
+		const Five = 5;
+		const Base10 = 10;
+		for (const exp of exponents) {
+			const base = Base10 ** exp;
+			out.push(base, Two * base, Five * base);
 		}
 		return out;
 	})();
@@ -463,26 +476,45 @@
 		return NiceSteps.at(-1);
 	}
 
+	const UsPerMs = 1000;
+	const UsPerSecond = 1_000_000;
+	const FractionDigitsTwo = 2;
+	const FractionDigitsOne = 1;
+	const FractionDigitsZero = 0;
+	const TenThreshold = 10;
+	const HundredThreshold = 100;
+
+	function fractionDigitsFor(value) {
+		if (value < TenThreshold) {
+			return FractionDigitsTwo;
+		}
+		if (value < HundredThreshold) {
+			return FractionDigitsOne;
+		}
+		return FractionDigitsZero;
+	}
+
 	function formatDurationUs(usFloat) {
 		const us = Math.round(usFloat);
 		if (us === 0) {
 			return "0 µs";
 		}
-		if (Math.abs(us) < 1000) {
+		if (Math.abs(us) < UsPerMs) {
 			return `${us} µs`;
 		}
-		const ms = us / 1000;
-		if (Math.abs(ms) < 1000) {
-			return `${ms.toFixed(ms < 10 ? 2 : ms < 100 ? 1 : 0)} ms`;
+		const ms = us / UsPerMs;
+		if (Math.abs(us) < UsPerSecond) {
+			return `${ms.toFixed(fractionDigitsFor(ms))} ms`;
 		}
-		const s = ms / 1000;
-		return `${s.toFixed(s < 10 ? 2 : s < 100 ? 1 : 0)} s`;
+		const s = us / UsPerSecond;
+		return `${s.toFixed(fractionDigitsFor(s))} s`;
 	}
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ruler refresh is one logical pass — read visible-range, pick step, walk ticks, anchor edge labels — and threading the local geometry vars (canvasW, scrollLeft, totalTs, ratios) through helpers would just shuffle bytes around.
 	function updateRuler(container) {
 		const canvas = container.querySelector(CanvasSelector);
 		const ruler = canvas?.querySelector(RulerSelector);
-		if (!ruler || !canvas) {
+		if (!(ruler && canvas)) {
 			return;
 		}
 		const totalTs = Number(ruler.dataset.totalTs ?? 0);
@@ -590,6 +622,8 @@
 	const GestureIdleMs = 250;
 	let _zoomGesture = null;
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: wheel handler — captures gesture, latches anchor ts, applies clamped exponential zoom, re-pins scroll on cursor; inlined so the per-event geometry vars stay on one frame.
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: same.
 	function handleZoomWheel(ev) {
 		if (!(ev.ctrlKey || ev.metaKey)) {
 			return;
