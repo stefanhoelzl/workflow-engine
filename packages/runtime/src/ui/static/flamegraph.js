@@ -144,6 +144,16 @@
 		const pairAttr = hit.getAttribute(EventPairAttr);
 		const seqAttr = hit.getAttribute(EventSeqAttr);
 
+		// showResultBlocks's second arg is an HTTP-style status code (number
+		// or null), not a boolean. The dialog's pickOutcome() classifies
+		// 2xx → green Success, 4xx → amber Failed, 5xx/null → red Error.
+		// Synthesise: error events → 500 (red Error), everything else → 200
+		// (green Success).
+		const StatusOk = 200;
+		const StatusError = 500;
+		const isErrorEvent = (e) =>
+			e && typeof e.kind === "string" && e.kind.endsWith(".error");
+
 		if (pairAttr) {
 			const [reqSeqStr, resSeqStr] = pairAttr.split("-");
 			const req = findEventBySeq(events, reqSeqStr);
@@ -158,12 +168,8 @@
 			if (blocks.length === 0) {
 				return;
 			}
-			const ok = !(
-				res &&
-				typeof res.kind === "string" &&
-				res.kind.endsWith(".error")
-			);
-			window.showResultBlocks(blocks, ok);
+			const status = isErrorEvent(res) ? StatusError : StatusOk;
+			window.showResultBlocks(blocks, status);
 			return;
 		}
 
@@ -173,7 +179,8 @@
 				return;
 			}
 			const label = e.kind || "Event";
-			window.showResultBlocks([{ label, payload: e }], true);
+			const status = isErrorEvent(e) ? StatusError : StatusOk;
+			window.showResultBlocks([{ label, payload: e }], status);
 		}
 	});
 

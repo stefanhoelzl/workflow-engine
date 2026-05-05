@@ -921,7 +921,11 @@ body {
 	padding: var(--sp-4);
 	max-width: 720px;
 	width: 90vw;
-	max-height: 80vh;
+	/* Fixed 80vh (was max-height) so the inner blocks have a stable
+	   parent to flex-grow into. With max-height alone the dialog shrunk
+	   to its zero-intrinsic-content size when blocks use `flex: 1 1 0`,
+	   collapsing them to 0 px. */
+	height: 80vh;
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
@@ -1594,6 +1598,12 @@ body {
 	flex-direction: column;
 	gap: var(--sp-1);
 	min-height: 0;
+	/* Each block claims an equal share of the dialog's vertical space so a
+	   small Request and a large Response render at the same height (the
+	   large one's body scrolls inside its half). With a single block the
+	   `flex: 1` still applies so it fills the dialog. */
+	flex: 1 1 0;
+	overflow: hidden;
 }
 .trigger-result-label {
 	font-size: var(--fs-xs);
