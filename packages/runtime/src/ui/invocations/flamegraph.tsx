@@ -1,15 +1,20 @@
 import type { InvocationEvent } from "@workflow-engine/core";
 import { raw } from "hono/html";
+import {
+	flameIconSprite,
+	iconForBar,
+	iconForMarker,
+	shortLabelFor,
+} from "./flame-icons.js";
 import { formatDurationUs } from "./page.js";
 
-// Chrome (legend, metrics, header, error fragment, top-level wrapper) is
-// JSX. SVG body is machine-generated content built via string concatenation
-// in `buildSvgPieces` / `renderRuler` and bridged into the JSX tree via
-// `{raw(svg)}` / `{raw(ruler)}`. Two-natures rationale: SVG body is
-// hundreds of computed-coordinate elements per render — readability win
-// from JSX is zero, output bytes change cost is real (existing
-// flamegraph.test.ts assertions depend on byte shape). See migration
-// design.md Decision 5.
+// Chrome (legend, header, error fragment, top-level wrapper) is JSX. SVG body
+// is machine-generated content built via string concatenation in
+// `buildSvgPieces` / `renderRuler` and bridged into the JSX tree via
+// `{raw(svg)}` / `{raw(ruler)}`. Two-natures rationale: SVG body is hundreds
+// of computed-coordinate elements per render — readability win from JSX is
+// zero, output bytes change cost is real (existing flamegraph.test.ts
+// assertions depend on byte shape).
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -20,27 +25,16 @@ const BAR_HEIGHT_PX = 18;
 const BAR_Y_OFFSET_PX = 2;
 const TRACK_DIVIDER_GAP_PX = 12;
 const TRACK_LABEL_HEIGHT_PX = 14;
-const MARKER_WIDTH_VIEWBOX = 16;
-const MIN_BAR_WIDTH_VIEWBOX = 4;
-const VIEWBOX_WIDTH = 1000;
+// Icon and marker glyph dimensions in CSS pixels. The flame-graph SVG
+// renders without a viewBox so user units = device pixels; this keeps
+// icons and text glyphs from stretching when the canvas is widened by
+// ctrl+wheel zoom.
+const ICON_SIZE_PX = 14;
+const MARKER_WIDTH_PX = 16;
 const RULER_HEIGHT_PX = 18;
-const RULER_TICK_COUNT = 5;
 const PERCENT_MULTIPLIER = 100;
 const PERCENT_FRACTION_DIGITS = 4;
-const COORD_FRACTION_DIGITS = 2;
-const MARKER_X_INSET = 2;
-const MARKER_X_VERTICAL_INSET = 3;
 const HALF = 2;
-const BAR_LABEL_X_INSET_PCT = 0.3;
-const BAR_LABEL_Y_OFFSET = 1;
-const BAR_LABEL_MIN_PCT_FOR_NAME = 6;
-const BAR_LABEL_MIN_PCT_FOR_DURATION = 12;
-const ERROR_ICON_X_INSET = 2;
-// Horizontal space (in percent of the flamegraph width) reserved to the
-// right of a bar's duration label so the ⚠ icon can sit next to it without
-// overlapping. Tuned so the glyph at var(--fs-xs) clears a one-digit duration.
-const ERROR_ICON_RESERVE_PCT = 3;
-const MARKER_CALL_RADIUS = 5;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,18 +57,8 @@ interface LaidOutBar {
 	readonly timerId: string | null;
 }
 
-// Markers are open-ended leaf events. After the bridge-main-sequencing
-// prefix consolidation, this includes `system.call` (setTimeout
-// registration, console.log, randomUUID, WASI clock/random, etc.) and
-// `system.exception` (uncaught guest throws). Timer registration vs.
-// arbitrary host calls is distinguished by the event's `name` field
-// (`setTimeout`/`setInterval` for registration, `clearTimeout`/
-// `clearInterval` for clears). The flamegraph renders bespoke glyphs for
-// the timer family and falls back to a neutral circle for everything else.
 type MarkerKind = string;
 
-// Timer-family detection. Replaces the legacy `kind.startsWith("timer.")`
-// check (now that `timer.*` no longer exists as a top-level prefix).
 const TIMER_REGISTRATION_NAMES = new Set(["setTimeout", "setInterval"]);
 const TIMER_CLEAR_NAMES = new Set(["clearTimeout", "clearInterval"]);
 const TIMER_CALLBACK_NAMES = TIMER_REGISTRATION_NAMES;
@@ -115,9 +99,6 @@ interface LaidOutMarker {
 	readonly location: Location;
 	readonly timerId: string | null;
 	readonly auto: boolean;
-	// Populated for `system.exhaustion` events only; surfaced in the SVG
-	// `<title>` so hovering identifies the configured cap and observed
-	// value at breach. `name` already carries the dimension.
 	readonly budget?: number;
 	readonly observed?: number;
 }
@@ -158,8 +139,6 @@ function barKindFromEventKind(kind: string): BarKind | null {
 	if (kind.startsWith("action.")) {
 		return "action";
 	}
-	// Any other <prefix>.request/.response/.error (fetch.*, timer.*, legacy
-	// system.*, future plugin prefixes) groups into the generic "rest" lane.
 	if (
 		kind.endsWith(".request") ||
 		kind.endsWith(".response") ||
@@ -211,12 +190,15 @@ interface Layout {
 	readonly connectors: readonly LaidOutConnector[];
 	readonly mainRows: number;
 	readonly trackRows: number;
+	// Index of the dedicated leaf-marker row inside each lane, or null
+	// when the lane has no markers. Used by the SVG emitter to override
+	// `marker.row` so all leaf icons cluster on a single row at the bottom
+	// of their lane instead of overlapping their parent bar.
+	readonly mainMarkerRow: number | null;
+	readonly trackMarkerRow: number | null;
 	readonly totalDurationTs: number;
 	readonly triggerEvent: InvocationEvent;
 	readonly terminalEvent: InvocationEvent;
-	readonly actionCount: number;
-	readonly systemCount: number;
-	readonly timerCount: number;
 	readonly status: "succeeded" | "failed";
 }
 
@@ -268,17 +250,11 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 	const status: "succeeded" | "failed" =
 		terminalEvent.kind === "trigger.response" ? "succeeded" : "failed";
 
-	// Index events by seq for fast lookup.
 	const bySeq = new Map<number, InvocationEvent>();
 	for (const e of events) {
 		bySeq.set(e.seq, e);
 	}
 
-	// Classify each event as belonging to "main" or "track" based on its ref-chain root.
-	//   - trigger.request (ref=null) → main root
-	//   - timer-callback system.request (ref=null) → track root
-	//   - non-null ref → inherit location from parent
-	//   - timer-clear system.call with ref=null (auto-clear) → main (row 0)
 	const location = new Map<number, Location>();
 	const depthInLocation = new Map<number, number>();
 
@@ -293,7 +269,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 				depthInLocation.set(event.seq, 0);
 				return "track";
 			}
-			// trigger.request OR auto-clear timer system.call OR any other null-ref edge case → main
 			location.set(event.seq, "main");
 			depthInLocation.set(event.seq, 0);
 			return "main";
@@ -315,9 +290,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		classify(e);
 	}
 
-	// Pair up request events with their responses/errors.
-	// Paired events = request_event -> terminal_event (response or error).
-	// Map from request.seq → terminal event.
 	const terminalByRef = new Map<number, InvocationEvent>();
 	for (const e of events) {
 		if ((isResponseKind(e.kind) || isErrorKind(e.kind)) && e.ref !== null) {
@@ -325,9 +297,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		}
 	}
 
-	// ------ Main-tree and timer-track row assignment ------
-	// Each location has a bucket per depth. Assign bars (request events) to
-	// sub-rows greedily by start ts.
 	const mainBuckets = new Map<number, RowBucket>();
 	const trackBuckets = new Map<number, RowBucket>();
 	const getBucket = (loc: Location, depth: number): RowBucket => {
@@ -340,7 +309,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		return b;
 	};
 
-	// Sort request events by start ts for deterministic greedy assignment.
 	const requestEvents = events
 		.filter((e) => isRequestKind(e.kind))
 		.slice()
@@ -362,7 +330,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		if (terminal) {
 			endTs = terminal.ts;
 		} else {
-			// Orphan: extend to terminal trigger event's ts.
 			endTs = terminalEvent.ts;
 			orphan = true;
 		}
@@ -379,7 +346,7 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 			terminalSeq: terminal ? terminal.seq : null,
 			startTs,
 			endTs,
-			row: -1, // filled below after depth offsets are known
+			row: -1,
 			location: loc,
 			errored,
 			orphan,
@@ -387,16 +354,14 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		});
 	}
 
-	// Compute physical-row offsets per location.
 	const mainDepthOffsets: number[] = [];
 	let mainOffset = 0;
 	const mainMaxDepth = Math.max(-1, ...Array.from(mainBuckets.keys()));
 	for (let d = 0; d <= mainMaxDepth; d++) {
 		mainDepthOffsets[d] = mainOffset;
 		const subs = mainBuckets.get(d)?.subRows.length ?? 0;
-		mainOffset += Math.max(1, subs); // reserve at least one row per populated depth; unpopulated depths skipped below
+		mainOffset += Math.max(1, subs);
 		if (subs === 0) {
-			// Depth not populated; pull back so we don't reserve.
 			mainOffset -= 1;
 			mainDepthOffsets[d] = -1;
 		}
@@ -417,7 +382,6 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 	}
 	const trackRows = trackOffset;
 
-	// Fill bar.row from depth + subRow.
 	const laidOutBars = bars.map((b) => {
 		const depth = depthInLocation.get(b.requestSeq) ?? 0;
 		const subRow = subRowByRequestSeq.get(b.requestSeq) ?? 0;
@@ -428,24 +392,19 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		return { ...b, row };
 	});
 
-	// ------ Markers ------
-	// Each marker event (system.call leaves, system.exception) renders on the
-	// row identified by its ref. For an auto-clear timer (system.call
-	// name="clearTimeout/clearInterval") with ref=null, render on row 0 main
-	// (the trigger row).
 	const rowBySeq = new Map<number, { row: number; location: Location }>();
 	rowBySeq.set(triggerEvent.seq, { row: 0, location: "main" });
 	for (const b of laidOutBars) {
 		rowBySeq.set(b.requestSeq, { row: b.row, location: b.location });
 	}
 
+	// Markers render on a dedicated lane below the bars (one row per
+	// location). They keep their parent's location for grouping but their
+	// row is overridden in buildSvgPieces to the lane's marker-row index;
+	// the parent association still reads from the timer connectors and the
+	// shared x position (timestamp).
 	const markers: LaidOutMarker[] = [];
 	for (const e of events) {
-		// Leaf events are anything that isn't a paired request/response/error.
-		// This includes timer registrations/clears (system.call name=
-		// setTimeout/setInterval/clearTimeout/clearInterval), generic host
-		// calls (system.call name=console.log, randomUUID, wasi.*, etc.),
-		// and uncaught guest exceptions (system.exception).
 		if (
 			isRequestKind(e.kind) ||
 			isResponseKind(e.kind) ||
@@ -494,8 +453,21 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		});
 	}
 
-	// ------ Connectors (system.call timer registration → each
-	// system.request timer-callback with same timerId) ------
+	// All leaf markers share a single row per lane. When multiple markers
+	// fall within icon-width of each other in *rendered pixels*, the
+	// client-side updateMarkerClusters() collapses them into a single
+	// representative icon with an "Nx" badge; the tooltip lists each
+	// member event. As the user zooms in, gaps grow and clusters split
+	// apart automatically. Doing the clustering in JS lets it react to
+	// the canvas's actual pixel width — a static SSR sub-row count is
+	// always wrong at some zoom level.
+	const mainHasMarkers = markers.some((m) => m.location === "main");
+	const trackHasMarkers = markers.some((m) => m.location === "track");
+	const mainMarkerRow = mainHasMarkers ? mainRows : null;
+	const trackMarkerRow = trackHasMarkers ? trackRows : null;
+	const mainRowsTotal = mainRows + (mainHasMarkers ? 1 : 0);
+	const trackRowsTotal = trackRows + (trackHasMarkers ? 1 : 0);
+
 	const connectors: LaidOutConnector[] = [];
 	const setMarkers = markers.filter(
 		(m) =>
@@ -505,13 +477,16 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 	);
 	for (const setM of setMarkers) {
 		const originX = pct(setM.ts - triggerEvent.ts, totalDurationTs);
-		const originY = yForRow(setM.row, setM.location, mainRows) + BAR_HEIGHT_PX;
+		const setMRow =
+			(setM.location === "main" ? mainMarkerRow : trackMarkerRow) ?? setM.row;
+		const originY =
+			yForRow(setMRow, setM.location, mainRowsTotal) + BAR_HEIGHT_PX;
 		for (const bar of laidOutBars) {
 			if (bar.timerId === null || bar.timerId !== setM.timerId) {
 				continue;
 			}
 			const targetX = pct(bar.startTs - triggerEvent.ts, totalDurationTs);
-			const targetY = yForRow(bar.row, bar.location, mainRows);
+			const targetY = yForRow(bar.row, bar.location, mainRowsTotal);
 			connectors.push({
 				timerId: setM.timerId ?? "",
 				setSeq: setM.seq,
@@ -524,34 +499,17 @@ function computeLayout(events: readonly InvocationEvent[]): Layout | null {
 		}
 	}
 
-	// Summary counts.
-	let actionCount = 0;
-	let systemCount = 0;
-	let timerCount = 0;
-	for (const e of events) {
-		if (e.kind === "action.request") {
-			actionCount += 1;
-		} else if (e.kind === "system.request") {
-			if (isTimerCallbackRequest(e)) {
-				timerCount += 1;
-			} else {
-				systemCount += 1;
-			}
-		}
-	}
-
 	return {
 		bars: laidOutBars,
 		markers,
 		connectors,
-		mainRows: Math.max(mainRows, 1),
-		trackRows,
+		mainRows: Math.max(mainRowsTotal, 1),
+		trackRows: trackRowsTotal,
+		mainMarkerRow,
+		trackMarkerRow,
 		totalDurationTs,
 		triggerEvent,
 		terminalEvent,
-		actionCount,
-		systemCount,
-		timerCount,
 		status,
 	};
 }
@@ -595,26 +553,75 @@ function escapeHtml(s: string): string {
 		.replace(/'/g, "&#39;");
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SSR emitter for three element categories (bars, markers, connectors, text layer) with per-bar variants (orphan, errored, labels) — inlined here so we emit a single string[] in deterministic document order; splitting the emitters would duplicate the shared state (triggerTs, total, mainRows, escape helpers).
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: same — the length comes from per-kind variant handling, not branching depth.
-function buildSvgPieces(layout: Layout): RenderedSvgPieces {
+function markerVariantClass(m: LaidOutMarker): string {
+	if (m.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(m.name)) {
+		return "flame-marker--timer-set";
+	}
+	if (m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name)) {
+		return m.auto
+			? "flame-marker--timer-clear flame-marker--auto"
+			: "flame-marker--timer-clear";
+	}
+	if (m.kind === "system.exception") {
+		return "flame-marker--exception";
+	}
+	if (m.kind === "system.exhaustion") {
+		return "flame-marker--exhaustion";
+	}
+	return "flame-marker--call";
+}
+
+// Compose an informative tooltip — name first (so fetch-style "POST
+// https://…" detail appears on hover for every host call), then kind-
+// specific suffixes (budget / observed for exhaustion, timer id for the
+// timer family).
+function markerTitleText(m: LaidOutMarker): string {
+	if (m.kind === "system.exhaustion" && m.budget !== undefined) {
+		const observedPart =
+			m.observed === undefined ? "" : `, observed=${m.observed}`;
+		return `${m.kind}: ${m.name} (budget=${m.budget}${observedPart})`;
+	}
+	if (m.timerId) {
+		return `${m.name} (timerId=${m.timerId})`;
+	}
+	return `${m.kind}: ${m.name}`;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SSR emitter for bar/marker/connector/text/clip categories — inlined so we emit a single string[] per layer in deterministic document order; splitting would duplicate shared state (triggerTs, total, mainRows, escape helpers, icon-id resolution).
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: same — length comes from per-kind variant handling, not branching depth.
+function buildSvgPieces(
+	layout: Layout,
+	triggerKind: string | undefined,
+): RenderedSvgPieces {
 	const shapes: string[] = [];
 	const texts: string[] = [];
 	const triggerTs = layout.triggerEvent.ts;
 	const total = layout.totalDurationTs;
 
-	// Defs: hatched pattern for orphan bars.
+	// Defs: hatched pattern for orphan bars + icon sprite. Both live in a
+	// single <defs> so the parser only opens one.
 	shapes.push(
-		`<defs><pattern id="flame-hatched" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect width="6" height="6" fill="currentColor" fill-opacity="0.15"/><line x1="0" y1="0" x2="0" y2="6" stroke="currentColor" stroke-width="1.4" stroke-opacity="0.6"/></pattern></defs>`,
+		`<defs><pattern id="flame-hatched" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect width="6" height="6" fill="currentColor" fill-opacity="0.15"/><line x1="0" y1="0" x2="0" y2="6" stroke="currentColor" stroke-width="1.4" stroke-opacity="0.6"/></pattern>${flameIconSprite()}</defs>`,
 	);
 
-	// Bars (paired events).
+	// Bars + per-bar clipPath. Each bar emits a coloured `<rect>` (the
+	// click target + tooltip) plus a `<clipPath id="bc-N">` whose rect
+	// matches the bar's bbox. Bar icon, label, and right-edge glyphs are
+	// rendered in the SAME outer SVG coordinate space and reference
+	// `clip-path="url(#bc-N)"`; SVG `clipPath` is the one rendering
+	// primitive that *every* engine clips correctly (Firefox + Chrome
+	// both honour CSS `overflow:hidden` on a nested <svg> inconsistently
+	// — empirically observed bar-text bleeding into neighbour bars).
+	const clipDefs: string[] = [];
 	for (const bar of layout.bars) {
 		const x = pct(bar.startTs - triggerTs, total);
 		const rawWidth = pct(bar.endTs - bar.startTs, total);
-		// Minimum width floor in viewBox units: MIN_BAR_WIDTH_VIEWBOX / VIEWBOX_WIDTH * 100%.
-		const minPct = (MIN_BAR_WIDTH_VIEWBOX / VIEWBOX_WIDTH) * PERCENT_MULTIPLIER;
-		const width = Math.max(rawWidth, minPct);
+		// No min-width clamp: per Brendan-Gregg flame chart design, sub-µs
+		// bars stay sub-pixel and visually disappear at low zoom. Padding
+		// them out artificially causes adjacent sequential bars to visibly
+		// overlap (and their labels to render in the same pixels), which
+		// looks like concurrency where there is none.
+		const width = rawWidth;
 		const y = yForRow(bar.row, bar.location, layout.mainRows);
 		const classes = ["flame-bar", `kind-${bar.kind}`];
 		if (bar.errored) {
@@ -628,72 +635,111 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			: "";
 		const terminal = bar.terminalSeq === null ? "" : String(bar.terminalSeq);
 		const dataEventPair = ` data-event-pair="${bar.requestSeq}-${escapeHtml(terminal)}"`;
-		const barTitle = bar.orphan
-			? "<title>No terminal event recorded</title>"
-			: "";
+		const titleText = bar.orphan
+			? `${bar.name} (no terminal event recorded)`
+			: bar.name;
+		const barTitle = `<title>${escapeHtml(titleText)}</title>`;
+		const xPct = fmtPct(x);
+		const widthPct = fmtPct(width);
+		const clipId = `bc-${bar.requestSeq}`;
 		shapes.push(
-			`<rect class="${classes.join(" ")}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(width)}" height="${BAR_HEIGHT_PX}" rx="2"${dataTimerId}${dataEventPair}>${barTitle}</rect>`,
+			`<rect class="${classes.join(" ")}" x="${xPct}" y="${y}" width="${widthPct}" height="${BAR_HEIGHT_PX}" rx="2"${dataTimerId}${dataEventPair}>${barTitle}</rect>`,
+		);
+		clipDefs.push(
+			`<clipPath id="${clipId}"><rect x="${xPct}" y="${y}" width="${widthPct}" height="${BAR_HEIGHT_PX}"/></clipPath>`,
+		);
+
+		const iconId = iconForBar(bar.kind, bar.name, triggerKind);
+		const yMid = y + BAR_HEIGHT_PX / HALF + 1;
+		const yIcon = y + (BAR_HEIGHT_PX - ICON_SIZE_PX) / HALF;
+		// Wrap the bar's content in a <g clip-path="url(#bc-N)"> with NO
+		// transform of its own. Per SVG spec, when clip-path and transform
+		// are on the SAME element the clipPath rect is transformed too,
+		// so the clip region tracks the element instead of staying at
+		// the bar's bbox — empirically this lets text bleed into the
+		// next bar. Putting the clip on a non-transformed wrapper keeps
+		// the clip region pinned to the bar while inner children remain
+		// free to use SVG `transform="translate(N 0)"` for fixed-pixel
+		// insets that don't drift with zoom.
+		const inner: string[] = [];
+		if (iconId !== null) {
+			inner.push(
+				`<use class="flame-bar-icon" href="#fi-${iconId}" x="${xPct}" y="${yIcon}" width="${MARKER_WIDTH_PX}" height="${ICON_SIZE_PX}" transform="translate(4 0)"/>`,
+			);
+		}
+		const labelDx = iconId === null ? 4 : 22;
+		inner.push(
+			`<text class="bar-label" x="${xPct}" y="${yMid}" transform="translate(${labelDx} 0)">${escapeHtml(shortLabelFor(bar.name))}</text>`,
+		);
+		// Duration label is always emitted (the SSR-time `bar.width >= N%`
+		// gate was invariant under zoom: at any zoom level the bar's % of
+		// canvas is the same, so a "5%" bar that's 80px at 100% zoom is
+		// still 5% — and so still 8000px at 100x zoom — but the gate
+		// rejected it the same way). Static JS hides the label at runtime
+		// (toggleBarLabels in flamegraph.js) when the bar's actual pixel
+		// width can't fit both name + duration without overlap.
+		const duration = formatDurationUs(bar.endTs - bar.startTs);
+		const dimDx = bar.errored ? -22 : -4;
+		inner.push(
+			`<text class="bar-label-dim" x="${fmtPct(x + width)}" y="${yMid}" text-anchor="end" transform="translate(${dimDx} 0)">${escapeHtml(duration)}</text>`,
+		);
+		if (bar.errored) {
+			inner.push(
+				`<text class="bar-error-icon" x="${fmtPct(x + width)}" y="${yMid}" text-anchor="end" transform="translate(-4 0)">⚠</text>`,
+			);
+		}
+		texts.push(
+			`<g clip-path="url(#${clipId})" pointer-events="none">${inner.join("")}</g>`,
 		);
 	}
 
-	// Markers.
+	// Emit clipPath defs at the end of the shapes list — they are
+	// non-rendering, so their position only affects reference resolution
+	// (forward refs are legal in SVG).
+	if (clipDefs.length > 0) {
+		shapes.push(`<defs>${clipDefs.join("")}</defs>`);
+	}
+
+	// Markers — single <use> per marker referencing the icon sprite. The
+	// rendering is uniform across kinds (timer set, timer clear, generic
+	// host call, exception, exhaustion); the icon glyph itself conveys the
+	// kind, classes only carry hit-target / theming hooks.
 	for (const m of layout.markers) {
 		const x = pct(m.ts - triggerTs, total);
-		const y = yForRow(m.row, m.location, layout.mainRows);
-		const markerWidthPct =
-			(MARKER_WIDTH_VIEWBOX / VIEWBOX_WIDTH) * PERCENT_MULTIPLIER;
+		// Override the marker's parent-derived row with the lane's
+		// dedicated marker lane (base row + greedy sub-row) so leaf icons
+		// (a) cluster below the bars instead of overlapping their parents
+		// and (b) stack vertically when many markers fire close together.
+		const markerLaneBase =
+			(m.location === "main" ? layout.mainMarkerRow : layout.trackMarkerRow) ??
+			m.row;
+		const markerRow = markerLaneBase;
+		const y = yForRow(markerRow, m.location, layout.mainRows);
 		const dataTimerId = m.timerId
 			? ` data-timer-id="${escapeHtml(m.timerId)}"`
 			: "";
 		const dataEventSeq = ` data-event-seq="${m.seq}"`;
-		const markerTitle = `<title>${escapeHtml(m.kind)}</title>`;
-		const isTimerSet =
-			m.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(m.name);
-		const isTimerClear =
-			m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name);
-		if (isTimerSet) {
-			shapes.push(
-				`<rect class="marker-set" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
-			);
-		} else if (isTimerClear) {
-			const autoClass = m.auto ? " marker-auto" : "";
-			shapes.push(
-				`<rect class="marker-clear-bg${autoClass}" x="${fmtPct(x)}" y="${y}" width="${fmtPct(markerWidthPct)}" height="${BAR_HEIGHT_PX}"${dataTimerId}${dataEventSeq}>${markerTitle}</rect>`,
-			);
-			// Two diagonal lines forming an ×.
-			// Compute endpoints in viewBox units:
-			//   left edge:  x%           → x viewBox = (x/100) * 1000
-			//   right edge: x + markerW% → (x + markerW)/100 * 1000
-			const xLeft = (x / PERCENT_MULTIPLIER) * VIEWBOX_WIDTH;
-			const xRight = xLeft + MARKER_WIDTH_VIEWBOX;
-			const yTop = y + MARKER_X_VERTICAL_INSET;
-			const yBot = y + BAR_HEIGHT_PX - MARKER_X_VERTICAL_INSET;
-			shapes.push(
-				`<line class="marker-x${autoClass}" x1="${(xLeft + MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y1="${yTop}" x2="${(xRight - MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y2="${yBot}"${dataTimerId}${dataEventSeq}/>`,
-			);
-			shapes.push(
-				`<line class="marker-x${autoClass}" x1="${(xRight - MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y1="${yTop}" x2="${(xLeft + MARKER_X_INSET).toFixed(COORD_FRACTION_DIGITS)}" y2="${yBot}"${dataTimerId}${dataEventSeq}/>`,
-			);
-		} else {
-			// Generic leaf marker (wasi.*, system.call, system.exception,
-			// system.exhaustion, future plugin leaves): a small filled circle
-			// centered on the row. No per-kind CSS class; severity for
-			// system.exhaustion is conveyed at the bar level via the synth
-			// `trigger.error` close that drives the existing `errored: true`
-			// styling.
-			const cxPct = x + markerWidthPct / HALF;
-			const cy = y + BAR_HEIGHT_PX / HALF;
-			let titleText = `${m.kind}: ${m.name}`;
-			if (m.kind === "system.exhaustion" && m.budget !== undefined) {
-				const observedPart =
-					m.observed === undefined ? "" : `, observed=${m.observed}`;
-				titleText = `${m.kind}: ${m.name} (budget=${m.budget}${observedPart})`;
-			}
-			const title = `<title>${escapeHtml(titleText)}</title>`;
-			shapes.push(
-				`<circle class="marker-call" cx="${fmtPct(cxPct)}" cy="${cy}" r="${MARKER_CALL_RADIUS}"${dataEventSeq}>${title}</circle>`,
-			);
-		}
+		const iconId = iconForMarker(m.kind, m.name);
+		const variantClass = markerVariantClass(m);
+		const titleText = markerTitleText(m);
+		const iconY = y + (BAR_HEIGHT_PX - ICON_SIZE_PX) / HALF;
+		const iconX = fmtPct(x);
+		// `<use>` referencing a `<symbol>` is unreliable as a hit target:
+		// Firefox often only triggers click/hover on the icon's stroke
+		// pixels (where the SVG paint is opaque) rather than the bounding
+		// box, and `<title>` inside `<use>` doesn't surface as a tooltip
+		// in Firefox at all. Wrap each marker in a <g> with a transparent
+		// hit rect that owns the click + title; the visible <use> sits
+		// above with pointer-events:none. Result: full bbox is clickable,
+		// tooltip appears on hover anywhere in the icon area.
+		// data-marker-ts encodes the event's offset from the trigger ts in
+		// the same units as the ruler (microseconds). updateMarkerClusters
+		// in flamegraph.js uses it to compute pixel x at any zoom level
+		// without parsing percentage strings.
+		const markerTs = m.ts - triggerTs;
+		shapes.push(
+			`<g class="flame-marker ${variantClass}"${dataTimerId}${dataEventSeq} data-marker-ts="${markerTs}" data-marker-row-y="${iconY}"><title>${escapeHtml(titleText)}</title><rect class="flame-marker-hit" x="${iconX}" y="${iconY}" width="${MARKER_WIDTH_PX}" height="${ICON_SIZE_PX}"/><use class="flame-marker-icon" href="#fi-${iconId}" x="${iconX}" y="${iconY}" width="${MARKER_WIDTH_PX}" height="${ICON_SIZE_PX}" pointer-events="none"/></g>`,
+		);
 	}
 
 	// Connectors.
@@ -702,42 +748,6 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 		shapes.push(
 			`<path class="timer-connector" d="${d}" data-timer-id="${escapeHtml(c.timerId)}"/>`,
 		);
-	}
-
-	// Text layer: bar labels (name primary + duration sub-caption when wide enough).
-	for (const bar of layout.bars) {
-		const x = pct(bar.startTs - triggerTs, total);
-		const width = pct(bar.endTs - bar.startTs, total);
-		const y =
-			yForRow(bar.row, bar.location, layout.mainRows) + BAR_HEIGHT_PX / HALF;
-		// Only render text when bar is wide enough. Name is left-aligned at
-		// the bar's left edge; duration is right-aligned at the bar's right
-		// edge so the two never collide.
-		if (width >= BAR_LABEL_MIN_PCT_FOR_NAME) {
-			texts.push(
-				`<text class="bar-label" x="${fmtPct(x + BAR_LABEL_X_INSET_PCT)}" y="${y + BAR_LABEL_Y_OFFSET}">${escapeHtml(bar.name)}</text>`,
-			);
-			if (width >= BAR_LABEL_MIN_PCT_FOR_DURATION) {
-				const duration = formatDurationUs(bar.endTs - bar.startTs);
-				const reserve = bar.errored ? ERROR_ICON_RESERVE_PCT : 0;
-				const durationX = x + width - BAR_LABEL_X_INSET_PCT - reserve;
-				texts.push(
-					`<text class="bar-label-dim" x="${fmtPct(durationX)}" y="${y + BAR_LABEL_Y_OFFSET}" text-anchor="end">${escapeHtml(duration)}</text>`,
-				);
-			}
-		}
-		if (bar.errored) {
-			const iconX = x + width - ERROR_ICON_X_INSET;
-			texts.push(
-				`<text class="bar-error-icon" x="${fmtPct(Math.max(iconX, x + BAR_LABEL_X_INSET_PCT))}" y="${y + BAR_LABEL_Y_OFFSET}">⚠</text>`,
-			);
-		}
-		if (bar.orphan) {
-			const glyphX = x + width - BAR_LABEL_X_INSET_PCT;
-			texts.push(
-				`<text class="bar-orphan-glyph" x="${fmtPct(glyphX)}" y="${y + BAR_LABEL_Y_OFFSET}">⇥</text>`,
-			);
-		}
 	}
 
 	const svgHeight =
@@ -749,11 +759,10 @@ function buildSvgPieces(layout: Layout): RenderedSvgPieces {
 			: 0) +
 		BAR_Y_OFFSET_PX;
 
-	// Track divider + label (always render when there would be a track area).
 	if (layout.trackRows > 0 || hasAnyTimerMarker(layout)) {
 		const dividerY = layout.mainRows * ROW_HEIGHT_PX + TRACK_DIVIDER_GAP_PX / 2;
 		shapes.push(
-			`<line class="flame-track-divider" x1="0" y1="${dividerY}" x2="${VIEWBOX_WIDTH}" y2="${dividerY}"/>`,
+			`<line class="flame-track-divider" x1="0" y1="${dividerY}" x2="100%" y2="${dividerY}"/>`,
 		);
 		const labelY = dividerY + TRACK_LABEL_HEIGHT_PX;
 		const labelText =
@@ -791,24 +800,14 @@ function FlameEmpty() {
 }
 
 function renderRuler(totalDurationTs: number): string {
-	const segments: string[] = [];
-	const ticks = RULER_TICK_COUNT;
-	for (let i = 0; i < ticks; i++) {
-		const frac = i / (ticks - 1);
-		const ts = Math.round(totalDurationTs * frac);
-		const label = formatDurationUs(ts);
-		const xPct = frac * PERCENT_MULTIPLIER;
-		let anchor = "middle";
-		if (i === 0) {
-			anchor = "start";
-		} else if (i === ticks - 1) {
-			anchor = "end";
-		}
-		segments.push(
-			`<text class="flame-ruler-label" x="${fmtPct(xPct)}" y="12" text-anchor="${anchor}">${escapeHtml(label)}</text>`,
-		);
-	}
-	return `<svg class="flame-ruler" width="100%" height="${RULER_HEIGHT_PX}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"><line class="flame-ruler-tick" x1="0" y1="15" x2="100%" y2="15"/>${segments.join("")}</svg>`;
+	// Ruler tick labels are emitted by static/flamegraph.js based on the
+	// container's visible time range (scrollLeft + width / canvas-width →
+	// visible-ts → "nice" tick step). SSR only emits the empty SVG with
+	// the totalDurationTs metadata; client JS rebuilds ticks on every
+	// zoom + scroll event so the labels always reflect what's on screen
+	// (a pure-SSR ruler would show ticks at 0/25/50/75/100% of the full
+	// duration — at deep zoom only the leftmost tick stays in view).
+	return `<svg class="flame-ruler" width="100%" height="${RULER_HEIGHT_PX}" data-total-ts="${totalDurationTs}" xmlns="http://www.w3.org/2000/svg"><line class="flame-ruler-tick" x1="0" y1="15" x2="100%" y2="15"/></svg>`;
 }
 
 interface LegendPresence {
@@ -816,16 +815,21 @@ interface LegendPresence {
 	readonly hasAction: boolean;
 	readonly hasRest: boolean;
 	readonly hasOrphan: boolean;
-	readonly hasClearMarker: boolean;
+	readonly hasTimerSet: boolean;
+	readonly hasTimerClear: boolean;
 	readonly hasCallMarker: boolean;
+	readonly hasException: boolean;
+	readonly hasExhaustion: boolean;
 }
 
-function detectLegendPresence(layout: Layout): LegendPresence {
+function detectBarPresence(
+	bars: readonly LaidOutBar[],
+): Pick<LegendPresence, "hasTrigger" | "hasAction" | "hasRest" | "hasOrphan"> {
 	let hasTrigger = false;
 	let hasAction = false;
 	let hasRest = false;
 	let hasOrphan = false;
-	for (const bar of layout.bars) {
+	for (const bar of bars) {
 		if (bar.orphan) {
 			hasOrphan = true;
 		}
@@ -837,27 +841,73 @@ function detectLegendPresence(layout: Layout): LegendPresence {
 			hasRest = true;
 		}
 	}
-	let hasClearMarker = false;
+	return { hasTrigger, hasAction, hasRest, hasOrphan };
+}
+
+function detectMarkerPresence(
+	markers: readonly LaidOutMarker[],
+): Pick<
+	LegendPresence,
+	| "hasTimerSet"
+	| "hasTimerClear"
+	| "hasCallMarker"
+	| "hasException"
+	| "hasExhaustion"
+> {
+	let hasTimerSet = false;
+	let hasTimerClear = false;
 	let hasCallMarker = false;
-	for (const m of layout.markers) {
-		const isTimerSet =
-			m.kind === "system.call" && TIMER_REGISTRATION_NAMES.has(m.name);
-		const isTimerClear =
-			m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name);
-		if (isTimerClear) {
-			hasClearMarker = true;
-		} else if (!isTimerSet) {
+	let hasException = false;
+	let hasExhaustion = false;
+	for (const m of markers) {
+		if (m.kind === "system.exception") {
+			hasException = true;
+		} else if (m.kind === "system.exhaustion") {
+			hasExhaustion = true;
+		} else if (
+			m.kind === "system.call" &&
+			TIMER_REGISTRATION_NAMES.has(m.name)
+		) {
+			hasTimerSet = true;
+		} else if (m.kind === "system.call" && TIMER_CLEAR_NAMES.has(m.name)) {
+			hasTimerClear = true;
+		} else {
 			hasCallMarker = true;
 		}
 	}
 	return {
-		hasTrigger,
-		hasAction,
-		hasRest,
-		hasOrphan,
-		hasClearMarker,
+		hasTimerSet,
+		hasTimerClear,
 		hasCallMarker,
+		hasException,
+		hasExhaustion,
 	};
+}
+
+function detectLegendPresence(layout: Layout): LegendPresence {
+	return {
+		...detectBarPresence(layout.bars),
+		...detectMarkerPresence(layout.markers),
+	};
+}
+
+function LegendIcon({ id }: { id: string }) {
+	return (
+		<svg
+			class="flame-legend-icon"
+			viewBox="0 0 24 24"
+			width="14"
+			height="14"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+		>
+			<use href={`#fi-${id}`} />
+		</svg>
+	);
 }
 
 function Legend({ presence }: { presence: LegendPresence }) {
@@ -877,7 +927,7 @@ function Legend({ presence }: { presence: LegendPresence }) {
 		presence.hasRest && (
 			<span class="flame-legend-item">
 				<span class="flame-legend-swatch flame-legend-swatch--rest" />
-				fetch / timer / other
+				fetch / sql / queue / other
 			</span>
 		),
 		presence.hasOrphan && (
@@ -886,16 +936,34 @@ function Legend({ presence }: { presence: LegendPresence }) {
 				orphan (no terminal)
 			</span>
 		),
-		presence.hasClearMarker && (
+		presence.hasTimerSet && (
 			<span class="flame-legend-item">
-				<span class="flame-legend-glyph">×</span>
+				<LegendIcon id="timer" />
+				timer set
+			</span>
+		),
+		presence.hasTimerClear && (
+			<span class="flame-legend-item">
+				<LegendIcon id="timer-off" />
 				timer cleared
 			</span>
 		),
 		presence.hasCallMarker && (
 			<span class="flame-legend-item">
-				<span class="flame-legend-glyph">●</span>
+				<LegendIcon id="circle-question-mark" />
 				host call
+			</span>
+		),
+		presence.hasException && (
+			<span class="flame-legend-item flame-legend-item--danger">
+				<LegendIcon id="triangle-alert" />
+				exception
+			</span>
+		),
+		presence.hasExhaustion && (
+			<span class="flame-legend-item flame-legend-item--danger">
+				<LegendIcon id="circle-x" />
+				exhaustion
 			</span>
 		),
 	].filter(Boolean);
@@ -909,41 +977,6 @@ function Legend({ presence }: { presence: LegendPresence }) {
 	);
 }
 
-function Metrics({ layout }: { layout: Layout }) {
-	return (
-		<>
-			{layout.actionCount > 0 && (
-				<span>
-					<strong>{String(layout.actionCount)}</strong>{" "}
-					{layout.actionCount === 1 ? "action" : "actions"}
-				</span>
-			)}
-			{layout.systemCount > 0 && (
-				<span>
-					<strong>{String(layout.systemCount)}</strong>{" "}
-					{layout.systemCount === 1 ? "host call" : "host calls"}
-				</span>
-			)}
-			{layout.timerCount > 0 && (
-				<span>
-					<strong>{String(layout.timerCount)}</strong>{" "}
-					{layout.timerCount === 1 ? "timer" : "timers"}
-				</span>
-			)}
-		</>
-	);
-}
-
-function hasAnyMetrics(layout: Layout): boolean {
-	return (
-		layout.actionCount > 0 || layout.systemCount > 0 || layout.timerCount > 0
-	);
-}
-
-// Pulls the dispatching user's name out of the invocation's `trigger.request`
-// event (`meta.dispatch.user.name`, stamped by the executor's widener).
-// Returns an empty fragment when no name is present so the flamegraph header
-// stays unadorned for trigger-source-backed invocations.
 function dispatchUserName(
 	events: readonly InvocationEvent[],
 ): string | undefined {
@@ -963,17 +996,7 @@ function TriggeredBy({ name }: { name: string }) {
 	);
 }
 
-// Synthetic single-leaf `trigger.exception` invocation — no
-// `trigger.request`, no frame, no paired bars to lay out. Render an instant
-// marker carrying the failure cause so the author sees "imap.poll-failed:
-// ECONNREFUSED" (or similar) without expanding further. Per
-// `invocations-list-view` spec "Single-leaf invocation flamegraph renders
-// the leaf event".
 function TriggerExceptionFragment({ event }: { event: InvocationEvent }) {
-	// `event.name` carries the failure-category discriminator
-	// (e.g. "imap.poll-failed"). Stage-specific payload (e.g. IMAP's
-	// `stage`) lives under `event.input.{stage,…}` per the
-	// `executor.fail` stamping contract.
 	const stage = (event.input as { stage?: unknown } | undefined)?.stage;
 	const cause = event.name;
 	const message = event.error?.message ?? "";
@@ -992,7 +1015,13 @@ function TriggerExceptionFragment({ event }: { event: InvocationEvent }) {
 	);
 }
 
-function Flamegraph({ events }: { events: readonly InvocationEvent[] }) {
+function Flamegraph({
+	events,
+	triggerKind,
+}: {
+	events: readonly InvocationEvent[];
+	triggerKind?: string;
+}) {
 	if (events.length === 0) {
 		return <FlameEmpty />;
 	}
@@ -1004,19 +1033,20 @@ function Flamegraph({ events }: { events: readonly InvocationEvent[] }) {
 		return <FlameEmpty />;
 	}
 
-	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(layout);
+	const { svgShapes, svgTexts, svgHeight } = buildSvgPieces(
+		layout,
+		triggerKind,
+	);
 	const ruler = renderRuler(layout.totalDurationTs);
 
-	// The invocation card that wraps this flamegraph already surfaces the
-	// workflow/trigger identity, started timestamp, duration and status
-	// badge. The flamegraph header only adds what the card does not:
-	// per-kind counts (actions/host calls/timers, suppressed when zero) and
-	// the dispatching user's name when the fire was manual.
 	const dispatcher = dispatchUserName(events);
-	const showHeader = hasAnyMetrics(layout) || dispatcher !== undefined;
 
+	// Document order: shapes (defs + sprite + bars + markers + connectors +
+	// divider) → texts (per-bar nested <svg overflow=hidden> wrappers, plus
+	// the track label). Text wrappers render after rects so they paint on
+	// top.
 	const svg =
-		`<svg class="flame-graph" width="100%" height="${svgHeight}" viewBox="0 0 ${VIEWBOX_WIDTH} ${svgHeight}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">` +
+		`<svg class="flame-graph" width="100%" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg">` +
 		svgShapes +
 		svgTexts +
 		"</svg>";
@@ -1028,15 +1058,18 @@ function Flamegraph({ events }: { events: readonly InvocationEvent[] }) {
 
 	return (
 		<div class="flame-fragment">
-			{showHeader && (
+			{dispatcher && (
 				<div class="flame-header-metrics">
-					<Metrics layout={layout} />
-					{dispatcher && <TriggeredBy name={dispatcher} />}
+					<TriggeredBy name={dispatcher} />
 				</div>
 			)}
+			<div class="flame-container">
+				<div class="flame-canvas">
+					{raw(ruler)}
+					{raw(svg)}
+				</div>
+			</div>
 			<Legend presence={detectLegendPresence(layout)} />
-			{raw(ruler)}
-			<div class="flame-container">{raw(svg)}</div>
 			<script type="application/json" class="flame-events">
 				{raw(eventsJson)}
 			</script>
@@ -1044,10 +1077,13 @@ function Flamegraph({ events }: { events: readonly InvocationEvent[] }) {
 	);
 }
 
-// Compat shim — calls .toString() so c.html() accepts the result directly
-// and html-invariants tests can `(await renderFlamegraph(...)).toString()`.
-function renderFlamegraph(events: readonly InvocationEvent[]) {
-	return (<Flamegraph events={events} />).toString();
+function renderFlamegraph(
+	events: readonly InvocationEvent[],
+	triggerKind?: string,
+) {
+	const props =
+		triggerKind === undefined ? { events } : { events, triggerKind };
+	return (<Flamegraph {...props} />).toString();
 }
 
 export type { LaidOutBar, LaidOutConnector, LaidOutMarker, Layout };

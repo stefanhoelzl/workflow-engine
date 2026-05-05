@@ -656,7 +656,20 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 			owner,
 			repo,
 		);
-		return c.html(renderFlamegraph(events));
+		// Resolve trigger kind so the trigger bar gets the same icon the
+		// sidebar uses for that kind. Workflow + trigger name come from the
+		// trigger.request event; the registry lookup is best-effort —
+		// missing kind falls back to the generic zap.
+		const triggerReq = events.find((e) => e.kind === "trigger.request");
+		const triggerKind = triggerReq
+			? lookupTriggerKind(deps.registry, {
+					owner: triggerReq.owner,
+					repo: triggerReq.repo,
+					workflow: triggerReq.workflow,
+					trigger: triggerReq.name,
+				})
+			: undefined;
+		return c.html(renderFlamegraph(events, triggerKind));
 	});
 
 	// -- /invocations/:owner/:repo/:workflow/:trigger -- filter to one trigger

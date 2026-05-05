@@ -18,8 +18,7 @@ const TIMER_BAR_ID_9_RE = /kind-rest[^"]*"[^>]*data-timer-id="9"/;
 const TIMER_Y_RE =
 	/kind-rest[^"]*"[^>]* x="[^"]*" y="(\d+)"[^>]*data-timer-id="\d+"/g;
 const FETCH_REST_RE = /kind-rest[^"]*"[^>]* x="20\.\d+%"[^>]* width="20\.\d+%"/;
-const WASI_MARKER_CIRCLE_RE = /class="marker-call"[^>]*data-event-seq="2"/;
-const DURATION_1MS_RE = /1\.0 ms/;
+const WASI_MARKER_CIRCLE_RE = /flame-marker--call[^"]*"[^>]*data-event-seq="2"/;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -132,8 +131,10 @@ describe("renderFlamegraph — canonical tree", () => {
 		// workflow/trigger/duration/status — the flamegraph header only
 		// adds per-kind counts (zero counts are suppressed).
 		expect(out).toContain("sendEmail"); // action name inside bar label
-		expect(out).toContain("1</strong> action");
-		expect(out).toContain("1</strong> host call");
+		// Per-kind counts were removed from the header in the icon redesign;
+		// the surrounding card already surfaces totals.
+		expect(out).not.toContain("</strong> action");
+		expect(out).not.toContain("</strong> host call");
 	});
 
 	it("bar x% and width% reflect monotonic ts proportions", async () => {
@@ -148,7 +149,7 @@ describe("renderFlamegraph — canonical tree", () => {
 		expect(out).toMatch(ACTION_20_40_RE);
 	});
 
-	it("sub-µs bar receives minimum width floor", async () => {
+	it("sub-µs bar renders at its actual proportional width (no min clamp)", async () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "system.request", seq: 1, ref: 0, ts: 100, name: "h" }),
@@ -156,12 +157,11 @@ describe("renderFlamegraph — canonical tree", () => {
 			req({ kind: "trigger.response", seq: 3, ref: 0, ts: 1000 }),
 		];
 		const out = await html(renderFlamegraph(events));
-		// min width floor is 4/1000 * 100 = 0.4%
-		const match = out.match(REST_MIN_WIDTH_RE);
-		expect(match).not.toBeNull();
-		if (match) {
-			expect(Number(match[1])).toBeGreaterThanOrEqual(0.4);
-		}
+		// Per Brendan-Gregg flame chart design we no longer pad sub-µs
+		// bars out to a minimum width — padding caused adjacent sequential
+		// bars to visibly overlap. A zero-duration bar simply renders with
+		// width=0% (sub-pixel, invisible at low zoom).
+		expect(out).toMatch(/kind-rest[^"]*"[^>]* x="10\.\d+%"[^>]* width="0\.0+%"/);
 	});
 });
 
@@ -258,8 +258,8 @@ describe("renderFlamegraph — setTimeout fires once", () => {
 		expect(matches?.length).toBe(1);
 		expect(out).toContain('data-timer-id="7"');
 		expect(out).toContain("kind-rest");
-		// Compact header metrics include a timer count when nonzero.
-		expect(out).toContain("1</strong> timer");
+		// Per-kind counts removed in icon redesign.
+		expect(out).not.toContain("</strong> timer");
 	});
 });
 
@@ -342,9 +342,9 @@ describe("renderFlamegraph — setInterval fires 3x", () => {
 		// All connectors carry the same timer-id
 		const idMatches = out.match(CONNECTOR_ID_9_RE);
 		expect(idMatches?.length).toBe(3);
-		// Clear marker is rendered
-		expect(out).toContain("marker-clear-bg");
-		expect(out).toContain('class="marker-x"');
+		// Clear marker is rendered (icon-based: timer-off glyph).
+		expect(out).toContain("flame-marker--timer-clear");
+		expect(out).toContain("#fi-timer-off");
 	});
 });
 
@@ -372,9 +372,11 @@ describe("renderFlamegraph — unpaired set", () => {
 		];
 		const out = await html(renderFlamegraph(events));
 		expect(out).not.toContain('class="timer-connector"');
-		// But both markers render
-		expect(out).toContain("marker-set");
-		expect(out).toContain("marker-clear-bg");
+		// Both markers render as icon-based glyphs (timer + timer-off).
+		expect(out).toContain("flame-marker--timer-set");
+		expect(out).toContain("flame-marker--timer-clear");
+		expect(out).toContain("#fi-timer");
+		expect(out).toContain("#fi-timer-off");
 	});
 });
 
@@ -589,7 +591,7 @@ describe("renderFlamegraph — rest-lane bars", () => {
 });
 
 describe("renderFlamegraph — open-ended markers", () => {
-	it("renders wasi.* leaf event as a marker-call circle", async () => {
+	it("renders wasi.* leaf event as a generic marker icon", async () => {
 		const events: InvocationEvent[] = [
 			req({ kind: "trigger.request", seq: 0, ts: 0 }),
 			req({ kind: "action.request", seq: 1, ref: 0, ts: 100, name: "work" }),
@@ -637,9 +639,9 @@ describe("renderFlamegraph — open-ended markers", () => {
 			req({ kind: "trigger.response", seq: 4, ref: 0, ts: 500 }),
 		];
 		const out = await html(renderFlamegraph(events));
-		expect(out).toContain("marker-set");
-		expect(out).toContain("marker-clear-bg");
-		expect(out).toContain("marker-call");
+		expect(out).toContain("flame-marker--timer-set");
+		expect(out).toContain("flame-marker--timer-clear");
+		expect(out).toContain("flame-marker--call");
 	});
 });
 
@@ -658,9 +660,13 @@ describe("renderFlamegraph — fragment structure", () => {
 		expect(out).toContain('class="flame-container"');
 		expect(out).toContain('class="flame-events"');
 		expect(out).toContain('<script type="application/json"');
-		// Ruler renders with at least four tick labels + the total
-		expect(out).toContain("0 µs");
-		expect(out).toMatch(DURATION_1MS_RE); // 1000 µs total rendered as smart-unit "1.0 ms"
+		// Ruler is now JS-driven (ticks added on first paint + every
+		// zoom/scroll). SSR only emits the empty <svg> with the duration
+		// metadata; the totalDurationTs roundtrips so the client can
+		// translate pixel positions to timestamps. Tick label rendering
+		// is exercised by the playwright harness in packages/tests.
+		expect(out).toContain('class="flame-ruler"');
+		expect(out).toContain('data-total-ts="1000"');
 	});
 
 	it("renders track divider and label when timer events exist", async () => {
@@ -727,7 +733,8 @@ describe("renderFlamegraph — system.exhaustion marker", () => {
 		const out = await html(renderFlamegraph(events));
 		// Generic marker styling — no `kind-limit` class.
 		expect(out).not.toContain("kind-limit");
-		expect(out).toMatch(/class="marker-call"/);
+		expect(out).toMatch(/flame-marker--exhaustion/);
+		expect(out).toContain("#fi-circle-x");
 		// Title carries kind, dim, budget, observed.
 		expect(out).toContain("system.exhaustion: cpu");
 		expect(out).toContain("budget=100");
