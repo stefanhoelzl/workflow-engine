@@ -8,7 +8,7 @@ interface ValidationIssue {
 }
 
 /**
- * Plain error subclass that the sdk-support plugin catches and surfaces to
+ * Plain error subclass that the action-dispatch plugin catches and surfaces to
  * the guest. Carries the underlying validator's raw issue array under
  * `errors` plus a normalised `issues` array (path-of-segments + message) —
  * both shapes are present so downstream handlers can introspect either.
@@ -92,7 +92,7 @@ function runValidator(
 /**
  * Rehydrates per-action Zod validators at `worker()` boot and exports
  * `validateAction(name, input)` + `validateActionOutput(name, output)` for
- * consumption by sdk-support via `dependsOn: ["host-call-action"]`.
+ * consumption by action-dispatch via `dependsOn: ["host-call-action"]`.
  * Validators persist for the sandbox's lifetime; no rehydration between
  * runs.
  */

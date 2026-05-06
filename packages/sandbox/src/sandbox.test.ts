@@ -145,7 +145,7 @@ describe("sandbox isActive", () => {
 
 	it("is host-side only — not visible to the guest", async () => {
 		// The guest sees only what plugins export onto globalThis (and in
-		// production, the sdk-support plugin auto-deletes non-public descriptors
+		// production, the action-dispatch plugin auto-deletes non-public descriptors
 		// post-init per SECURITY §2 R-1). `isActive` is a property on the
 		// host-side Sandbox object; it is never placed onto the guest's
 		// globalThis. Prove it: a guest probe for typeof isActive yields

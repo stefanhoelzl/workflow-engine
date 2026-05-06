@@ -14,7 +14,7 @@ import { sendMail } from "./mail.js";
 import { executeSql } from "./sql.js";
 
 // ---------------------------------------------------------------------------
-// Action dispatch (routed through the sdk-support plugin's locked __sdk)
+// Action dispatch (routed through the action-dispatch plugin's locked __sdk)
 // ---------------------------------------------------------------------------
 
 type SdkDispatcher = (
@@ -263,8 +263,8 @@ function isWorkflow(value: unknown): value is Workflow {
 /**
  * `action({input, output, handler, name})` returns a callable that routes
  * every invocation through `globalThis.__sdk.dispatchAction(name, input,
- * handler)` — installed by the sdk-support plugin as a locked global during
- * sandbox boot. The sdk-support plugin validates the input host-side via
+ * handler)` — installed by the action-dispatch plugin as a locked global during
+ * sandbox boot. The action-dispatch plugin validates the input host-side via
  * the host-call-action plugin, invokes the handler in-sandbox, and validates
  * the returned value host-side against the declared output schema before
  * returning to the caller. The SDK itself contains zero bridge logic.

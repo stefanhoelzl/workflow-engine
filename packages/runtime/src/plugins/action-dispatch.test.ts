@@ -10,12 +10,12 @@ import {
 } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import {
+	dependsOn as ACTION_DISPATCH_DEPENDS_ON,
+	name as ACTION_DISPATCH_PLUGIN_NAME,
 	guest,
 	SDK_DISPATCH_DESCRIPTOR,
-	dependsOn as SDK_SUPPORT_DEPENDS_ON,
-	name as SDK_SUPPORT_PLUGIN_NAME,
 	worker,
-} from "./index.js";
+} from "./action-dispatch.js";
 
 function brandEnvelope(env: CallableResult): CallableResult {
 	Object.defineProperty(env, CALLABLE_RESULT_BRAND, { value: true });
@@ -81,10 +81,10 @@ function makeHostCallActionDeps(
 	};
 }
 
-describe("sdk-support plugin (§10 shape)", () => {
+describe("action-dispatch plugin (§10 shape)", () => {
 	it("exposes expected name + dependsOn", () => {
-		expect(SDK_SUPPORT_PLUGIN_NAME).toBe("sdk-support");
-		expect(SDK_SUPPORT_DEPENDS_ON).toEqual(["host-call-action"]);
+		expect(ACTION_DISPATCH_PLUGIN_NAME).toBe("action-dispatch");
+		expect(ACTION_DISPATCH_DEPENDS_ON).toEqual(["host-call-action"]);
 	});
 
 	it("worker() registers a private __sdkDispatchAction descriptor", () => {

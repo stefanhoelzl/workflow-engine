@@ -12,8 +12,7 @@
 	},
 	"exports": {
 		".": "./src/index.ts",
-		"./cli": "./src/cli/index.ts",
-		"./sdk-support": "./src/sdk-support/index.ts"
+		"./cli": "./src/cli/index.ts"
 	},
 	"bin": {
 		"wfe": "./dist/cli/cli.js"
@@ -28,7 +27,6 @@
 	],
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",
-		"@workflow-engine/sandbox": "workspace:*",
 		"citty": "^0.2.2",
 		"magic-string": "^0.30.21",
 		"tar-stream": "^3.1.8",

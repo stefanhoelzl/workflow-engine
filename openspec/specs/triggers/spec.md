@@ -273,7 +273,7 @@ The `trigger.` event-kind prefix SHALL be reserved for the trigger plugin. Third
 #### Scenario: Only trigger plugin emits trigger.* events
 
 - **GIVEN** a production sandbox composition including `createTriggerPlugin()`
-- **WHEN** inspecting every other plugin's source (web-platform, fetch, timers, console, host-call-action, sdk-support, wasi-telemetry)
+- **WHEN** inspecting every other plugin's source (web-platform, fetch, timers, console, host-call-action, action-dispatch, wasi-telemetry)
 - **THEN** no other plugin SHALL invoke `ctx.emit("trigger.*", ...)` or `ctx.request("trigger", ...)`
 - **AND** every `trigger.request` / `trigger.response` / `trigger.error` event in the stream SHALL originate from the trigger plugin's hooks
 

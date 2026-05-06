@@ -250,11 +250,11 @@ The HTTP response contract (e.g., `204 No Content` on successful upload) is owne
 
 ### Requirement: Workflow loading instantiates one sandbox per `(tenant, sha)`
 
-Workflow loading SHALL instantiate exactly one cached sandbox per `(tenant, sha)` via the SandboxStore (see `sandbox` "SandboxStore provides per-`(tenant, sha)` sandbox access"). The sandbox source SHALL be the workflow bundle produced by the vite plugin WITHOUT any runtime-side source appending. The runtime SHALL NOT concatenate `action-dispatcher.js` or any other dispatcher shim to the source before passing it to `sandbox({ source, plugins })`. Dispatcher logic lives in `createSdkSupportPlugin` (see `sdk` capability), which the runtime composes into the plugin list.
+Workflow loading SHALL instantiate exactly one cached sandbox per `(tenant, sha)` via the SandboxStore (see `sandbox` "SandboxStore provides per-`(tenant, sha)` sandbox access"). The sandbox source SHALL be the workflow bundle produced by the vite plugin WITHOUT any runtime-side source appending. The runtime SHALL NOT concatenate `action-dispatcher.js` or any other dispatcher shim to the source before passing it to `sandbox({ source, plugins })`. Dispatcher logic lives in the runtime's `action-dispatch` plugin (see `actions` capability), which the runtime composes into the plugin list.
 
 After sandbox initialization completes, the plugin-installed globals SHALL be present on `globalThis` per their descriptors' `public` flags: public descriptors (fetch, setTimeout, console.*) survive Phase 3; private descriptors (`__sdkDispatchAction`, `__reportErrorHost`, `$fetch/do`, `__wptReport` in tests) are auto-deleted by Phase 3 after being captured in Phase-2 IIFE closures. The `__sdk` global SHALL be present (locked, frozen) for action dispatch.
 
-User source — including SDK-bundled `action()` callables — SHALL run in Phase 4 and SHALL see only the public globals, the VM-level globals from quickjs-wasi extensions, and `__sdk`. SDK `action()` callables invoke `globalThis.__sdk.dispatchAction(name, input, handler)`, which routes through the sdk-support plugin's host handler.
+User source — including SDK-bundled `action()` callables — SHALL run in Phase 4 and SHALL see only the public globals, the VM-level globals from quickjs-wasi extensions, and `__sdk`. SDK `action()` callables invoke `globalThis.__sdk.dispatchAction(name, input, handler)`, which routes through the action-dispatch plugin's host handler.
 
 #### Scenario: No source appending
 

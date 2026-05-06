@@ -20,9 +20,9 @@ import queuePlugin from "../../sandbox-stdlib/src/queue/index.ts?sandbox-plugin"
 import sqlPlugin from "../../sandbox-stdlib/src/sql/index.ts?sandbox-plugin";
 import timersPlugin from "../../sandbox-stdlib/src/timers/index.ts?sandbox-plugin";
 import webPlatformPlugin from "../../sandbox-stdlib/src/web-platform/index.ts?sandbox-plugin";
-import sdkSupportPlugin from "../../sdk/src/sdk-support/index.ts?sandbox-plugin";
 import { compileActionValidators } from "./host-call-action-config.js";
 import type { Logger } from "./logger.js";
+import actionDispatchPlugin from "./plugins/action-dispatch.ts?sandbox-plugin";
 import hostCallActionPlugin from "./plugins/host-call-action.ts?sandbox-plugin";
 import secretsPlugin from "./plugins/secrets.ts?sandbox-plugin";
 import triggerPlugin from "./plugins/trigger.ts?sandbox-plugin";
@@ -125,7 +125,7 @@ function buildPluginDescriptors(
 		{ ...timersPlugin },
 		{ ...consolePlugin },
 		{ ...hostCallActionPlugin, config: hostCallActionConfig },
-		{ ...sdkSupportPlugin },
+		{ ...actionDispatchPlugin },
 		{ ...triggerPlugin },
 	];
 }

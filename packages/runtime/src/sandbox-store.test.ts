@@ -55,7 +55,7 @@ const WORKFLOW = makeWorkflowManifest({
 // `globalThis.__wfe_exports__` (see IIFE_NAMESPACE in @workflow-engine/core).
 // The SDK's action() calls `globalThis.__sdk.dispatchAction(name, input,
 // handler, completer)` where completer = (raw) => outputSchema.parse(raw);
-// the sdk-support plugin installs `__sdk` as a locked global during boot.
+// the action-dispatch plugin installs `__sdk` as a locked global during boot.
 const BUNDLE_SOURCE = `
 var __wfe_exports__ = (function(exports) {
   exports.doIt = async (input) => globalThis.__sdk.dispatchAction(
