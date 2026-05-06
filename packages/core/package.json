@@ -1,19 +1,46 @@
 {
 	"name": "@workflow-engine/core",
 	"description": "Internal shared contract types and schemas for workflow-engine.",
-	"version": "0.1.0",
+	"version": "0.0.0-dev",
 	"type": "module",
 	"sideEffects": false,
-	"private": true,
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/stefanhoelzl/workflow-engine.git",
+		"directory": "packages/core"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./constants": "./src/constants.ts",
 		"./test-utils": "./src/test-utils.ts",
 		"./secrets-crypto": "./src/secrets/index.ts"
 	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"./constants": {
+				"types": "./dist/constants.d.ts",
+				"default": "./dist/constants.js"
+			},
+			"./secrets-crypto": {
+				"types": "./dist/secrets/index.d.ts",
+				"default": "./dist/secrets/index.js"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsc --build"
+	},
 	"files": [
-		"src",
-		"!src/**/*.test.ts"
+		"dist",
+		"!dist/**/*.test.js",
+		"!dist/**/*.test.d.ts",
+		"!dist/test-utils.js",
+		"!dist/test-utils.d.ts"
 	],
 	"dependencies": {
 		"libsodium-wrappers": "^0.8.4",

@@ -644,6 +644,35 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 		expect(result.infraErrors?.length).toBe(1);
 	});
 
+	it("rejects a manifest containing an unrecognized field at the top level (ManifestSchema strict)", async () => {
+		const logger = createTestLogger();
+		const http = stubBackend("http", "ok");
+		const registry = createWorkflowRegistry({
+			logger,
+			executor: makeExecutor(),
+			keyStore: makeKeyStore(),
+			backends: [http.source],
+			queuesRoot: "/tmp/wfe-test-queues",
+		});
+		const badManifest = {
+			workflows: [VALID_WORKFLOW],
+			futureField: "v2",
+		};
+		const result = await registry.registerOwner(
+			"acme",
+			"demo",
+			new Map([
+				["manifest.json", JSON.stringify(badManifest)],
+				["demo.js", BUNDLE_SOURCE],
+			]),
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(JSON.stringify(result)).toMatch(/Unrecognized key|futureField/);
+		}
+		expect(http.calls).toHaveLength(0);
+	});
+
 	it("rejects a manifest that references an unknown trigger kind before calling any backend", async () => {
 		const logger = createTestLogger();
 		const http = stubBackend("http", "ok");

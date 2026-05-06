@@ -251,6 +251,48 @@ The auto-update timer hasn't ticked yet. Wait up to 60 s. If still stale after 5
 - Check the last run: `journalctl -u podman-auto-update.service --since "10 min ago"`.
 - Force a pull: `sudo systemctl start podman-auto-update.service`.
 
+## SDK publishing to npm
+
+`@workflow-engine/sdk` and `@workflow-engine/core` publish to npm on every push to `release` whose diff touches `packages/sdk` or `packages/core`. Auth is via npm trusted publishing (OIDC) — there is no long-lived `NPM_AUTOMATION_TOKEN` in repo secrets. Workflow: `.github/workflows/deploy-prod.yml` job `publish-npm`.
+
+### Versioning (CalVer)
+
+Versions are computed by CI as `YYYY.M.PATCH` (e.g. `2026.5.0`, `2026.5.1`, `2026.6.0`). The `version` field in `packages/{core,sdk}/package.json` is a permanent placeholder `0.0.0-dev`; CI rewrites it in-place at publish time and does not commit the change back. After a successful publish, CI tags the commit `v$VERSION` and pushes the tag — the tag is the diff anchor for the next run's "is a publish needed?" gate.
+
+### Bootstrap (one-time per package — required before automated publish works)
+
+npm trusted publishing cannot publish a package's first version (npm/cli#8544). Bootstrap each package once with a temporary token, then never again:
+
+1. In the npm UI, generate a short-lived classic automation token for the `@workflow-engine` org. Pick the shortest available expiry. Do NOT add it to repo secrets.
+2. Locally, `npm login` (or `NPM_TOKEN=… npm publish`) and publish a minimal `0.0.0-init` placeholder for the package — a `package.json` with `name`, `version: "0.0.0-init"`, `repository`, `license`, plus an empty `index.js`.
+3. On `https://www.npmjs.com/package/@workflow-engine/<pkg>/access` (or via `npm trust github @workflow-engine/<pkg> --yes` on npm ≥ 11.10), add a GitHub Actions trusted publisher pinned to:
+   - Repository: `stefanhoelzl/workflow-engine`
+   - Workflow: `.github/workflows/deploy-prod.yml`
+   - Branch: `release`
+   - Environment: `production`
+4. `npm deprecate @workflow-engine/<pkg>@0.0.0-init "bootstrap placeholder, do not install"`.
+5. Repeat 2–4 for the other package.
+6. Revoke the temporary classic token in the npm UI.
+
+After this, no long-lived credential exists anywhere and the next push to `release` (with changes in `packages/sdk` or `packages/core`) will publish `2026.M.0`.
+
+### Rebinding (if the workflow path or branch changes)
+
+The trusted-publisher binding is exact: it pins to the workflow file path AND the branch AND the environment. If you rename `.github/workflows/deploy-prod.yml`, move the publish to a non-`release` branch, or rename the `production` GitHub Actions environment, publishes will fail with `OIDC token does not match the configured trusted publisher`. Update the binding on `https://www.npmjs.com/package/@workflow-engine/<pkg>/access` for both packages.
+
+### Bad publish recovery
+
+`npm publish` rejects republishing an already-published version. Fix a bad publish with `npm deprecate @workflow-engine/<pkg>@<bad-version> "<reason>"` (which keeps the version installable but warns). Unpublish (`npm unpublish`) is only available within 72 hours of publish and should be a last resort. The next intentional source change to `packages/sdk` or `packages/core` produces a new CalVer that supersedes the deprecated one.
+
+## Granting a new external author access (`AUTH_ALLOW`)
+
+`AUTH_ALLOW` is a comma-separated string of provider-prefixed identifiers (e.g. `github:org:acme,github:user:alice`) read at runtime boot. It is materialized from the `AUTH_ALLOW_PROD` and `AUTH_ALLOW_STAGING` GitHub Actions repository variables. To onboard a new external author:
+
+1. Confirm the author's GitHub identity. Their owner namespace must be either their own GitHub login (`github:user:<login>`) OR a GitHub org they're a member of (`github:org:<org>`).
+2. Append the entry to the relevant `AUTH_ALLOW_*` GitHub Actions variable. Example: `github:org:acme` → add `,github:user:bob` to onboard `bob`.
+3. Re-deploy by pushing to `main` (staging) or `release` (prod). The runtime reads the variable at boot.
+4. Tell the author to install the SDK (`npm install @workflow-engine/sdk`), mint a GitHub PAT with the **`read:org`** scope (fine-grained tokens: "Members: read" on the org), and run `npx wfe upload --owner <their-namespace> --token <PAT>`. The runtime calls `/user` and `/user/orgs` to populate `user.orgs` and enforces `isMember(user, owner)`. A token without `read:org` returns an empty `orgs` array → membership check fails → 404 (deliberately indistinguishable from "owner does not exist", to prevent enumeration).
+
 ## Risks (carry these in your head)
 
 - **No backups.** `/srv/wfe/<env>` and `/srv/caddy/data` have no off-box copy. A VPS-loss event is total data loss until users re-upload bundles via `wfe upload`. Top-priority follow-up.

@@ -239,26 +239,14 @@ describe("ManifestSchema manual trigger", () => {
 		expect(trigger.name).toBe("rerun");
 	});
 
-	it("strips http-only fields from a manual entry", () => {
+	it("rejects http-only fields on a manual entry", () => {
 		const bad = { ...validManual, method: "POST", body: {} };
-		const parsed = ManifestSchema.parse(base([bad]));
-		const trigger = parsed.workflows[0]?.triggers[0];
-		if (trigger?.type !== "manual") {
-			throw new Error("expected manual");
-		}
-		expect("method" in trigger).toBe(false);
-		expect("body" in trigger).toBe(false);
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow(/Unrecognized key/);
 	});
 
-	it("strips cron-only fields from a manual entry", () => {
+	it("rejects cron-only fields on a manual entry", () => {
 		const bad = { ...validManual, schedule: "0 9 * * *", tz: "UTC" };
-		const parsed = ManifestSchema.parse(base([bad]));
-		const trigger = parsed.workflows[0]?.triggers[0];
-		if (trigger?.type !== "manual") {
-			throw new Error("expected manual");
-		}
-		expect("schedule" in trigger).toBe(false);
-		expect("tz" in trigger).toBe(false);
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow(/Unrecognized key/);
 	});
 
 	it("rejects a manual entry missing inputSchema", () => {
@@ -422,26 +410,14 @@ describe("ManifestSchema ws trigger", () => {
 		expect(trigger.name).toBe("chat");
 	});
 
-	it("strips http-only fields from a ws entry", () => {
+	it("rejects http-only fields on a ws entry", () => {
 		const bad = { ...validWs, method: "POST", body: {} };
-		const parsed = ManifestSchema.parse(base([bad]));
-		const trigger = parsed.workflows[0]?.triggers[0];
-		if (trigger?.type !== "ws") {
-			throw new Error("expected ws");
-		}
-		expect("method" in trigger).toBe(false);
-		expect("body" in trigger).toBe(false);
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow(/Unrecognized key/);
 	});
 
-	it("strips cron-only fields from a ws entry", () => {
+	it("rejects cron-only fields on a ws entry", () => {
 		const bad = { ...validWs, schedule: "0 9 * * *", tz: "UTC" };
-		const parsed = ManifestSchema.parse(base([bad]));
-		const trigger = parsed.workflows[0]?.triggers[0];
-		if (trigger?.type !== "ws") {
-			throw new Error("expected ws");
-		}
-		expect("schedule" in trigger).toBe(false);
-		expect("tz" in trigger).toBe(false);
+		expect(() => ManifestSchema.parse(base([bad]))).toThrow(/Unrecognized key/);
 	});
 
 	it("rejects a ws entry missing request", () => {
@@ -982,5 +958,74 @@ describe("ManifestSchema queues field", () => {
 	it("accepts an empty queues array", () => {
 		const parsed = ManifestSchema.parse(baseWorkflow([]));
 		expect(parsed.workflows[0]?.queues).toEqual([]);
+	});
+});
+
+describe("ManifestSchema strict-mode rejection of unknown fields", () => {
+	const validManual = {
+		name: "rerun",
+		type: "manual" as const,
+		inputSchema: {},
+		outputSchema: {},
+	};
+
+	const validWorkflow = {
+		name: "demo",
+		module: "demo.js",
+		sha: "sha",
+		env: {},
+		actions: [],
+		triggers: [validManual],
+	};
+
+	const wrap = (overrides: Record<string, unknown> = {}) => ({
+		workflows: [{ ...validWorkflow, ...overrides }],
+	});
+
+	it("rejects an unknown top-level manifest key", () => {
+		expect(() =>
+			ManifestSchema.parse({
+				workflows: [validWorkflow],
+				futureField: "v2",
+			}),
+		).toThrow(/Unrecognized key/);
+	});
+
+	it("rejects an unknown field on a workflow entry", () => {
+		expect(() =>
+			ManifestSchema.parse(wrap({ description: "a friendly demo" })),
+		).toThrow(/Unrecognized key/);
+	});
+
+	it("rejects an unknown field on an HTTP trigger entry", () => {
+		const validHttp = {
+			name: "hello",
+			type: "http" as const,
+			method: "GET",
+			request: { body: {}, headers: {} },
+			inputSchema: {},
+			outputSchema: {},
+		};
+		expect(() =>
+			ManifestSchema.parse(
+				wrap({
+					triggers: [{ ...validHttp, priority: 1 }],
+				}),
+			),
+		).toThrow(/Unrecognized key/);
+	});
+
+	it("rejects an unknown field on a queue entry", () => {
+		expect(() =>
+			ManifestSchema.parse(
+				wrap({
+					queues: [{ name: "items", schema: {}, retentionDays: 7 }],
+				}),
+			),
+		).toThrow(/Unrecognized key/);
+	});
+
+	it("accepts a well-formed manifest with only declared fields", () => {
+		expect(() => ManifestSchema.parse(wrap())).not.toThrow();
 	});
 });
