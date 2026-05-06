@@ -94,8 +94,8 @@ var __wfe_exports__ = (function(exports) {
 // `secrets` plugin (packages/runtime/src/plugins/secrets.ts):
 const SECRETS_GLOBALS = ["$secrets", "workflow"] as const;
 
-// `sdk-support` plugin (packages/sdk/src/sdk-support/index.ts):
-const SDK_SUPPORT_GLOBALS = ["__sdk"] as const;
+// `action-dispatch` plugin (packages/runtime/src/plugins/action-dispatch.ts):
+const ACTION_DISPATCH_GLOBALS = ["__sdk"] as const;
 
 // `sql` plugin (packages/sandbox-stdlib/src/sql/index.ts):
 const SQL_GLOBALS = ["__sql"] as const;
@@ -194,7 +194,7 @@ const WEB_PLATFORM_GLOBALS = [
 
 const EXPECTED_DELTA: readonly string[] = [
 	...SECRETS_GLOBALS,
-	...SDK_SUPPORT_GLOBALS,
+	...ACTION_DISPATCH_GLOBALS,
 	...SQL_GLOBALS,
 	...MAIL_GLOBALS,
 	...QUEUE_GLOBALS,

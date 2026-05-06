@@ -516,7 +516,7 @@ describe("action callable: host bridge + in-sandbox handler", () => {
 
 	beforeEach(() => {
 		// The SDK delegates to globalThis.__sdk.dispatchAction (installed by the
-		// sdk-support plugin). Install the same dispatch shape used in
+		// action-dispatch plugin). Install the same dispatch shape used in
 		// production: the plugin validates input host-side, runs the guest
 		// handler, then validates output host-side. Output validation is NOT
 		// performed by the SDK; this mock simulates a passthrough host

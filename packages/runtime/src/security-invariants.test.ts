@@ -87,7 +87,7 @@ async function probe(code: string, store: SandboxStore): Promise<unknown> {
 
 // §4.2 — private descriptors from all composed plugins are unreachable from
 // guest source after Phase-3 deletion. The canonical ones are:
-//   - `__sdkDispatchAction` (sdk-support)
+//   - `__sdkDispatchAction` (action-dispatch)
 //   - `__reportErrorHost` (web-platform)
 //   - `$fetch/do` (fetch)
 //   - `__console_{log,info,warn,error,debug}` (console)

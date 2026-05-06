@@ -258,9 +258,6 @@ importers:
       '@workflow-engine/core':
         specifier: workspace:*
         version: link:../core
-      '@workflow-engine/sandbox':
-        specifier: workspace:*
-        version: link:../sandbox
       citty:
         specifier: ^0.2.2
         version: 0.2.2

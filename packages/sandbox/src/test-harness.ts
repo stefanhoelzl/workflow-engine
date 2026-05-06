@@ -11,7 +11,7 @@
 //   Strategy B — `withPluginSandbox(source, options, fn)`: spins up a real
 //   sandbox with the given plugin composition and user source, then calls
 //   `fn(sb)`. Disposes on exit even if `fn` throws. Suitable for
-//   multi-plugin integration cases (e.g. `sdk-support` captures bridges
+//   multi-plugin integration cases (e.g. `action-dispatch` captures bridges
 //   installed by `host-call-action`).
 //
 // Neither helper is production code — they live in the package but are

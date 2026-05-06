@@ -209,7 +209,7 @@ async function runWpt(
 		// WPT tests rely on web-platform globals (self, EventTarget, fetch,
 		// timers, console, etc.) that live in sandbox-stdlib plugins. Compose
 		// the subset of the production plugin list that's relevant to WPT;
-		// runtime-only plugins (host-call-action, sdk-support, trigger) are
+		// runtime-only plugins (host-call-action, action-dispatch, trigger) are
 		// omitted because no action/trigger manifest applies. The polyfill
 		// IIFE ships as `webPlatformPlugin.guestSource` produced by the
 		// `?sandbox-plugin` transform — no runtime config wiring needed.

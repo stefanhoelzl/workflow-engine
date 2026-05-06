@@ -39,12 +39,12 @@ function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 		| undefined;
 	if (!dep || typeof dep.validateAction !== "function") {
 		throw new Error(
-			'sdk-support plugin: dependency "host-call-action" did not export validateAction',
+			'action-dispatch plugin: dependency "host-call-action" did not export validateAction',
 		);
 	}
 	if (typeof dep.validateActionOutput !== "function") {
 		throw new Error(
-			'sdk-support plugin: dependency "host-call-action" did not export validateActionOutput',
+			'action-dispatch plugin: dependency "host-call-action" did not export validateActionOutput',
 		);
 	}
 	return {
@@ -55,7 +55,7 @@ function resolveHostCallActionDeps(deps: DepsMap): HostCallActionExports {
 	};
 }
 
-const name = "sdk-support";
+const name = "action-dispatch";
 const dependsOn: readonly string[] = ["host-call-action"];
 
 interface ValidationIssueLike {
