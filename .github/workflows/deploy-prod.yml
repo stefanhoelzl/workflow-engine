@@ -24,3 +24,102 @@ jobs:
           tag: release
           url: https://workflow-engine.webredirect.org
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish @workflow-engine/core and @workflow-engine/sdk to npm via
+  # trusted publishing (OIDC). Pinned via npmjs.com trusted-publisher
+  # config to this workflow path + the `release` branch + the
+  # `production` environment, so no NPM_AUTOMATION_TOKEN is needed.
+  # Runs in parallel with `deploy` (independent — image push and npm
+  # publish target different registries).
+  publish-npm:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write   # tag push
+      id-token: write   # OIDC + --provenance
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # `git describe --tags` needs full history to find prior `v*` tags.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pnpm
+      # Trusted publishing's OIDC exchange requires npm ≥ 11.5.1.
+      - run: npm install -g npm@latest
+
+      - name: Build
+        run: pnpm -r build
+        env:
+          WEBHOOK_TOKEN: ci-presence-only
+          IMAP_USER: ci-presence-only
+          IMAP_PASSWORD: ci-presence-only
+
+      - name: Compute next CalVer (gated on packages/sdk + packages/core diff)
+        id: version
+        run: |
+          set -euo pipefail
+          LAST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGED=$(git diff --name-only "$LAST_TAG"..HEAD -- packages/sdk packages/core)
+          else
+            # First publish — treat as changed.
+            CHANGED=initial
+          fi
+          if [ -z "$CHANGED" ]; then
+            echo "No changes under packages/sdk or packages/core since $LAST_TAG; skipping publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LATEST=$(npm view @workflow-engine/sdk version 2>/dev/null || echo "0.0.0")
+          NOW="$(date -u +%Y.%-m)"
+          case "$LATEST" in
+            "$NOW".*)
+              PATCH="${LATEST##*.}"
+              NEXT="$NOW.$((PATCH + 1))"
+              ;;
+            *)
+              NEXT="$NOW.0"
+              ;;
+          esac
+          echo "Computed CalVer: $NEXT (latest on npm: $LATEST)"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite versions in core + sdk package.json
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.version.outputs.next }}"
+          npm --prefix packages/core pkg set "version=$NEXT"
+          npm --prefix packages/sdk pkg set "version=$NEXT"
+
+      - name: Pack core + sdk
+        id: pack
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          CORE_TGZ=$(pnpm --filter @workflow-engine/core pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          SDK_TGZ=$(pnpm --filter @workflow-engine/sdk pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          echo "core=$CORE_TGZ" >> "$GITHUB_OUTPUT"
+          echo "sdk=$SDK_TGZ" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm via trusted publishing (OIDC)
+        if: steps.version.outputs.skip == 'false'
+        # Run from $RUNNER_TEMP so npm doesn't apply the workspace's
+        # `devEngines.runtime` constraint to the publish target.
+        # Order matters: core must be on the registry before sdk
+        # publishes, because sdk's tarball references core@$VERSION.
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          npm publish --access public --provenance "${{ steps.pack.outputs.core }}"
+          npm publish --access public --provenance "${{ steps.pack.outputs.sdk }}"
+
+      - name: Tag and push
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.version.outputs.next }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v$NEXT"
+          git push origin "v$NEXT"

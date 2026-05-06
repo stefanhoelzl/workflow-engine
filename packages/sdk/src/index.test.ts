@@ -977,36 +977,34 @@ describe("ManifestSchema", () => {
 		expect(wf?.triggers).toHaveLength(1);
 	});
 
-	it("strips a legacy path field from an HTTP trigger entry (z.object default)", () => {
-		const parsed = ManifestSchema.parse({
-			workflows: [
-				{
-					...validWorkflow,
-					triggers: [
-						{
-							name: "legacy",
-							type: "http",
-							path: "legacy",
-							method: "POST",
-							request: {
-								body: { type: "object" },
-								headers: {
-									type: "object",
-									properties: {},
-									additionalProperties: false,
+	it("rejects a legacy path field on an HTTP trigger entry (strict mode)", () => {
+		expect(() =>
+			ManifestSchema.parse({
+				workflows: [
+					{
+						...validWorkflow,
+						triggers: [
+							{
+								name: "legacy",
+								type: "http",
+								path: "legacy",
+								method: "POST",
+								request: {
+									body: { type: "object" },
+									headers: {
+										type: "object",
+										properties: {},
+										additionalProperties: false,
+									},
 								},
+								inputSchema: { type: "object" },
+								outputSchema: { type: "object" },
 							},
-							inputSchema: { type: "object" },
-							outputSchema: { type: "object" },
-						},
-					],
-				},
-			],
-		});
-		const trigger = parsed.workflows[0]?.triggers[0];
-		expect(trigger).toBeDefined();
-		expect((trigger as Record<string, unknown>).path).toBeUndefined();
-		expect((trigger as Record<string, unknown>).params).toBeUndefined();
+						],
+					},
+				],
+			}),
+		).toThrow(/Unrecognized key/);
 	});
 
 	it("rejects an HTTP trigger whose name fails the identifier regex", () => {
@@ -1144,12 +1142,13 @@ describe("ManifestSchema", () => {
 		).toThrow();
 	});
 
-	it("strips legacy fields like events from the parsed shape", () => {
-		const parsed = ManifestSchema.parse({
-			...validManifest,
-			events: [{ name: "ignored", schema: { type: "object" } }],
-		});
-		expect(parsed).not.toHaveProperty("events");
+	it("rejects legacy fields like events at the top level (strict mode)", () => {
+		expect(() =>
+			ManifestSchema.parse({
+				...validManifest,
+				events: [{ name: "ignored", schema: { type: "object" } }],
+			}),
+		).toThrow(/Unrecognized key/);
 	});
 });
 

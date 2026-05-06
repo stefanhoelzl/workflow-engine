@@ -237,7 +237,7 @@ const jsonSchemaValidator = z.custom<Record<string, unknown>>((val) => {
 	}
 });
 
-const actionManifestSchema = z.object({
+const actionManifestSchema = z.strictObject({
 	name: z.string(),
 	input: jsonSchemaValidator,
 	output: jsonSchemaValidator,
@@ -248,21 +248,21 @@ const REPO_NAME_RE = /^[a-zA-Z0-9._-]{1,100}$/;
 const TRIGGER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 const QUEUE_NAME_RE = /^[a-z][a-zA-Z0-9]*$/;
 
-const queueManifestSchema = z.object({
+const queueManifestSchema = z.strictObject({
 	name: z.string().regex(QUEUE_NAME_RE),
 	schema: jsonSchemaValidator,
 });
 
-const httpTriggerManifestSchema = z.object({
+const httpTriggerManifestSchema = z.strictObject({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("http"),
 	method: z.string(),
-	request: z.object({
+	request: z.strictObject({
 		body: jsonSchemaValidator,
 		headers: jsonSchemaValidator,
 	}),
 	response: z
-		.object({
+		.strictObject({
 			body: jsonSchemaValidator.optional(),
 			headers: jsonSchemaValidator.optional(),
 		})
@@ -329,7 +329,7 @@ function containsSentinel(value: string): boolean {
 	return CONTAINS_SENTINEL_RE.test(value);
 }
 
-const cronTriggerManifestSchema = z.object({
+const cronTriggerManifestSchema = z.strictObject({
 	name: z.string(),
 	type: z.literal("cron"),
 	schedule: z
@@ -345,7 +345,7 @@ const cronTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
-const manualTriggerManifestSchema = z.object({
+const manualTriggerManifestSchema = z.strictObject({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("manual"),
 	inputSchema: jsonSchemaValidator,
@@ -358,11 +358,11 @@ const manualTriggerManifestSchema = z.object({
 // against the current IMAP session after the handler completes. Authors
 // write the full UID-scoped command (e.g. `UID STORE 42 +FLAGS (\Seen)`);
 // the runtime does not bind UIDs for them.
-const imapTriggerResultSchema = z.object({
+const imapTriggerResultSchema = z.strictObject({
 	command: z.array(z.string()).optional(),
 });
 
-const imapAddressSchema = z.object({
+const imapAddressSchema = z.strictObject({
 	name: z.string().optional(),
 	address: z.string(),
 });
@@ -370,7 +370,7 @@ const imapAddressSchema = z.object({
 // Parsed message payload delivered to the imap handler. Attachments are
 // base64-inline because the main/sandbox bridge is JSON-only — File/Blob
 // objects do not survive the crossing.
-const imapMessageSchema = z.object({
+const imapMessageSchema = z.strictObject({
 	uid: z.number(),
 	messageId: z.string().optional(),
 	inReplyTo: z.string().optional(),
@@ -386,7 +386,7 @@ const imapMessageSchema = z.object({
 	html: z.string().optional(),
 	headers: z.record(z.string(), z.array(z.string())),
 	attachments: z.array(
-		z.object({
+		z.strictObject({
 			filename: z.string().optional(),
 			contentType: z.string(),
 			size: z.number(),
@@ -397,7 +397,7 @@ const imapMessageSchema = z.object({
 	),
 });
 
-const wsTriggerManifestSchema = z.object({
+const wsTriggerManifestSchema = z.strictObject({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("ws"),
 	request: jsonSchemaValidator,
@@ -406,7 +406,7 @@ const wsTriggerManifestSchema = z.object({
 	outputSchema: jsonSchemaValidator,
 });
 
-const imapTriggerManifestSchema = z.object({
+const imapTriggerManifestSchema = z.strictObject({
 	name: z.string().regex(TRIGGER_NAME_RE),
 	type: z.literal("imap"),
 	host: z.string(),
@@ -443,7 +443,7 @@ type TriggerManifest = z.infer<typeof triggerManifestSchema>;
 const SECRETS_KEY_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 const workflowManifestSchema = z
-	.object({
+	.strictObject({
 		name: z.string(),
 		module: z.string(),
 		sha: z.string(),
@@ -543,7 +543,7 @@ const workflowManifestSchema = z
 	});
 
 const ManifestSchema = z
-	.object({
+	.strictObject({
 		workflows: z.array(workflowManifestSchema),
 	})
 	.refine(

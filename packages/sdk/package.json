@@ -1,7 +1,7 @@
 {
 	"name": "@workflow-engine/sdk",
 	"description": "SDK for authoring workflow-engine workflows: DSL, triggers, event schemas, Zod re-exports.",
-	"version": "0.1.0",
+	"version": "0.0.0-dev",
 	"type": "module",
 	"sideEffects": false,
 	"license": "MIT",
@@ -14,6 +14,18 @@
 		".": "./src/index.ts",
 		"./cli": "./src/cli/index.ts"
 	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"./cli": {
+				"types": "./dist/cli/index.d.ts",
+				"default": "./dist/cli/index.js"
+			}
+		}
+	},
 	"bin": {
 		"wfe": "./dist/cli/cli.js"
 	},
@@ -22,8 +34,8 @@
 	},
 	"files": [
 		"dist",
-		"src",
-		"!src/**/*.test.ts"
+		"!dist/**/*.test.js",
+		"!dist/**/*.test.d.ts"
 	],
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",

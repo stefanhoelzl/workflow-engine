@@ -56,3 +56,68 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/docker-build
+
+  # Pack `@workflow-engine/core` and `@workflow-engine/sdk` exactly as
+  # `pnpm publish` would (workspace:* rewrites and all), install both
+  # tarballs into a throwaway project outside the workspace, and verify
+  # the canonical `workflows/src/demo.ts` builds against the published
+  # shape. Catches publish-shape regressions that the workspace's
+  # symlinked `workspace:*` resolution hides — `exports` typos, missing
+  # `dist/` files, leaked `workspace:*` deps, missing `wfe` shebang,
+  # undeclared peer deps. Also runs `npm publish --dry-run` against each
+  # tarball to catch metadata + provenance-prerequisite errors before
+  # the release-time job. Runs on every PR (no path filter).
+  smoke-publish-shape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-pnpm
+      # Trusted publishing's --dry-run validation paths require npm ≥ 11.5.1.
+      # Node 24 ships with a recent npm; force-upgrade to be safe.
+      - run: npm install -g npm@latest
+      - run: pnpm -r build
+        env:
+          WEBHOOK_TOKEN: ci-presence-only
+          IMAP_USER: ci-presence-only
+          IMAP_PASSWORD: ci-presence-only
+
+      - name: Pack core and sdk
+        id: pack
+        run: |
+          set -euo pipefail
+          CORE_TGZ=$(pnpm --filter @workflow-engine/core pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          SDK_TGZ=$(pnpm --filter @workflow-engine/sdk pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          echo "core=$CORE_TGZ" >> "$GITHUB_OUTPUT"
+          echo "sdk=$SDK_TGZ" >> "$GITHUB_OUTPUT"
+
+      - name: Build demo.ts against packed tarballs
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$RUNNER_TEMP/smoke"
+          mkdir -p "$SMOKE_DIR/src"
+          cd "$SMOKE_DIR"
+          npm init -y >/dev/null
+          # The SDK's typecheck path uses `module: NodeNext`; without
+          # `"type": "module"` Node treats source as CommonJS and rejects
+          # ESM-style `export` syntax (TS1287).
+          npm pkg set type=module
+          npm install "${{ steps.pack.outputs.core }}" "${{ steps.pack.outputs.sdk }}"
+          cp "$GITHUB_WORKSPACE/workflows/src/demo.ts" src/workflow.ts
+          npx wfe build
+          test -s dist/workflow.js
+        env:
+          WEBHOOK_TOKEN: ci-presence-only
+          IMAP_USER: ci-presence-only
+          IMAP_PASSWORD: ci-presence-only
+
+      - name: npm publish --dry-run (publish-shape gate)
+        # Run from $RUNNER_TEMP (outside the workspace) so npm doesn't apply
+        # the workspace's `devEngines.runtime` Node-version constraint to the
+        # publish target. `--tag dev` is required because the placeholder
+        # `0.0.0-dev` version is treated as a prerelease — at real release time
+        # the version is CalVer (e.g. 2026.5.0) and `--tag dev` is unnecessary.
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          npm publish --dry-run --tag dev --access public --provenance "${{ steps.pack.outputs.core }}"
+          npm publish --dry-run --tag dev --access public --provenance "${{ steps.pack.outputs.sdk }}"
