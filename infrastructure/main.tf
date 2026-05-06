@@ -182,10 +182,7 @@ locals {
       runtime_user       = "wfe-prod"
       gh_oauth_client_id = var.gh_oauth_client_id_prod
       gh_oauth_secret    = var.gh_oauth_client_secret_prod
-      # NOTE: separator is `;` to match the currently-deployed :release/:main
-      # image (built from a pre-`863377a0` commit). Switch to `,` once a fresh
-      # image is built from this branch (the comma-separator code lands).
-      auth_allow = "github:user:stefanhoelzl;github:user:mrh1997;github:org:baltech-ag;github:org:sharepad-de"
+      auth_allow         = "github:user:stefanhoelzl,github:user:mrh1997,github:org:baltech-ag,github:org:sharepad-de"
     }
     staging = {
       domain             = "staging.workflow-engine.webredirect.org"
