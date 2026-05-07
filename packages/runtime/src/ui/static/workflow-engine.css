@@ -1285,6 +1285,20 @@ body {
 	color: var(--text);
 }
 
+.event-detail-fragment {
+	/* Left padding clears the row's 3px status strip and gives the tree's
+	   depth-0 disclosure chevron breathing room. */
+	padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-4);
+	color: var(--text);
+}
+.event-detail-tree {
+	max-height: 40vh;
+	overflow-y: auto;
+	/* Indent every JSON-tree row a bit so nested levels are easier to
+	   distinguish from the row's left edge. */
+	padding-left: var(--sp-2);
+}
+
 .flame-header {
 	display: flex;
 	flex-direction: column;

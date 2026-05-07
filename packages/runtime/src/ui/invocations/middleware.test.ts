@@ -429,14 +429,20 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_reject"');
 		expect(html).toMatch(/<span class="entry-trigger">ingest<\/span>/);
-		// Status is carried by the row's `s-failed` class.
-		expect(html).toMatch(/class="entry s-failed"/);
+		// Status is carried by the row's `s-failed` class. The row is now
+		// expandable so it carries the `entry-expandable` modifier too.
+		expect(html).toMatch(/class="entry entry-expandable s-failed"/);
 		expect(html).toContain('aria-label="trigger rejected"');
 		// First-issue summary surfaces in the title attribute
 		expect(html).toContain("name: Required");
-		// No dispatch chip and no flamegraph expand affordance for rejection
-		expect(html).not.toContain('id="inv-evt_reject"></details>');
-		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_reject');
+		// Rejection rows are expandable to an event-detail fragment (NOT a
+		// flamegraph fragment): the row is a <details> and its hx-get
+		// targets `/event`, not `/flamegraph`.
+		expect(html).toMatch(/<details[^>]*id="inv-evt_reject"/);
+		expect(html).toContain('hx-get="/invocations/t0/r0/evt_reject/event"');
+		expect(html).not.toContain(
+			'hx-get="/invocations/t0/r0/evt_reject/flamegraph"',
+		);
 	});
 });
 
@@ -484,8 +490,9 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 		expect(html).toMatch(/<span class="entry-workflow">demo<\/span>/);
 		expect(html).not.toMatch(/<span class="entry-trigger">/);
 		// Row status is conveyed by the `s-upload` class (drives the accent
-		// left-edge strip); no status badge is rendered.
-		expect(html).toMatch(/class="entry s-upload"/);
+		// left-edge strip); no status badge is rendered. The row is now
+		// expandable so it carries the `entry-expandable` modifier too.
+		expect(html).toMatch(/class="entry entry-expandable s-upload"/);
 		expect(html).not.toMatch(/<span class="badge/);
 		// Leading kind-icon in the accent-coloured upload variant
 		expect(html).toMatch(
@@ -499,8 +506,13 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 			/class="entry-meta-cell entry-dispatch entry-dispatch--upload"[^>]*title="alice &lt;alice@acme&gt;"/,
 		);
 		expect(html).not.toContain(">UPLOAD</span>");
-		// no flamegraph expand affordance
-		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_upload');
+		// Upload rows are expandable to an event-detail fragment so the user
+		// can inspect uploader + workflowSha + bundle metadata in-page.
+		expect(html).toMatch(/<details[^>]*id="inv-evt_upload"/);
+		expect(html).toContain('hx-get="/invocations/t0/r0/evt_upload/event"');
+		expect(html).not.toContain(
+			'hx-get="/invocations/t0/r0/evt_upload/flamegraph"',
+		);
 	});
 
 	it("surfaces upload rows on the workflow-level URL", async () => {
@@ -675,6 +687,207 @@ describe("dashboard middleware — auth scoping", () => {
 	it("returns 404 for a malformed repo identifier", async () => {
 		const app = await mount(store);
 		const res = await app.request("/invocations/t0/bad%20repo", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("dashboard middleware — event-detail fragment endpoint", () => {
+	let store: EventStore;
+	let disposeStore: () => Promise<void>;
+
+	beforeEach(async () => {
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
+	});
+
+	const REJECTION_INPUT = {
+		trigger: "ingest",
+		issues: [{ path: ["name"], message: "Required" }],
+		method: "POST",
+		path: "/webhooks/t0/r0/wf/ingest",
+	};
+
+	it("returns the rejection event as a JSON tree fragment", async () => {
+		await store.record(
+			event({
+				id: "evt_reject",
+				kind: "trigger.rejection",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "http.body-validation",
+				input: REJECTION_INPUT,
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_reject/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		// Fragment, not a page shell.
+		expect(html).not.toContain("<html");
+		expect(html).toContain('class="event-detail-fragment"');
+		// JSON payload carried verbatim on the host element so the client
+		// renderer can mount the tree.
+		const match = html.match(/data-json="([^"]+)"/);
+		const raw = match?.[1];
+		if (raw === undefined) {
+			throw new Error("data-json attribute missing from fragment");
+		}
+		const parsed = JSON.parse(raw.replace(/&quot;/g, '"'));
+		expect(parsed.kind).toBe("trigger.rejection");
+		expect(parsed.name).toBe("http.body-validation");
+		expect(parsed.id).toBe("evt_reject");
+		expect(parsed.at).toBeDefined();
+		expect(parsed.input.issues[0].path).toEqual(["name"]);
+		expect(parsed.input.issues[0].message).toBe("Required");
+		expect(parsed.input.method).toBe("POST");
+		expect(parsed.input.path).toBe("/webhooks/t0/r0/wf/ingest");
+	});
+
+	it("returns the upload event as a JSON tree fragment with dispatch + workflowSha", async () => {
+		await store.record(
+			event({
+				id: "evt_upload",
+				kind: "system.upload",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "demo",
+				workflow: "demo",
+				workflowSha: "abcdef0123456789".padEnd(64, "0"),
+				input: { name: "demo", module: "demo.js" },
+				meta: {
+					dispatch: {
+						source: "upload",
+						user: { login: "alice", mail: "alice@acme" },
+					},
+				},
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_upload/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		const match = html.match(/data-json="([^"]+)"/);
+		const raw = match?.[1];
+		if (raw === undefined) {
+			throw new Error("data-json attribute missing from fragment");
+		}
+		const parsed = JSON.parse(raw.replace(/&quot;/g, '"'));
+		expect(parsed.kind).toBe("system.upload");
+		expect(parsed.workflowSha).toBe("abcdef0123456789".padEnd(64, "0"));
+		expect(parsed.meta.dispatch.user.login).toBe("alice");
+		expect(parsed.meta.dispatch.user.mail).toBe("alice@acme");
+	});
+
+	it("returns 404 for a real paired-bar invocation", async () => {
+		await store.record(
+			event({ id: "evt_real", kind: "trigger.request", seq: 0 }),
+		);
+		await store.record(
+			event({
+				id: "evt_real",
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				output: { status: 200 },
+				at: "2026-04-16T10:00:01.000Z",
+				ts: 1_000_000,
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_real/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 for a trigger.exception row", async () => {
+		await store.record(
+			event({
+				id: "evt_exc",
+				kind: "trigger.exception",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "imap.poll-failed",
+				input: { trigger: "inbound", stage: "connect" },
+				error: { message: "x" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_exc/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 for an unknown id", async () => {
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_missing/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 for a non-member", async () => {
+		const app = await mount(store);
+		const res = await app.request("/invocations/other/r0/anything/event", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("dashboard middleware — flamegraph 404 for synthetic ids", () => {
+	let store: EventStore;
+	let disposeStore: () => Promise<void>;
+
+	beforeEach(async () => {
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
+	});
+
+	it.each([
+		["trigger.rejection", "evt_reject_fg"],
+		["trigger.exception", "evt_exc_fg"],
+		["system.upload", "evt_upload_fg"],
+	] as const)("returns 404 for a single-leaf %s row", async (kind, id) => {
+		await store.record(
+			event({
+				id,
+				kind,
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: kind === "system.upload" ? "demo" : "x",
+				input: { trigger: "ingest" },
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request(`/invocations/t0/r0/${id}/flamegraph`, {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 404 for an unknown id (no events)", async () => {
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/evt_missing/flamegraph", {
 			headers: AUTH_HEADERS,
 		});
 		expect(res.status).toBe(404);

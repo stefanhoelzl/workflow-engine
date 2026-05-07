@@ -11,6 +11,7 @@ import type { Middleware } from "../../triggers/http.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { buildSidebarData, SidebarTree } from "../sidebar-tree.js";
 import { Tabs } from "../tabs.js";
+import { renderEventDetail } from "./event-detail.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
 import { renderInvocationsPage } from "./page.js";
@@ -496,6 +497,32 @@ async function attachExhaustion(
 	});
 }
 
+const SYNTHETIC_LEAF_KINDS = new Set([
+	"trigger.exception",
+	"trigger.rejection",
+	"system.upload",
+]);
+
+const INSPECTABLE_LEAF_KINDS = new Set(["trigger.rejection", "system.upload"]);
+
+function isSyntheticLeaf(events: readonly InvocationEvent[]): boolean {
+	const [first] = events;
+	return (
+		events.length === 1 &&
+		first !== undefined &&
+		SYNTHETIC_LEAF_KINDS.has(first.kind)
+	);
+}
+
+function isInspectableLeaf(events: readonly InvocationEvent[]): boolean {
+	const [first] = events;
+	return (
+		events.length === 1 &&
+		first !== undefined &&
+		INSPECTABLE_LEAF_KINDS.has(first.kind)
+	);
+}
+
 async function fetchInvocationEvents(
 	eventStore: EventStore,
 	id: string,
@@ -685,6 +712,9 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 			owner,
 			repo,
 		);
+		if (events.length === 0 || isSyntheticLeaf(events)) {
+			return c.notFound();
+		}
 		// Resolve trigger kind so the trigger bar gets the same icon the
 		// sidebar uses for that kind. Workflow + trigger name come from the
 		// trigger.request event; the registry lookup is best-effort —
@@ -699,6 +729,31 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 				})
 			: undefined;
 		return c.html(renderFlamegraph(events, triggerKind));
+	});
+
+	// -- Event-detail fragment -------------------------------------------
+	// Registered before the 4-segment trigger filter for the same reason as
+	// the flamegraph route. Restricted to single-leaf rows of kind
+	// `trigger.rejection` or `system.upload`; every other case (real paired
+	// row, `trigger.exception`, unknown id, non-member) responds 404 with
+	// the same shape — no enumeration distinction (see
+	// `invocations-list-view/spec.md` "Event-detail fragment endpoint").
+	app.get("/:owner/:repo/:id/event", async (c) => {
+		const owner = c.req.param("owner");
+		const repo = c.req.param("repo");
+		const id = c.req.param("id");
+		logger?.debug("invocations.event.request", { id, owner, repo });
+		const events = await fetchInvocationEvents(
+			deps.eventStore,
+			id,
+			owner,
+			repo,
+		);
+		const [leaf] = events;
+		if (leaf === undefined || !isInspectableLeaf(events)) {
+			return c.notFound();
+		}
+		return c.html(renderEventDetail(leaf));
 	});
 
 	// -- /invocations/:owner/:repo/:workflow/:trigger -- filter to one trigger

@@ -361,6 +361,20 @@
 	// Alpine.data.
 	window.wfeRenderJsonTree = renderJson;
 
+	// Bridge htmx swaps into Alpine. The invocations row expands via
+	// `hx-get`/`hx-swap="innerHTML"` and may inject markup carrying
+	// `x-data="wfeJsonTree"` (e.g. the event-detail fragment). Alpine does
+	// not auto-walk htmx-swapped subtrees, so we trigger `initTree` on the
+	// swap target here. Idempotent — running on already-initialised nodes
+	// is a no-op for Alpine.
+	function initSwapTarget(event) {
+		const target = event?.detail?.target ?? event?.target;
+		if (target && target.nodeType === 1 && window.Alpine?.initTree) {
+			window.Alpine.initTree(target);
+		}
+	}
+	document.addEventListener("htmx:afterSwap", initSwapTarget);
+
 	// Alpine initialises on `alpine:init`; if we load after that event has
 	// already fired, register synchronously.
 	if (!register()) {

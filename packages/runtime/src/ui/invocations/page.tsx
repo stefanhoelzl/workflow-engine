@@ -287,26 +287,41 @@ function RowCells({
 	);
 }
 
-function Row({ row }: { row: InvocationRow }) {
-	const noFlamegraph =
-		row.status === "pending" ||
+function fragmentUrlForRow(row: InvocationRow): string | null {
+	// Synthetic single-leaf rows that are user-relevant (rejection, upload)
+	// expand to an event-detail fragment. Real paired-bar rows expand to a
+	// flamegraph fragment. Pending rows and `trigger.exception` rows are
+	// not expandable.
+	if (row.status === "pending") {
+		return null;
+	}
+	if (row.syntheticKind === "trigger.exception") {
+		return null;
+	}
+	if (
 		row.syntheticKind === "trigger.rejection" ||
-		row.syntheticKind === "trigger.exception" ||
-		row.syntheticKind === "system.upload";
+		row.syntheticKind === "system.upload"
+	) {
+		return `/invocations/${row.owner}/${row.repo}/${row.id}/event`;
+	}
+	return `/invocations/${row.owner}/${row.repo}/${row.id}/flamegraph`;
+}
+
+function Row({ row }: { row: InvocationRow }) {
+	const fragmentUrl = fragmentUrlForRow(row);
 	const statusCls = StatusClass(row);
-	if (noFlamegraph) {
+	if (fragmentUrl === null) {
 		return (
 			<div class={`entry ${statusCls}`} id={`inv-${row.id}`}>
 				<RowCells row={row} expandable={false} />
 			</div>
 		);
 	}
-	const flamegraphUrl = `/invocations/${row.owner}/${row.repo}/${row.id}/flamegraph`;
 	return (
 		<details
 			class={`entry entry-expandable ${statusCls}`}
 			id={`inv-${row.id}`}
-			hx-get={flamegraphUrl}
+			hx-get={fragmentUrl}
 			hx-trigger="toggle once"
 			hx-target="find .flame-slot"
 			hx-swap="innerHTML"
