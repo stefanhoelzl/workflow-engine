@@ -417,8 +417,9 @@ async function fetchSyntheticRows(
 	const out: InvocationRow[] = [];
 	for (const r of rows) {
 		if (r.kind === "system.upload") {
-			// per-trigger filter URLs do not surface upload rows.
-			if (narrow) {
+			// per-trigger filter URLs do not surface upload rows; workflow-level
+			// and broader scopes do.
+			if (narrow?.trigger) {
 				continue;
 			}
 			out.push(buildUploadRow(r));
