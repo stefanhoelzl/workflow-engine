@@ -88,9 +88,14 @@ The invocations view SHALL render a user-visible loading state before invocation
 
 ### Requirement: Invocation rows are expandable into an inline flamegraph
 
-Each rendered invocation row whose status is `succeeded` or `failed` SHALL provide an expand affordance that, when activated by the user, reveals an inline flamegraph fragment for that invocation. Pending rows, `uploaded` rows (synthetic `system.upload`), and synthetic `trigger.rejection` rows SHALL NOT provide an expand affordance. Multiple rows MAY be expanded simultaneously (no accordion coordination).
+Each rendered invocation row whose status is `succeeded` or `failed` SHALL provide an expand affordance. When activated, the affordance SHALL reveal:
 
-The flamegraph fragment SHALL be loaded on demand the first time a row is expanded, scoped to that row's own `(owner, repo)` rather than to the page-level filter — so a cross-scope view still resolves each row's flamegraph correctly. Subsequent toggles on a row that has already loaded its fragment SHALL NOT trigger a re-fetch.
+- For real paired-bar invocations (rows with a `trigger.request` opening event): an inline flamegraph fragment loaded from `GET /invocations/:owner/:repo/:id/flamegraph`.
+- For synthetic single-leaf rows of kind `trigger.rejection` or `system.upload`: an inline event-detail fragment loaded from `GET /invocations/:owner/:repo/:id/event` (see "Event-detail fragment endpoint").
+
+Pending rows and synthetic `trigger.exception` rows SHALL NOT provide an expand affordance. Multiple rows MAY be expanded simultaneously (no accordion coordination).
+
+The fragment SHALL be loaded on demand the first time a row is expanded, scoped to that row's own `(owner, repo)` rather than to the page-level filter — so a cross-scope view still resolves each row's fragment correctly. Subsequent toggles on a row that has already loaded its fragment SHALL NOT trigger a re-fetch.
 
 #### Scenario: Terminal row's flamegraph is fetched from its own scope
 
@@ -105,11 +110,37 @@ The flamegraph fragment SHALL be loaded on demand the first time a row is expand
 - **THEN** the row SHALL NOT include an expand affordance
 - **AND** activating the row SHALL NOT trigger a flamegraph fetch
 
+#### Scenario: trigger.exception row has no expand affordance
+
+- **GIVEN** a synthetic `trigger.exception` invocation
+- **WHEN** the invocation list is rendered
+- **THEN** the row SHALL NOT include an expand affordance
+- **AND** activating the row SHALL NOT trigger a fragment fetch
+
+#### Scenario: trigger.rejection row expands to event-detail fragment
+
+- **GIVEN** a synthetic `trigger.rejection` invocation `evt_rej` belonging to `(acme, foo)`
+- **WHEN** the user expands the row for `evt_rej`
+- **THEN** the runtime SHALL request `GET /invocations/acme/foo/evt_rej/event`
+- **AND** the runtime SHALL NOT request a flamegraph fragment for `evt_rej`
+
+#### Scenario: system.upload row expands to event-detail fragment
+
+- **GIVEN** a synthetic `system.upload` invocation `evt_up` belonging to `(acme, foo)`
+- **WHEN** the user expands the row for `evt_up`
+- **THEN** the runtime SHALL request `GET /invocations/acme/foo/evt_up/event`
+- **AND** the runtime SHALL NOT request a flamegraph fragment for `evt_up`
+
 ### Requirement: Flamegraph fragment endpoint
 
 The runtime SHALL expose `GET /invocations/:owner/:repo/:id/flamegraph`. The endpoint SHALL validate `:owner` and `:repo` against their respective regexes, enforce owner-membership via the shared authorization middleware, and read the invocation's events via `eventStore.query([{owner, repo}]).where('id', '=', id).orderBy('seq', 'asc').execute()` and return an HTML fragment (not a full page shell).
 
-The endpoint SHALL return `404 Not Found` when the supplied `(owner, repo)` is not registered or the user is not a member of `owner`, using the same fail-closed pattern as other scoped routes.
+The endpoint SHALL return `404 Not Found` when:
+- The supplied `(owner, repo)` is not registered, or
+- The user is not a member of `owner`, or
+- The invocation has no `trigger.request` opening event (i.e. the row is a synthetic single-leaf row of kind `trigger.exception`, `trigger.rejection`, or `system.upload`).
+
+All `404` cases SHALL share the same fail-closed response shape used by the other scoped routes (no enumeration distinction between "non-member" and "synthetic id").
 
 #### Scenario: Flamegraph fragment requires scope in URL
 
@@ -123,6 +154,13 @@ The endpoint SHALL return `404 Not Found` when the supplied `(owner, repo)` is n
 - **WHEN** `GET /invocations/acme/foo/evt_abc/flamegraph` is requested
 - **THEN** only the events belonging to `(acme, foo)` SHALL be rendered
 - **AND** events from `(acme, bar)` SHALL NOT appear in the fragment
+
+#### Scenario: Flamegraph endpoint 404s for synthetic single-leaf invocations
+
+- **GIVEN** a member of `acme` and a synthetic invocation `evt_synth` under `(acme, foo)` whose only event is one of `trigger.exception` / `trigger.rejection` / `system.upload`
+- **WHEN** `GET /invocations/acme/foo/evt_synth/flamegraph` is requested
+- **THEN** the response status SHALL be `404 Not Found`
+- **AND** the response SHALL NOT include a "No flamegraph available" empty fragment
 
 ### Requirement: Flamegraph SVG structure
 
@@ -429,7 +467,7 @@ The client-side rewrite SHALL NOT mutate the `datetime` attribute itself, so tha
 
 ### Requirement: Expandable invocation rows carry an expand affordance
 
-Invocation rows that are expandable (those with terminal status, i.e. `succeeded` or `failed`, excluding synthetic `trigger.rejection` and `system.upload`) SHALL carry a visible expand affordance (e.g. a chevron glyph) that transitions to an "open" state when the row is expanded. Pending rows, `uploaded` rows, and rejected rows, which are not expandable, SHALL NOT carry this affordance.
+Invocation rows that are expandable (those with terminal status, i.e. `succeeded` or `failed`, plus synthetic `trigger.rejection` and `system.upload` rows) SHALL carry a visible expand affordance (e.g. a chevron glyph) that transitions to an "open" state when the row is expanded. Pending rows and synthetic `trigger.exception` rows, which are not expandable, SHALL NOT carry this affordance.
 
 The affordance SHALL be driven by the native `[open]` state of the `<details>` element, so that no client-side JavaScript is required to keep it in sync with the row's open/closed state.
 
@@ -450,6 +488,18 @@ The affordance SHALL be driven by the native `[open]` state of the `<details>` e
 - **GIVEN** a pending invocation row
 - **WHEN** the row is rendered
 - **THEN** the row SHALL NOT contain the expand affordance
+
+#### Scenario: trigger.exception row carries no affordance
+
+- **GIVEN** a synthetic `trigger.exception` invocation row
+- **WHEN** the row is rendered
+- **THEN** the row SHALL NOT contain the expand affordance
+
+#### Scenario: trigger.rejection and system.upload rows carry the affordance
+
+- **GIVEN** a synthetic `trigger.rejection` row and a synthetic `system.upload` row in the rendered list
+- **WHEN** the rows are rendered in their closed state
+- **THEN** each row's summary SHALL contain a visible expand affordance element
 
 ### Requirement: Invocation list header surfaces count and ordering
 
@@ -527,6 +577,7 @@ A synthetic-`trigger.exception` row SHALL display:
 - An empty/zero duration.
 - A wrench / settings glyph (or equivalent affordance distinct from the normal `failed` red indicator) and the label `"trigger setup failed"` accessible via `<title>`.
 - NO dispatch chip.
+- NO expand affordance — the row is not expandable. The `<title>` tooltip on the wrench glyph is the sole inspection surface for `trigger.exception` rows. (Server-internal trigger setup failures are an operator concern, not a workflow-author concern; the cause + optional stage + optional error message composed into the tooltip are sufficient.)
 
 A synthetic-`trigger.rejection` row SHALL display:
 
@@ -536,6 +587,7 @@ A synthetic-`trigger.rejection` row SHALL display:
 - An empty/zero duration.
 - A shield-cross glyph (or equivalent rejected-by-validation affordance distinct from both `failed`-red and the wrench setup-failed glyph) and the label `"trigger rejected"` accessible via `<title>`. The `<title>` SHALL additionally include a brief summary of the first issue's path + message for at-a-glance debuggability.
 - NO dispatch chip.
+- An expand affordance that, when activated, fetches an event-detail fragment from `GET /invocations/:owner/:repo/:id/event` (see "Event-detail fragment endpoint" and "Invocation rows are expandable into an inline flamegraph"). The fragment renders the full persisted event row as a JSON tree.
 
 A synthetic-`system.upload` row SHALL display:
 
@@ -546,8 +598,9 @@ A synthetic-`system.upload` row SHALL display:
 - An empty/zero duration.
 - A `<title>` accessible on the leading kind-icon SHALL include `"workflow uploaded"` and `sha=<workflowSha-short>` for at-a-glance version identification.
 - A dispatch chip with visible label `"UPLOAD"` (uppercase) positioned at the row's far right (replacing the status-badge slot). The chip's `<title>` SHALL carry the uploader's name and mail (from `meta.dispatch.user`).
+- An expand affordance that, when activated, fetches an event-detail fragment from `GET /invocations/:owner/:repo/:id/event`. The fragment renders the full persisted event row as a JSON tree (including `meta.dispatch.user`, `meta.workflowSha`, and any other persisted columns).
 
-For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-leaf events have no paired-bar layout to graph) and SHALL NOT carry a dimension pill.
+For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-leaf events have no paired-bar layout to graph) and SHALL NOT carry a dimension pill. The `trigger.rejection` and `system.upload` expand affordances target the event-detail endpoint, NOT the flamegraph endpoint.
 
 #### Scenario: trigger.exception synthetic row renders wrench glyph
 
@@ -555,7 +608,7 @@ For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-le
 - **WHEN** `GET /invocations/<owner>/<repo>` is requested
 - **THEN** the row SHALL render the wrench/settings glyph with `<title>` text including `"trigger setup failed"`
 - **AND** the row SHALL NOT render a dispatch chip
-- **AND** the row SHALL NOT render a flamegraph expand affordance
+- **AND** the row SHALL NOT render an expand affordance
 
 #### Scenario: trigger.rejection synthetic row renders shield-cross glyph
 
@@ -563,7 +616,7 @@ For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-le
 - **WHEN** the invocations view is requested
 - **THEN** the row SHALL render the shield-cross glyph with `<title>` text including `"trigger rejected"` and a summary of the first issue
 - **AND** the row SHALL NOT render a dispatch chip
-- **AND** the row SHALL NOT render a flamegraph expand affordance
+- **AND** the row SHALL render an expand affordance whose `hx-get` URL targets `/invocations/<owner>/<repo>/<id>/event`
 
 #### Scenario: system.upload synthetic row renders accent leading icon and right-side UPLOAD chip
 
@@ -574,7 +627,7 @@ For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-le
 - **AND** the row SHALL NOT render a `succeeded`/`failed`/`pending`/`uploaded` status badge
 - **AND** the row SHALL render a dispatch chip with visible label `"UPLOAD"` (uppercase) positioned at the row's far right
 - **AND** the dispatch chip's `<title>` SHALL contain `alice` and `alice@acme`
-- **AND** the row SHALL NOT render a flamegraph expand affordance
+- **AND** the row SHALL render an expand affordance whose `hx-get` URL targets `/invocations/<owner>/<repo>/<id>/event`
 - **AND** the row SHALL NOT render a second upload glyph anywhere outside the leading icon slot
 
 #### Scenario: All three synthetic kinds have zero duration
@@ -582,22 +635,6 @@ For all three synthetic kinds, rows SHALL NOT carry a flamegraph link (single-le
 - **GIVEN** any synthetic-row invocation
 - **WHEN** the row is rendered
 - **THEN** the duration SHALL render as `0` (or the minimal-unit zero rendering produced by the smart-unit formatter)
-
-### Requirement: Single-leaf invocation flamegraph renders the leaf event
-
-When a user expands a synthetic-row invocation (one of `trigger.exception`, `trigger.rejection`, `system.upload`) — to the extent the row exposes an expand affordance — the flamegraph fragment endpoint SHALL render an instant-marker representation of the single leaf event rather than attempting to render a paired-bar layout. The marker SHALL use a visual treatment consistent with other instant markers (see "Instant markers for single-record events") and SHALL carry a `<title>` containing the event's `kind` and `name` and (for `trigger.exception`) the `error.message` text or (for `trigger.rejection`) a brief summary of the first issue or (for `system.upload`) the `workflowSha`.
-
-The flamegraph SHALL NOT attempt to render an `orphan` bar for a synthetic single-leaf invocation. The orphan-bar treatment is reserved for paired `*.request` events whose terminal is missing (engine-crashed invocations); single-leaf invocations have no opening request to orphan.
-
-In the current implementation, `trigger.rejection` and `system.upload` rows do NOT expose a flamegraph expand affordance (per "Single-leaf trigger.exception invocations render inline" above). This requirement applies to `trigger.exception` rows today and is documented for forward consistency if expand affordances are extended to other single-leaf kinds.
-
-#### Scenario: Expanded synthetic trigger.exception invocation renders an instant marker
-
-- **GIVEN** a synthetic invocation whose only event is `{ kind: "trigger.exception", name: "imap.poll-failed", input: { stage: "search", failedUids: [] }, error: { message: "BAD UNKNOWN_KEYWORD" } }`
-- **WHEN** the user expands the row and the flamegraph fragment is rendered
-- **THEN** the rendered SVG SHALL contain an instant-marker element for the event
-- **AND** the marker's `<title>` SHALL include `"trigger.exception"`, `"imap.poll-failed"`, and `"BAD UNKNOWN_KEYWORD"`
-- **AND** the rendered SVG SHALL NOT contain any `<rect>` with the `orphan` class
 
 ### Requirement: Sandbox-exhaustion dimension pill on failed invocation rows
 
@@ -631,4 +668,54 @@ The lookup SHALL be implemented as a LEFT JOIN against the `events` table on `(i
 - **GIVEN** a failed invocation whose terminal `trigger.error` has no preceding `system.exhaustion` event
 - **WHEN** the row is rendered
 - **THEN** NO dimension pill SHALL appear
+
+### Requirement: Event-detail fragment endpoint
+
+The runtime SHALL expose `GET /invocations/:owner/:repo/:id/event`. The endpoint SHALL validate `:owner` and `:repo` against their respective regexes, enforce owner-membership via the shared authorization middleware, and read the invocation's events via `eventStore.query([{owner, repo}]).where('id', '=', id).orderBy('seq', 'asc').execute()`. The endpoint SHALL return an HTML fragment (not a full page shell) containing the persisted EventStore row rendered as a single collapsible JSON tree using the shared client-side renderer (`window.wfeRenderJsonTree`, defined by `/static/json-tree.js`).
+
+The endpoint SHALL render the row losslessly: every column persisted by the EventStore for that row SHALL appear in the JSON tree (no per-kind field filtering applied at the endpoint).
+
+The endpoint SHALL return `404 Not Found` when:
+- The supplied `(owner, repo)` is not registered, or
+- The user is not a member of `owner`, or
+- No invocation with `id` exists under `(owner, repo)`, or
+- The invocation's only event is not of kind `trigger.rejection` or `system.upload` (i.e. the row is a real paired-bar invocation, a `trigger.exception`, or any other kind).
+
+All four cases SHALL produce the same fail-closed `404` response shape — the endpoint SHALL NOT distinguish "wrong kind" from "non-member" in the response, preserving the enumeration-prevention pattern used by the other scoped routes.
+
+#### Scenario: Event-detail fragment for a rejection row renders the persisted row as a JSON tree
+
+- **GIVEN** an `(owner, repo) = (acme, foo)` with one `trigger.rejection` event whose `id = "evt_abc"`, `name = "http.body-validation"`, `input = {trigger: "webhook", issues: [{path: ["name"], message: "Required"}], method: "POST", path: "/webhooks/acme/foo/demo/webhook"}`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/evt_abc/event`
+- **THEN** the response status SHALL be `200 OK`
+- **AND** the response body SHALL be an HTML fragment (no page shell)
+- **AND** the fragment SHALL contain the `id`, `kind`, `name`, `at`, and `input` field labels rendered through `window.wfeRenderJsonTree`
+- **AND** the rendered tree SHALL include `input.issues[0].path` and `input.issues[0].message` so the user can inspect every Zod issue, not only the first
+
+#### Scenario: Event-detail fragment for an upload row renders dispatch user and workflowSha
+
+- **GIVEN** an `(owner, repo) = (acme, foo)` with one `system.upload` event whose `id = "evt_xyz"`, `meta = {dispatch: {source: "upload", user: {login: "alice", mail: "alice@acme"}}, workflowSha: "abc12345"}`
+- **WHEN** a member of `acme` requests `GET /invocations/acme/foo/evt_xyz/event`
+- **THEN** the response status SHALL be `200 OK`
+- **AND** the rendered tree SHALL include `meta.dispatch.user.login`, `meta.dispatch.user.mail`, and `meta.workflowSha`
+
+#### Scenario: Event-detail fragment 404s for a real paired-bar invocation
+
+- **GIVEN** a member of `acme` and an invocation `evt_real` under `(acme, foo)` whose events include a `trigger.request` and a paired `trigger.response`
+- **WHEN** `GET /invocations/acme/foo/evt_real/event` is requested
+- **THEN** the response status SHALL be `404 Not Found`
+- **AND** the response shape SHALL match the `404` returned for non-existent owner/repo
+
+#### Scenario: Event-detail fragment 404s for a trigger.exception row
+
+- **GIVEN** a member of `acme` and a single-leaf `trigger.exception` invocation `evt_exc` under `(acme, foo)`
+- **WHEN** `GET /invocations/acme/foo/evt_exc/event` is requested
+- **THEN** the response status SHALL be `404 Not Found`
+
+#### Scenario: Event-detail fragment 404s for a non-member
+
+- **GIVEN** a user who is NOT a member of `evil-corp`
+- **WHEN** `GET /invocations/evil-corp/foo/evt_anything/event` is requested
+- **THEN** the response status SHALL be `404 Not Found`
+- **AND** the response shape SHALL be identical to the `404` returned for a non-existent owner
 
