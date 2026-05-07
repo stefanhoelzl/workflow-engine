@@ -10,7 +10,7 @@ import {
 } from "@workflow-engine/core";
 import MagicString from "magic-string";
 import ts from "typescript";
-import { build, type Plugin } from "vite";
+import { build, normalizePath, type Plugin } from "vite";
 import {
 	type Action,
 	type CronTrigger,
@@ -172,7 +172,7 @@ async function buildWorkflows(
 
 	const built = await Promise.all(
 		workflows.map((wf) => {
-			const workflowPath = resolve(root, wf);
+			const workflowPath = normalizePath(resolve(root, wf));
 			const filestem = basename(wf, ".ts");
 			return buildOneWorkflow({
 				workflowPath,
