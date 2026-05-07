@@ -34,7 +34,6 @@ interface InvocationRow {
 	// are non-expandable, so the tooltip is the only place the message
 	// surfaces in the list view.
 	readonly setupFailureMessage?: string;
-	readonly uploadShaShort?: string;
 	readonly exhaustion?: {
 		readonly dim: "cpu" | "memory" | "output" | "pending";
 		readonly budget?: number;
@@ -166,7 +165,7 @@ function MetaCell({ row }: { row: InvocationRow }) {
 		);
 	}
 	if (row.dispatch?.source === "manual") {
-		const tooltip = row.dispatch.user?.login ?? "manual";
+		const tooltip = row.dispatch.user?.login ?? "unknown";
 		return (
 			<span
 				class="entry-meta-cell entry-dispatch entry-dispatch--manual"
@@ -199,9 +198,8 @@ function LeadingKindIcon({ row }: { row: InvocationRow }) {
 		return <span class="trigger-kind-icon" aria-hidden="true" />;
 	}
 	if (row.syntheticKind === "system.upload") {
-		const title = row.uploadShaShort
-			? `workflow uploaded sha=${row.uploadShaShort}`
-			: "workflow uploaded";
+		const login = row.dispatch?.user?.login || "unknown";
+		const title = `workflow uploaded by ${login}`;
 		return (
 			<TriggerKindIcon
 				kind={row.triggerKind}

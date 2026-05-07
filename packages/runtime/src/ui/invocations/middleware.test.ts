@@ -491,8 +491,8 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 		expect(html).toMatch(
 			/<span class="trigger-kind-icon trigger-kind-icon--upload"[^>]*aria-label="workflow uploaded"/,
 		);
-		// sha-short surfaced in the leading icon's title
-		expect(html).toContain("sha=abcdef01");
+		// uploader login surfaced in the leading icon's title
+		expect(html).toContain("workflow uploaded by alice");
 		// Dispatch attribution lives on the meta cell as a tooltip — no
 		// "UPLOAD" pill (the kind icon already conveys it).
 		expect(html).toMatch(
