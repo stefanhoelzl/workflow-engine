@@ -69,7 +69,24 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          LATEST=$(npm view @workflow-engine/sdk version 2>/dev/null || echo "0.0.0")
+          # Run from $RUNNER_TEMP so npm doesn't apply the workspace's
+          # `devEngines.runtime` constraint (mirrors the publish step).
+          # A genuine "not published yet" returns E404 — only that maps
+          # to 0.0.0; any other failure fails the step loudly so we
+          # don't silently regenerate $NOW.0 on top of an existing tag.
+          set +e
+          LATEST_OUT=$(cd "$RUNNER_TEMP" && npm view @workflow-engine/sdk version 2>&1)
+          LATEST_RC=$?
+          set -e
+          if [ $LATEST_RC -eq 0 ]; then
+            LATEST="$LATEST_OUT"
+          elif echo "$LATEST_OUT" | grep -q "E404"; then
+            LATEST="0.0.0"
+          else
+            echo "npm view failed:" >&2
+            echo "$LATEST_OUT" >&2
+            exit 1
+          fi
           NOW="$(date -u +%Y.%-m)"
           case "$LATEST" in
             "$NOW".*)
