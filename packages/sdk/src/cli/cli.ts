@@ -12,6 +12,49 @@ interface ResolvedScope {
 	readonly repo: string;
 }
 
+function collectKnownArgKeys(
+	argsDef: Readonly<Record<string, object>>,
+): Set<string> {
+	const known = new Set<string>(["_"]);
+	for (const [name, def] of Object.entries(argsDef)) {
+		known.add(name);
+		const alias = (def as { alias?: string | readonly string[] }).alias;
+		if (typeof alias === "string") {
+			known.add(alias);
+		} else if (Array.isArray(alias)) {
+			for (const a of alias) {
+				known.add(a);
+			}
+		}
+	}
+	return known;
+}
+
+function assertNoUnknownArgs(
+	args: Record<string, unknown>,
+	argsDef: Readonly<Record<string, object>>,
+): void {
+	const known = collectKnownArgKeys(argsDef);
+	for (const key of Object.keys(args)) {
+		if (!known.has(key)) {
+			const prefix = key.length === 1 ? "-" : "--";
+			throw new Error(`unknown option: ${prefix}${key}`);
+		}
+	}
+	const positionals = args._;
+	if (Array.isArray(positionals) && positionals.length > 0) {
+		throw new Error(`unexpected argument: ${positionals[0]}`);
+	}
+}
+
+function failOnArgsError(error: unknown, subcommand: string): never {
+	// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+	console.error(error instanceof Error ? error.message : String(error));
+	// biome-ignore lint/suspicious/noConsole: user-facing CLI output
+	console.error(`run \`wfe ${subcommand} --help\` to see valid options`);
+	process.exit(1);
+}
+
 async function resolveScope(
 	cwd: string,
 	repoFlag: string | undefined,
@@ -34,29 +77,36 @@ async function resolveScope(
 	);
 }
 
+const uploadArgs = {
+	url: {
+		type: "string",
+		description: "Target runtime URL",
+		default: DEFAULT_URL,
+	},
+	repo: {
+		type: "string",
+		description:
+			"Target owner/name (defaults to `git remote get-url origin` on github.com)",
+	},
+	user: {
+		type: "string",
+		description:
+			"Local dev provider user (mutually exclusive with GITHUB_TOKEN)",
+	},
+} as const;
+
 const uploadCommand = defineCommand({
 	meta: {
 		name: "upload",
 		description: "Build workflows in cwd and upload them to a runtime",
 	},
-	args: {
-		url: {
-			type: "string",
-			description: "Target runtime URL",
-			default: DEFAULT_URL,
-		},
-		repo: {
-			type: "string",
-			description:
-				"Target owner/name (defaults to `git remote get-url origin` on github.com)",
-		},
-		user: {
-			type: "string",
-			description:
-				"Local dev provider user (mutually exclusive with GITHUB_TOKEN)",
-		},
-	},
+	args: uploadArgs,
 	async run({ args }) {
+		try {
+			assertNoUnknownArgs(args as Record<string, unknown>, uploadArgs);
+		} catch (err) {
+			failOnArgsError(err, "upload");
+		}
 		const cwd = process.cwd();
 		let scope: ResolvedScope;
 		try {
@@ -88,13 +138,21 @@ const uploadCommand = defineCommand({
 	},
 });
 
+const buildArgs = {} as const;
+
 const buildCommand = defineCommand({
 	meta: {
 		name: "build",
 		description:
 			"Compile workflows in cwd to dist/<name>.js (no manifest, no tar, no network)",
 	},
-	async run() {
+	args: buildArgs,
+	async run({ args }) {
+		try {
+			assertNoUnknownArgs(args as Record<string, unknown>, buildArgs);
+		} catch (err) {
+			failOnArgsError(err, "build");
+		}
 		try {
 			await build({ cwd: process.cwd() });
 			process.exit(0);
