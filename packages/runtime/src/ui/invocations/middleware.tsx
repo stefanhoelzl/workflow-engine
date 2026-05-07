@@ -16,9 +16,6 @@ import type { InvocationRow } from "./page.js";
 import { renderInvocationsPage } from "./page.js";
 
 const DEFAULT_LIMIT = 500;
-// Length of the workflowSha prefix surfaced in the upload-row tooltip —
-// long enough to disambiguate at a glance, short enough to read.
-const SHA_SHORT_LEN = 8;
 
 interface InvocationsMiddlewareDeps {
 	readonly eventStore: EventStore;
@@ -66,7 +63,6 @@ interface RawExceptionRow {
 
 interface RawSyntheticRow extends RawExceptionRow {
 	kind: string;
-	workflowSha: string;
 	meta: unknown;
 }
 
@@ -311,7 +307,6 @@ function buildUploadRow(r: RawSyntheticRow): InvocationRow {
 		triggerKind: "upload",
 		synthetic: true,
 		syntheticKind: "system.upload",
-		uploadShaShort: r.workflowSha.slice(0, SHA_SHORT_LEN),
 		...(dispatch ? { dispatch } : {}),
 	};
 }
@@ -406,7 +401,6 @@ async function fetchSyntheticRows(
 			"owner",
 			"repo",
 			"workflow",
-			"workflowSha",
 			"name",
 			"kind",
 			"at",
