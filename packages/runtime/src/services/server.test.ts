@@ -81,11 +81,11 @@ describe("createApp — plumbing", () => {
 });
 
 describe("createApp — root redirect", () => {
-	it("GET / returns 302 to /trigger", async () => {
+	it("GET / returns 302 to /invocations", async () => {
 		const app = createApp(fixturePages());
 		const res = await app.request("/");
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toBe("/trigger");
+		expect(res.headers.get("location")).toBe("/invocations");
 	});
 
 	it("POST / is not redirected by the root handler", async () => {

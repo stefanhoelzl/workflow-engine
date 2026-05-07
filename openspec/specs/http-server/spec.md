@@ -130,15 +130,15 @@ The runtime SHALL read the `PORT` environment variable to determine the HTTP ser
 
 ### Requirement: Root redirect
 
-The server SHALL redirect `GET /` to `/trigger` with a `302` status. The redirect SHALL match the exact root path only; requests to any other path SHALL NOT be redirected by this handler.
+The server SHALL redirect `GET /` to `/invocations` with a `302` status. The redirect SHALL match the exact root path only; requests to any other path SHALL NOT be redirected by this handler.
 
-#### Scenario: Root redirects to /trigger
+#### Scenario: Root redirects to /invocations
 - **WHEN** a `GET /` request is received
 - **THEN** the response status SHALL be `302`
-- **AND** the `Location` header SHALL be `/trigger`
+- **AND** the `Location` header SHALL be `/invocations`
 
 #### Scenario: Non-root paths are not redirected
-- **WHEN** a `GET /invocations` request is received
+- **WHEN** a `GET /trigger` request is received
 - **THEN** the response SHALL NOT be a redirect produced by the root-redirect handler
 
 #### Scenario: Redirect precedes the static middleware
