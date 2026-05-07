@@ -898,7 +898,7 @@ The route SHALL NOT require a valid session to operate — posting to `/auth/log
 
 The route SHALL NOT attempt to revoke the access token at GitHub (GitHub OAuth Apps do not support server-side revocation that matches our model); logout is purely local cookie deletion. The signed-out banner rendered by `/login` SHALL NOT include any GitHub-IdP-logout affordance — our app's session and GitHub's session are independent logouts and we do not conflate them in the post-logout UI.
 
-Redirecting to `/login` with the `logged-out` flash (rather than to `/`) is load-bearing for the UX: `/` triggers `redirect-root` → `/trigger` → `sessionMw` → `/login` → GitHub, which silently re-authenticates using the existing OAuth grant and re-issues a session cookie, making sign-out appear to have no effect. The flash cookie puts the login route into its banner-render branch, which breaks the chain at a route that does not require authentication.
+Redirecting to `/login` with the `logged-out` flash (rather than to `/`) is load-bearing for the UX: `/` triggers `redirect-root` → `/invocations` → `sessionMw` → `/login` → GitHub, which silently re-authenticates using the existing OAuth grant and re-issues a session cookie, making sign-out appear to have no effect. The flash cookie puts the login route into its banner-render branch, which breaks the chain at a route that does not require authentication.
 
 #### Scenario: POST clears cookie, sets logged-out flash, redirects to login
 

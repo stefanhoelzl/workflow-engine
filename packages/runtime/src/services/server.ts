@@ -41,7 +41,7 @@ function createApp(opts: AppOptions = {}, ...middlewares: Middleware[]): Hono {
 		}),
 	);
 
-	app.get("/", (c) => c.redirect("/trigger", HTTP_FOUND));
+	app.get("/", (c) => c.redirect("/invocations", HTTP_FOUND));
 
 	for (const { match, handler } of middlewares) {
 		app.use(match, handler);
