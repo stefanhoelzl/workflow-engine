@@ -502,6 +502,64 @@ describe("dashboard middleware — single-leaf system.upload invocations", () =>
 		// no flamegraph expand affordance
 		expect(html).not.toContain('hx-get="/invocations/t0/r0/evt_upload');
 	});
+
+	it("surfaces upload rows on the workflow-level URL", async () => {
+		await store.record(
+			event({
+				id: "evt_upload",
+				kind: "system.upload",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "demo",
+				workflow: "demo",
+				workflowSha: "abcdef0123456789".padEnd(64, "0"),
+				input: { name: "demo", module: "demo.js" },
+				meta: {
+					dispatch: {
+						source: "upload",
+						user: { login: "alice", mail: "alice@acme" },
+					},
+				},
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/demo", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_upload"');
+	});
+
+	it("hides upload rows on the trigger-level URL", async () => {
+		await store.record(
+			event({
+				id: "evt_upload",
+				kind: "system.upload",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "demo",
+				workflow: "demo",
+				workflowSha: "abcdef0123456789".padEnd(64, "0"),
+				input: { name: "demo", module: "demo.js" },
+				meta: {
+					dispatch: {
+						source: "upload",
+						user: { login: "alice", mail: "alice@acme" },
+					},
+				},
+			}),
+		);
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0/demo/some-trigger", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).not.toContain('id="inv-evt_upload"');
+	});
 });
 
 describe("dashboard middleware — sandbox-exhaustion pill", () => {
