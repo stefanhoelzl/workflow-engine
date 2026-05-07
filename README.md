@@ -31,8 +31,13 @@ export const processOrder = action({
 });
 
 export const order = httpTrigger({
-  body: z.object({ orderId: z.string() }),
-  responseBody: z.object({ orderId: z.string(), total: z.number() }),
+  method: "POST",
+  request: {
+    body: z.object({ orderId: z.string() }),
+  },
+  response: {
+    body: z.object({ orderId: z.string(), total: z.number() }),
+  },
   handler: async ({ body }) => {
     const result = await processOrder({ orderId: body.orderId });
     return { status: 202, body: result };
@@ -42,68 +47,54 @@ export const order = httpTrigger({
 
 `defineWorkflow({env})` declares the workflow's environment contract; values are injected at runtime and read via `workflow.env.*`. `action({input, output, handler})` defines a typed callable that other actions or triggers can invoke directly (e.g. `await processOrder({orderId})`). Trigger factories (`httpTrigger`, `cronTrigger`, `manualTrigger`) wire ingress into the workflow.
 
-The optional `responseBody: z.ZodSchema` on `httpTrigger` makes the response `body` field required and validates it against the schema. Without `responseBody`, the handler may return any partial `{status?, body?, headers?}` shape — for example `handler: async () => ({status: 202})` is valid for fire-and-forget webhooks.
+`httpTrigger` config is grouped: `request: {body, headers}` validates ingress, `response: {body, headers}` validates egress. When `response.body` is set the handler MUST return a `body` matching the schema; without it the handler may return any partial `{status?, body?, headers?}` shape — for example `handler: async () => ({status: 202})` is valid for fire-and-forget webhooks. `@workflow-engine/sdk` also exposes a programmatic CLI at `@workflow-engine/sdk/cli` (`build`, `upload`) for custom dev/release scripts.
 
-The canonical reference workflow lives at [`workflows/src/demo.ts`](workflows/src/demo.ts) and exercises every SDK surface (`httpTrigger` GET/POST, `cronTrigger`, `manualTrigger`, action composition, environment variables, and the sandbox-stdlib `fetch` / `crypto` / `setTimeout` / `URL` / `console` globals).
-
-### SDK subpath exports
-
-`@workflow-engine/sdk` ships three additional entry points alongside the root DSL:
-
-| Subpath | Purpose | Typical caller |
-|---------|---------|----------------|
-| `@workflow-engine/sdk` | Authoring DSL: `defineWorkflow`, `action`, `httpTrigger`, `cronTrigger`, `manualTrigger`, `env`, `z` | Workflow source files |
-| `@workflow-engine/sdk/plugin` | Vite plugin (`workflowPlugin`) used to bundle workflows into a tarball | `vite.config.ts` (built-in via `wfe upload`) |
-| `@workflow-engine/sdk/cli` | Programmatic CLI: `build`, `upload`, `NoWorkflowsFoundError`, `UploadOptions`, `UploadResult` | Custom dev/release scripts (e.g. `scripts/dev.ts`) |
-| `@workflow-engine/sdk/sdk-support` | Sandbox plugin (`createSdkSupportPlugin`) that wires the action dispatcher inside the guest | Runtime sandbox composition |
+The canonical reference workflow lives at [`workflows/src/demo.ts`](workflows/src/demo.ts) and exercises every SDK surface — `httpTrigger` (GET/POST), `cronTrigger`, `manualTrigger`, `imapTrigger`, `wsTrigger`, action composition, `defineQueue`, `executeSql`, `secret()`, `sendMail()`, environment variables, and the sandbox-stdlib `fetch` / `crypto` / `setTimeout` / `URL` / `console` / `EventTarget` / `AbortController` / `scheduler` / `Observable` globals.
 
 ## Getting Started
 
 ```bash
 pnpm install
 pnpm build
-pnpm start
+pnpm dev
 ```
 
-This builds the runtime and starts the server. Workflows no longer bootstrap from disk — upload your tenant's bundle with the `wfe` CLI once the server is reachable.
+`pnpm dev` boots the runtime on a random port (or `PORT`), watches sources, and auto-uploads `workflows/src/demo.ts` so the dashboard has data on first boot. Workflows do not bootstrap from disk — upload your tenant's bundle with the `wfe` CLI.
 
 ```bash
-# Local dev (built-in local auth provider, no GitHub token required):
-pnpm exec wfe upload --tenant <name> --url http://localhost:8080 --user <name>
-
-# Production (default URL https://workflow-engine.webredirect.org):
-GITHUB_TOKEN=<gh-token> pnpm exec wfe upload --tenant <name>
+# Uploads the bundle for the current `git remote get-url origin` repo.
+GITHUB_TOKEN=<gh-token> pnpm exec wfe upload
 ```
 
-CLI options:
+The CLI defaults to `https://workflow-engine.webredirect.org` and infers `--repo <owner>/<name>` from `git remote get-url origin`. CLI options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--tenant <name>` | `$WFE_TENANT` | Target tenant. Required (flag or env var). |
+| `--repo <owner>/<name>` | parsed from `origin` remote | Target repo. Required if not in a github.com checkout. |
 | `--url <url>` | `https://workflow-engine.webredirect.org` | Runtime base URL. Pass `http://localhost:8080` for local dev. |
-| `--user <name>` | — | Local-provider user. Mutually exclusive with `GITHUB_TOKEN`. |
-| `GITHUB_TOKEN` (env) | — | GitHub personal access token for the prod GitHub auth provider. Mutually exclusive with `--user`. |
+| `--token <ghp_…>` | `$GITHUB_TOKEN` | GitHub personal access token. |
+
+For local-provider auth (against a server with `LOCAL_DEPLOYMENT=1`) substitute `--user <name>` for `--token`. `--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive — see `SECURITY.md` §4 "CLI authentication".
 
 Trigger an HTTP workflow:
 
 ```bash
-curl -X POST http://localhost:8080/webhooks/<tenant>/<workflow-name>/<trigger-export-name> \
+curl -X POST http://localhost:8080/webhooks/<owner>/<repo>/<workflow-name>/<trigger-export-name> \
   -H 'Content-Type: application/json' \
   -d '{"orderId": "abc-123"}'
 ```
 
-`<trigger-export-name>` is the JavaScript export name of the `httpTrigger` in the workflow source. For the example above (`export const order = httpTrigger({...})` in `workflows/src/orders.ts`) the URL would be `/webhooks/<tenant>/orders/order`. Webhook routes are derived mechanically from the export name; `httpTrigger` does not accept a `path` config field.
+`<trigger-export-name>` is the JavaScript export name of the `httpTrigger` in the workflow source. For the example above (`export const order = httpTrigger({...})` in `workflows/src/orders.ts`) the URL is `/webhooks/<owner>/<repo>/orders/order`. Webhook routes are derived mechanically from the export name; `httpTrigger` does not accept a `path` config field.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
-| `PERSISTENCE_PATH` | — | Filesystem persistence directory (also hosts tenant bundles at `workflows/<tenant>.tar.gz`) |
-| `PERSISTENCE_S3_BUCKET` | — | S3 bucket for persistence |
+| `PERSISTENCE_PATH` | — | Filesystem persistence directory (also hosts tenant bundles at `workflows/<owner>/<repo>.tar.gz`) |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 
-`PERSISTENCE_PATH` and `PERSISTENCE_S3_BUCKET` are mutually exclusive — exactly one SHALL be set. See `openspec/project.md` for the full runtime-config surface (all env vars, their defaults, and cross-references to the runtime-config spec) and `docs/infrastructure.md` ("Storage backend selection") for the S3 credential-injection flow.
+See `openspec/project.md` for the full runtime-config surface (all env vars, defaults, and cross-references to the runtime-config spec) and `docs/infrastructure.md` for the deployment topology.
 
 ## Development
 
@@ -123,10 +114,11 @@ pnpm validate         # lint + type check + test + tofu fmt/validate (run before
 ```
 packages/
 ├── core/            # Shared contract types (manifest schemas, trigger payloads, event types, Zod v4 re-export)
-├── sdk/             # Workflow DSL + types + vite plugin + sdk-support plugin
+├── sdk/             # Workflow DSL + types + `wfe` CLI (`./` and `./cli` exports)
 ├── sandbox/         # QuickJS host + plugin composition
 ├── sandbox-stdlib/  # Web-platform / fetch / timers / console plugins
-└── runtime/         # HTTP server + executor + workflow registry + sandbox store
-workflows/           # User-defined workflows
-infrastructure/      # OpenTofu IaC (modules + local/persistence/cluster/prod/staging environments)
+├── runtime/         # HTTP server + executor + workflow registry + sandbox store + action-dispatch plugin
+└── tests/           # End-to-end suite (real runtime spawn + CLI upload)
+workflows/           # User-defined workflows (canonical demo at `src/demo.ts`)
+infrastructure/      # OpenTofu IaC — single flat project: Scaleway VPS hosting Caddy + prod & staging app instances
 ```
