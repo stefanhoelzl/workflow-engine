@@ -5,6 +5,7 @@ import type {
 } from "@workflow-engine/sandbox";
 import {
 	CALLABLE_RESULT_BRAND,
+	GuestSafeError,
 	GuestThrownError,
 	recordingContext,
 } from "@workflow-engine/sandbox";
@@ -14,6 +15,7 @@ import {
 	name as ACTION_DISPATCH_PLUGIN_NAME,
 	guest,
 	SDK_DISPATCH_DESCRIPTOR,
+	translateValidatorThrow,
 	worker,
 } from "./action-dispatch.js";
 
@@ -268,5 +270,56 @@ describe("action-dispatch plugin (§10 shape)", () => {
 		const setup = worker(recordingContext(), makeHostCallActionDeps());
 		const gf = setup.guestFunctions?.[0];
 		expect(gf?.args).toHaveLength(3);
+	});
+
+	describe("translateValidatorThrow", () => {
+		it("reshapes ValidationError into GuestSafeError carrying enriched issues", () => {
+			const err = Object.assign(new Error("action input validation failed"), {
+				name: "ValidationError",
+				issues: [
+					{
+						path: ["kind"],
+						message: 'Invalid option: expected one of "A"|"B"',
+						received: "a",
+						expected: 'one of ["A", "B"]',
+						code: "invalid_value",
+					},
+				],
+				errors: [{ raw: "zod-internal" }],
+			});
+			const out = translateValidatorThrow(err);
+			expect(out).toBeInstanceOf(GuestSafeError);
+			expect(out.name).toBe("GuestSafeError");
+			expect(out.message).toContain("kind");
+			expect(out.message).toContain("(received");
+			const issues = (out as GuestSafeError & { issues?: unknown[] }).issues;
+			expect(Array.isArray(issues)).toBe(true);
+			expect(issues?.[0]).toMatchObject({
+				path: ["kind"],
+				received: "a",
+				expected: 'one of ["A", "B"]',
+				code: "invalid_value",
+			});
+			// Raw zod errors must NOT cross — only the normalised issues do.
+			expect((out as { errors?: unknown }).errors).toBeUndefined();
+		});
+
+		it("attached issues are enumerable so the sandbox bridge marshals them", () => {
+			const err = Object.assign(new Error("validation failed"), {
+				name: "ValidationError",
+				issues: [{ path: ["x"], message: "msg" }],
+				errors: [],
+			});
+			const out = translateValidatorThrow(err);
+			const descriptor = Object.getOwnPropertyDescriptor(out, "issues");
+			expect(descriptor?.enumerable).toBe(true);
+		});
+
+		it("non-ValidationError host throws collapse to a plain GuestSafeError without issues", () => {
+			const err = new TypeError("kaboom");
+			const out = translateValidatorThrow(err);
+			expect(out).toBeInstanceOf(GuestSafeError);
+			expect((out as { issues?: unknown }).issues).toBeUndefined();
+		});
 	});
 });

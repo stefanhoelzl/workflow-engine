@@ -506,6 +506,62 @@ describe("triggerMiddleware: POST dispatch", () => {
 		expect(res.status).toBe(422);
 	});
 
+	it("422 response strips received/expected/code and emits trigger.rejection (manual)", async () => {
+		const stub = makeManualStub("t0", "ops", {
+			name: "rerun",
+			inputSchema: {
+				type: "object",
+				properties: { count: { type: "number" } },
+				required: ["count"],
+			},
+		});
+		const registry = makeStubRegistry([stub]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/ops/rerun", {
+			method: "POST",
+			body: JSON.stringify({ count: "many" }),
+			headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+		});
+		expect(res.status).toBe(422);
+		const body = await res.json();
+		expect(body.error).toBe("payload_validation_failed");
+		expect(Array.isArray(body.issues)).toBe(true);
+		expect(body.issues[0]).not.toHaveProperty("received");
+		expect(body.issues[0]).not.toHaveProperty("expected");
+		expect(body.issues[0]).not.toHaveProperty("code");
+		const exception = stub.triggerEntry.exception as ReturnType<typeof vi.fn>;
+		expect(exception).toHaveBeenCalledTimes(1);
+		const params = exception.mock.calls[0]?.[0];
+		expect(params).toMatchObject({
+			kind: "trigger.rejection",
+			name: "manual.input-validation",
+		});
+		const issue = params.input.issues[0];
+		expect(issue.received).toBe("many");
+		expect(issue.expected).toBe("number");
+		expect(issue.code).toBe("invalid_type");
+	});
+
+	it("does NOT emit trigger.rejection when the manual fire succeeds", async () => {
+		const stub = makeManualStub("t0", "ops", {
+			name: "rerun",
+			inputSchema: {
+				type: "object",
+				properties: { count: { type: "number" } },
+				required: ["count"],
+			},
+		});
+		const registry = makeStubRegistry([stub]);
+		const app = mount(registry);
+		const res = await app.request("/trigger/t0/r0/ops/rerun", {
+			method: "POST",
+			body: JSON.stringify({ count: 3 }),
+			headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+		});
+		expect(res.status).toBe(200);
+		expect(stub.triggerEntry.exception).not.toHaveBeenCalled();
+	});
+
 	it("returns 404 for an unknown trigger name", async () => {
 		const registry = makeStubRegistry([
 			makeHttpStub("t0", "demo", {

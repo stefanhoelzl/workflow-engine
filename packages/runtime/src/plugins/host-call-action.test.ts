@@ -95,7 +95,7 @@ describe("host-call-action plugin (§10 shape)", () => {
 		}
 	});
 
-	it("throws ValidationError with issues + errors on schema mismatch", () => {
+	it("throws ValidationError with enriched issues (received/expected/code) + raw errors on schema mismatch", () => {
 		const config = configFor(
 			manifestWith([
 				{
@@ -122,7 +122,11 @@ describe("host-call-action plugin (§10 shape)", () => {
 			const ve = err as ValidationError;
 			expect(ve.name).toBe("ValidationError");
 			expect(ve.issues.length).toBeGreaterThan(0);
-			expect(ve.issues[0]?.message).toMatch(/string/);
+			const issue = ve.issues[0];
+			expect(issue?.message).toMatch(/string/);
+			expect(issue?.received).toBe(42);
+			expect(issue?.expected).toBe("string");
+			expect(issue?.code).toBe("invalid_type");
 			expect(Array.isArray(ve.errors)).toBe(true);
 		}
 	});

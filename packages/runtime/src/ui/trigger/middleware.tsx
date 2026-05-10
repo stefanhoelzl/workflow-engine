@@ -9,6 +9,7 @@ import type {
 } from "../../executor/types.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
+import { toWireIssues } from "../../triggers/validator.js";
 import type { WorkflowRegistry } from "../../workflow-registry.js";
 import { buildSidebarData, SidebarTree } from "../sidebar-tree.js";
 import { Tabs } from "../tabs.js";
@@ -331,6 +332,7 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 	// manual fire. Validates JSON body against descriptor.inputSchema and
 	// dispatches via the shared executor. Response returns `{ ok, output }`
 	// on success or `{ error: "internal_error" }` on failure.
+	// biome-ignore lint/complexity/noExcessiveLinesPerFunction: single linear request pipeline — lookup, body parse, input wrap, fire, branch on result; splitting fragments the flow
 	app.post("/:owner/:repo/:workflow/:trigger", async (c) => {
 		const owner = c.req.param("owner");
 		const repo = c.req.param("repo");
@@ -372,10 +374,21 @@ function triggerMiddleware(deps: TriggerMiddlewareDeps): Middleware {
 		const result = await entry.fire(input, dispatch);
 		if (!result.ok) {
 			if (result.error.issues) {
+				// Persist a trigger.rejection event so the rejection shows up
+				// in the dashboard's invocations list with the full enriched
+				// issues. The wire response strips to {path, message} per
+				// payload-validation/spec.md §83.
+				await entry.exception({
+					kind: "trigger.rejection",
+					name: "manual.input-validation",
+					input: {
+						issues: result.error.issues,
+					},
+				});
 				return c.json(
 					{
 						error: "payload_validation_failed",
-						issues: result.error.issues,
+						issues: toWireIssues(result.error.issues),
 					},
 					HTTP_UNPROCESSABLE_ENTITY,
 				);

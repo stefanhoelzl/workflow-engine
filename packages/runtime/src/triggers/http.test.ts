@@ -572,6 +572,73 @@ describe("createHttpTriggerSource: trigger.rejection emission", () => {
 		// no request body persisted
 		expect(params.input.body).toBeUndefined();
 		expect(params.input.secret).toBeUndefined();
+		// Persisted event carries the enriched issue shape; the public 422
+		// response body strips received/expected/code via toWireIssues.
+		const persistedIssue = params.input.issues[0];
+		expect(persistedIssue.code).toBeDefined();
+		const wireBody = await res.json();
+		expect(wireBody.error).toBe("payload_validation_failed");
+		expect(Array.isArray(wireBody.issues)).toBe(true);
+		expect(wireBody.issues[0]).not.toHaveProperty("received");
+		expect(wireBody.issues[0]).not.toHaveProperty("expected");
+		expect(wireBody.issues[0]).not.toHaveProperty("code");
+	});
+
+	it("422 response strips library-specific fields but persisted event keeps them (enum case)", async () => {
+		const inputSchema = {
+			type: "object",
+			required: ["body"],
+			properties: {
+				body: {
+					type: "object",
+					required: ["kind"],
+					properties: { kind: { type: "string", enum: ["A", "B"] } },
+				},
+			},
+		} as Record<string, unknown>;
+		const descriptor = makeDescriptor({
+			request: {
+				body: {
+					type: "object",
+					required: ["kind"],
+					properties: { kind: { type: "string", enum: ["A", "B"] } },
+				} as Record<string, unknown>,
+				headers: {
+					type: "object",
+					properties: {},
+					additionalProperties: false,
+				} as Record<string, unknown>,
+			},
+			inputSchema,
+		});
+		const entry = makeEntry(
+			descriptor,
+			validatingFire(descriptor, async () => ({
+				ok: true as const,
+				output: { status: 200 },
+			})),
+		);
+		const source = createHttpTriggerSource();
+		await source.reconfigure("t0", "r0", [entry]);
+		const app = new Hono();
+		app.all(source.middleware.match, source.middleware.handler);
+		const res = await app.request("/webhooks/t0/r0/w/t", {
+			method: "POST",
+			body: JSON.stringify({ kind: "a" }),
+			headers: { "Content-Type": "application/json" },
+		});
+		expect(res.status).toBe(422);
+		const persisted = (entry.exception as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0];
+		const persistedIssue = persisted.input.issues[0];
+		expect(persistedIssue.received).toBe("a");
+		expect(persistedIssue.expected).toContain('"A"');
+		expect(persistedIssue.code).toBe("invalid_value");
+		const wireBody = await res.json();
+		expect(wireBody.issues[0]).toEqual({
+			path: ["body", "kind"],
+			message: expect.any(String),
+		});
 	});
 
 	it("does not emit trigger.rejection on 404 (no matching trigger)", async () => {

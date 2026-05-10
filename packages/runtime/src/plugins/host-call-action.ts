@@ -5,6 +5,9 @@ import { GuestSafeError } from "@workflow-engine/sandbox";
 interface ValidationIssue {
 	readonly path: (string | number)[];
 	readonly message: string;
+	readonly received?: unknown;
+	readonly expected?: string;
+	readonly code?: string;
 }
 
 /**
@@ -55,13 +58,66 @@ function rehydrateValidators(
 	return validators;
 }
 
+function liftAtPath(
+	input: unknown,
+	path: readonly (string | number)[],
+): unknown {
+	let cur: unknown = input;
+	for (const seg of path) {
+		if (cur === null || cur === undefined) {
+			return;
+		}
+		cur = (cur as Record<string | number, unknown>)[seg];
+	}
+	return cur;
+}
+
+function deriveExpected(issue: z.core.$ZodIssue): string | undefined {
+	switch (issue.code) {
+		case "invalid_type":
+			return issue.expected;
+		case "invalid_value": {
+			const values = issue.values
+				.map((v: unknown) => (typeof v === "string" ? `"${v}"` : String(v)))
+				.join(", ");
+			return `one of [${values}]`;
+		}
+		case "too_big": {
+			const op = issue.inclusive === false ? "<" : "<=";
+			return `${op} ${String(issue.maximum)}`;
+		}
+		case "too_small": {
+			const op = issue.inclusive === false ? ">" : ">=";
+			return `${op} ${String(issue.minimum)}`;
+		}
+		case "invalid_format":
+			return issue.format;
+		case "unrecognized_keys":
+			return `no unrecognized keys (got [${issue.keys.map((k: string) => `"${k}"`).join(", ")}])`;
+		case "not_multiple_of":
+			return `multiple of ${String(issue.divisor)}`;
+		default:
+			return;
+	}
+}
+
 function zodIssuesToValidationIssues(
 	issues: readonly z.core.$ZodIssue[],
+	input?: unknown,
 ): ValidationIssue[] {
-	return issues.map((issue) => ({
-		path: [...issue.path] as (string | number)[],
-		message: issue.message,
-	}));
+	return issues.map((issue) => {
+		const path = [...issue.path] as (string | number)[];
+		const received =
+			issue.input === undefined ? liftAtPath(input, path) : issue.input;
+		const expected = deriveExpected(issue);
+		return {
+			path,
+			message: issue.message,
+			...(received === undefined ? {} : { received }),
+			...(expected === undefined ? {} : { expected }),
+			code: issue.code,
+		};
+	});
 }
 
 function runValidator(
@@ -84,7 +140,7 @@ function runValidator(
 	}
 	throw new ValidationError(
 		errorLabel,
-		zodIssuesToValidationIssues(result.error.issues),
+		zodIssuesToValidationIssues(result.error.issues, value),
 		result.error.issues,
 	);
 }
