@@ -990,7 +990,6 @@ body {
 .trigger-result-body {
 	margin: 0;
 	padding: var(--sp-3);
-	padding-right: var(--sp-6);
 	background: var(--bg-surface);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
@@ -1003,36 +1002,6 @@ body {
 	word-break: break-word;
 	flex: 1 1 auto;
 	min-height: 0;
-}
-
-.trigger-result-copy {
-	position: absolute;
-	top: 6px;
-	right: 6px;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 28px;
-	height: 28px;
-	padding: 0;
-	background: var(--bg-elevated);
-	color: var(--text-secondary);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	cursor: pointer;
-	transition:
-		border-color 0.15s ease,
-		color 0.15s ease;
-}
-
-.trigger-result-copy:hover {
-	border-color: var(--accent);
-	color: var(--accent);
-}
-
-.trigger-result-copy--copied {
-	color: var(--green);
-	border-color: var(--green-border);
 }
 
 /* Visually-hidden live region for screen-reader copy confirmations */
@@ -2516,10 +2485,45 @@ a.tree-row:hover .tree-label,
    --------------------------------------------------------------------------- */
 
 .json-tree {
+	position: relative;
 	font-family: var(--font-mono);
 	font-size: var(--fs-sm);
 	line-height: 1.5;
 	color: var(--text);
+	padding-right: var(--sp-6);
+}
+
+/* Per-tree copy-to-clipboard control. Always present, anchored to the tree's
+   top-right corner. Implementation lives in /static/json-tree.js — see the
+   ui-foundation spec's "Shared interactive JSON-tree component" requirement. */
+.json-tree-copy {
+	position: absolute;
+	top: 0;
+	right: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	background: var(--bg-elevated);
+	color: var(--text-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition:
+		border-color 0.15s ease,
+		color 0.15s ease;
+}
+
+.json-tree-copy:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.json-tree-copy--copied {
+	color: var(--green);
+	border-color: var(--green-border);
 }
 
 .json-tree-container {

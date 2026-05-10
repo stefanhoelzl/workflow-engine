@@ -194,6 +194,17 @@ States: focus follows the global `--focus-ring` (two-layer: surface gap + accent
 - Backdrop dim using `--overlay-strong` (semi-opaque black).
 - Trapped focus while open; Esc closes.
 
+### Shared JSON tree (copy control)
+
+Every mount of the shared JSON-tree component (`renderJson` in `/static/json-tree.js`, registered as the Alpine `wfeJsonTree` data-component) carries its own copy-to-clipboard control as a child of the `.json-tree` root — no per-call-site wiring. Surfaces inheriting it: trigger result dialog (`result-dialog.js` via `window.wfeRenderJsonTree`), invocations event-detail expanded rows, queue item cards, plus any future `wfeJsonTree` mount.
+
+- Class pair: `.json-tree-copy` (idle) / `.json-tree-copy--copied` (success). Both rules live in the JSON-tree section of `workflow-engine.css`; the previous `.trigger-result-copy` was removed during this migration.
+- Position: absolute, top-right of the `.json-tree` root. The root carries `position: relative` and `padding-right: var(--sp-6)` so the button never overlaps content.
+- Visual treatment: 28×28, `--bg-elevated` background, `--border` border, hover deepens to `--accent`; on success the border + foreground swap to `--green` / `--green-border` until the revert delay elapses.
+- Copy fidelity: the click handler writes `JSON.stringify(value, null, 2)` of the **source value** passed into `renderJson` — never the rendered DOM text and never the visible (collapsed-aware) representation. Empty containers (`{}`, `[]`) and primitive roots (`null`, `42`, `"x"`) all carry the control and copy their literal JSON form.
+- A11y: a sibling `<span class="sr-live" role="status" aria-live="polite">` announces "Copied" on the resolved clipboard write; both the button icon and the announcement revert after ~2 s.
+- The behavior contract — including the CSP-cleanliness invariants — is owned by the `ui-foundation` capability's "Shared interactive JSON-tree component" requirement.
+
 ### Universal topbar
 
 40px tall, fixed top, `--bg-elevated` with a 1px bottom border. Contents:

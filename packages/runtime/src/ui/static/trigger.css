@@ -97,8 +97,8 @@
 	white-space: nowrap;
 }
 
-/* Copy button on the HTTP trigger meta — reuses .trigger-result-copy visuals
-   but smaller and inline. */
+/* Copy button on the HTTP trigger meta — same visual family as
+   .json-tree-copy but smaller and inline. */
 .trigger-meta-copy {
 	display: inline-flex;
 	align-items: center;
