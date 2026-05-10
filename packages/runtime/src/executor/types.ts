@@ -92,6 +92,19 @@ type TriggerDescriptor =
 interface ValidationIssue {
 	readonly path: readonly (string | number)[];
 	readonly message: string;
+	// The value at `path` lifted from the validated input. Carries primitives
+	// verbatim and sub-objects/arrays as-is. Persisted-event surfaces (e.g.
+	// trigger.rejection) include this; the public wire (HTTP 422 body) strips
+	// it via toWireIssues so caller-facing responses stay library-agnostic.
+	readonly received?: unknown;
+	// Engine-stable description of the violated constraint (e.g.
+	// `'one of ["A","B"]'`, `"string"`). Derived from the underlying zod
+	// issue; absent when the issue doesn't carry one.
+	readonly expected?: string;
+	// Engine-stable issue code mirroring the underlying validator's
+	// vocabulary (e.g. `"invalid_type"`, `"invalid_value"`). Not part of the
+	// public wire shape.
+	readonly code?: string;
 }
 
 // Envelope for executor.invoke / entry.fire return value — kind-agnostic.

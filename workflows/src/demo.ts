@@ -391,6 +391,23 @@ export const ping = httpTrigger({
 	},
 });
 
+// httpTrigger with a strict enum body — calling it with anything other than
+// `{ kind: "A" | "B" }` produces a `trigger.rejection` event in the
+// dashboard. The persisted event's `input.issues[0]` carries `received`,
+// `expected`, and `code` so the dashboard's expanded JSON-tree view shows
+// the actual rejected value, not just the path. Use with:
+//   curl -X POST /webhooks/local-user/demo-repo/demo/rejectMe -d '{"kind":"a"}'
+export const rejectMe = httpTrigger({
+	method: "POST",
+	request: {
+		body: z.object({ kind: z.enum(["A", "B"]) }),
+	},
+	handler: async ({ body }) => {
+		const result = await runDemo({ name: `enum-${body.kind}` });
+		return { status: 200, body: result };
+	},
+});
+
 // httpTrigger with typed request.headers — `x-trace-id` is optional, so a
 // caller may include it for tracing or omit it; the handler reads the value
 // from the validated payload.headers and echoes it back into the response

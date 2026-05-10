@@ -17,6 +17,7 @@ import type {
 	TriggerEntry,
 	TriggerSource,
 } from "./source.js";
+import { toWireIssues } from "./validator.js";
 
 // ---------------------------------------------------------------------------
 // HTTP TriggerSource
@@ -76,8 +77,15 @@ function validationFailure(
 	c: Context,
 	issues: readonly ValidationIssue[] | undefined,
 ): Response {
+	// Project to the minimal wire shape; enriched `received`/`expected`/`code`
+	// stay on the persisted `trigger.rejection` event but never reach the
+	// public-by-design /webhooks/* response (payload-validation/spec.md
+	// "HTTP 422 response for validation failures").
 	return c.json(
-		{ error: "payload_validation_failed", issues: issues ?? [] },
+		{
+			error: "payload_validation_failed",
+			issues: issues ? toWireIssues(issues) : [],
+		},
 		HTTP_UNPROCESSABLE_ENTITY,
 	);
 }
@@ -260,8 +268,10 @@ function createHttpTriggerSource(): HttpTriggerSource {
 					// Body schema rejected the caller's payload. Emit a
 					// trigger.rejection leaf so the author sees the
 					// rejection in the dashboard. Pathname only — no
-					// query string, no request body (SECURITY: caller
-					// bodies are untrusted and may carry PII).
+					// query string, no whole-body persistence. Per-issue
+					// `received` carries only the value at the failing
+					// path (see validator.ts), never the entire request
+					// body — that's the PII boundary.
 					const url = new URL(c.req.url);
 					await entry.exception({
 						kind: "trigger.rejection",

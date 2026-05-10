@@ -408,7 +408,7 @@ describe("upgradeHandler accepted + dispatch", () => {
 		await closed;
 	});
 
-	it("bad JSON → 1007 close", async () => {
+	it("bad JSON → 1007 close + trigger.rejection (ws.json-parse)", async () => {
 		const { client, closed } = openClient(bound.port, "/ws/acme/repo/wf/echo", {
 			Authorization: "Bearer xyz",
 			"X-Auth-Provider": "local",
@@ -417,9 +417,14 @@ describe("upgradeHandler accepted + dispatch", () => {
 		client.send("not json");
 		const r = await closed;
 		expect(r.code).toBe(WS_CLOSE_INVALID_PAYLOAD);
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+		expect(entry.exception.mock.calls[0]?.[0]).toMatchObject({
+			kind: "trigger.rejection",
+			name: "ws.json-parse",
+		});
 	});
 
-	it("schema-violating JSON → 1007 close (via fire returning issues)", async () => {
+	it("schema-violating JSON → 1007 close + trigger.rejection (ws.body-validation)", async () => {
 		const { client, closed } = openClient(bound.port, "/ws/acme/repo/wf/echo", {
 			Authorization: "Bearer xyz",
 			"X-Auth-Provider": "local",
@@ -428,6 +433,14 @@ describe("upgradeHandler accepted + dispatch", () => {
 		client.send(JSON.stringify({ greet: 42 }));
 		const r = await closed;
 		expect(r.code).toBe(WS_CLOSE_INVALID_PAYLOAD);
+		expect(entry.exception).toHaveBeenCalledTimes(1);
+		const params = entry.exception.mock.calls[0]?.[0];
+		expect(params).toMatchObject({
+			kind: "trigger.rejection",
+			name: "ws.body-validation",
+		});
+		expect(Array.isArray(params.input.issues)).toBe(true);
+		expect(params.input.issues.length).toBeGreaterThan(0);
 	});
 
 	it("handler throws → 1011 close", async () => {

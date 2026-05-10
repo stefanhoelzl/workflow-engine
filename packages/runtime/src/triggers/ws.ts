@@ -268,6 +268,10 @@ function createWsTriggerSource(deps: WsTriggerSourceDeps): WsTriggerSource {
 		try {
 			parsed = JSON.parse(frameToText(frame));
 		} catch {
+			await conn.entry.exception({
+				kind: "trigger.rejection",
+				name: "ws.json-parse",
+			});
 			conn.ws.close(WS_CLOSE_INVALID_PAYLOAD, "json parse");
 			return;
 		}
@@ -285,6 +289,11 @@ function createWsTriggerSource(deps: WsTriggerSourceDeps): WsTriggerSource {
 		if (result.error.issues === undefined) {
 			conn.ws.close(WS_CLOSE_SERVER_ERROR, "handler");
 		} else {
+			await conn.entry.exception({
+				kind: "trigger.rejection",
+				name: "ws.body-validation",
+				input: { issues: result.error.issues },
+			});
 			conn.ws.close(WS_CLOSE_INVALID_PAYLOAD, "schema");
 		}
 	}

@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the `manualTrigger` SDK factory and its runtime `TriggerSource` implementation. Manual triggers fire workflow invocations exclusively via the authenticated `/trigger/<tenant>/<workflow>/<trigger>` UI endpoint — there is no public webhook ingress and no timer. The manual source shares the per-`(tenant, workflow.sha)` runQueue with other trigger kinds. The backend is a thin no-op; entries live in the workflow registry and the `/trigger` middleware resolves them directly via `registry.getEntry`.
-
 ## Requirements
-
 ### Requirement: manualTrigger factory creates branded ManualTrigger
 
 The SDK SHALL export a `manualTrigger(config)` factory that returns a `ManualTrigger` value that is BOTH branded with `Symbol.for("@workflow-engine/manual-trigger")` AND callable as `(input: unknown) => Promise<unknown>`. Invoking the callable SHALL run the user-supplied `handler(input)` and return its result (the return value is preserved for callable-style usage in tests; the runtime fire path validates/serialises via the descriptor's schemas separately).
@@ -123,6 +121,7 @@ The manual fire path SHALL NOT bypass owner-authorization. Two users belonging t
 - **GIVEN** alice is a member of `acme` but `(acme, foo)` has no manual trigger named `ghost`
 - **WHEN** alice posts to `POST /trigger/acme/foo/wf/ghost`
 - **THEN** the runtime SHALL respond `404 Not Found`
+
 ### Requirement: Manual triggers carry no audit identity on events
 
 Manual fire invocations SHALL have their dispatching user identity captured via the `meta.dispatch.user` field on the `trigger.request` event (see `invocations` spec). The manual trigger source SHALL NOT stamp or embed any additional user identity into the `trigger.request` input or any subsequent event. Workflow handler code SHALL NOT see the dispatching user's identity directly — it reads only the `input` it was called with.
@@ -134,6 +133,7 @@ Manual fire invocations SHALL have their dispatching user identity captured via 
 - **THEN** the event SHALL carry `meta.dispatch = { source: "manual", user: { login: "alice", mail } }`
 - **AND** `owner` SHALL be `acme` and `repo` SHALL be `foo` (stamped by the widener)
 - **AND** the `input` passed to the handler SHALL NOT contain `dispatch` or `user` fields
+
 ### Requirement: Trigger kind icon for manual triggers
 
 The trigger-ui page SHALL render a distinct icon for manual-kind trigger cards via the `KIND_ICONS` map. The icon SHALL be a person glyph (U+1F464 BUST IN SILHOUETTE) or an equivalent person-themed glyph that is visually distinct from the http (`🌐`) and cron (`⏰`) icons.
@@ -156,3 +156,41 @@ This requirement exists to bind the manual-trigger backend to the shared contrac
 - **GIVEN** any manifest with sentinel substrings anywhere in manual trigger descriptors
 - **WHEN** `manualTriggerSource.reconfigure` is called by the registry
 - **THEN** no string field reachable from the entries argument SHALL contain the byte sequence `\x00secret:`
+
+### Requirement: Manual fire emits trigger.rejection on input validation failure
+
+When a manual-fire POST to `/trigger/:owner/:repo/:workflow/:trigger` is rejected by the trigger's input schema, the `/trigger` UI middleware SHALL, before returning the HTTP 422 response, emit a `trigger.rejection` lifecycle event with:
+
+- `kind: "trigger.rejection"`
+- `name: "manual.input-validation"`
+- `input.issues`: the engine-internal `ValidationIssue[]` array in its full enriched shape (including `received`, `expected`, `code` when supplied by the underlying validator) — NOT the minimal wire shape served in the 422 response
+- `input.trigger`: the trigger name (the `:trigger` URL parameter)
+
+Per the existing host-fail emission contract (`packages/runtime/src/executor/exception.ts`), the emitted event SHALL NOT carry `meta.dispatch` — single-leaf host-fail events have no paired `trigger.request` and follow the same dispatch-less pattern that `http.body-validation` rejection events use today. The event is identified as manual-fire-originated by its `name: "manual.input-validation"`.
+
+The 422 response shape served to the dashboard caller is unchanged: `{ error: "payload_validation_failed", issues: [{path, message}, ...] }` with the minimal projection defined in `payload-validation/spec.md` ("HTTP 422 response for validation failures"). The persistence path and the response path are independent — the response SHALL NOT be delayed or otherwise made dependent on event emission success or failure.
+
+The emission SHALL NOT happen for non-validation failures (e.g. handler throws, output validation failure). Those failures continue to be surfaced by the executor's existing lifecycle events.
+
+#### Scenario: Manual fire with invalid input persists trigger.rejection
+
+- **GIVEN** authenticated user `alice` (member of `acme`) and a manual trigger `runBatch` in `(acme, foo)` whose input schema is `z.object({ count: z.number() })`
+- **WHEN** alice POSTs `/trigger/acme/foo/batch/runBatch` with body `{ "count": "many" }`
+- **THEN** the runtime SHALL respond 422 with body `{ error: "payload_validation_failed", issues: [{ path: ["count"], message: "Expected number, received string" }] }`
+- **AND** the runtime SHALL emit a `trigger.rejection` event with `name: "manual.input-validation"` and `input.issues[0].received === "many"`
+- **AND** the invocations list SHALL render a synthetic single-leaf row for this rejection under the `(acme, foo)` scope
+
+#### Scenario: Manual fire with valid input does not emit trigger.rejection
+
+- **GIVEN** the same trigger as above
+- **WHEN** alice POSTs with body `{ "count": 3 }`
+- **THEN** no `trigger.rejection` event SHALL be emitted
+- **AND** the existing `trigger.request` event SHALL be emitted as before
+
+#### Scenario: Persisted event uses the full enriched shape
+
+- **GIVEN** the same trigger as above with input schema `z.object({ kind: z.enum(["A","B"]) })`
+- **WHEN** alice POSTs with body `{ "kind": "a" }`
+- **THEN** the persisted `trigger.rejection` event's `input.issues[0]` SHALL carry `path: ["kind"]`, `received: "a"`, an `expected` describing the enum options, and a `code` identifying the enum-failure case
+- **AND** the 422 response body issue SHALL carry only `path` and `message`
+

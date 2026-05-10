@@ -61,6 +61,9 @@ const dependsOn: readonly string[] = ["host-call-action"];
 interface ValidationIssueLike {
 	readonly path: readonly (string | number)[];
 	readonly message: string;
+	readonly received?: unknown;
+	readonly expected?: string;
+	readonly code?: string;
 }
 
 function isValidationErrorLike(
@@ -85,7 +88,17 @@ function formatValidationIssues(
 	return issues
 		.map((issue) => {
 			const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-			return `${path}: ${issue.message}`;
+			const head = `${path}: ${issue.message}`;
+			if (issue.received === undefined) {
+				return head;
+			}
+			let receivedStr: string;
+			try {
+				receivedStr = JSON.stringify(issue.received);
+			} catch {
+				receivedStr = String(issue.received);
+			}
+			return `${head} (received ${receivedStr})`;
 		})
 		.join("; ");
 }
@@ -97,8 +110,12 @@ function formatValidationIssues(
  *   - `GuestSafeError("action \"X\" is not declared")` for unknown action
  *     names — pass through unchanged.
  *   - `ValidationError(message, issues, errors)` for input/output schema
- *     violations — re-shape as a flat issue summary; `.errors` and `.issues`
- *     arrays SHALL NOT cross the bridge per `specs/actions/spec.md`.
+ *     violations — re-shape as a flat issue summary on `.message` and attach
+ *     the normalised `issues` array as an own-property on the rethrown
+ *     error so persisted `action.error` events and guest catch blocks both
+ *     see the enriched shape (`{path, message, received?, expected?, code?}`).
+ *     The underlying validator's `.errors` field (raw zod issues) stays
+ *     host-only.
  *   - Anything else — collapse to a generic GuestSafeError so the bridge
  *     closure-rule's pass-through still applies.
  */
@@ -107,7 +124,19 @@ function translateValidatorThrow(err: unknown): GuestSafeError {
 		return err;
 	}
 	if (isValidationErrorLike(err)) {
-		return new GuestSafeError(formatValidationIssues(err.issues));
+		const guestErr = new GuestSafeError(formatValidationIssues(err.issues));
+		// Attach `issues` as an enumerable own-property so the sandbox bridge
+		// marshals it into the guest catch (it walks enumerable-own-props
+		// with a skip-list of name/message/stack). Content is guest-data +
+		// guest-schema, so propagation respects the host-opacity intent of
+		// the original bridge rule (specs/actions/spec.md).
+		Object.defineProperty(guestErr, "issues", {
+			value: err.issues,
+			enumerable: true,
+			writable: false,
+			configurable: false,
+		});
+		return guestErr;
 	}
 	if (err instanceof Error) {
 		return new GuestSafeError(err.message);
@@ -214,4 +243,11 @@ function guest(): void {
 }
 
 export type { HostCallActionExports };
-export { dependsOn, guest, name, SDK_DISPATCH_DESCRIPTOR, worker };
+export {
+	dependsOn,
+	guest,
+	name,
+	SDK_DISPATCH_DESCRIPTOR,
+	translateValidatorThrow,
+	worker,
+};
