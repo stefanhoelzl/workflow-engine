@@ -243,6 +243,7 @@ The component SHALL satisfy the following invariants:
 - **Keyboard accessible**: the disclosure control on each collapsible node SHALL be reachable by keyboard tab navigation and SHALL be activatable by `Enter` or `Space`. The focus indicator SHALL conform to the existing keyboard-focus requirement.
 - **Dark/light theme respect**: the component's visual treatment SHALL adapt to the user's `prefers-color-scheme` per the existing theme requirement; it SHALL NOT define theme-specific colours outside the established palette.
 - **Reduced-motion respect**: any expand/collapse transition SHALL be suppressed when `prefers-reduced-motion: reduce` is set.
+- **Copy-to-clipboard control**: every mount of the component SHALL render a copy-to-clipboard control as a child of the tree's root element. Activation of the control (mouse click or keyboard activation) SHALL write `JSON.stringify(value, null, 2)` of the *source value passed into the component* — not the rendered DOM text and not the tree's currently-visible (collapsed-aware) representation — to the system clipboard via `navigator.clipboard.writeText`. The control SHALL signal success by swapping its icon to a confirmation glyph and announcing "Copied" through a sibling `role="status"` `aria-live="polite"` region for assistive tech, then SHALL revert its icon and clear the announcement after a short delay (~2 seconds). The control SHALL be implemented via `addEventListener` on a button created by `document.createElement`; it SHALL NOT introduce inline event handlers, inline scripts, inline styles, or any binding that violates the CSP-clean rendering invariant. Empty containers (`{}`, `[]`) and primitive root values SHALL each carry the control.
 
 The component SHALL be the single rendering path for all JSON values shown in the authenticated UI, including but not limited to: trigger-fire result payloads (existing trigger result dialog), action request/response payloads (existing flamegraph), and queue items (new `/queue` surface).
 
@@ -284,3 +285,43 @@ The component SHALL be the single rendering path for all JSON values shown in th
 - **THEN** the item SHALL be rendered via the shared JSON-tree component
 - **WHEN** the flamegraph displays an action's request or response payload
 - **THEN** the payload SHALL be rendered via the shared JSON-tree component
+
+#### Scenario: Copy-to-clipboard control writes the source value
+
+- **GIVEN** the component has rendered the value `{"orderId": 42, "items": [{"sku": "X"}]}`
+- **WHEN** the user activates the copy-to-clipboard control on the rendered tree
+- **THEN** `navigator.clipboard.writeText` SHALL have been called exactly once
+- **AND** the argument SHALL equal `JSON.stringify({"orderId": 42, "items": [{"sku": "X"}]}, null, 2)`
+
+#### Scenario: Copy ignores collapsed state
+
+- **GIVEN** the component has rendered `{"a": 1, "b": {"c": 2}}` and the user has collapsed key `b`
+- **WHEN** the user activates the copy-to-clipboard control
+- **THEN** the clipboard payload SHALL contain `"c": 2` (the source value, not the visible representation)
+
+#### Scenario: Copy success announces and reverts
+
+- **GIVEN** a rendered tree whose copy-to-clipboard control is in its idle state
+- **WHEN** the user activates the control and the clipboard write resolves successfully
+- **THEN** the control SHALL display a confirmation icon
+- **AND** a sibling `role="status"` `aria-live="polite"` region SHALL contain the text "Copied"
+- **AND** after a short delay (~2 seconds) the control SHALL revert to its idle icon
+- **AND** the live region's text content SHALL be cleared
+
+#### Scenario: Primitive and empty roots still carry the control
+
+- **GIVEN** the component is asked to render the primitive value `null`
+- **WHEN** the component renders the value
+- **THEN** the rendered tree root SHALL still contain the copy-to-clipboard control
+- **AND** activating it SHALL write the literal text `null` to the clipboard
+
+- **GIVEN** the component is asked to render the empty object `{}`
+- **WHEN** the component renders the value
+- **THEN** the rendered tree root SHALL still contain the copy-to-clipboard control
+- **AND** activating it SHALL write the literal text `{}` to the clipboard
+
+#### Scenario: Copy control does not violate CSP
+
+- **WHEN** any page renders a JSON value through the component
+- **THEN** the copy-to-clipboard control SHALL NOT carry an inline `on*=` handler, an inline `style=` attribute, or be wired through an inline `<script>`
+- **AND** the control's click behavior SHALL be installed via `addEventListener` from the same `/static/*.js` module that defines the component

@@ -23,6 +23,9 @@
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: IIFE keeps tree-rendering helpers, two Alpine factories, fragment-append helper and registration in one closure — the alternative (separate module-level helpers) leaks private state to the global scope on a no-module-loader setup, identical pattern to result-dialog.js
 (() => {
+	const SvgNs = "http://www.w3.org/2000/svg";
+	const CopyFeedbackMs = 2000;
+
 	const PrimitiveClass = {
 		string: "json-tree-string",
 		number: "json-tree-number",
@@ -213,10 +216,80 @@
 		appendPrimitiveRow(parent, value, depth, key, hasNext);
 	}
 
+	function createIcon(children) {
+		const svg = document.createElementNS(SvgNs, "svg");
+		svg.setAttribute("viewBox", "0 0 24 24");
+		svg.setAttribute("width", "14");
+		svg.setAttribute("height", "14");
+		svg.setAttribute("fill", "none");
+		svg.setAttribute("stroke", "currentColor");
+		svg.setAttribute("stroke-width", "2");
+		svg.setAttribute("stroke-linecap", "round");
+		svg.setAttribute("stroke-linejoin", "round");
+		svg.setAttribute("aria-hidden", "true");
+		for (const [tag, attrs] of children) {
+			const el = document.createElementNS(SvgNs, tag);
+			for (const [k, v] of Object.entries(attrs)) {
+				el.setAttribute(k, v);
+			}
+			svg.appendChild(el);
+		}
+		return svg;
+	}
+
+	function createCopyIcon() {
+		return createIcon([
+			["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" }],
+			[
+				"path",
+				{ d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" },
+			],
+		]);
+	}
+
+	function createCheckIcon() {
+		return createIcon([["path", { d: "M20 6 9 17l-5-5" }]]);
+	}
+
+	// Build the per-tree copy-to-clipboard control. The button copies the
+	// *source value* passed into renderJson (pretty-printed with 2-space
+	// indent), not the rendered DOM text and not the visible/collapsed
+	// representation. The sr-live region announces "Copied" to assistive tech.
+	function appendCopyControl(root, value) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.classList.add("json-tree-copy");
+		button.setAttribute("aria-label", "Copy to clipboard");
+		button.replaceChildren(createCopyIcon());
+
+		const live = document.createElement("span");
+		live.classList.add("sr-live");
+		live.setAttribute("role", "status");
+		live.setAttribute("aria-live", "polite");
+
+		const copyText = JSON.stringify(value, null, 2);
+		button.addEventListener("click", () => {
+			navigator.clipboard.writeText(copyText).then(() => {
+				button.replaceChildren(createCheckIcon());
+				button.classList.add("json-tree-copy--copied");
+				live.textContent = "Copied";
+				setTimeout(() => {
+					button.replaceChildren(createCopyIcon());
+					button.classList.remove("json-tree-copy--copied");
+					live.textContent = "";
+				}, CopyFeedbackMs);
+			});
+		});
+
+		root.appendChild(button);
+		root.appendChild(live);
+	}
+
 	// Public render entry point. Returns the root DOM node.
 	function renderJson(value) {
 		const wrap = document.createElement("div");
 		wrap.classList.add("json-tree");
+		appendCopyControl(wrap, value);
 		appendValue(wrap, value, 0, undefined, false);
 		return wrap;
 	}

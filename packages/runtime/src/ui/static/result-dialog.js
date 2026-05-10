@@ -1,7 +1,9 @@
-// Shared result-dialog primitive. Standalone — depends only on the DOM and the
-// clipboard API. Other /static/*.js modules reuse it via window.showResult /
-// window.showResultBlocks so no script ordering or globals are required beyond
-// "load result-dialog.js before any consumer."
+// Shared result-dialog primitive. Depends on the DOM and on the shared JSON
+// tree (`window.wfeRenderJsonTree`, defined by `/static/json-tree.js`) which
+// owns the per-tree copy-to-clipboard control. Other /static/*.js modules
+// reuse it via window.showResult / window.showResultBlocks so no script
+// ordering or globals are required beyond "load result-dialog.js after
+// json-tree.js."
 //
 // Three-state outcome keyed on HTTP status class — kind-agnostic so any
 // trigger backend that honours the status contract (2xx = ok, 4xx = client,
@@ -10,11 +12,8 @@
 //   4xx → --warn    (amber)
 //   5xx / null/network → --error (red)
 //
-// biome-ignore lint/complexity/noExcessiveLinesPerFunction: IIFE keeps icon builders, block builder, dialog singleton, and two show* entry points in one closure — the alternative (separate module-level helpers) would leak private state to the global scope on a no-module-loader setup.
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: IIFE keeps the block builder, dialog singleton, and two show* entry points in one closure — the alternative (separate module-level helpers) would leak private state to the global scope on a no-module-loader setup.
 (() => {
-	const CopyFeedbackMs = 2000;
-	const SvgNs = "http://www.w3.org/2000/svg";
-
 	// HTTP status-class boundaries (RFC 9110 §15).
 	const StatusSuccessMin = 200;
 	const StatusSuccessMax = 300;
@@ -26,45 +25,6 @@
 		"trigger-result-dialog--warn",
 		"trigger-result-dialog--error",
 	];
-
-	function createIcon(children) {
-		const svg = document.createElementNS(SvgNs, "svg");
-		svg.setAttribute("viewBox", "0 0 24 24");
-		svg.setAttribute("width", "14");
-		svg.setAttribute("height", "14");
-		svg.setAttribute("fill", "none");
-		svg.setAttribute("stroke", "currentColor");
-		svg.setAttribute("stroke-width", "2");
-		svg.setAttribute("stroke-linecap", "round");
-		svg.setAttribute("stroke-linejoin", "round");
-		svg.setAttribute("aria-hidden", "true");
-		for (const [tag, attrs] of children) {
-			const el = document.createElementNS(SvgNs, tag);
-			for (const [k, v] of Object.entries(attrs)) {
-				el.setAttribute(k, v);
-			}
-			svg.appendChild(el);
-		}
-		return svg;
-	}
-
-	function createCopyIcon() {
-		return createIcon([
-			["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" }],
-			[
-				"path",
-				{ d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" },
-			],
-		]);
-	}
-
-	function createCheckIcon() {
-		return createIcon([["path", { d: "M20 6 9 17l-5-5" }]]);
-	}
-
-	function replaceIcon(btn, icon) {
-		btn.replaceChildren(icon);
-	}
 
 	function buildResultBlock(block) {
 		const wrap = document.createElement("div");
@@ -78,9 +38,10 @@
 		const codeWrap = document.createElement("div");
 		codeWrap.classList.add("trigger-result-code");
 
-		// JSON renders via the shared collapsible tree (json-tree.js). Falls
-		// back to <pre>+JSON.stringify if the renderer hasn't loaded yet (e.g.
-		// in tests that don't load /static/json-tree.js).
+		// JSON renders via the shared collapsible tree (json-tree.js), which
+		// owns the per-tree copy-to-clipboard control. Falls back to
+		// <pre>+JSON.stringify if the renderer hasn't loaded yet (test-only
+		// path; the fallback intentionally has no copy button).
 		const body = document.createElement("div");
 		body.classList.add("trigger-result-body");
 		if (typeof window.wfeRenderJsonTree === "function") {
@@ -92,35 +53,6 @@
 		}
 		codeWrap.appendChild(body);
 
-		const copyBtn = document.createElement("button");
-		copyBtn.type = "button";
-		copyBtn.classList.add("trigger-result-copy");
-		copyBtn.setAttribute("aria-label", "Copy to clipboard");
-		replaceIcon(copyBtn, createCopyIcon());
-
-		// Visually-hidden live region so screen readers hear "Copied" on success
-		const live = document.createElement("span");
-		live.classList.add("sr-live");
-		live.setAttribute("role", "status");
-		live.setAttribute("aria-live", "polite");
-
-		// Copy preserves payload fidelity: stringify the original payload, not
-		// the rendered tree's textContent (which would lose JSON formatting).
-		const copyText = JSON.stringify(block.payload, null, 2);
-		copyBtn.addEventListener("click", () => {
-			navigator.clipboard.writeText(copyText).then(() => {
-				replaceIcon(copyBtn, createCheckIcon());
-				copyBtn.classList.add("trigger-result-copy--copied");
-				live.textContent = "Copied";
-				setTimeout(() => {
-					replaceIcon(copyBtn, createCopyIcon());
-					copyBtn.classList.remove("trigger-result-copy--copied");
-					live.textContent = "";
-				}, CopyFeedbackMs);
-			});
-		});
-		codeWrap.appendChild(copyBtn);
-		codeWrap.appendChild(live);
 		wrap.appendChild(codeWrap);
 		return wrap;
 	}
