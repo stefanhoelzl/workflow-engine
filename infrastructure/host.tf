@@ -195,6 +195,44 @@ locals {
         on_change  = "sudo /usr/sbin/sysctl --system"
         on_destroy = "sudo /usr/bin/rm -f /etc/sysctl.d/10-unprivileged-ports.conf && sudo /usr/sbin/sysctl --system"
       }
+      # Daily disk reclaim: apt archive cache + systemd journal + dangling
+      # rootless images per tenant. The script + .service file go in "pre";
+      # the .timer goes in "post" so it cannot fire (Persistent=true catch-up)
+      # before its prerequisites are on disk — managed_file_pre's for_each is
+      # unordered, but managed_file_post depends_on managed_file_pre.
+      disk_cleanup_script = {
+        path       = "/usr/local/sbin/disk-cleanup.sh"
+        content    = templatefile("${path.module}/files/disk-cleanup.sh.tmpl", { tenants = join(" ", local.tenants) })
+        mode       = "0755"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "pre"
+        on_change  = ""
+        on_destroy = "sudo /usr/bin/rm -f /usr/local/sbin/disk-cleanup.sh"
+      }
+      disk_cleanup_service = {
+        path       = "/etc/systemd/system/disk-cleanup.service"
+        content    = file("${path.module}/files/disk-cleanup.service")
+        mode       = "0644"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "pre"
+        on_change  = "sudo /bin/systemctl daemon-reload"
+        on_destroy = "sudo /usr/bin/rm -f /etc/systemd/system/disk-cleanup.service && sudo /bin/systemctl daemon-reload"
+      }
+      disk_cleanup_timer = {
+        path       = "/etc/systemd/system/disk-cleanup.timer"
+        content    = file("${path.module}/files/disk-cleanup.timer")
+        mode       = "0644"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "post"
+        on_change  = "sudo /bin/systemctl daemon-reload && sudo /bin/systemctl enable --now disk-cleanup.timer"
+        on_destroy = "sudo /bin/systemctl disable --now disk-cleanup.timer 2>/dev/null || true; sudo /usr/bin/rm -f /etc/systemd/system/disk-cleanup.timer && sudo /bin/systemctl daemon-reload"
+      }
     },
     # Per-tenant podman-auto-update.timer override. With user-mode Quadlets
     # each tenant runs its own podman-auto-update.timer in user systemd; the
