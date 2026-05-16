@@ -13,7 +13,11 @@ const stubFactory = (id: string): AuthProviderFactory => ({
 			renderLoginSection: () => html`<x-${id}>${seen.join(",")}</x-${id}>`,
 			mountAuthRoutes: (_app: Hono) => {},
 			resolveApiIdentity: () => Promise.resolve(undefined),
-			refreshSession: () => Promise.resolve(undefined),
+			refreshSession: () =>
+				Promise.resolve({
+					ok: false as const,
+					reason: "session-expired" as const,
+				}),
 		} satisfies AuthProvider;
 	},
 });
@@ -67,7 +71,11 @@ describe("buildRegistry", () => {
 					renderLoginSection: () => html`${raw.join("|")}`,
 					mountAuthRoutes: () => {},
 					resolveApiIdentity: () => Promise.resolve(undefined),
-					refreshSession: () => Promise.resolve(undefined),
+					refreshSession: () =>
+						Promise.resolve({
+							ok: false as const,
+							reason: "session-expired" as const,
+						}),
 				};
 			},
 		};

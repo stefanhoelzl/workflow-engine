@@ -228,7 +228,7 @@ describe("refreshSession", () => {
 		};
 	}
 
-	it("returns UserContext on allowlisted user", async () => {
+	it("returns ok with UserContext on allowlisted user", async () => {
 		const fetchFn = fakeGitHub({
 			user: { login: "alice", email: "alice@example.com" },
 			orgs: [{ login: "acme" }],
@@ -237,25 +237,38 @@ describe("refreshSession", () => {
 			["user:alice"],
 			depsWith(fetchFn),
 		);
-		const user = await provider.refreshSession(mkPayload());
-		expect(user).toEqual({
-			login: "alice",
-			mail: "alice@example.com",
-			orgs: ["alice", "acme"],
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({
+			ok: true,
+			user: {
+				login: "alice",
+				mail: "alice@example.com",
+				orgs: ["alice", "acme"],
+			},
 		});
 	});
 
-	it("returns undefined when github returns 5xx", async () => {
+	it("returns session-expired when github returns 5xx", async () => {
 		const fetchFn = fakeGitHub({ userStatus: 503 });
 		const provider = githubProviderFactory.create(
 			["user:alice"],
 			depsWith(fetchFn),
 		);
-		const user = await provider.refreshSession(mkPayload());
-		expect(user).toBeUndefined();
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({ ok: false, reason: "session-expired" });
 	});
 
-	it("returns undefined when user is no longer on allowlist", async () => {
+	it("returns session-expired when github returns 401 (token revoked)", async () => {
+		const fetchFn = fakeGitHub({ userStatus: 401 });
+		const provider = githubProviderFactory.create(
+			["user:alice"],
+			depsWith(fetchFn),
+		);
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({ ok: false, reason: "session-expired" });
+	});
+
+	it("returns access-denied when user is no longer on allowlist", async () => {
 		const fetchFn = fakeGitHub({
 			user: { login: "eve", email: null },
 			orgs: [],
@@ -264,7 +277,7 @@ describe("refreshSession", () => {
 			["user:alice"],
 			depsWith(fetchFn),
 		);
-		const user = await provider.refreshSession(mkPayload());
-		expect(user).toBeUndefined();
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({ ok: false, reason: "access-denied" });
 	});
 });

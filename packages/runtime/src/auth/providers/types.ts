@@ -17,12 +17,19 @@ interface ProviderRouteDeps {
 // directly into its tree (no HtmlEscapedString concat).
 type LoginSection = Child;
 
+type RefreshResult =
+	| { readonly ok: true; readonly user: UserContext }
+	| {
+			readonly ok: false;
+			readonly reason: "session-expired" | "access-denied";
+	  };
+
 interface AuthProvider {
 	readonly id: string;
 	renderLoginSection(returnTo: string): LoginSection;
 	mountAuthRoutes(subApp: Hono): void;
 	resolveApiIdentity(req: Request): Promise<UserContext | undefined>;
-	refreshSession(payload: SessionPayload): Promise<UserContext | undefined>;
+	refreshSession(payload: SessionPayload): Promise<RefreshResult>;
 }
 
 interface AuthProviderFactory {
@@ -35,4 +42,5 @@ export type {
 	AuthProviderFactory,
 	LoginSection,
 	ProviderRouteDeps,
+	RefreshResult,
 };

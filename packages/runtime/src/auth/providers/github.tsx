@@ -4,19 +4,16 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { GithubIcon } from "../../ui/icons.js";
 import {
 	FIVE_MINUTES_SECONDS,
-	FLASH_COOKIE,
 	HTTP_BAD_GATEWAY,
 	HTTP_BAD_REQUEST,
-	LOGIN_PATH,
 	SESSION_COOKIE,
 	SEVEN_DAYS_MS,
 	SEVEN_DAYS_SECONDS,
-	SIXTY_SECONDS,
 	STATE_COOKIE,
 } from "../constants.js";
 import { clearOpts, writeOpts } from "../cookie-opts.js";
-import { sealFlash } from "../flash-cookie.js";
 import { buildAuthorizeUrl, exchangeCode, resolveUser } from "../github-api.js";
+import { redirectToLoginWithFlash } from "../redirect-to-login.js";
 import { type SessionPayload, sealSession } from "../session-cookie.js";
 import { sanitizeReturnTo, sealState, unsealState } from "../state-cookie.js";
 import type { UserContext } from "../user-context.js";
@@ -25,6 +22,7 @@ import type {
 	AuthProviderFactory,
 	LoginSection,
 	ProviderRouteDeps,
+	RefreshResult,
 } from "./types.js";
 
 const ID = "github";
@@ -189,18 +187,11 @@ function buildCallback(
 		const user = userRes.data;
 
 		if (!isAllowed(user, users, orgs)) {
-			const flash = await sealFlash({
-				kind: "denied",
-				login: user.login,
-			});
-			setCookie(
+			return redirectToLoginWithFlash(
 				c,
-				FLASH_COOKIE,
-				flash,
-				writeOpts("/", deps.secureCookies, SIXTY_SECONDS),
+				{ kind: "denied", login: user.login },
+				deps.secureCookies,
 			);
-			deleteCookie(c, SESSION_COOKIE, clearOpts("/", deps.secureCookies));
-			return c.redirect(LOGIN_PATH);
 		}
 
 		const now = deps.nowFn();
@@ -277,20 +268,18 @@ function createGithubProvider(
 			return userRes.data;
 		},
 
-		async refreshSession(
-			payload: SessionPayload,
-		): Promise<UserContext | undefined> {
+		async refreshSession(payload: SessionPayload): Promise<RefreshResult> {
 			const userRes = await resolveUser({
 				accessToken: payload.accessToken,
 				...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
 			});
 			if (!userRes.ok) {
-				return;
+				return { ok: false, reason: "session-expired" };
 			}
 			if (!isAllowed(userRes.data, users, orgs)) {
-				return;
+				return { ok: false, reason: "access-denied" };
 			}
-			return userRes.data;
+			return { ok: true, user: userRes.data };
 		},
 	};
 }

@@ -85,12 +85,16 @@ async function freshCookie(
 }
 
 describe("sessionMiddleware", () => {
-	it("redirects to /login when no session cookie", async () => {
+	it("redirects to /login when no session cookie, without setting a flash", async () => {
 		const app = mkApp({ authAllow: "github:user:alice" });
 		const res = await app.request("/protected");
 		expect(res.status).toBe(302);
 		const loc = res.headers.get("location");
 		expect(loc).toMatch(/^\/login\?returnTo=/);
+		const setCookies = res.headers.getSetCookie();
+		expect(
+			setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`)),
+		).toBeUndefined();
 	});
 
 	it("passes through on fresh github session with allowed user", async () => {
@@ -166,7 +170,7 @@ describe("sessionMiddleware", () => {
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 
-	it("fails closed when GitHub returns 5xx on refresh", async () => {
+	it("fails closed with logged-out flash when GitHub returns 5xx on refresh", async () => {
 		const now = 1_700_000_000_000;
 		const { cookie } = await freshCookie({ resolvedAt: now - 60 * 60_000 });
 		const fetchFn = fakeFetch({
@@ -180,7 +184,36 @@ describe("sessionMiddleware", () => {
 		});
 		const res = await app.request("/protected", { headers: { cookie } });
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toMatch(/^\/login/);
+		expect(res.headers.get("location")).toBe("/login");
+		const setCookies = res.headers.getSetCookie();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		expect(flash).toBeDefined();
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "logged-out",
+		});
+	});
+
+	it("fails closed with logged-out flash when GitHub rejects the token (401)", async () => {
+		const now = 1_700_000_000_000;
+		const { cookie } = await freshCookie({ resolvedAt: now - 60 * 60_000 });
+		const fetchFn = fakeFetch({
+			"/user": { body: {}, status: 401 },
+			"/user/orgs": { body: [{ login: "acme" }] },
+		});
+		const app = mkApp({
+			authAllow: "github:user:alice",
+			fetchFn,
+			nowFn: () => now,
+		});
+		const res = await app.request("/protected", { headers: { cookie } });
+		expect(res.status).toBe(302);
+		const setCookies = res.headers.getSetCookie();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "logged-out",
+		});
 	});
 
 	it("redirects with flash when refresh finds user now outside allow-list", async () => {
@@ -208,7 +241,7 @@ describe("sessionMiddleware", () => {
 		});
 	});
 
-	it("redirects on expired (hard TTL exceeded) session", async () => {
+	it("redirects on expired (hard TTL exceeded) session with logged-out flash", async () => {
 		const now = 1_700_000_000_000;
 		const { cookie } = await freshCookie({ exp: now - 1 });
 		const app = mkApp({
@@ -217,10 +250,16 @@ describe("sessionMiddleware", () => {
 		});
 		const res = await app.request("/protected", { headers: { cookie } });
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toMatch(/^\/login/);
+		expect(res.headers.get("location")).toBe("/login");
+		const setCookies = res.headers.getSetCookie();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "logged-out",
+		});
 	});
 
-	it("redirects on tampered cookie", async () => {
+	it("redirects on tampered cookie with logged-out flash", async () => {
 		const { cookie } = await freshCookie();
 		const tampered = `${cookie.slice(0, -2)}XX`;
 		const app = mkApp({ authAllow: "github:user:alice" });
@@ -228,9 +267,16 @@ describe("sessionMiddleware", () => {
 			headers: { cookie: tampered },
 		});
 		expect(res.status).toBe(302);
+		expect(res.headers.get("location")).toBe("/login");
+		const setCookies = res.headers.getSetCookie();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "logged-out",
+		});
 	});
 
-	it("clears cookie and redirects when payload references unregistered provider", async () => {
+	it("clears cookie and redirects with logged-out flash when payload references unregistered provider", async () => {
 		const now = 1_700_000_000_000;
 		const { cookie } = await freshCookie({
 			provider: "local",
@@ -244,11 +290,44 @@ describe("sessionMiddleware", () => {
 		});
 		const res = await app.request("/protected", { headers: { cookie } });
 		expect(res.status).toBe(302);
-		expect(res.headers.get("location")).toMatch(/^\/login/);
+		expect(res.headers.get("location")).toBe("/login");
 		const setCookies = res.headers.getSetCookie();
 		const sessionCleared = setCookies.find((c) =>
 			c.startsWith(`${SESSION_COOKIE}=;`),
 		);
 		expect(sessionCleared).toBeDefined();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "logged-out",
+		});
+	});
+
+	it("clears local session with denied flash when catalog entry was removed", async () => {
+		const now = 1_700_000_000_000;
+		const { cookie } = await freshCookie({
+			provider: "local",
+			login: "alice",
+			mail: "alice@dev.local",
+			orgs: ["alice"],
+			accessToken: "",
+			resolvedAt: now - 60 * 60_000,
+		});
+		// Registry's local provider has only "dev"; "alice" was minted in a
+		// previous boot when she was in AUTH_ALLOW.
+		const app = mkApp({
+			authAllow: "local:dev",
+			nowFn: () => now,
+		});
+		const res = await app.request("/protected", { headers: { cookie } });
+		expect(res.status).toBe(302);
+		expect(res.headers.get("location")).toBe("/login");
+		const setCookies = res.headers.getSetCookie();
+		const flash = setCookies.find((c) => c.startsWith(`${FLASH_COOKIE}=`));
+		const flashValue = flash?.split(";")[0]?.split("=")[1] ?? "";
+		await expect(unsealFlash(flashValue)).resolves.toEqual({
+			kind: "denied",
+			login: "alice",
+		});
 	});
 });
