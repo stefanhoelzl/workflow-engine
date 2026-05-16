@@ -17,15 +17,23 @@ The repository SHALL contain exactly one OpenTofu project at `infrastructure/` w
 - **AND** `infrastructure/envs/` SHALL NOT exist
 - **AND** `infrastructure/modules/{kubernetes,object-storage,app-instance,baseline,caddy}/` SHALL NOT exist
 
-### Requirement: Minimum OpenTofu version
+### Requirement: Pinned OpenTofu version
 
-The `infrastructure/` project SHALL declare `required_version = ">= 1.11.0"` to ensure clients (operator + CI) use a tofu version that supports the encryption block and current provider features.
+The `infrastructure/` project SHALL declare an exact-patch `required_version` (e.g. `"1.11.6"`, not a range) so all clients — operator local + every CI job invoking `tofu` — resolve the same version. The pin is required because `tofu init` writes version-specific `h1:` hashes into `.terraform.lock.hcl`, and the repo's lockfile-drift gate (`git diff --exit-code infrastructure/.terraform.lock.hcl` in `ci.yml`) fails when CI's `tofu init` produces a different set of hashes than the operator's last commit.
 
-#### Scenario: Older tofu refuses to init
+The CI jobs that invoke `tofu` (`ci.yml`, `plan-infra.yml`) SHALL set `opentofu/setup-opentofu`'s `tofu_version` input to the same exact value declared in `required_version`. Bumping the pinned version SHALL update both `infrastructure/main.tf` and every `setup-opentofu` invocation in the same PR.
 
-- **GIVEN** an operator runs `tofu version` returning `1.10.0`
+#### Scenario: Wrong-version tofu refuses to init
+
+- **GIVEN** an operator runs `tofu version` returning a version that does not exactly match `required_version` (e.g. `1.10.0` or `1.12.0` against a pin of `1.11.6`)
 - **WHEN** they run `tofu -chdir=infrastructure init`
 - **THEN** tofu SHALL refuse with a version-constraint error
+
+#### Scenario: CI tofu matches the pin
+
+- **WHEN** the rendered `.github/workflows/ci.yml` and `.github/workflows/plan-infra.yml` are inspected
+- **THEN** every `opentofu/setup-opentofu@v*` step SHALL set `with.tofu_version` to a literal version string
+- **AND** that string SHALL equal `infrastructure/main.tf#required_version`
 
 ### Requirement: Tofu state on Scaleway Object Storage
 

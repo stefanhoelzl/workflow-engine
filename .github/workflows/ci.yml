@@ -10,6 +10,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: opentofu/setup-opentofu@v2
         with:
+          # Pin to match infrastructure/main.tf#required_version. Drift
+          # between local and CI surfaces as version-specific h1: hashes
+          # in .terraform.lock.hcl, failing the `git diff --exit-code`
+          # gate below. Bump deliberately, with a matching bump in
+          # infrastructure/main.tf and plan-infra.yml.
+          tofu_version: "1.11.6"
           # Wrapper swallows tofu's real exit code, masking `tofu fmt -check`
           # and `tofu validate` failures inside `pnpm validate`.
           tofu_wrapper: false

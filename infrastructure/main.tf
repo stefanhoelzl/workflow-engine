@@ -1,5 +1,11 @@
 terraform {
-  required_version = ">= 1.11"
+  # Pin exact patch — operator local + CI must match, otherwise
+  # `tofu init` adds version-specific h1: hashes to .terraform.lock.hcl
+  # and the lockfile gate (`git diff --exit-code` in ci.yml) flaps on
+  # every drift. CI pins the same value via setup-opentofu's tofu_version
+  # in .github/workflows/{ci,plan-infra}.yml. Bump deliberately, with a
+  # matching CI bump in the same PR.
+  required_version = "1.11.6"
 
   required_providers {
     scaleway = {
