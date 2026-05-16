@@ -20,6 +20,9 @@ jobs:
 
       - uses: opentofu/setup-opentofu@v2
         with:
+          # Pin to match infrastructure/main.tf#required_version. See
+          # ci.yml for the full rationale.
+          tofu_version: "1.11.6"
           # Wrapper swallows tofu's real exit code (always exits 0, exposes
           # the real one as steps.<id>.outputs.exitcode). That defeats the
           # -detailed-exitcode gate below — we need the shell to see 2.
