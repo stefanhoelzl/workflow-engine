@@ -218,14 +218,25 @@ describe("refreshSession", () => {
 		};
 	}
 
-	it("returns UserContext sourced from the payload", async () => {
+	it("returns ok with UserContext when login is still in the catalog", async () => {
 		const provider = localProviderFactory.create(["dev"], DEPS);
-		const user = await provider.refreshSession(mkPayload());
-		expect(user).toEqual({
-			login: "dev",
-			mail: "dev@dev.local",
-			orgs: ["acme"],
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({
+			ok: true,
+			user: {
+				login: "dev",
+				mail: "dev@dev.local",
+				orgs: ["dev"],
+			},
 		});
+	});
+
+	it("returns access-denied when login was removed from the catalog", async () => {
+		// Catalog no longer contains "dev"; the session payload was minted
+		// during a previous boot when "dev" was allowed.
+		const provider = localProviderFactory.create(["other"], DEPS);
+		const result = await provider.refreshSession(mkPayload());
+		expect(result).toEqual({ ok: false, reason: "access-denied" });
 	});
 
 	it("never makes a network call", async () => {
@@ -236,8 +247,8 @@ describe("refreshSession", () => {
 			...DEPS,
 			fetchFn: fetchFn as unknown as typeof globalThis.fetch,
 		});
-		const user = await provider.refreshSession(mkPayload());
-		expect(user).toBeDefined();
+		const result = await provider.refreshSession(mkPayload());
+		expect(result.ok).toBe(true);
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 });

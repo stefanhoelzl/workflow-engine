@@ -16,6 +16,7 @@ import type {
 	AuthProviderFactory,
 	LoginSection,
 	ProviderRouteDeps,
+	RefreshResult,
 } from "./types.js";
 
 const ID = "local";
@@ -174,12 +175,12 @@ function createLocalProvider(
 			return Promise.resolve(userFromEntry(entry));
 		},
 
-		refreshSession(payload: SessionPayload): Promise<UserContext | undefined> {
-			return Promise.resolve({
-				login: payload.login,
-				mail: payload.mail,
-				orgs: payload.orgs,
-			});
+		refreshSession(payload: SessionPayload): Promise<RefreshResult> {
+			const entry = byName.get(payload.login);
+			if (!entry) {
+				return Promise.resolve({ ok: false, reason: "access-denied" });
+			}
+			return Promise.resolve({ ok: true, user: userFromEntry(entry) });
 		},
 	};
 }

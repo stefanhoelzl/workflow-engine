@@ -17,7 +17,11 @@ function stubProvider(
 		renderLoginSection: () => html``,
 		mountAuthRoutes: () => {},
 		resolveApiIdentity: resolve,
-		refreshSession: () => Promise.resolve(undefined),
+		refreshSession: () =>
+			Promise.resolve({
+				ok: false as const,
+				reason: "session-expired" as const,
+			}),
 	};
 }
 
