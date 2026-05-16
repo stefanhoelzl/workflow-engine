@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Daily host reclaim: apt archive cache + systemd journal + dangling rootless
+# podman images. Managed by infrastructure/host.tf; edit the template, not
+# this file (it will be overwritten on the next apply).
+set -euo pipefail
+
+echo "[disk-cleanup] apt-get clean"
+apt-get clean
+
+echo "[disk-cleanup] journalctl --vacuum-size=200M --vacuum-time=14d"
+journalctl --vacuum-size=200M --vacuum-time=14d
+
+for u in ${tenants}; do
+	uid=$(id -u "$u")
+	echo "[disk-cleanup] podman image prune -a (tenant=$u, uid=$uid)"
+	runuser -u "$u" -- env XDG_RUNTIME_DIR=/run/user/$uid podman image prune -a -f
+done
+
+echo "[disk-cleanup] done"

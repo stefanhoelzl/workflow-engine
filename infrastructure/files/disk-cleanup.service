@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily host reclaim (apt cache + journal vacuum + dangling rootless image prune)
+Documentation=https://github.com/stefanhoelzl/workflow-engine
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/disk-cleanup.sh
