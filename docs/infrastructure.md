@@ -7,8 +7,8 @@ Production runbook for the single-VPS deployment. Local-dev instructions live in
 One Scaleway VPS (Debian 12) hosts both prod and staging. Three rootless Podman + systemd Quadlet units:
 
 - `caddy.service` — TLS-terminating reverse proxy. Binds `0.0.0.0:80` and `0.0.0.0:443`. Let's Encrypt certs via the built-in HTTP-01 ACME client; state on the host bind mount `/srv/caddy/data`.
-- `wfe-prod.service` — image `ghcr.io/stefanhoelzl/workflow-engine:release`. Binds `127.0.0.1:8081 → :8080`. Persistence at `/srv/wfe/prod`.
-- `wfe-staging.service` — image `ghcr.io/stefanhoelzl/workflow-engine:main`. Binds `127.0.0.1:8082 → :8080`. Persistence at `/srv/wfe/staging`.
+- `wfe-prod.service` — image `ghcr.io/stefanhoelzl/workflow-engine:release`. Binds `127.0.0.1:8081 → :8080`. Persistence at `/srv/wfe/prod` (a dedicated Block Storage volume).
+- `wfe-staging.service` — image `ghcr.io/stefanhoelzl/workflow-engine:main`. Binds `127.0.0.1:8082 → :8080`. Persistence at `/srv/wfe/staging` (a dedicated Block Storage volume).
 
 URLs:
 
@@ -16,6 +16,23 @@ URLs:
 - Staging: <https://staging.workflow-engine.webredirect.org>
 
 DNS: Dynu A records owned by tofu, point at the VPS public IP (`scaleway_instance_ip` — stable across instance stop/start).
+
+## Storage
+
+| Device | Type | Mount | Survives VPS replacement? |
+| --- | --- | --- | --- |
+| root | local SSD (`l_ssd`, 10 GB) | `/` (OS, container images, `/srv/caddy` ACME) | No — rebuilt by cloud-init |
+| prod data | Block Storage (`sbs_5k`, 5 GB) | `/srv/wfe/prod` | **Yes** — `scaleway_block_volume.prod`, `prevent_destroy = true` |
+| staging data | Block Storage (`sbs_5k`, 5 GB) | `/srv/wfe/staging` | **Yes** — `scaleway_block_volume.staging` (plain, re-creatable) |
+
+The two data volumes are standalone `scaleway_block_volume` resources attached via the instance's `additional_volume_ids` (a stop/start, not a rebuild). Activation is fully systemd-routed so it needs no new sudoers verbs:
+
+- `wfe-data-format.service` (root oneshot) runs `/usr/local/sbin/wfe-data-format.sh`, which `mkfs.ext4 -L wfe-<env>` a volume **only when `blkid -p` finds no signature** — a reattached/already-formatted volume is never reformatted. It resolves the raw device by matching the volume UUID against the block device's virtio serial (`/dev/disk/by-id` is empty on this instance).
+- `srv-wfe-<env>.mount` units mount by `/dev/disk/by-label/wfe-<env>` with `nofail`, ordered `After=`/`Requires=` the format service.
+- Each app Quadlet has `ExecStartPre=/usr/bin/mountpoint -q /srv/wfe/<env>`: if the volume isn't mounted the container stays **down** (loud, `/readyz` red) rather than silently writing to the ephemeral root.
+- Swap is likewise a `swapfile.swap` unit (systemd does the `swapon`); there is no `/etc/fstab` swap line.
+
+Volumes resize **up** live (`size_in_gb`); resizing **down** requires recreate. **Caveat (provider issue #766):** when growing a data volume later, confirm the plan shows an in-place resize, not a force-replace of the volume (which would couple to the server and deadlock); if it force-replaces, resize via the Scaleway API/console out-of-band and reconcile.
 
 ## Authentication
 
@@ -100,32 +117,23 @@ Adding a new tenant (e.g., `wfe-experimental`) is a tofu-only operation: add an 
 
 When you do need to edit the cloud-init bootstrap minimum (rare — SSH key rotation, sshd port change, sudoers verb addition, FORWARD policy change), `tofu apply` automatically replaces the VPS. The trigger is a sha256 of the rendered cloud-init content, captured by `terraform_data.cloud_init_bootstrap`; when the hash flips, `lifecycle { replace_triggered_by = [...] }` on `scaleway_instance_server.vps` forces replacement. (Without this, the Scaleway provider would just update `user_data` in place — but cloud-init only runs at first boot, so the new content would never take effect.)
 
-VPS replacement destroys the local SSD root, including `/srv/wfe/<env>` (event-store) and `/srv/caddy/data` (ACME state). To preserve data across the rebuild:
+VPS replacement destroys the local SSD root — but **`/srv/wfe/{prod,staging}` now live on Block Storage volumes, which detach from the destroyed instance and reattach to its replacement, so env data survives the rebuild with no rsync ritual.** On the new box the `wfe-data-format.service` sees the existing filesystem (`blkid -p`) and skips `mkfs`; the `srv-wfe-<env>.mount` units remount by label. The only ephemeral state is `/srv/caddy/data` (ACME), which Caddy re-issues automatically.
 
 ```bash
-# 1. Backup before applying.
-rsync -aAX deploy@<host>:/srv/wfe/prod /tmp/prod-pre-apply-$(date +%F)
+# 1. (Optional) back up ACME state to avoid a re-issue round; env data needs no backup.
 rsync -aAX deploy@<host>:/srv/caddy/data /tmp/caddy-pre-apply-$(date +%F)
 
 # 2. Apply the change. tofu will plan a `-/+ destroy and then create
-# replacement` for scaleway_instance_server.vps — that's expected.
+# replacement` for scaleway_instance_server.vps — that's expected. The
+# scaleway_block_volume.{prod,staging} resources are NOT replaced; they detach
+# and reattach. (prevent_destroy on prod is an extra guard.)
 tofu -chdir=infrastructure apply
 
-# 3. Wait for the new VPS to come up. ssh in as deploy.
-
-# 4. Restore data with correct ownership.
-rsync -aAX /tmp/prod-pre-apply-<date>/ deploy@<host>:/tmp/restore-prod/
-ssh deploy@<host> "sudo /usr/bin/install -d -m 0700 -o wfe-prod -g wfe-prod /srv/wfe/prod && sudo cp -a /tmp/restore-prod/. /srv/wfe/prod/ && sudo /usr/bin/chown -R wfe-prod:wfe-prod /srv/wfe/prod && rm -rf /tmp/restore-prod"
-
-# 5. Restart services. (Caddy will re-issue ACME certs from scratch unless
-# /srv/caddy/data was also restored.)
-ssh deploy@<host> "sudo /usr/bin/runuser -u wfe-prod -- env XDG_RUNTIME_DIR=/run/user/$(id -u wfe-prod) /bin/systemctl --user restart wfe-prod.service"
-ssh deploy@<host> "sudo /usr/bin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$(id -u wfe-caddy) /bin/systemctl --user restart caddy.service"
+# 3. Wait for the new VPS to come up. The data volumes reattach and remount
+# automatically; verify with `findmnt /srv/wfe/prod /srv/wfe/staging`.
 ```
 
-For staging, data loss is acceptable; skip the rsync.
-
-**Forcing a rebuild without a content edit.** If you need to re-bake the bootstrap minimum without changing the source (e.g., to rotate the in-memory session-sealing password by recycling all containers), run `tofu -chdir=infrastructure taint scaleway_instance_server.vps && tofu apply`. Same data-loss caveats; same rsync ritual applies.
+**Forcing a rebuild without a content edit.** If you need to re-bake the bootstrap minimum without changing the source (e.g., to rotate the in-memory session-sealing password by recycling all containers), run `tofu -chdir=infrastructure taint scaleway_instance_server.vps && tofu apply`. Env data on the Block Storage volumes survives; only `/srv/caddy/data` is re-issued.
 
 **When to run apply-infra.** Any PR touching `infrastructure/`. The pre-merge `plan (vps)` gate fails if the plan is non-empty, so the operator runs `apply-infra` from the feature branch *before* requesting review.
 
@@ -295,10 +303,10 @@ The trusted-publisher binding is exact: it pins to the workflow file path AND th
 
 ## Risks (carry these in your head)
 
-- **No backups.** `/srv/wfe/<env>` and `/srv/caddy/data` have no off-box copy. A VPS-loss event is total data loss until users re-upload bundles via `wfe upload`. Top-priority follow-up.
+- **No off-box backups / snapshots.** `/srv/wfe/{prod,staging}` now persist across VPS replacement (Block Storage volumes; prod is `prevent_destroy`), so a rebuild is no longer data loss. But there is still no snapshot or off-box copy, so an accidental volume delete or a Block Storage-side loss is unrecovered until users re-upload bundles via `wfe upload`. Scheduled snapshots are the remaining follow-up. `/srv/caddy/data` remains ephemeral (auto-re-issued).
 - **No rollback for infra.** Cutover is one-way; fix-forward is the only mode. App rollback (`git revert` + auto-update) is the fast path for app bugs.
 - **Single VPS, single region.** Hardware failure causes downtime until manual re-provision.
-- **Host kernel is the only isolation boundary** between prod and staging. Mitigated by `unattended-upgrades`.
+- **Host kernel is the only compute/memory isolation boundary** between prod and staging (disk is now isolated — each env has its own Block Storage volume, so neither can exhaust the other's space). Mitigated by `unattended-upgrades`.
 
 ## References
 

@@ -1,0 +1,19 @@
+[Unit]
+Description=workflow-engine ${env_name} data volume
+# The by-label target only exists after wfe-data-format.service has run mkfs -L.
+Requires=wfe-data-format.service
+After=wfe-data-format.service
+
+[Mount]
+# Mount by filesystem label (set via `mkfs -L wfe-${env_name}`): the /dev/disk/
+# by-label symlink is stable and device-order independent. by-id is empty on
+# this instance, so it is deliberately NOT used for mounting.
+What=/dev/disk/by-label/wfe-${env_name}
+Where=${data_dir}
+Type=ext4
+# nofail: a detached/missing volume must never wedge boot. The app container's
+# `ExecStartPre=mountpoint -q ${data_dir}` is the loud backstop when unmounted.
+Options=nofail
+
+[Install]
+WantedBy=multi-user.target

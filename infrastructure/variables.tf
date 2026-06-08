@@ -71,6 +71,22 @@ variable "app_image" {
   description = "App image repository. Tag is :release for prod, :main for staging — chosen per-env in apps.tf."
 }
 
+# Per-env persistence Block Storage volumes (sbs_5k). One volume per app env,
+# attached to the VPS via additional_volume_ids and mounted at /srv/wfe/<env>.
+# 5 GB is the SBS minimum; volumes resize UP live (no replacement). The root
+# local SSD is untouched — attaching these is a stop/start, not a rebuild.
+variable "app_data_volume_size_gb" {
+  type        = number
+  default     = 5
+  description = "Size (GB) of each per-env Block Storage data volume. SBS minimum is 5; resizable up only (down requires recreate)."
+}
+
+variable "app_data_volume_iops" {
+  type        = number
+  default     = 5000
+  description = "IOPS tier for the per-env data volumes. 5000 = sbs_5k (the right tier on STARDUST1-S, whose block bandwidth caps low); 15000 = sbs_15k."
+}
+
 # Per-env GitHub OAuth App credentials. Two distinct OAuth Apps in the
 # GitHub UI — one with callback URL https://workflow-engine.webredirect.org/...,
 # one with https://staging.workflow-engine.webredirect.org/... .
