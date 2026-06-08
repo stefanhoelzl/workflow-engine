@@ -131,12 +131,45 @@ resource "terraform_data" "cloud_init_bootstrap" {
   }))
 }
 
+# Per-env persistence on dedicated Block Storage volumes. Each is a standalone
+# resource (NOT an inline root_volume), so it detaches/reattaches across a VPS
+# replacement and survives the local-SSD root dying — the durability win.
+# Attaching them to the instance below is an in-place additional_volume_ids
+# update (stop/start), not a rebuild. iops=5000 selects the sbs_5k tier.
+resource "scaleway_block_volume" "prod" {
+  name       = "wfe-prod-data"
+  iops       = var.app_data_volume_iops
+  size_in_gb = var.app_data_volume_size_gb
+
+  # The durable store. prevent_destroy makes `tofu destroy` / accidental
+  # removal fail loud instead of wiping prod. Intentional teardown requires
+  # removing this lifecycle block first (deliberate friction).
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "scaleway_block_volume" "staging" {
+  name       = "wfe-staging-data"
+  iops       = var.app_data_volume_iops
+  size_in_gb = var.app_data_volume_size_gb
+  # No prevent_destroy: staging is disposable and must stay freely re-creatable.
+}
+
 resource "scaleway_instance_server" "vps" {
   name              = "wfe"
   type              = var.instance_type
   image             = var.instance_image
   ip_id             = scaleway_instance_ip.vps.id
   security_group_id = scaleway_instance_security_group.vps.id
+
+  # Attach the two per-env data volumes. Both are SBS (block) volumes, so this
+  # is an in-place stop/start attach — the local-SSD root_volume below is
+  # unchanged (changing its size_in_gb would force a rebuild; we don't).
+  additional_volume_ids = [
+    scaleway_block_volume.prod.id,
+    scaleway_block_volume.staging.id,
+  ]
 
   # Replace the VPS when the cloud-init bootstrap content changes — see
   # `terraform_data.cloud_init_bootstrap` rationale above. The bootstrap

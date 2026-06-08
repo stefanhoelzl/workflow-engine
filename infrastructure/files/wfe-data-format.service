@@ -1,0 +1,13 @@
+[Unit]
+Description=Format wfe per-env data block volumes if unformatted
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=local-fs-pre.target
+# Must complete before either data volume is mounted — the .mount units also
+# declare Requires=/After= this service, so enabling a mount pulls it in.
+Before=srv-wfe-prod.mount srv-wfe-staging.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wfe-data-format.sh

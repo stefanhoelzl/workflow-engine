@@ -38,6 +38,14 @@ Environment=AUTH_ALLOW=${auth_allow}
 EnvironmentFile=/etc/wfe/${env_name}.env
 
 [Service]
+# Durability guard: refuse to start unless the env's Block Storage volume is
+# actually mounted at ${data_dir}. The .mount unit uses `nofail` so a missing
+# volume never wedges boot — without this check the container would start, :U
+# would chown the bare mount point on the root fs, and the app would silently
+# write events to non-durable root storage. This converts that silent failure
+# into a loud one (container down + /readyz red); Restart=always retries, so
+# the unit self-heals once the volume mounts.
+ExecStartPre=/usr/bin/mountpoint -q ${data_dir}
 Restart=always
 TimeoutStartSec=120
 MemoryMax=${memory_max}

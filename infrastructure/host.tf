@@ -38,6 +38,37 @@ locals {
   # timer-override files below.
   tenants = ["wfe-prod", "wfe-staging", "wfe-caddy"]
 
+  # Per-env data volumes (defined in main.tf). The format script resolves each
+  # device by matching the volume UUID (the segment after the zone in the
+  # resource id `<zone>/<uuid>`) against the block device's virtio serial.
+  # Spec format consumed by files/wfe-data-format.sh.tmpl: "<uuid>:<fs-label>".
+  data_volume_ids = {
+    prod    = scaleway_block_volume.prod.id
+    staging = scaleway_block_volume.staging.id
+  }
+  data_volume_specs = [
+    for env, vid in local.data_volume_ids :
+    "${element(split("/", vid), length(split("/", vid)) - 1)}:wfe-${env}"
+  ]
+
+  # Exec-stage one-shot: enable the per-env data mounts (which pull in the
+  # format service to mkfs-if-empty), then hand a freshly-formatted root:root
+  # mount root to its tenant so the container's `:U` chown works (guarded so a
+  # reattached, already-subuid-owned volume is left untouched). Content-only —
+  # references no volume ids — so its hash is stable across applies and only
+  # flips when this logic or the env set changes.
+  enable_data_mounts_script = <<-EOT
+    set -euo pipefail
+    sudo /bin/systemctl daemon-reload
+    %{~for env, cfg in local.envs~}
+    sudo /bin/systemctl enable --now srv-wfe-${env}.mount
+    if [ -n "$(find ${cfg.data_dir} -maxdepth 0 -uid 0 2>/dev/null)" ]; then
+      sudo /usr/bin/chown -R ${cfg.runtime_user}:${cfg.runtime_user} ${cfg.data_dir}
+      sudo /usr/bin/chmod 0700 ${cfg.data_dir}
+    fi
+    %{~endfor~}
+  EOT
+
   # Directories. Order is irrelevant within the stage — `install -d` creates
   # parents and is idempotent.
   managed_dirs = merge(
@@ -233,6 +264,77 @@ locals {
         on_change  = "sudo /bin/systemctl daemon-reload && sudo /bin/systemctl enable --now disk-cleanup.timer"
         on_destroy = "sudo /bin/systemctl disable --now disk-cleanup.timer 2>/dev/null || true; sudo /usr/bin/rm -f /etc/systemd/system/disk-cleanup.timer && sudo /bin/systemctl daemon-reload"
       }
+
+      # ── Per-env data-volume formatting + swap, all routed through systemd ──
+      # so no new sudoers verbs are needed (mkfs/blkid/mount/swapon run as root
+      # via systemd, enabled with the already-allowed `systemctl`). Keeps the
+      # apply a stop/start — no sudoers edit, no cloud-init hash flip.
+
+      # Root-owned format script: mkfs.ext4 -L wfe-<env> a data volume ONLY when
+      # `blkid -p` finds no signature (so reattached/already-formatted volumes
+      # and the root are never wiped). Rendered with the volume UUIDs.
+      wfe_data_format_script = {
+        path = "/usr/local/sbin/wfe-data-format.sh"
+        content = templatefile("${path.module}/files/wfe-data-format.sh.tmpl", {
+          specs = local.data_volume_specs
+        })
+        mode       = "0755"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "pre"
+        on_change  = ""
+        on_destroy = "sudo /usr/bin/rm -f /usr/local/sbin/wfe-data-format.sh"
+      }
+      # Oneshot service that runs the format script, ordered Before the mounts.
+      # No [Install]; the .mount units pull it in via Requires=.
+      wfe_data_format_service = {
+        path       = "/etc/systemd/system/wfe-data-format.service"
+        content    = file("${path.module}/files/wfe-data-format.service")
+        mode       = "0644"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "pre"
+        on_change  = "sudo /bin/systemctl daemon-reload"
+        on_destroy = "sudo /usr/bin/rm -f /etc/systemd/system/wfe-data-format.service && sudo /bin/systemctl daemon-reload"
+      }
+      # Swap activated via a .swap unit (systemd does the swapon) — retires the
+      # /etc/fstab swap line and the latent leaked-line wart. The swapfile
+      # itself is created in managed_exec (fallocate + mkswap, both allowlisted).
+      swapfile_swap = {
+        path       = "/etc/systemd/system/swapfile.swap"
+        content    = file("${path.module}/files/swapfile.swap")
+        mode       = "0644"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "post"
+        on_change  = "sudo /bin/systemctl daemon-reload && sudo /bin/systemctl enable --now swapfile.swap"
+        on_destroy = "sudo /bin/systemctl disable --now swapfile.swap 2>/dev/null || true; sudo /usr/bin/rm -f /etc/systemd/system/swapfile.swap && sudo /bin/systemctl daemon-reload"
+      }
+    },
+    # Per-env mount unit FILES. Written in the `pre` stage (reload only, NOT
+    # enabled here) so they exist before the `exec`-stage enable below; the
+    # actual `enable --now` lives in managed_exec["enable_data_mounts"] so the
+    # mount is active BEFORE the app Quadlets (post stage) restart with their
+    # `ExecStartPre=mountpoint -q` guard. Ordering across stages is the only way
+    # to sequence this — within a single stage the convergence runs in parallel.
+    {
+      for env, cfg in local.envs : "srv_wfe_mount_${env}" => {
+        path = "/etc/systemd/system/srv-wfe-${env}.mount"
+        content = templatefile("${path.module}/files/srv-wfe.mount.tmpl", {
+          env_name = env
+          data_dir = cfg.data_dir
+        })
+        mode       = "0644"
+        owner      = "root"
+        group      = "root"
+        sudo       = true
+        stage      = "pre"
+        on_change  = "sudo /bin/systemctl daemon-reload"
+        on_destroy = "sudo /bin/systemctl disable --now srv-wfe-${env}.mount 2>/dev/null || true; sudo /usr/bin/rm -f /etc/systemd/system/srv-wfe-${env}.mount && sudo /bin/systemctl daemon-reload"
+      }
     },
     # Per-tenant podman-auto-update.timer override. With user-mode Quadlets
     # each tenant runs its own podman-auto-update.timer in user systemd; the
@@ -260,8 +362,16 @@ locals {
   # come via managed_files; the enable is one-shot).
   managed_exec = merge(
     {
+      # Create-only: allocate + mkswap the swapfile. Activation is owned by the
+      # swapfile.swap systemd unit (managed_files, stage post) — systemd does the
+      # swapon, so no /etc/fstab line and no `swapon`/`swapoff` in the convergence
+      # (the latter isn't even in the sudoers allowlist). change_key flips from
+      # the pre-unit "1G" so this re-runs once to drop the legacy fstab line
+      # (which would otherwise make the fstab-generator synthesize a competing
+      # swapfile.swap unit). Teardown is rm-only; the .swap unit's `disable --now`
+      # deactivates swap first.
       swapfile = {
-        change_key = "1G"
+        change_key = "1G-unit"
         on_create  = <<-EOT
           set -euo pipefail
           if [ ! -f /swapfile ]; then
@@ -269,20 +379,39 @@ locals {
             sudo /usr/bin/chmod 0600 /swapfile
             sudo /usr/sbin/mkswap /swapfile
           fi
-          if ! sudo /usr/sbin/swapon --show=NAME --noheadings | grep -q '^/swapfile$'; then
-            sudo /usr/sbin/swapon /swapfile
-          fi
-          if ! grep -q '^/swapfile' /etc/fstab; then
-            echo '/swapfile none swap sw 0 0' | sudo /usr/bin/tee -a /etc/fstab >/dev/null
+          if grep -q '^/swapfile' /etc/fstab; then
+            grep -v '^/swapfile' /etc/fstab | sudo /usr/bin/tee /etc/fstab >/dev/null
           fi
         EOT
-        on_destroy = "sudo /usr/sbin/swapoff /swapfile && sudo /usr/bin/rm -f /swapfile"
+        on_destroy = "sudo /usr/bin/rm -f /swapfile"
       }
       services_enable = {
         change_key = "v2"
         # No system-mode podman-auto-update.timer — each tenant runs its own
         # user-mode timer (see user_timers_<u> entries below).
         on_create  = "sudo /bin/systemctl enable --now fail2ban.service unattended-upgrades.service"
+        on_destroy = ""
+      }
+      # Enable the per-env data mounts in the `exec` stage — AFTER the mount +
+      # format unit files are written (pre) and BEFORE the app Quadlets restart
+      # (post) with their `ExecStartPre=mountpoint -q` guard. `enable --now`
+      # starts each mount, which pulls in wfe-data-format.service (Requires=) to
+      # mkfs-if-empty, then mounts by label. Fails the apply loudly if a volume
+      # can't be formatted/mounted (better than a silently-down Quadlet).
+      #
+      # A freshly `mkfs`'d volume's root (and lost+found) is owned root:root,
+      # which the rootless tenant can't chown — so the container's `:U` mount
+      # flag (which recursively chowns the source into the tenant's subuid range)
+      # fails with EPERM. Hand the mount root to the tenant first; `:U` then maps
+      # it. Guarded on root-ownership so a reattached volume (already subuid-owned
+      # after a prior `:U`) is left untouched — no pointless recursive chown.
+      enable_data_mounts = {
+        # Content-addressed: re-runs whenever the script (logic or env set)
+        # changes — no hand-bumped version string. Safe because the body is
+        # idempotent (enable is a no-op if already enabled; the chown is guarded
+        # on root-ownership).
+        change_key = sha256(local.enable_data_mounts_script)
+        on_create  = local.enable_data_mounts_script
         on_destroy = ""
       }
     },
