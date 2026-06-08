@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InvocationEvent } from "@workflow-engine/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createEventStore,
 	type EventStore,
@@ -18,6 +18,7 @@ function defaultConfig(
 		commitMaxRetries: 0,
 		commitBackoffMs: 0,
 		sigtermFlushTimeoutMs: 5000,
+		retentionDays: 0,
 		...overrides,
 	};
 }
@@ -351,6 +352,225 @@ describe("EventStore", () => {
 				"event-store.record-after-stop",
 				expect.objectContaining({ kind: "trigger.request" }),
 			);
+		});
+	});
+
+	// Commit a complete invocation (request + terminal response) under
+	// (acme, foo). `requestAt`/`responseAt` set the wall-clock `at` of each event.
+	async function commitInvocation(
+		s: EventStore,
+		id: string,
+		requestAt: string,
+		responseAt: string = requestAt,
+	): Promise<void> {
+		await s.record(
+			makeEvent({ id, kind: "trigger.request", seq: 0, at: requestAt }),
+		);
+		await s.record(
+			makeEvent({
+				id,
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				at: responseAt,
+			}),
+		);
+	}
+
+	async function distinctIds(s: EventStore): Promise<string[]> {
+		const rows = await s
+			.query([{ owner: "acme", repo: "foo" }])
+			.select("id")
+			.distinct()
+			.execute();
+		return rows.map((r) => r.id).sort();
+	}
+
+	describe("prune", () => {
+		it("deletes fully-aged invocations, keeps recent ones, returns the invocation count", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			await commitInvocation(store, "evt_old", "2026-01-01T00:00:00.000Z");
+			await commitInvocation(store, "evt_recent", "2026-06-01T00:00:00.000Z");
+			const deleted = await store.prune({
+				olderThan: new Date("2026-03-01T00:00:00.000Z"),
+			});
+			expect(deleted).toBe(1);
+			expect(await distinctIds(store)).toEqual(["evt_recent"]);
+		});
+
+		it("keeps a straddling call graph whole (max(at) newer than cutoff survives)", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			// request is old, response is recent → max(at) newer than cutoff.
+			await commitInvocation(
+				store,
+				"evt_span",
+				"2026-01-01T00:00:00.000Z",
+				"2026-06-01T00:00:00.000Z",
+			);
+			const deleted = await store.prune({
+				olderThan: new Date("2026-03-01T00:00:00.000Z"),
+			});
+			expect(deleted).toBe(0);
+			const rows = await store
+				.query([{ owner: "acme", repo: "foo" }])
+				.where("id", "=", "evt_span")
+				.selectAll()
+				.execute();
+			expect(rows).toHaveLength(2);
+		});
+
+		it("is a no-op when nothing is aged", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			await commitInvocation(store, "evt_recent", "2026-06-01T00:00:00.000Z");
+			const deleted = await store.prune({
+				olderThan: new Date("2026-01-01T00:00:00.000Z"),
+			});
+			expect(deleted).toBe(0);
+			expect(await distinctIds(store)).toEqual(["evt_recent"]);
+		});
+
+		it("returns 0 once the store is stopped", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			await store.drainAndClose();
+			const deleted = await store.prune({ olderThan: new Date() });
+			expect(deleted).toBe(0);
+		});
+	});
+
+	describe("scheduled retention", () => {
+		it("schedules nothing when retention is disabled", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig({ retentionDays: 0 }),
+			});
+			await commitInvocation(
+				store,
+				"evt_old",
+				new Date(Date.now() - 100 * 86_400_000).toISOString(),
+			);
+			// Give any (non-existent) timer ample time to fire.
+			await new Promise((r) => setTimeout(r, 60));
+			expect(await distinctIds(store)).toEqual(["evt_old"]);
+			expect(logger.info).not.toHaveBeenCalledWith(
+				"event-store.prune-ok",
+				expect.anything(),
+			);
+		});
+
+		it("an enabled tick prunes aged invocations and logs prune-ok", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig({ retentionDays: 30 }),
+			});
+			await commitInvocation(
+				store,
+				"evt_old",
+				new Date(Date.now() - 100 * 86_400_000).toISOString(),
+			);
+			await commitInvocation(
+				store,
+				"evt_recent",
+				new Date(Date.now() - 1 * 86_400_000).toISOString(),
+			);
+			await vi.waitFor(() => {
+				expect(logger.info).toHaveBeenCalledWith(
+					"event-store.prune-ok",
+					expect.objectContaining({ invocations: 1 }),
+				);
+			});
+			expect(await distinctIds(store)).toEqual(["evt_recent"]);
+		});
+
+		it("a failing scheduled prune logs prune-failed, keeps running, and the timer survives", async () => {
+			vi.useFakeTimers();
+			try {
+				// Interval is derived: retentionDays/100 → 30/100 days.
+				const retentionDays = 30;
+				const intervalMs = (retentionDays * 86_400_000) / 100;
+				store = await createEventStore({
+					persistenceRoot: dir,
+					logger,
+					config: defaultConfig({ retentionDays }),
+				});
+				// Force scheduled prunes to reject; the scheduler tick calls the
+				// public prune, so this exercises the safePrune catch.
+				const realPrune = store.prune.bind(store);
+				let failures = 0;
+				store.prune = vi.fn(() => {
+					failures += 1;
+					return Promise.reject(new Error("boom"));
+				});
+				// Deferred first prune (setTimeout 0), then one interval tick.
+				await vi.advanceTimersByTimeAsync(0);
+				await vi.advanceTimersByTimeAsync(intervalMs);
+				// Process still alive and the interval kept firing (>1 attempt).
+				expect(failures).toBeGreaterThan(1);
+				expect(logger.error).toHaveBeenCalledWith(
+					"event-store.prune-failed",
+					expect.objectContaining({ error: "boom" }),
+				);
+				// Restore so afterEach drains a healthy store.
+				store.prune = realPrune;
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	describe("retention shutdown safety", () => {
+		it("drainAndClose clears the timer and no prune runs afterward", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig({ retentionDays: 30 }),
+			});
+			await store.drainAndClose();
+			const pruneSpy = vi.fn(store.prune);
+			store.prune = pruneSpy;
+			await new Promise((r) => setTimeout(r, 60));
+			expect(pruneSpy).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("retention durability across reopen", () => {
+		it("a committed prune persists; reopening shows only retained invocations", async () => {
+			store = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			await commitInvocation(store, "evt_old", "2026-01-01T00:00:00.000Z");
+			await commitInvocation(store, "evt_recent", "2026-06-01T00:00:00.000Z");
+			await store.prune({ olderThan: new Date("2026-03-01T00:00:00.000Z") });
+			await store.drainAndClose();
+			const reopen = await createEventStore({
+				persistenceRoot: dir,
+				logger,
+				config: defaultConfig(),
+			});
+			try {
+				expect(await distinctIds(reopen)).toEqual(["evt_recent"]);
+			} finally {
+				store = reopen;
+			}
 		});
 	});
 });

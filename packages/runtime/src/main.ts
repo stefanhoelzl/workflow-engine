@@ -92,6 +92,7 @@ async function init() {
 			commitMaxRetries: config.eventStoreCommitMaxRetries,
 			commitBackoffMs: config.eventStoreCommitBackoffMs,
 			sigtermFlushTimeoutMs: config.eventStoreSigtermFlushTimeoutMs,
+			retentionDays: config.eventStoreRetentionDays,
 		},
 	});
 

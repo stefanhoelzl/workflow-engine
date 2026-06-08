@@ -259,6 +259,35 @@ The auto-update timer hasn't ticked yet. Wait up to 60 s. If still stale after 5
 - Check the last run: `journalctl -u podman-auto-update.service --since "10 min ago"`.
 - Force a pull: `sudo systemctl start podman-auto-update.service`.
 
+## EventStore retention & disk recovery
+
+The EventStore (`<data_dir>/events.duckdb`) appends one row per invocation event and, by default, never deletes them. On the shared root volume this grows unbounded and can fill the disk. Two independent levers:
+
+**1. Bound future growth — opt-in time-based retention.**
+
+Set on the app's Quadlet unit (`Environment=` in `wfe.container.tmpl`, or `/etc/wfe/<env>.env`):
+
+- `EVENT_STORE_RETENTION_DAYS` — integer days; invocations whose most recent event is older than this are pruned. **Unset or `0` disables retention** (the default). Six months = `180`. The prune interval is **derived** from this — the runtime prunes 100× per window (every `retentionDays / 100` days), so there is no separate interval knob. (Prod `90` → ~21.6h cadence; staging `1` → ~14.4 min.)
+
+The runtime self-prunes on this schedule: it deletes whole invocations older than the window and issues a `CHECKPOINT`. A failed prune logs `event-store.prune-failed` and retries on the next tick; it never crashes the runtime. A successful run logs `event-store.prune-ok { invocations, durationMs }`.
+
+> **Important:** `DELETE` does **not** shrink the `.duckdb` file on disk — DuckDB reuses the freed space for future writes, so the file *plateaus* at roughly one retention window's worth of data rather than returning space to the OS. Retention bounds *future* growth; it does **not** recover disk already consumed (see lever 2).
+
+> **First prune on a large DB:** if you enable retention on an already-bloated `events.duckdb` without wiping it first, the first prune is a single large `DELETE` that briefly serializes ahead of live event commits — event recording can lag for the duration (triggers still execute; nothing is lost). Prefer the wipe below before enabling on a bloated DB.
+
+**2. Recover disk already consumed — one-time wipe.**
+
+Because `DELETE` won't return space, recover a full disk by recreating the DB file (loses historical invocation events):
+
+```
+# as the app's host user (e.g. wfe-prod), per environment
+systemctl --user stop wfe-prod
+rm -f /srv/wfe/prod/events.duckdb /srv/wfe/prod/events.duckdb.wal
+systemctl --user start wfe-prod
+```
+
+The events table is recreated empty on boot. After this one-time reset, enable lever 1 so the file plateaus instead of growing again. (Sizing the volume to fit the plateau, or isolating `/srv/wfe` on its own volume, is the durable blast-radius fix and is tracked separately.)
+
 ## SDK publishing to npm
 
 `@workflow-engine/sdk` and `@workflow-engine/core` publish to npm on every push to `release` whose diff touches `packages/sdk` or `packages/core`. Auth is via npm trusted publishing (OIDC) — there is no long-lived `NPM_AUTOMATION_TOKEN` in repo secrets. Workflow: `.github/workflows/deploy-prod.yml` job `publish-npm`.

@@ -45,6 +45,9 @@ function createTestEventStore(options?: TestEventStoreOptions): TestEventStore {
 				await options.onRecord(event);
 			}
 		},
+		prune() {
+			return Promise.resolve(0);
+		},
 		query(
 			_scopes: readonly Scope[],
 		): SelectQueryBuilder<Database, "events", object> {
@@ -83,6 +86,7 @@ async function createRealEventStoreForTest(): Promise<RealEventStoreHandle> {
 			commitMaxRetries: 0,
 			commitBackoffMs: 0,
 			sigtermFlushTimeoutMs: 5000,
+			retentionDays: 0,
 		},
 	});
 	return {

@@ -222,6 +222,8 @@ locals {
       gh_oauth_client_id = var.gh_oauth_client_id_prod
       gh_oauth_secret    = var.gh_oauth_client_secret_prod
       auth_allow         = "github:user:stefanhoelzl,github:user:mrh1997,github:org:baltech-ag,github:org:sharepad-de"
+      # EventStore retention window in days (prune interval derived as days/100).
+      retention_days = 90
     }
     staging = {
       domain             = "staging.workflow-engine.webredirect.org"
@@ -234,6 +236,8 @@ locals {
       gh_oauth_client_id = var.gh_oauth_client_id_staging
       gh_oauth_secret    = var.gh_oauth_client_secret_staging
       auth_allow         = "github:user:stefanhoelzl"
+      # EventStore retention window in days (prune interval derived as days/100).
+      retention_days = 1
     }
   }
 
