@@ -11,6 +11,8 @@ locals {
         domain     = cfg.domain
         base_url   = "https://${cfg.domain}"
         auth_allow = cfg.auth_allow
+
+        retention_days = cfg.retention_days
       }
     )
   }

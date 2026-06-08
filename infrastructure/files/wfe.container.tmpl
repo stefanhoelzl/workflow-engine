@@ -34,6 +34,9 @@ Environment=PORT=8080
 Environment=AUTH_PROVIDER=github
 Environment=BASE_URL=${base_url}
 Environment=AUTH_ALLOW=${auth_allow}
+# EventStore retention window in days (0 disables; prune interval is derived as
+# days/100). See docs/infrastructure.md.
+Environment=EVENT_STORE_RETENTION_DAYS=${retention_days}
 # Secrets only — env file is two lines now.
 EnvironmentFile=/etc/wfe/${env_name}.env
 

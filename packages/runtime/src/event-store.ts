@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDbDialect } from "@oorabona/kysely-duckdb";
 import type { InvocationEvent } from "@workflow-engine/core";
-import { CompiledQuery, Kysely, type SelectQueryBuilder } from "kysely";
+import { CompiledQuery, Kysely, type SelectQueryBuilder, sql } from "kysely";
 import type { Logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,15 @@ interface EventStoreConfig {
 	commitMaxRetries: number;
 	commitBackoffMs: number;
 	sigtermFlushTimeoutMs: number;
+	// Retention window in days. 0 disables pruning entirely. The prune interval
+	// is derived from this (1/100th of the window) — see RETENTION_PRUNES_PER_WINDOW.
+	retentionDays: number;
+}
+
+interface PruneOptions {
+	// Wall-clock cutoff: invocations whose every event is older than this are
+	// deleted. Compared against the `at` column (TIMESTAMPTZ), never `ts`.
+	olderThan: Date;
 }
 
 interface EventStoreOptions {
@@ -61,6 +70,7 @@ interface Scope {
 
 interface EventStore {
 	record(event: InvocationEvent): Promise<void>;
+	prune(options: PruneOptions): Promise<number>;
 	query(
 		scopes: readonly Scope[],
 	): SelectQueryBuilder<Database, "events", object>;
@@ -97,6 +107,13 @@ CREATE TABLE IF NOT EXISTS events (
 
 const CREATE_OWNER_REPO_INDEX_DDL =
 	"CREATE INDEX IF NOT EXISTS events_owner_repo_idx ON events (owner, repo)";
+
+const MS_PER_DAY = 86_400_000;
+
+// The self-scheduled prune runs this many times per retention window, so the
+// interval is `retentionDays / 100` (in days). At 100 prunes/window an
+// invocation outlives its window by at most ~1% before it is deleted.
+const RETENTION_PRUNES_PER_WINDOW = 100;
 
 // Kinds that close out an invocation. trigger.response and trigger.error are
 // the natural pair to a trigger.request; trigger.exception and trigger.rejection
@@ -193,6 +210,21 @@ async function createEventStore(
 
 	const accumulator = new Map<string, PendingInvocation>();
 	let stopped = false;
+	let retentionTimer: ReturnType<typeof setInterval> | undefined;
+	let firstPruneTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// Serialize all writes (commits and prunes) so two writes never run
+	// concurrently on the single DuckDB connection. A failed write doesn't
+	// poison the chain — the next write still runs.
+	let writeChain: Promise<unknown> = Promise.resolve();
+	function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+		const result = writeChain.then(fn, fn);
+		writeChain = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
 
 	function appendToAccumulator(event: InvocationEvent): void {
 		let entry = accumulator.get(event.id);
@@ -206,7 +238,7 @@ async function createEventStore(
 	async function commitOnce(events: InvocationEvent[]): Promise<string> {
 		const rows = events.map(eventToRow);
 		const start = Date.now();
-		await db.insertInto("events").values(rows).execute();
+		await runExclusive(() => db.insertInto("events").values(rows).execute());
 		return `${Date.now() - start}ms`;
 	}
 
@@ -286,7 +318,40 @@ async function createEventStore(
 		await commitWithRetry(id, first.owner, first.repo, entry.events);
 	}
 
-	return {
+	// Delete whole invocations whose most recent event is older than the cutoff.
+	// Grouping by id with `max("at")` keeps a straddling call graph intact. The
+	// CHECKPOINT returns freed blocks to DuckDB's reusable free list (it does NOT
+	// shrink the file on disk — see openspec event-store retention spec).
+	async function prune({ olderThan }: PruneOptions): Promise<number> {
+		if (stopped) {
+			return 0;
+		}
+		return await runExclusive(async () => {
+			const cutoff = olderThan.toISOString();
+			const countResult = await sql<{ c: number | bigint }>`
+				SELECT count(*) AS c FROM (
+					SELECT id FROM events
+					GROUP BY id
+					HAVING max("at") < ${cutoff}::TIMESTAMPTZ
+				)
+			`.execute(db);
+			const invocations = Number(countResult.rows[0]?.c ?? 0);
+			if (invocations === 0) {
+				return 0;
+			}
+			await sql`
+				DELETE FROM events WHERE id IN (
+					SELECT id FROM events
+					GROUP BY id
+					HAVING max("at") < ${cutoff}::TIMESTAMPTZ
+				)
+			`.execute(db);
+			await conn.run("CHECKPOINT");
+			return invocations;
+		});
+	}
+
+	const store: EventStore = {
 		async record(event: InvocationEvent): Promise<void> {
 			if (stopped) {
 				logger.warn("event-store.record-after-stop", {
@@ -301,6 +366,8 @@ async function createEventStore(
 				await commitInvocation(event.id);
 			}
 		},
+
+		prune,
 
 		query(
 			scopes: readonly Scope[],
@@ -352,6 +419,16 @@ async function createEventStore(
 
 		async drainAndClose(): Promise<void> {
 			stopped = true;
+			// Clear the retention timers first so no new prune starts during
+			// shutdown. A prune already in flight is not awaited here — it is
+			// serialized via the write chain and rolls back atomically if the
+			// process exits mid-DELETE.
+			if (retentionTimer !== undefined) {
+				clearInterval(retentionTimer);
+			}
+			if (firstPruneTimer !== undefined) {
+				clearTimeout(firstPruneTimer);
+			}
 			const deadline = Date.now() + config.sigtermFlushTimeoutMs;
 			for (const [id, entry] of accumulator) {
 				if (Date.now() >= deadline) {
@@ -391,6 +468,47 @@ async function createEventStore(
 			await db.destroy();
 		},
 	};
+
+	// Self-scheduled retention. The tick calls the public `prune` (the same seam
+	// tests exercise) and never throws — a failed prune logs `prune-failed` and
+	// waits for the next interval (the tick is the retry), mirroring commit's
+	// drop-not-crash posture. The first prune is deferred (setTimeout, not
+	// awaited) so it never delays factory resolution, startup recovery, or server
+	// bind. unref() keeps the timers from holding the process open on their own.
+	const retentionDays = config.retentionDays;
+	function safePrune(): void {
+		if (stopped) {
+			return;
+		}
+		const olderThan = new Date(Date.now() - retentionDays * MS_PER_DAY);
+		const start = Date.now();
+		store
+			.prune({ olderThan })
+			.then((invocations) => {
+				logger.info("event-store.prune-ok", {
+					invocations,
+					durationMs: Date.now() - start,
+				});
+			})
+			.catch((err) => {
+				logger.error("event-store.prune-failed", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	}
+
+	if (retentionDays > 0) {
+		const intervalMs = Math.max(
+			1,
+			Math.floor((retentionDays * MS_PER_DAY) / RETENTION_PRUNES_PER_WINDOW),
+		);
+		retentionTimer = setInterval(safePrune, intervalMs);
+		retentionTimer.unref?.();
+		firstPruneTimer = setTimeout(safePrune, 0);
+		firstPruneTimer.unref?.();
+	}
+
+	return store;
 }
 
 // biome-ignore lint/performance/noBarrelFile: intentional re-export — consumers must not import kysely directly
@@ -402,6 +520,7 @@ export type {
 	EventStore,
 	EventStoreConfig,
 	EventsTable,
+	PruneOptions,
 	Scope,
 };
 export { createEventStore };

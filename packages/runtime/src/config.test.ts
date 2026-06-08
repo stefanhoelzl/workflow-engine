@@ -212,6 +212,31 @@ describe("createConfig", () => {
 			expect(String(err)).toContain("EVENT_STORE_COMMIT_BACKOFF_MS");
 		}
 	});
+
+	it("EVENT_STORE_RETENTION_DAYS defaults to 0 (retention disabled)", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.eventStoreRetentionDays).toBe(0);
+	});
+
+	it("EVENT_STORE_RETENTION_DAYS parses an explicit window", () => {
+		const config = createConfig({
+			...REQUIRED,
+			EVENT_STORE_RETENTION_DAYS: "90",
+		});
+		expect(config.eventStoreRetentionDays).toBe(90);
+	});
+
+	it("EVENT_STORE_RETENTION_DAYS rejects non-numeric values", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, EVENT_STORE_RETENTION_DAYS: "forever" }),
+		).toThrow();
+	});
+
+	it("EVENT_STORE_RETENTION_DAYS rejects negative values", () => {
+		expect(() =>
+			createConfig({ ...REQUIRED, EVENT_STORE_RETENTION_DAYS: "-1" }),
+		).toThrow();
+	});
 });
 
 describe("createSecret", () => {

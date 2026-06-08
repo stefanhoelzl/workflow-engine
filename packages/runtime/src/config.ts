@@ -109,6 +109,17 @@ const schema = z
 		// biome-ignore lint/style/useNamingConvention: env var name
 		// biome-ignore lint/style/noMagicNumbers: default 60 s; must be < the Quadlet unit's TimeoutStopSec
 		EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS: z.coerce.number().default(60_000),
+		// EventStore retention. Off by default: 0 (or unset) disables pruning.
+		// A positive value is the window in days; periods longer than a month are
+		// expressed in days (six months = 180). The prune interval is derived
+		// from the window (1/100th of it), so there is no separate interval knob.
+		// See `openspec/specs/event-store/spec.md` "self-schedules retention pruning".
+		// biome-ignore lint/style/useNamingConvention: env var name
+		EVENT_STORE_RETENTION_DAYS: z.coerce
+			.number()
+			.int()
+			.nonnegative()
+			.default(0),
 	})
 	.transform((env) => ({
 		logLevel: env.LOG_LEVEL,
@@ -131,6 +142,7 @@ const schema = z
 		eventStoreCommitMaxRetries: env.EVENT_STORE_COMMIT_MAX_RETRIES,
 		eventStoreCommitBackoffMs: env.EVENT_STORE_COMMIT_BACKOFF_MS,
 		eventStoreSigtermFlushTimeoutMs: env.EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS,
+		eventStoreRetentionDays: env.EVENT_STORE_RETENTION_DAYS,
 	}));
 
 export type { Secret };
