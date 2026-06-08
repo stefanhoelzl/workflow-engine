@@ -30,7 +30,8 @@
 		"wfe": "./dist/cli/cli.js"
 	},
 	"scripts": {
-		"build": "tsc --build"
+		"build": "tsc --build",
+		"prepare": "pnpm build"
 	},
 	"files": [
 		"dist",

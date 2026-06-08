@@ -24,9 +24,6 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
-      - name: Build SDK (produces wfe CLI)
-        run: pnpm --filter @workflow-engine/sdk build
-
       - name: Upload workflows bundle
         working-directory: workflows
         env:
@@ -36,4 +33,4 @@ jobs:
           WEBHOOK_TOKEN: staging-webhook-token
           IMAP_USER: staging-imap-user
           IMAP_PASSWORD: staging-imap-password
-        run: node ../packages/sdk/dist/cli/cli.js upload --url https://staging.workflow-engine.webredirect.org
+        run: pnpm exec wfe upload --url https://staging.workflow-engine.webredirect.org
