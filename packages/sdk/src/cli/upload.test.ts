@@ -298,6 +298,33 @@ describe("upload", () => {
 		expect(result).toEqual({ uploaded: 0, failed: 1 });
 	});
 
+	it("reports a bundle() failure as bundle-error, not network-error", async () => {
+		const { cwd } = await createProjectWithBundle();
+		const bundleModule = await import("./bundle.js");
+		vi.mocked(bundleModule.bundle).mockRejectedValueOnce(
+			new Error("Date cannot be represented in JSON Schema"),
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const result = await upload({
+			cwd,
+			url: runtime.url,
+			owner: "acme",
+			repo: "foo",
+		});
+
+		expect(result).toEqual({ uploaded: 0, failed: 1 });
+		// The failure happens before any upload POST — no request reaches the runtime.
+		expect(runtime.requests).toHaveLength(0);
+		const joined = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(joined).toContain("status: bundle-error");
+		expect(joined).toContain(
+			"error: Date cannot be represented in JSON Schema",
+		);
+		expect(joined).not.toContain("network-error");
+		errorSpy.mockRestore();
+	});
+
 	it("rejects invalid owner names client-side", async () => {
 		const { cwd } = await createProjectWithBundle();
 		await expect(
