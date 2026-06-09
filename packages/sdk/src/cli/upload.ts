@@ -1,5 +1,5 @@
 import { OWNER_NAME_RE, REPO_NAME_RE } from "@workflow-engine/core";
-import { bundle, MissingSecretEnvError } from "./bundle.js";
+import { bundle } from "./bundle.js";
 import { PublicKeyFetchError } from "./seal-http.js";
 
 const TRAILING_SLASHES = /\/+$/;
@@ -36,7 +36,7 @@ interface ErrorBody {
 interface UploadFailure {
 	owner: string;
 	repo: string;
-	status: number | "network-error";
+	status: number | "network-error" | "bundle-error";
 	error: string;
 	issues?: ManifestIssue[];
 }
@@ -163,16 +163,13 @@ function bundleFailureToUploadFailure(
 	owner: string,
 	repo: string,
 ): UploadFailure {
-	if (err instanceof MissingSecretEnvError) {
-		return { owner, repo, status: "network-error", error: err.message };
-	}
 	if (err instanceof PublicKeyFetchError) {
 		return { owner, repo, status: err.status, error: err.message };
 	}
 	return {
 		owner,
 		repo,
-		status: "network-error",
+		status: "bundle-error",
 		error: err instanceof Error ? err.message : String(err),
 	};
 }
