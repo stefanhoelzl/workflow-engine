@@ -1,35 +1,4 @@
-# Shared Layout Specification
-
-## Purpose
-
-Provide a shared HTML layout with navigation sidebar reused across dashboard and trigger UI pages.
-## Requirements
-### Requirement: Shared layout API
-
-Every authenticated UI surface (`/invocations/*`, `/trigger/*`) SHALL render with four regions: a topbar (delegated to the universal topbar contract in `ui-foundation`), a navigation sidebar, an in-page tab strip that switches between Invocations and Trigger surfaces, and a content area for the page-specific body. The runtime SHALL expose a single shared mechanism that authenticated route handlers use to compose these regions; surface-specific handlers SHALL NOT reimplement the shell layout.
-
-The layout SHALL emit `<!DOCTYPE html>` ahead of `<html>` so browsers render the page in standards mode.
-
-The shared mechanism SHALL accept the tab strip as an opaque slot (a child node), in the same way it accepts the sidebar tree as an opaque slot. The layout SHALL render the tab strip in a fixed location between the sidebar and the content area, so CSS can anchor the tabs to that region without inspecting their content. The layout SHALL NOT itself decide which surface is active — that is the caller's responsibility (the caller passes a pre-rendered tab strip with the active surface marked).
-
-#### Scenario: Layout includes topbar, sidebar, tabs, and content area
-
-- **WHEN** an authenticated UI surface is rendered (e.g. `/invocations`, `/trigger`)
-- **THEN** the response body SHALL contain a topbar element matching the `ui-foundation` universal topbar contract
-- **AND** a sidebar element with the navigation tree
-- **AND** an in-page tab strip switching between Invocations and Trigger surfaces
-- **AND** a content area carrying the page-specific body
-
-#### Scenario: Layout emits DOCTYPE
-
-- **WHEN** any authenticated UI surface is rendered
-- **THEN** the response body SHALL begin with `<!DOCTYPE html>` followed by `<html lang="en">`
-
-#### Scenario: Sidebar tree present on authenticated surfaces
-
-- **WHEN** an authenticated UI surface is rendered for a user with at least one accessible owner
-- **THEN** the sidebar SHALL contain a single owner→repo→workflow→trigger tree
-- **AND** the layout SHALL NOT render any flat top-level nav-link list (no separate Invocations/Trigger entry points in the sidebar or topbar)
+## MODIFIED Requirements
 
 ### Requirement: Navigation sidebar
 
@@ -110,21 +79,6 @@ The sidebar SHALL NOT render any top-level Invocations/Trigger section header, n
 - **THEN** the tree SHALL contain only registry-derived nodes
 - **AND** no `legacy-run` leaf SHALL appear
 
-### Requirement: Application top bar
-
-Authenticated UI surfaces SHALL render a topbar above the sidebar and main content area. The topbar's appearance and content (brand wordmark, conditional user identity, sign-out control) SHALL conform to the `ui-foundation` universal topbar contract. The topbar SHALL NOT contain Invocations/Trigger surface-selector links — surface choice lives in the in-page tab strip rendered between the sidebar and main content.
-
-#### Scenario: Authenticated topbar shows user identity
-
-- **WHEN** an authenticated UI surface is rendered for a user with a valid session
-- **THEN** the topbar matches the `ui-foundation` "Universal topbar" requirement (brand wordmark + username + email + sign-out control)
-- **AND** the topbar SHALL NOT contain any link or button labelled "Invocations" or "Trigger"
-
-#### Scenario: Sign out link
-
-- **WHEN** the user clicks the "Sign out" link in the topbar
-- **THEN** the browser submits a POST to `/auth/logout`
-
 ### Requirement: In-page surface tabs
 
 Every authenticated UI surface SHALL render an in-page tab strip between the sidebar and the main content area. The strip SHALL contain three tabs — `Invocations`, `Trigger`, and `Queues` — corresponding to the `/invocations/*`, `/trigger/*`, and `/queue/*` URL prefixes, with two exceptions: (a) at trigger-leaf scope (the URL has a trailing `:trigger` segment, e.g. `/trigger/:owner/:repo/:workflow/:trigger`), the `Queues` tab SHALL be omitted because `/queue` has no trigger-keyed counterpart and following the tab would 404; and (b) when the current invocations scope is **removed** — its workflow is absent from the `WorkflowRegistry`, or its trigger is absent from the registry entry for an otherwise-live workflow — the `Trigger` and `Queues` tabs SHALL both be omitted, because those surfaces are registry-only and following either tab would 404. An removed scope therefore renders only the current `Invocations` tab. The tab matching the current URL prefix SHALL render in an "active" visual state; the other tabs SHALL render in an inactive state.
@@ -175,4 +129,3 @@ The asymmetry between the singular `Trigger` tab label and the plural `Invocatio
 - **WHEN** the user is on `/invocations/acme/foo/deploy/legacy-run`
 - **THEN** the tab strip SHALL contain exactly one tab labelled `Invocations`
 - **AND** no `Trigger` or `Queue` tab anchor SHALL appear
-

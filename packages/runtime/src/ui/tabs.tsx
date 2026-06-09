@@ -25,6 +25,11 @@ interface TabsProps {
 	readonly surface: Surface;
 	readonly path: string;
 	readonly scope?: TabsScope;
+	// True when the current scope's workflow/trigger is no longer in the
+	// registry (a removed/renamed entity viewed via its invocation history).
+	// The `/trigger` and `/queue` surfaces are registry-only, so their tabs are
+	// hidden here — otherwise a click follows the tab into a 404.
+	readonly removed?: boolean;
 }
 
 const TABS: readonly { surface: Surface; label: string }[] = [
@@ -93,15 +98,30 @@ function Breadcrumb({
 	);
 }
 
-function Tabs({ surface, path, scope }: TabsProps) {
-	// Trigger-leaf URLs (`/<surface>/:owner/:repo/:workflow/:trigger`) have no
-	// counterpart on `/queue` — queue identity is `(owner, repo, workflow,
-	// queue)`, not trigger-keyed. The Queues tab is hidden at this scope so
-	// users don't follow a tab into a 404. The Invocations and Trigger tabs
-	// still render because both surfaces have valid trigger-leaf views.
-	const visibleTabs = scope?.trigger
-		? TABS.filter((tab) => tab.surface !== "/queue")
-		: TABS;
+// Pick which surface tabs to show for the current scope:
+//   - A removed scope (removed/renamed workflow or trigger viewed via its
+//     history) exists only on the invocations surface — `/trigger` and `/queue`
+//     are registry-only and would 404 — so keep just the current tab.
+//   - At trigger-leaf scope (`/<surface>/:owner/:repo/:workflow/:trigger`) the
+//     Queues tab is hidden: queue identity is `(owner, repo, workflow, queue)`,
+//     not trigger-keyed, so it has no counterpart. Invocations + Trigger stay.
+//   - Otherwise all three tabs render.
+function visibleTabsFor(
+	surface: Surface,
+	scope?: TabsScope,
+	removed?: boolean,
+) {
+	if (removed) {
+		return TABS.filter((tab) => tab.surface === surface);
+	}
+	if (scope?.trigger) {
+		return TABS.filter((tab) => tab.surface !== "/queue");
+	}
+	return TABS;
+}
+
+function Tabs({ surface, path, scope, removed }: TabsProps) {
+	const visibleTabs = visibleTabsFor(surface, scope, removed);
 	return (
 		<div class="page-tabs-bar">
 			<Breadcrumb surface={surface} scope={scope ?? {}} />

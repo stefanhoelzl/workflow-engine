@@ -280,6 +280,12 @@ body {
 .trigger-kind-icon--upload {
 	color: var(--accent);
 }
+/* `removed` is the sentinel kind for a removed/renamed trigger — its
+   (workflow, trigger) pair no longer exists in the registry. Painted muted so
+   archived history reads as de-emphasised against the live working set. */
+.trigger-kind-icon--removed {
+	color: var(--text-muted);
+}
 
 .topbar-right {
 	display: flex;
@@ -1145,6 +1151,12 @@ body {
 	font-size: var(--fs-base);
 	color: var(--text-secondary);
 }
+/* Removed (removed/renamed trigger) rows: mute the trigger leg so the row
+   reads de-emphasised. Placed after the base rule to keep specificity
+   ascending. The archive-box leading icon carries the primary signal. */
+.entry--removed .entry-trigger {
+	color: var(--text-muted);
+}
 
 .entry-duration,
 .entry-age {
@@ -1353,7 +1365,7 @@ body {
 .flame-legend-swatch--rest {
 	background: var(--kind-rest);
 }
-.flame-legend-swatch--orphan {
+.flame-legend-swatch--removed {
 	background: repeating-linear-gradient(
 		45deg,
 		var(--kind-rest) 0 4px,
@@ -1428,7 +1440,7 @@ body {
 	stroke-width: 2;
 }
 
-.orphan {
+.removed {
 	fill: url(#flame-hatched);
 }
 
@@ -1457,7 +1469,7 @@ body {
 	dominant-baseline: middle;
 }
 
-.bar-orphan-glyph {
+.bar-removed-glyph {
 	font-family: var(--font-mono);
 	font-size: var(--fs-xs);
 	fill: var(--on-accent);
@@ -2303,6 +2315,14 @@ a.tree-row:hover .tree-label,
 	text-overflow: ellipsis;
 	flex: 1 1 auto;
 	min-width: 0;
+}
+
+/* Removed (removed/renamed) sidebar nodes: mute the whole node so the name
+   inherits the de-emphasised colour. Single-class rules placed after the base
+   anchor rules so they win on source order without a descendant selector. */
+.sidebar-trigger--removed,
+.sidebar-workflow-link--removed {
+	color: var(--text-muted);
 }
 
 .sidebar-trigger .trigger-kind-icon {

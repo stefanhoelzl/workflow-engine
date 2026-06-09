@@ -132,6 +132,44 @@ describe("<Tabs>", () => {
 		expect(d.querySelector('a[href="/queue/acme/foo/deploy"]')).toBeTruthy();
 	});
 
+	it("hides Trigger and Queues tabs for an removed workflow scope", () => {
+		const html = String(
+			<Tabs
+				surface="/invocations"
+				path="/acme/foo/gone-wf"
+				scope={{ owner: "acme", repo: "foo", workflow: "gone-wf" }}
+				removed={true}
+			/>,
+		);
+		const d = dom(html);
+		const links = d.querySelectorAll("a.page-tabs-link");
+		// Only the current (Invocations) surface tab remains.
+		expect(links).toHaveLength(1);
+		expect(links[0]?.textContent).toBe("Invocations");
+		expect(d.querySelector('a[href^="/trigger/"]')).toBeNull();
+		expect(d.querySelector('a[href^="/queue/"]')).toBeNull();
+	});
+
+	it("hides the Trigger tab for an removed trigger scope", () => {
+		const html = String(
+			<Tabs
+				surface="/invocations"
+				path="/acme/foo/deploy/legacy-run"
+				scope={{
+					owner: "acme",
+					repo: "foo",
+					workflow: "deploy",
+					trigger: "legacy-run",
+				}}
+				removed={true}
+			/>,
+		);
+		const d = dom(html);
+		const links = d.querySelectorAll("a.page-tabs-link");
+		expect(links).toHaveLength(1);
+		expect(links[0]?.textContent).toBe("Invocations");
+	});
+
 	it("emits no inline style/script/handler attributes (CSP)", () => {
 		const html = String(<Tabs surface="/invocations" path="/x/y/z/q" />);
 		expect(html).not.toMatch(STYLE_ATTR_RE);

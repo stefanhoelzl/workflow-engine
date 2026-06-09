@@ -136,12 +136,15 @@ All UI icons SHALL be rendered as inline SVG in `packages/runtime/src/ui/icons.t
 
 | Kind     | Lucide name              | Component        |
 | -------- | ------------------------ | ---------------- |
-| `cron`   | clock                    | `<CronIcon/>`    |
-| `http`   | globe                    | `<HttpIcon/>`    |
-| `manual` | user                     | `<ManualIcon/>`  |
-| `imap`   | mail                     | `<ImapIcon/>`    |
+| `cron`     | clock                  | `<CronIcon/>`     |
+| `http`     | globe                  | `<HttpIcon/>`     |
+| `manual`   | user                   | `<ManualIcon/>`   |
+| `imap`     | mail                   | `<ImapIcon/>`     |
+| `removed`  | archive (box + slot)   | `<RemovedIcon/>`  |
 
 Used by `<TriggerKindIcon kind={...}>` in the dashboard `.entry` rows, the trigger card summary, and the sidebar trigger leaves.
+
+`removed` is a sentinel kind (not a real trigger kind on the wire): the leading indicator for a removed or renamed trigger whose `(workflow, trigger)` pair no longer exists in the registry. Coloured `--text-muted` via `.trigger-kind-icon--removed`; it appears only on the invocations surface (sidebar leaves + list rows), never on `/trigger` or `/queue`.
 
 ### Event-prefix icon table
 

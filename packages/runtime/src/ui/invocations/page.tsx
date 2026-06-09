@@ -19,6 +19,11 @@ interface InvocationRow {
 	readonly startedTs: number;
 	readonly completedTs: number | null;
 	readonly triggerKind?: string;
+	// True when this row's (workflow, trigger) is no longer a live trigger in
+	// the registry (removed/renamed). Drives the muted row treatment; the
+	// archive-box leading icon comes from `triggerKind === "removed"`. Never set
+	// on synthetic `system.upload` rows.
+	readonly removed?: boolean;
 	readonly dispatch?: {
 		readonly source: "manual" | "trigger" | "upload";
 		readonly user?: { readonly login: string; readonly mail?: string };
@@ -310,16 +315,17 @@ function fragmentUrlForRow(row: InvocationRow): string | null {
 function Row({ row }: { row: InvocationRow }) {
 	const fragmentUrl = fragmentUrlForRow(row);
 	const statusCls = StatusClass(row);
+	const removedCls = row.removed ? " entry--removed" : "";
 	if (fragmentUrl === null) {
 		return (
-			<div class={`entry ${statusCls}`} id={`inv-${row.id}`}>
+			<div class={`entry ${statusCls}${removedCls}`} id={`inv-${row.id}`}>
 				<RowCells row={row} expandable={false} />
 			</div>
 		);
 	}
 	return (
 		<details
-			class={`entry entry-expandable ${statusCls}`}
+			class={`entry entry-expandable ${statusCls}${removedCls}`}
 			id={`inv-${row.id}`}
 			hx-get={fragmentUrl}
 			hx-trigger="toggle once"

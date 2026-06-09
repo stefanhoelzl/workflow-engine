@@ -15,6 +15,11 @@ import { renderEventDetail } from "./event-detail.js";
 import { renderFlamegraph } from "./flamegraph.js";
 import type { InvocationRow } from "./page.js";
 import { renderInvocationsPage } from "./page.js";
+import {
+	queryTriggerPairs,
+	REMOVED_KIND,
+	workflowHistoryExists,
+} from "./removed-triggers.js";
 
 const DEFAULT_LIMIT = 500;
 
@@ -231,6 +236,10 @@ async function fetchInvocationRowsForScopes(
 			trigger: r.name,
 		});
 		const dispatch = extractDispatch(r.meta);
+		// No live kind ⇒ the (workflow, trigger) pair is gone from the registry
+		// (removed/renamed). Promote the already-computed undefined into the
+		// `removed` sentinel + flag — no extra query. See removed triggers.ts.
+		const isRemoved = kind === undefined;
 		const row: InvocationRow = {
 			id: r.id,
 			owner: r.owner,
@@ -242,7 +251,8 @@ async function fetchInvocationRowsForScopes(
 			completedAt: t?.at ?? null,
 			startedTs: toNumber(r.ts),
 			completedTs: t ? toNumber(t.ts) : null,
-			...(kind ? { triggerKind: kind } : {}),
+			triggerKind: kind ?? REMOVED_KIND,
+			...(isRemoved ? { removed: true } : {}),
 			...(dispatch ? { dispatch } : {}),
 		};
 		return row;
@@ -340,6 +350,7 @@ function buildSyntheticTriggerRow(
 		syntheticKind === "trigger.exception"
 			? composeSetupFailureMessage(r)
 			: undefined;
+	const isRemoved = kind === undefined;
 	return {
 		id: r.id,
 		owner: r.owner,
@@ -353,7 +364,8 @@ function buildSyntheticTriggerRow(
 		completedTs: ts,
 		synthetic: true,
 		syntheticKind,
-		...(kind ? { triggerKind: kind } : {}),
+		triggerKind: kind ?? REMOVED_KIND,
+		...(isRemoved ? { removed: true } : {}),
 		...(rejectionSummary ? { rejectionSummary } : {}),
 		...(setupFailureMessage ? { setupFailureMessage } : {}),
 	};
@@ -582,7 +594,8 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 	const limit = deps.limit ?? DEFAULT_LIMIT;
 	const logger = deps.logger;
 
-	function buildSidebarTree(
+	async function buildSidebarTree(
+		user: Parameters<typeof resolveQueryScopes>[0],
 		owners: readonly string[],
 		active: {
 			owner?: string;
@@ -591,7 +604,16 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 			trigger?: string;
 		},
 	) {
-		const data = buildSidebarData(deps.registry, owners);
+		// Removed nodes are an invocations-surface concept only. The pair set
+		// is GLOBAL (every scope the user can access), not narrowed by the URL
+		// filter, so the tree stays complete as the user drills in. One distinct
+		// query, deduped tuples — see removed triggers.ts.
+		const globalScopes = resolveQueryScopes(user, deps.registry);
+		const triggerPairs =
+			globalScopes.length > 0
+				? await queryTriggerPairs(deps.eventStore, globalScopes)
+				: [];
+		const data = buildSidebarData(deps.registry, owners, triggerPairs);
 		return (
 			<SidebarTree
 				surface="/invocations"
@@ -613,25 +635,58 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 		readonly trigger?: string;
 	}
 
+	// Validate the :workflow segment. A workflow "exists" if it is in the
+	// registry OR has any invocation history in the EventStore — so removed
+	// and renamed workflows stay navigable by URL; only a workflow in NEITHER
+	// is a 404 (the enumeration-prevention shape). The :trigger segment is
+	// intentionally NOT separately validated (it never was): a trigger name
+	// just narrows the EventStore query, rendering an empty list when nothing
+	// matches. Validating it on the `name` column would wrongly 404
+	// trigger.exception / trigger.rejection history, which stamps the trigger
+	// name into `input.trigger`, not `name`. Membership is enforced upstream,
+	// so the history widening confirms nothing beyond what the member owns.
+	async function workflowSegmentMissing(filter: Filter): Promise<boolean> {
+		if (!(filter.workflow && filter.repo)) {
+			return false;
+		}
+		const entries = deps.registry.list(filter.owner, filter.repo);
+		if (entries.some((e) => e.workflow.name === filter.workflow)) {
+			return false;
+		}
+		return !(await workflowHistoryExists(
+			deps.eventStore,
+			filter.owner,
+			filter.repo,
+			filter.workflow,
+		));
+	}
+
+	// True when the filter's workflow (or trigger) is no longer registry-backed
+	// — i.e. an removed scope reachable only via invocation history. The
+	// `/trigger` and `/queue` surfaces are registry-only, so their in-page tabs
+	// are suppressed for such scopes (they would 404). Synchronous, registry-only.
+	function isScopeRemoved(filter: Filter): boolean {
+		if (!(filter.workflow && filter.repo)) {
+			return false;
+		}
+		const entry = deps.registry
+			.list(filter.owner, filter.repo)
+			.find((e) => e.workflow.name === filter.workflow);
+		if (!entry) {
+			return true; // workflow absent from the registry
+		}
+		return filter.trigger
+			? !entry.triggers.some((t) => t.name === filter.trigger)
+			: false;
+	}
+
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: shared 5-level filter handler — owner/repo/workflow/trigger validation, scope narrow, sidebar+tabs build; splitting fragments the request flow
 	async function renderListFiltered(c: Context, filter?: Filter) {
 		const user = c.get("user");
 		const owners = userOwners(c);
 
-		// Validate :workflow segment when the registry has any entries for
-		// (owner, repo) — a missing workflow under a populated repo is a 404
-		// per the invocations-list-view spec. When the registry has no entries
-		// at all (e.g. all workflows deleted, or synthetic events live on),
-		// skip validation: trigger.exception / system.upload rows may still
-		// be meaningful and we surface them via the EventStore.
-		if (filter?.workflow && filter.repo) {
-			const entries = deps.registry.list(filter.owner, filter.repo);
-			if (entries.length > 0) {
-				const hit = entries.some((e) => e.workflow.name === filter.workflow);
-				if (!hit) {
-					return c.notFound();
-				}
-			}
+		if (filter && (await workflowSegmentMissing(filter))) {
+			return c.notFound();
 		}
 
 		const scopes = resolveQueryScopes(
@@ -658,14 +713,22 @@ function invocationsMiddleware(deps: InvocationsMiddlewareDeps): Middleware {
 					.filter((s): s is string => Boolean(s))
 					.join("/")}`
 			: "";
+		const sidebarTree = await buildSidebarTree(user, owners, filter ?? {});
 		return c.html(
 			renderInvocationsPage({
 				user: user?.login ?? "",
 				email: user?.mail ?? "",
 				owners,
 				rows,
-				sidebarTree: buildSidebarTree(owners, filter ?? {}),
-				tabs: <Tabs surface="/invocations" path={path} scope={filter ?? {}} />,
+				sidebarTree,
+				tabs: (
+					<Tabs
+						surface="/invocations"
+						path={path}
+						scope={filter ?? {}}
+						removed={filter ? isScopeRemoved(filter) : false}
+					/>
+				),
 			}),
 		);
 	}
