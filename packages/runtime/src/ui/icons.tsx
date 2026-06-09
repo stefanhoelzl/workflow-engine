@@ -149,6 +149,20 @@ function UploadIcon({ class: cls = "icon" }: IconProps = {}) {
 	);
 }
 
+// archive box (Lucide: lid + body + slot) — `removed` sentinel kind for
+// removed or renamed triggers (their (workflow, trigger) pair no longer exists
+// in the registry; only their invocation history remains). Muted via the
+// `.trigger-kind-icon--removed` CSS rule so removed nodes read de-emphasised.
+function RemovedIcon({ class: cls = "icon" }: IconProps = {}) {
+	return (
+		<Svg class={cls} stroke="2">
+			<rect width="20" height="5" x="2" y="3" rx="1" fill="none" />
+			<path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" fill="none" />
+			<path d="M10 12h4" fill="none" />
+		</Svg>
+	);
+}
+
 function kindGlyph(kind: string): Child {
 	switch (kind) {
 		case "cron":
@@ -163,6 +177,8 @@ function kindGlyph(kind: string): Child {
 			return <WsIcon />;
 		case "upload":
 			return <UploadIcon />;
+		case "removed":
+			return <RemovedIcon />;
 		default:
 			// Unknown kind — neutral dot so layout stays stable without leaking
 			// emoji or `?` glyphs. Author-visible only when a new kind is
@@ -362,6 +378,7 @@ export {
 	HttpIcon,
 	ImapIcon,
 	ManualIcon,
+	RemovedIcon,
 	SystemPrefixIcon,
 	TopBar,
 	TriggerIcon,

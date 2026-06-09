@@ -47,9 +47,38 @@ const TEST_USER: UserContext = {
 	orgs: ["t0", "user"],
 };
 
+// Minimal populated registry for tests that render rows for LIVE triggers
+// (most synthetic-row / exhaustion tests use real triggers that merely
+// failed — they are not removed triggers). Casts past the full WorkflowEntry shape
+// since the UI only reads workflow.name + triggers[].{name,kind}.
+function registryWith(
+	triggers: readonly { workflow: string; trigger: string; kind: string }[],
+): WorkflowRegistry {
+	const byWorkflow = new Map<string, { name: string; kind: string }[]>();
+	for (const t of triggers) {
+		const arr = byWorkflow.get(t.workflow) ?? [];
+		arr.push({ name: t.trigger, kind: t.kind });
+		byWorkflow.set(t.workflow, arr);
+	}
+	const entries = [...byWorkflow.entries()].map(([workflow, ts]) => ({
+		owner: "t0",
+		repo: "r0",
+		workflow: { name: workflow },
+		bundleSource: "",
+		triggers: ts,
+	})) as unknown as ReturnType<WorkflowRegistry["list"]>;
+	return {
+		...emptyRegistry,
+		repos: (o) => (o === "t0" ? ["r0"] : []),
+		list: (o, r) =>
+			o === "t0" && (r === "r0" || r === undefined) ? entries : [],
+	};
+}
+
 async function mount(
 	eventStore: EventStore,
 	user: UserContext = TEST_USER,
+	registry: WorkflowRegistry = emptyRegistry,
 ): Promise<Hono> {
 	const app = new Hono();
 	const injectUser = async (c: any, next: () => Promise<void>) => {
@@ -58,7 +87,7 @@ async function mount(
 	};
 	const m = invocationsMiddleware({
 		eventStore,
-		registry: emptyRegistry,
+		registry,
 		sessionMw: injectUser,
 	});
 	const noopNext = async () => {
@@ -186,10 +215,7 @@ describe("dashboard middleware — scoped flat list", () => {
 
 	it("orders by at desc", async () => {
 		// Inject 3 complete invocations (request + response). Only terminal-
-		// committed invocations appear in the dashboard. Sequential awaits
-		// are intentional — DuckLake commits run on a single connection and
-		// parallelising them via Promise.all would still serialize at the
-		// connection-lock layer, with extra context-switching overhead.
+		// committed invocations appear in the dashboard.
 		await Promise.all(
 			[0, 1, 2].map(async (i) => {
 				await store.record(
@@ -220,7 +246,11 @@ describe("dashboard middleware — scoped flat list", () => {
 			headers: AUTH_HEADERS,
 		});
 		const html = await res.text();
-		expect(html.indexOf("tr_2")).toBeLessThan(html.indexOf("tr_0"));
+		// Scope the order check to the invocation list — trigger names also
+		// appear in the sidebar tree (as leaves), so a whole-page indexOf is
+		// ambiguous. The list lives in `.entry-table`.
+		const list = html.slice(html.indexOf("entry-table"));
+		expect(list.indexOf("tr_2")).toBeLessThan(list.indexOf("tr_0"));
 	});
 
 	it("succeeded row is expandable with HTMX lazy-load attributes", async () => {
@@ -308,7 +338,11 @@ describe("dashboard middleware — single-leaf trigger.exception invocations", (
 				error: { message: "ECONNREFUSED" },
 			}),
 		);
-		const app = await mount(store);
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "wf", trigger: "inbound", kind: "imap" }]),
+		);
 		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
@@ -422,7 +456,11 @@ describe("dashboard middleware — single-leaf trigger.rejection invocations", (
 				},
 			}),
 		);
-		const app = await mount(store);
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "wf", trigger: "ingest", kind: "http" }]),
+		);
 		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
@@ -612,7 +650,11 @@ describe("dashboard middleware — sandbox-exhaustion pill", () => {
 				error: { message: "limit:cpu" },
 			}),
 		);
-		const app = await mount(store);
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "wf", trigger: "on-push", kind: "http" }]),
+		);
 		const res = await app.request("/invocations/t0/r0", {
 			headers: AUTH_HEADERS,
 		});
@@ -984,5 +1026,146 @@ describe("dashboard middleware — unified scope routes + tabs", () => {
 		const html = await res.text();
 		expect(html).toContain('id="inv-evt_build_a"');
 		expect(html).not.toContain('id="inv-evt_deploy_a"');
+	});
+});
+
+describe("dashboard middleware — removed workflows/triggers", () => {
+	let store: EventStore;
+	let disposeStore: () => Promise<void>;
+
+	beforeEach(async () => {
+		const h = await createRealEventStoreForTest();
+		store = h.store;
+		disposeStore = h.dispose;
+	});
+	afterEach(async () => {
+		await disposeStore();
+	});
+
+	async function seedRun(id: string, workflow: string, name: string) {
+		await store.record(
+			event({ id, kind: "trigger.request", seq: 0, ref: null, workflow, name }),
+		);
+		await store.record(
+			event({
+				id,
+				kind: "trigger.response",
+				seq: 1,
+				ref: 0,
+				ts: 1,
+				workflow,
+				name,
+			}),
+		);
+	}
+
+	it("returns 200 with history for a removed workflow URL", async () => {
+		await seedRun("evt_gone", "gone-wf", "trig");
+		// Registry has a different live workflow, not "gone-wf".
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "live-wf", trigger: "t", kind: "http" }]),
+		);
+		const res = await app.request("/invocations/t0/r0/gone-wf", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain('id="inv-evt_gone"');
+	});
+
+	it("returns 404 for a workflow absent from both registry and history", async () => {
+		await seedRun("evt_real", "real-wf", "trig");
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "real-wf", trigger: "trig", kind: "http" }]),
+		);
+		const res = await app.request("/invocations/t0/r0/no-such-wf", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 200 + only its rows for a removed-trigger URL under a live workflow", async () => {
+		await seedRun("evt_legacy", "deploy", "legacy-run");
+		await seedRun("evt_run", "deploy", "run");
+		// "run" is live; "legacy-run" was removed.
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "deploy", trigger: "run", kind: "http" }]),
+		);
+		const res = await app.request("/invocations/t0/r0/deploy/legacy-run", {
+			headers: AUTH_HEADERS,
+		});
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('id="inv-evt_legacy"');
+		expect(html).not.toContain('id="inv-evt_run"');
+		// The cross-surface tabs are suppressed for an removed scope — clicking
+		// them would 404 on the registry-only /trigger and /queue surfaces.
+		expect(html).not.toContain('href="/trigger/t0/r0/deploy/legacy-run"');
+		expect(html).not.toContain('href="/queue/t0/r0/deploy/legacy-run"');
+	});
+
+	it("marks a removed-trigger row as removed in the repo-wide list", async () => {
+		await seedRun("evt_removed", "deploy", "legacy-run");
+		await seedRun("evt_live", "deploy", "run");
+		const app = await mount(
+			store,
+			TEST_USER,
+			registryWith([{ workflow: "deploy", trigger: "run", kind: "http" }]),
+		);
+		const res = await app.request("/invocations/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		// The removed row carries the muted modifier + archive-box leading icon.
+		expect(html).toMatch(
+			/<details class="entry[^"]*entry--removed"[^>]*id="inv-evt_removed"/,
+		);
+		// The live row does not.
+		expect(html).toMatch(/id="inv-evt_live"/);
+		const liveRow = html.slice(
+			html.indexOf('id="inv-evt_live"') - 200,
+			html.indexOf('id="inv-evt_live"'),
+		);
+		expect(liveRow).not.toContain("entry--removed");
+	});
+
+	it("never marks a system.upload row as removed", async () => {
+		await store.record(
+			event({
+				id: "evt_up",
+				kind: "system.upload",
+				seq: 0,
+				ref: 0,
+				ts: 0,
+				name: "demo",
+				workflow: "demo",
+				workflowSha: "abcdef0123456789".padEnd(64, "0"),
+				input: { name: "demo", module: "demo.js" },
+				meta: {
+					dispatch: { source: "upload", user: { login: "a", mail: "a@x" } },
+				},
+			}),
+		);
+		// Empty registry — everything else would be removed, but upload rows
+		// must never be.
+		const app = await mount(store);
+		const res = await app.request("/invocations/t0/r0", {
+			headers: AUTH_HEADERS,
+		});
+		const html = await res.text();
+		// The details tag carrying the row id must not be flagged removed.
+		const openTag = html.slice(
+			html.lastIndexOf("<details", html.indexOf('id="inv-evt_up"')),
+			html.indexOf('id="inv-evt_up"'),
+		);
+		expect(openTag).not.toContain("entry--removed");
+		// Upload rows keep their accent upload glyph, never the archive-box icon.
+		expect(html).toContain("trigger-kind-icon--upload");
+		expect(html).not.toContain("trigger-kind-icon--removed");
 	});
 });
