@@ -25,6 +25,17 @@ AddHost=${domain}:host-gateway
 # (65532 per the Dockerfile) at start time. Without it, the container
 # process can't write to a host dir owned by `deploy`.
 Volume=${data_dir}:/data:Z,U
+# Memory budget. Must be enforced on the container *payload* cgroup so
+# software inside that auto-sizes from detected memory (DuckDB, V8) reads
+# the real limit via /sys/fs/cgroup/memory.max. Two non-obvious constraints:
+# - Quadlet's `Memory=` key is unsupported on podman 5.4.2 (`quadlet
+#   -dryrun`: "unsupported key 'Memory'"); `PodmanArgs=--memory=` is the
+#   working spelling.
+# - Do NOT reintroduce `[Service] MemoryMax=` — that lands on the parent
+#   service cgroup, which is invisible from inside the container, so
+#   DuckDB sized its buffer pool to 80% of *host* RAM and got OOM-killed
+#   (each kill rotates the in-memory session-sealing key, breaking logins).
+PodmanArgs=--memory=${memory_max}
 # Non-secret config: passed as systemd `Environment=` so each value goes
 # through Quadlet → podman as a separate `--env KEY=VALUE` flag. Avoids
 # `--env-file` parser quirks (Podman's env-file reader mis-splits values
@@ -51,7 +62,6 @@ EnvironmentFile=/etc/wfe/${env_name}.env
 ExecStartPre=/usr/bin/mountpoint -q ${data_dir}
 Restart=always
 TimeoutStartSec=120
-MemoryMax=${memory_max}
 
 [Install]
 WantedBy=multi-user.target default.target
