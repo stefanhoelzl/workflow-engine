@@ -67,6 +67,62 @@ describe("defaultPluginLoader — data: URI path", () => {
 	});
 });
 
+// Vitest installs a source-map-remapping `Error.prepareStackTrace` that
+// formats frames via `CallSite.getFileName()`, which reports the raw data:
+// URL instead of the `//# sourceURL` name. Production workers run without
+// any override, so V8's default formatter (which honors sourceURL) applies.
+// `.stack` is computed lazily on first access — clearing the override for
+// that first read yields the production-shaped stack.
+function defaultFormatStack(err: Error): string {
+	const saved = Error.prepareStackTrace;
+	Reflect.deleteProperty(Error, "prepareStackTrace");
+	try {
+		return err.stack ?? "";
+	} finally {
+		if (saved !== undefined) {
+			Error.prepareStackTrace = saved;
+		}
+	}
+}
+
+describe("defaultPluginLoader — module identity in stack traces", () => {
+	afterEach(clearOverride);
+
+	test("worker-module throw carries the virtual name, not the data: URL", async () => {
+		const descriptor: PluginDescriptor = {
+			name: "fetch",
+			workerSource: `function doFetch() { throw new Error("aborted"); }
+export default () => doFetch();`,
+		};
+		const plugin = await defaultPluginLoader(descriptor);
+		let stack = "";
+		try {
+			plugin.worker({} as never, {} as never, {} as never);
+		} catch (err) {
+			stack = defaultFormatStack(err as Error);
+		}
+		expect(stack).toMatch(/at doFetch \(sandbox-plugin:fetch:\d+:\d+\)/);
+		expect(stack).not.toContain("data:text/javascript");
+	});
+
+	test("bundle ending in a line comment still gets the virtual name", async () => {
+		const descriptor: PluginDescriptor = {
+			name: "trailing",
+			workerSource: `export default () => { throw new Error("x"); };
+// bundle ends in a line comment`,
+		};
+		const plugin = await defaultPluginLoader(descriptor);
+		let stack = "";
+		try {
+			plugin.worker({} as never, {} as never, {} as never);
+		} catch (err) {
+			stack = defaultFormatStack(err as Error);
+		}
+		expect(stack).toMatch(/sandbox-plugin:trailing:\d+:\d+/);
+		expect(stack).not.toContain("data:text/javascript");
+	});
+});
+
 describe("defaultPluginLoader — override hook", () => {
 	afterEach(clearOverride);
 

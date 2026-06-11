@@ -4,7 +4,7 @@ Recipes agents use to verify changes against `pnpm dev` (see `CLAUDE.md` §Dev v
 
 ## HTTP
 
-`curl` against `POST /webhooks/local-user/demo-repo/<trigger>` (public webhooks), `/invocations/local-user/demo-repo` (session cookie), `/trigger/local-user/demo-repo` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the invocations view HTML — there is no `GET /api/workflows/<owner>` JSON listing.
+`curl` against `POST /webhooks/local-user/demo-repo/demo/<trigger>` (public webhooks; route shape is `/webhooks/<owner>/<repo>/<workflow>/<trigger>` — four segments), `/invocations/local-user/demo-repo` (session cookie), `/trigger/local-user/demo-repo/demo/<trigger>` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the invocations view HTML — there is no `GET /api/workflows/<owner>` JSON listing.
 
 ## EventStore (DuckLake)
 
@@ -52,8 +52,8 @@ Not in `pnpm test` / `pnpm validate`. Use for Alpine-driven interactivity, focus
 Queue files live at `.persistence/queues/<owner>/<repo>/<workflow>/<queueName>.ndjson` — one JSON-encoded item per line. The eager-create-at-upload invariant means every declared queue has a file (possibly zero-byte) on disk after a successful upload.
 
 - **Confirm a queue file exists after upload.** `ls .persistence/queues/local-user/demo-repo/demo/` after `pnpm dev` settles — should list `jobs.ndjson` (the demo's `defineQueue({...})` declaration).
-- **Producer round-trip.** `curl -X POST http://localhost:<port>/webhooks/local-user/demo-repo/enqueueJob -H 'content-type: application/json' -d '{"url":"https://example.com","note":"hi"}'` → 202; then `cat .persistence/queues/local-user/demo-repo/demo/jobs.ndjson` shows one line.
-- **Consumer drain.** Fire the manual `drainOnce` trigger via `/trigger/local-user/demo-repo/drainOnce` (session cookie required) with `{"max":10}`; the file becomes empty after a successful drain.
+- **Producer round-trip.** `curl -X POST http://localhost:<port>/webhooks/local-user/demo-repo/demo/enqueueJob -H 'content-type: application/json' -d '{"url":"https://example.com","note":"hi"}'` → 202; then `cat .persistence/queues/local-user/demo-repo/demo/jobs.ndjson` shows one line.
+- **Consumer drain.** Fire the manual `drainOnce` trigger via `/trigger/local-user/demo-repo/demo/drainOnce` (session cookie required) with `{"max":10}`; the file becomes empty after a successful drain.
 - **Schema-mismatch event.** Send a body that fails the schema (e.g. `note` longer than 64 chars) and grep stdout for `system.error` with `name="queue.put"` and `code="queue.schemaMismatch"`. The file remains unchanged.
 - **Boot reconciliation.** Add a manual orphan: `echo '{}' > .persistence/queues/local-user/demo-repo/demo/ghost.ndjson`. Restart `pnpm dev` and grep stdout for `queue-lifecycle.boot-sweep-orphan-removed { ... queue: "ghost" }`. The file is unlinked.
 - **Re-upload preserves data.** Touch a workflow file to trigger hot-reload; verify the existing items in `jobs.ndjson` are still there (sha changed, but `(owner, repo, workflow, queueName)` identity is sha-independent).
