@@ -39,7 +39,7 @@ function sandbox(opts: {
 The factory SHALL:
 
 1. Spawn a fresh `worker_threads` Worker using the package-bundled entrypoint.
-2. Serialize each plugin into a descriptor `{ name, workerSource, guestSource?, config?, dependsOn? }` where `workerSource` is a pre-bundled ESM source string (loaded inside the worker via `data:text/javascript;base64,<...>` import) produced by the `?sandbox-plugin` vite transform at build time, `guestSource` is an OPTIONAL pre-bundled IIFE string evaluated as top-level guest script in Phase 2, and `config` is JSON-serializable data.
+2. Serialize each plugin into a descriptor `{ name, workerSource, guestSource?, config?, dependsOn? }` where `workerSource` is a pre-bundled ESM source string (loaded inside the worker via `data:text/javascript;base64,<...>` import after appending `\n//# sourceURL=sandbox-plugin:<name>`, so its stack-trace script name is `sandbox-plugin:<name>`) produced by the `?sandbox-plugin` vite transform at build time, `guestSource` is an OPTIONAL pre-bundled IIFE string evaluated as top-level guest script in Phase 2, and `config` is JSON-serializable data.
 3. Send the worker an `init` message carrying `source`, `pluginDescriptors`, `filename`, `memoryLimit`, and `interruptHandler` (if any).
 4. Inside the worker: topo-sort plugins by `dependsOn`, instantiate QuickJS WASM with WASI imports routed to mutable hook slots, invoke each plugin's `worker(ctx, deps, config)` in topo order to collect `PluginSetup`s, install `guestFunctions` as `vm.newFunction` bindings, populate `wasiHooks` slots, then run boot phases 2 (guest sources), 3 (delete private descriptor globals), 4 (user source).
 5. Wait for the worker to reply with `ready` confirming all phases completed.
@@ -946,7 +946,7 @@ Guest-callable host bindings SHALL be installed exclusively via plugin-declared 
 
 The sandbox SHALL execute boot in phases:
 
-- **Phase 0**: Load plugin worker modules from `descriptor.workerSource` via `data:text/javascript;base64,<...>` dynamic `import()`; topo-sort; instantiate WASM with WASI imports (mutable hook slots).
+- **Phase 0**: Load plugin worker modules from `descriptor.workerSource` by appending `\n//# sourceURL=sandbox-plugin:<name>` and importing the result via `data:text/javascript;base64,<...>` dynamic `import()` (the appended comment names the module `sandbox-plugin:<name>` in stack traces); topo-sort; instantiate WASM with WASI imports (mutable hook slots).
 - **Phase 1**: For each plugin in topo order, invoke `plugin.worker(ctx, deps, config)`; register `guestFunctions` via `vm.newFunction`; populate `wasiHooks` slots; store `exports`, hooks.
 - **Phase 2**: For each plugin in topo order, if `descriptor.guestSource` is defined, `vm.evalCode(descriptor.guestSource, "<plugin:${name}>")`. Plugin IIFEs capture private bindings into closures.
 - **Phase 3**: For each guest function descriptor with `public !== true`, `delete globalThis[name]`.
