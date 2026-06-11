@@ -247,9 +247,9 @@ Caddy retries on its own backoff (default: every 9 min for the first hour, expon
 
 Check: `journalctl -u wfe-prod -u wfe-staging | grep -i oom`.
 
-Per-Quadlet `MemoryMax=350M` (per app on STARDUST1-S) keeps each app's blast radius contained to its own unit. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
+Each app's memory budget is a hard cap on the container *payload* cgroup (`PodmanArgs=--memory=` in the Quadlet, fed by `memory_max` in `local.envs`), so it is visible from inside the container as `/sys/fs/cgroup/memory.max` — software that auto-sizes from detected memory (DuckDB sizes its buffer pool to 80% of it) sees the real budget instead of host RAM. It also keeps each app's blast radius contained to its own unit on STARDUST1-S. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
 1. Inspect the workload — sandbox worker leak? Action with unbounded buffer?
-2. Bump `MemoryMax=` in `infrastructure/files/wfe.container.tmpl` and re-apply.
+2. Bump `memory_max` in `infrastructure/main.tf` (`local.envs`) and re-apply.
 3. If both apps need more, upgrade the VPS commercial type (`var.instance_type`) and re-apply (instance is recreated).
 
 **`/readyz` reports old `gitSha` after deploy.**

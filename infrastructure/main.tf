@@ -217,7 +217,7 @@ locals {
       port               = 8081
       image_ref          = "${var.app_image}:release"
       data_dir           = "/srv/wfe/prod"
-      memory_max         = "350M"
+      memory_max         = "350m"
       runtime_user       = "wfe-prod"
       gh_oauth_client_id = var.gh_oauth_client_id_prod
       gh_oauth_secret    = var.gh_oauth_client_secret_prod
@@ -231,7 +231,7 @@ locals {
       port               = 8082
       image_ref          = "${var.app_image}:main"
       data_dir           = "/srv/wfe/staging"
-      memory_max         = "350M"
+      memory_max         = "350m"
       runtime_user       = "wfe-staging"
       gh_oauth_client_id = var.gh_oauth_client_id_staging
       gh_oauth_secret    = var.gh_oauth_client_secret_staging

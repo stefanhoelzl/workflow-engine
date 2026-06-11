@@ -33,7 +33,7 @@ variable "scaleway_organization_id" {
 variable "instance_type" {
   type        = string
   default     = "STARDUST1-S"
-  description = "Scaleway commercial type. STARDUST1-S = 1 shared vCPU / 1 GB RAM / 10 GB local SSD — cheapest tier. Memory headroom is tight; per-Quadlet MemoryMax limits + a swapfile are load-bearing. Bump to PLAY2-MICRO (2 GB) if OOMs become recurrent."
+  description = "Scaleway commercial type. STARDUST1-S = 1 shared vCPU / 1 GB RAM / 10 GB local SSD — cheapest tier. Memory headroom is tight; per-Quadlet memory limits + a swapfile are load-bearing. Bump to PLAY2-MICRO (2 GB) if OOMs become recurrent."
 }
 
 variable "instance_image" {
