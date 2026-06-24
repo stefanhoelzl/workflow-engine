@@ -159,6 +159,7 @@ Secrets:
 - `GH_OAUTH_CLIENT_ID_PROD`, `GH_OAUTH_CLIENT_SECRET_PROD` — prod GitHub OAuth App
 - `GH_OAUTH_CLIENT_ID_STAGING`, `GH_OAUTH_CLIENT_SECRET_STAGING` — staging GitHub OAuth App
 - `GH_UPLOAD_TOKEN` — fine-grained PAT for `wfe upload` (staging only)
+- `BUNNYNET_API_KEY` — bunny.net account API key. Used by `deploy-staging.yml` (rolls the Magic Containers app via the image-digest PATCH) and mapped to `TF_VAR_bunnynet_api_key` in `plan-infra.yml`/local apply (the `bunnynet` provider). Must be a full-access account key — "team member API keys are not supported" by the provider.
 
 Variables:
 
@@ -336,6 +337,37 @@ The trusted-publisher binding is exact: it pins to the workflow file path AND th
 - **No rollback for infra.** Cutover is one-way; fix-forward is the only mode. App rollback (`git revert` + auto-update) is the fast path for app bugs.
 - **Single VPS, single region.** Hardware failure causes downtime until manual re-provision.
 - **Host kernel is the only compute/memory isolation boundary** between prod and staging (disk is now isolated — each env has its own Block Storage volume, so neither can exhaust the other's space). Mitigated by `unattended-upgrades`.
+
+## Staging on bunny.net Magic Containers (spike)
+
+Staging is being trialled on **bunny.net Magic Containers** in parallel with the VPS. This is a spike to develop intuition about the platform; **prod stays entirely on the VPS**. The VPS staging stack (`wfe-staging.container`, `/etc/wfe/staging.env`, the `/srv/wfe/staging` volume + mount, the Caddy `staging.*` site block) is **kept running, unedited, as a live warm fallback** (still auto-pulling `:main`). See `openspec/changes/staging-bunny-magic-containers/` for the full design.
+
+### What tofu manages
+
+`infrastructure/bunny-staging.tf` declares (via the `bunnynet` provider, pinned `~> 0.15`, key `var.bunnynet_api_key` ← `BUNNYNET_API_KEY`):
+
+- One `bunnynet_compute_container_app` `wfe-staging`: image `ghcr.io/stefanhoelzl/workflow-engine:main` (public registry resolved via the `bunnynet_compute_container_imageregistry` data source — `username = ""`, no token), `autoscaling_min = max = 1`, region `DE` (Frankfurt), `image_pull_policy = "Always"` (no pinned digest), a `/data` volume, a `/readyz` readiness probe, and an env block that mirrors the VPS staging Quadlet (including reuse of `random_bytes.secrets_key["staging"]` so bundles unseal against either backend).
+- A **CDN** endpoint (`origin_ssl = false`) for managed HTTPS — the staging replacement for Caddy's TLS termination.
+
+**Not yet wired (pending thin-apply discovery — see the change's `tasks.md` §1.5/§4):** the staging Dynu record cutover (A → CNAME to the Bunny `*.b-cdn.net` host) and the `deploy-staging.yml` rollout step. Both depend on confirming that a same-tag rollout re-pulls the new `:main` digest and that `data "bunnynet_pullzone"` resolves the app-owned pull zone.
+
+### Durability — accept-loss
+
+bunny volumes are **public preview**: **no backups, no replication**, and reattachment across a reschedule is **not guaranteed** (a node disk replacement yields an empty volume). There is **no recovery path**. This is accepted: staging data is low-stakes and `deploy-staging.yml` re-uploads the demo bundles on every deploy, so an empty-volume event is largely self-healing for bundles and only loses low-stakes event history.
+
+### Deploy & drift control
+
+`deploy-staging.yml` builds/pushes `:main`, captures the pushed **digest**, resolves the app id by name, then rolls the app via the official `BunnyWay/actions/container-update-image` action **pinned to a commit SHA** (`…@671d620…` = `0.2.2`; SHA-pinned because it receives `BUNNYNET_API_KEY`), passing `image_tag: main` + `image_digest: <digest>`, then polls `/readyz` for `gitSha`. **Updating the container image is the only documented rolling-update trigger** — a `/deploy` or `/restart` call does *not* re-pull — so a changing digest per deploy is required. (An inline `curl` PATCH of `/mc/apps/{id}/containers/{cid}` is an equivalent dependency-free alternative.)
+
+Because CI mutates the image digest out-of-band and the provider manages it as an attribute, the app resource declares `lifecycle { ignore_changes = [container[0].image_tag, container[0].image_digest] }`. TF stops managing the image (it stays `image_tag = "main"`, `image_pull_policy = "Always"` as the floor); CI owns the digest. This keeps the `plan-infra` empty-plan gate green after every deploy. Requires the `BUNNYNET_API_KEY` GitHub Actions secret (also used as `TF_VAR_bunnynet_api_key` by `plan-infra`/`apply-infra`).
+
+### Switching staging back to the VPS
+
+There is **no `staging_backend` toggle variable** (low expected bounce). To revert: hand-edit the `staging.workflow-engine.webredirect.org` record in `dns.tf` back to the VPS IP (A record) and `tofu apply`. The VPS staging app is still live on current `:main`, and Caddy re-issues the staging cert automatically once DNS points back. The plan shows only that one record changing.
+
+### DuckDB memory — deferred, observe-only
+
+No DuckDB `memory_limit` is wired for the Bunny app. On the VPS, the per-container `--memory=` cap is load-bearing — it makes `/sys/fs/cgroup/memory.max` reflect the budget so DuckDB sizes its buffer pool correctly; without it DuckDB sized to **80% of host RAM and got OOM-killed, rotating the session-sealing key and breaking logins** (see the Quadlet template comment and "App OOM" above). On Bunny we deliberately **assume auto-detect works and observe**: the change's `## Cluster smoke (human)` captures `MemTotal /proc/meminfo`, `/sys/fs/cgroup/memory.max`, `nproc`, and DuckDB `current_setting('memory_limit')`. Those values decide whether a future `memory_limit` fix is warranted; none is applied now.
 
 ## References
 

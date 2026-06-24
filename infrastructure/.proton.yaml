@@ -9,3 +9,5 @@ workflow_engine:
   TF_VAR_gh_oauth_client_secret_prod: github/workflow_engine_app_client_secret
   TF_VAR_gh_oauth_client_id_staging: github/staging_workflow_engine_app_client_id
   TF_VAR_gh_oauth_client_secret_staging: github/staging_workflow_engine_app_client_secret
+snap-sync:
+  TF_VAR_bunnynet_api_key: bunny/api-key
