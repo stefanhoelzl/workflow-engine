@@ -39,10 +39,24 @@ type RunResult =
 	| { ok: true; result: unknown }
 	| { ok: false; error: { message: string; stack: string } };
 
+// A single main-thread host-call handler: receives the JSON args a worker
+// plugin passed to `ctx.callHost(method, args)` and resolves with a
+// JSON-serializable result. Handlers are built per-sandbox by the runtime,
+// closure-scoped to that sandbox's (owner, workflow), and validate their
+// own args/result (e.g. via the runtime's `defineHostMethod` helper).
+type HostHandler = (args: readonly unknown[]) => Promise<unknown>;
+type HostHandlers = Readonly<Record<string, HostHandler>>;
+
 interface SandboxOptions {
 	readonly source: string;
 	readonly plugins: readonly PluginDescriptor[];
 	readonly filename?: string;
+	// Main-thread handlers for the worker→main host-call channel. A worker
+	// plugin's `ctx.callHost(method, args)` is routed to `hostHandlers[method]`
+	// here. Omitted (or absent method) ⇒ the call rejects as an unknown
+	// method. The sandbox core never interprets method names or payloads
+	// beyond this lookup.
+	readonly hostHandlers?: HostHandlers;
 	// Resource limits. All required positive integers; see
 	// `openspec/specs/sandbox/spec.md` "Sandbox resource limits —
 	// termination contract" for the enforcement pipeline.
@@ -103,6 +117,26 @@ function errorFromSerialized(err: SerializedError): Error {
 	return e;
 }
 
+// Serialize a host-side thrown error for the host-call-response channel.
+// Preserves a Zod `.issues` array when present so a main-side `args`/`result`
+// validation failure surfaces structured issues to the guest, mirroring the
+// bridge's error round-trip.
+function serializeHostError(err: unknown): SerializedError {
+	if (err instanceof Error) {
+		const out: SerializedError = {
+			name: err.name,
+			message: err.message,
+			stack: err.stack ?? "",
+		};
+		const issues = (err as Error & { issues?: unknown }).issues;
+		if (issues !== undefined) {
+			out.issues = issues;
+		}
+		return out;
+	}
+	return { name: "Error", message: String(err), stack: "" };
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups worker lifecycle, init handshake, run/dispose, event subscription, sequencer wiring
 async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	const {
@@ -115,6 +149,7 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		outputBytes,
 		pendingCallables,
 		logger,
+		hostHandlers = {},
 	} = options;
 
 	const worker = new Worker(resolveWorkerUrl());
@@ -184,9 +219,63 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 		}
 	}
 
+	// Service a worker→main host-call. Looks up `method` in `hostHandlers`,
+	// awaits it, and posts the typed reply. Unknown method / handler throw both
+	// reply `ok: false`. If the worker is gone (disposed/terminated) by the time
+	// the handler settles, the reply is dropped — the worker-side pending call
+	// was already rejected at run end / dispose.
+	async function handleHostCallRequest(
+		msg: WorkerToMain & { type: "host-call-request" },
+	): Promise<void> {
+		const handler = hostHandlers[msg.method];
+		let response: MainToWorker;
+		if (handler) {
+			try {
+				const result = await handler(msg.args);
+				response = {
+					type: "host-call-response",
+					id: msg.id,
+					ok: true,
+					result,
+				};
+			} catch (err) {
+				response = {
+					type: "host-call-response",
+					id: msg.id,
+					ok: false,
+					error: serializeHostError(err),
+				};
+			}
+		} else {
+			response = {
+				type: "host-call-response",
+				id: msg.id,
+				ok: false,
+				error: serializeHostError(
+					new Error(`unknown host-call method: ${msg.method}`),
+				),
+			};
+		}
+		if (disposed) {
+			return;
+		}
+		try {
+			worker.postMessage(response);
+		} catch {
+			// Worker terminated between settle and post — drop.
+		}
+	}
+
 	const onPersistentMessage = (msg: WorkerToMain) => {
 		if (msg.type === "event") {
 			dispatchWireEvent(msg);
+			return;
+		}
+		if (msg.type === "host-call-request") {
+			// Fire-and-forget: handleHostCallRequest catches its own errors and
+			// posts the reply (or drops it if the worker is gone), so it never
+			// rejects. Matches the bare-call style of `startRestore`.
+			handleHostCallRequest(msg);
 			return;
 		}
 		if (msg.type === "log") {
@@ -434,5 +523,5 @@ async function sandbox(options: SandboxOptions): Promise<Sandbox> {
 	};
 }
 
-export type { RunResult, Sandbox, SandboxOptions };
+export type { HostHandler, HostHandlers, RunResult, Sandbox, SandboxOptions };
 export { sandbox };

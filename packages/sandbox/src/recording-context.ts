@@ -117,7 +117,24 @@ function recordingContext(opts?: RecordingContextOptions): RecordingContext {
 		}
 	}
 
-	return { events, flatEvents, requests, flatRequests, emit, request };
+	// The recording harness is not wired to a main thread, so host-calls have
+	// nowhere to go. Reject loudly; tests that exercise host-calls drive a real
+	// sandbox with `hostHandlers` instead.
+	function callHost(): Promise<never> {
+		return Promise.reject(
+			new Error("host-call channel unavailable in recordingContext"),
+		);
+	}
+
+	return {
+		events,
+		flatEvents,
+		requests,
+		flatRequests,
+		emit,
+		request,
+		callHost,
+	};
 }
 
 export type {

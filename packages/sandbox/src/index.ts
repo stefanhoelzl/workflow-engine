@@ -27,6 +27,8 @@ export type {
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
+	HostApiShape,
+	HostCallFn,
 	LifecycleError,
 	LogConfig,
 	Plugin,
@@ -68,7 +70,13 @@ export type {
 	RecordingContextOptions,
 } from "./recording-context.js";
 export { recordingContext } from "./recording-context.js";
-export type { RunResult, Sandbox, SandboxOptions } from "./sandbox.js";
+export type {
+	HostHandler,
+	HostHandlers,
+	RunResult,
+	Sandbox,
+	SandboxOptions,
+} from "./sandbox.js";
 export { sandbox } from "./sandbox.js";
 export { withPluginSandbox, withStagedGlobals } from "./test-harness.js";
 export type {

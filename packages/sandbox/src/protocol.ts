@@ -71,7 +71,16 @@ type MainToWorker =
 			// no in-repo plugin consumes it today (see `RunInput.extras`
 			// in plugin.ts for rationale).
 			extras?: unknown;
-	  };
+	  }
+	// Main → worker reply on the host-call channel (see the
+	// `host-call-request` branch of `WorkerToMain`). `id` echoes the request
+	// unchanged so the worker can correlate it to a pending `callHost`
+	// promise. Distinct from the guest↔worker bridge RPC — this is the
+	// worker→main host-call channel.
+	| ({ type: "host-call-response"; id: number } & (
+			| { ok: true; result: unknown }
+			| { ok: false; error: SerializedError }
+	  ));
 
 type WorkerToMain =
 	| { type: "ready" }
@@ -84,6 +93,17 @@ type WorkerToMain =
 			level: "debug" | "info" | "warn" | "error";
 			message: string;
 			meta?: Record<string, unknown>;
+	  }
+	// Worker → main request on the host-call channel: a plugin worker handler
+	// called `ctx.callHost(method, args)`. `id` is worker-lifetime-monotonic
+	// (never reused) so a late response from a finished run cannot correlate
+	// to a fresh pending call in a later run. Main routes `method` through
+	// the sandbox `hostHandlers` map and replies with `host-call-response`.
+	| {
+			type: "host-call-request";
+			id: number;
+			method: string;
+			args: readonly unknown[];
 	  };
 
 export type {

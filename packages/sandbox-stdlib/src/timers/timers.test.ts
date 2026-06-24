@@ -41,6 +41,9 @@ function recordingCtx(): RecordingCtx {
 			}
 			return 0 as never;
 		},
+		callHost() {
+			return Promise.reject(new Error("host-call unavailable in test context"));
+		},
 		request(prefix, options, fn) {
 			// Real sandbox emission would be <prefix>.request/response/error;
 			// the timers plugin only needs to observe that ctx.request is
