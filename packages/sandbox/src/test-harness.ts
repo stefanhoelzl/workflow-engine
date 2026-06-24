@@ -108,6 +108,9 @@ function createNoopPluginContext(): PluginContext {
 		request(_prefix, _options, fn) {
 			return fn();
 		},
+		callHost() {
+			return Promise.reject(new Error("host-call unavailable in test context"));
+		},
 	};
 }
 

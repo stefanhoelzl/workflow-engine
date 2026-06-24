@@ -160,7 +160,33 @@ type EmitReturn<O extends { readonly type?: EmitFraming }> = O extends {
 	: // biome-ignore lint/suspicious/noConfusingVoidType: `void` here is the conditional return for non-open framings — using `undefined` would force callers to write `void ctx.emit(...)` to discard, which is worse ergonomics
 		void;
 
-interface PluginContext {
+/**
+ * A plugin's declared host-call surface: a map of method name → an async
+ * signature `(args) => Promise<result>`. A host-backed capability declares
+ * one of these (typically derived from a Zod contract via `z.infer`); the
+ * worker imports the TYPE only (`import type`) so no validation code enters
+ * the worker bundle, while the runtime implements the matching handlers.
+ */
+type HostApiShape = Record<string, (args: never) => Promise<unknown>>;
+
+/**
+ * Default `HostApi`: an open, untyped transport. A plugin that does not
+ * declare a `HostApi` may still issue raw host-calls (any method, `unknown`
+ * args/result) — e.g. the round-trip test plugin. A plugin that supplies a
+ * concrete `HostApi` gets compile-checked method names, args, and results.
+ */
+type DefaultHostApi = Record<
+	string,
+	(args: readonly unknown[]) => Promise<unknown>
+>;
+
+/** Runtime shape of the host-call transport handed to `createPluginContext`. */
+type HostCallFn = (
+	method: string,
+	args: readonly unknown[],
+) => Promise<unknown>;
+
+interface PluginContext<HostApi extends HostApiShape = DefaultHostApi> {
 	/**
 	 * Emit a single bus event. Returns a `CallId` only when
 	 * `options.type === "open"` (capture it to pair with a future close).
@@ -178,6 +204,21 @@ interface PluginContext {
 		options: RequestOptions,
 		fn: () => T | Promise<T>,
 	): T | Promise<T>;
+	/**
+	 * Invoke a named handler on the MAIN thread and await its result — the
+	 * worker→main host-call channel. Available only to plugin worker-side
+	 * code; it is never installed on the guest `globalThis`. Typed from the
+	 * plugin's `HostApi`: `method`, `args`, and the resolved value are
+	 * checked against the declared contract. Rejects if the method is not
+	 * registered in the sandbox's `hostHandlers`, if the handler throws, or
+	 * if the run ends while the call is in flight.
+	 */
+	callHost<K extends keyof HostApi & string>(
+		method: K,
+		args: HostApi[K] extends (args: infer A) => unknown ? A : never,
+	): Promise<
+		HostApi[K] extends (...a: never[]) => Promise<infer R> ? R : never
+	>;
 }
 
 type LogConfig = { readonly event: string } | { readonly request: string };
@@ -514,7 +555,21 @@ function pluginRequest<T>(
  * Bridge's emit primitives with the public ctx.emit / ctx.request surface.
  * The bridge mints CallIds for opens; the sequencer (on main) stamps seq/ref.
  */
-function createPluginContext(bridge: Bridge): PluginContext {
+function createPluginContext(
+	bridge: Bridge,
+	callHost?: HostCallFn,
+): PluginContext {
+	// Contexts built without a host-call transport (the bridge's internal
+	// auto-wrap ctx, test fixtures) reject any `callHost` rather than crash —
+	// those contexts never issue host-calls, so this path is unreachable in
+	// practice but fails loudly if a future caller wires one without the
+	// transport.
+	const hostCall: HostCallFn =
+		callHost ??
+		(() =>
+			Promise.reject(
+				new Error("host-call channel unavailable in this context"),
+			));
 	return {
 		// The cast to `never` (then to the conditional return) is the
 		// implementation-side acknowledgement that the type system narrows
@@ -526,6 +581,11 @@ function createPluginContext(bridge: Bridge): PluginContext {
 		},
 		request(prefix, options, fn) {
 			return pluginRequest(bridge, prefix, options, fn);
+		},
+		// Same boundary cast as `emit`: the interface narrows args/result per
+		// the plugin's `HostApi`, but the transport is untyped at runtime.
+		callHost(method, args) {
+			return hostCall(method, args as readonly unknown[]) as never;
 		},
 	};
 }
@@ -541,6 +601,8 @@ export type {
 	EventKind,
 	GuestFunctionDescription,
 	GuestFunctionHandler,
+	HostApiShape,
+	HostCallFn,
 	LifecycleError,
 	LogConfig,
 	Plugin,

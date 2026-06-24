@@ -981,6 +981,30 @@ plugin, and every change that adds a guest-visible surface.
     asserts an exact-set equality on the *delta* between a
     NOOP_PLUGINS baseline boot and the production-plugin boot.
 
+15. **R-15 Host-call channel is a main-thread trust boundary.** The
+    worker→main host-call channel (`ctx.callHost(method, args)` in a
+    plugin worker, serviced by the sandbox's `hostHandlers` map on the
+    main thread) lets a plugin reach a main-thread-only singleton. It is
+    NOT guest-reachable: `callHost` is a worker-side `PluginContext`
+    method and MUST NEVER be installed on the guest `globalThis` — guest
+    code reaches the host only through a plugin's guest-facing
+    descriptor, never `callHost` directly (a global-surface probe in
+    `packages/sandbox/src/host-call.test.ts` asserts its absence). Each
+    handler's `args` MUST be validated on the main thread BEFORE the
+    handler touches any singleton (the runtime's `defineHostMethod`
+    helper is the canonical pattern; it parses `args` with the
+    capability's Zod contract first). Each handler MUST be scoped to its
+    sandbox's `(owner, workflow)` — the scope is closure-captured when
+    the runtime builds the per-sandbox `hostHandlers` map and MUST NOT be
+    widened by caller-supplied arguments; a handler asked to operate
+    outside its scope MUST fail closed. Adding a new host method is a
+    high-impact change subject to the same scrutiny as a new sandbox
+    global or `public` descriptor. The transport (`host-call-request` /
+    `host-call-response` on the worker port) emits no events; a pending
+    call is rejected worker-side at run end (mirroring the dispose-time
+    treatment of in-flight bridge calls), and any main-side handler that
+    already started runs to completion with its result dropped.
+
 Additional standing rules that predate the plugin rewrite:
 
 - **Sandbox-related changes MUST include security tests** covering

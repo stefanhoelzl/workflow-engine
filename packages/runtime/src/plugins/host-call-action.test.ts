@@ -21,6 +21,9 @@ const ctx: PluginContext = {
 	request(_p, _o, fn) {
 		return fn();
 	},
+	callHost() {
+		return Promise.reject(new Error("host-call unavailable in test context"));
+	},
 };
 
 function manifestWith(actions: WorkflowAction[]): WorkflowManifest {

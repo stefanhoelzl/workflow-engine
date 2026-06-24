@@ -190,6 +190,87 @@ function serializeJsException(err: JSException): SerializedError {
 	};
 }
 
+function errorFromSerialized(err: SerializedError): Error {
+	const e = new Error(err.message);
+	e.name = err.name;
+	e.stack = err.stack;
+	if (err.issues !== undefined) {
+		(e as Error & { issues?: unknown }).issues = err.issues;
+	}
+	if (err.data) {
+		for (const [key, value] of Object.entries(err.data)) {
+			(e as unknown as Record<string, unknown>)[key] = value;
+		}
+	}
+	return e;
+}
+
+// --- Host-call channel (worker → main) ---
+//
+// A plugin worker handler reaches a main-thread-only singleton via
+// `ctx.callHost(method, args)`. The call posts a `host-call-request` and
+// resolves when the matching `host-call-response` arrives. Async over the
+// existing `port`; no SharedArrayBuffer/Atomics.
+//
+// `hostCallSeq` is worker-lifetime-monotonic and NEVER reset per run: reusing
+// ids would let a late response from a finished run resolve a fresh pending
+// call in a later run. The pending map is cleared per run (see
+// `rejectPendingHostCalls`), so monotonic ids make stale responses provably
+// un-correlatable — they hit a missing entry and are dropped.
+let hostCallSeq = 0;
+const pendingHostCalls = new Map<
+	number,
+	{ resolve: (value: unknown) => void; reject: (err: Error) => void }
+>();
+
+function callHost(method: string, args: readonly unknown[]): Promise<unknown> {
+	const id = hostCallSeq++;
+	const promise = new Promise<unknown>((resolve, reject) => {
+		pendingHostCalls.set(id, { resolve, reject });
+		post({ type: "host-call-request", id, method, args: [...args] });
+	});
+	// Suppress node-level unhandledRejection for a fire-and-forget call (one
+	// the plugin handler never awaits) or for the run-end rejection of a
+	// still-pending call. The consumer's own await/then still observes the
+	// settlement — this attached handler only silences the process warning.
+	promise.catch(() => {
+		/* observed by the caller; this branch only suppresses the warning */
+	});
+	return promise;
+}
+
+function resolveHostCall(
+	msg: Extract<MainToWorker, { type: "host-call-response" }>,
+): void {
+	const pending = pendingHostCalls.get(msg.id);
+	if (!pending) {
+		// No pending entry: the call was already rejected at run end (or the
+		// id is otherwise unknown). Drop — this is the cross-run-leak guard.
+		return;
+	}
+	pendingHostCalls.delete(msg.id);
+	if (msg.ok) {
+		pending.resolve(msg.result);
+	} else {
+		pending.reject(errorFromSerialized(msg.error));
+	}
+}
+
+// Reject every still-pending host-call and clear the map. Called at run end
+// (before the snapshot restore) so no response correlates across runs.
+// Main-side handlers already dispatched run to completion; their responses
+// arrive to a missing entry and are dropped by `resolveHostCall`.
+function rejectPendingHostCalls(): void {
+	if (pendingHostCalls.size === 0) {
+		return;
+	}
+	const err = new Error("host-call abandoned: run ended");
+	for (const pending of pendingHostCalls.values()) {
+		pending.reject(err);
+	}
+	pendingHostCalls.clear();
+}
+
 // --- Sandbox state (lives for the life of this worker) ---
 
 interface PluginLifecycleState {
@@ -365,7 +446,7 @@ async function runPluginBootPipeline(
 	// across snapshot restores as long as the plugin holds it. The bridge
 	// owns its own internal ctx for descriptor log auto-wrap; this one is
 	// only handed to plugin authors.
-	const ctx: PluginContext = createPluginContext(bridge);
+	const ctx: PluginContext = createPluginContext(bridge, callHost);
 	// Phase 1a — module load + plugin.worker().
 	const loaded = await loadPluginModules(descriptors, defaultPluginLoader);
 	const phase1 = await runPhaseWorker(loaded, ctx);
@@ -691,6 +772,10 @@ function finalizeRun(args: RunFinalizeArgs): void {
 	const { state, runInput, payload } = args;
 	const { bridge, pluginLifecycle } = state;
 	runLifecycleAfter(pluginLifecycle, bridge, runInput, payload);
+	// Reject any host-calls still in flight before the snapshot restore so a
+	// late response cannot bleed into the next run (see the host-call channel
+	// notes). Mirrors the dispose-time treatment of in-flight bridge calls.
+	rejectPendingHostCalls();
 	state.currentAbort?.abort();
 	state.currentAbort = null;
 	// Close the worker-side run window so any late host-callback
@@ -777,6 +862,8 @@ port.on("message", (msg: MainToWorker) => {
 				await handleInit(msg);
 			} else if (msg.type === "run") {
 				await handleRun(msg);
+			} else if (msg.type === "host-call-response") {
+				resolveHostCall(msg);
 			}
 		} catch (err) {
 			queueMicrotask(() => {
