@@ -106,13 +106,21 @@ resource "bunnynet_compute_container_app" "staging" {
       }
     }
 
-    # Gate traffic on app readiness (mirrors the VPS /readyz contract).
+    # Readiness gate uses /livez (pure process-liveness), NOT /readyz.
+    # /readyz self-reaches the app's own public BASE_URL (domain + webhooks
+    # checks fetch https://staging…/healthz and /webhooks/). During a deploy
+    # Bunny serves a "We're deploying" 503 on that hostname UNTIL readiness
+    # passes — so gating readiness on /readyz deadlocks (pod boots fine but
+    # can never satisfy its own self-check, Bunny retries it forever). /livez
+    # returns 200 unconditionally once the process is listening → Bunny routes
+    # traffic → and THEN /readyz's self-checks pass (and the deploy poll on
+    # /readyz converges).
     readiness_probe {
       type = "http"
       port = 8080
 
       http {
-        path = "/readyz"
+        path = "/livez"
       }
     }
 
@@ -167,9 +175,16 @@ resource "bunnynet_compute_container_app" "staging" {
     # AND break the plan-infra empty-plan gate. So CI owns the image
     # tag/digest; TF stops managing them here. image_tag stays "main" in config
     # as the floor; CI pins the exact digest per deploy.
+    #
+    # image_pull_policy is also ignored: Bunny's deploy/rolling-update resets it
+    # to its default "IfNotPresent" out-of-band (observed live), which would
+    # otherwise show as perpetual plan drift. It's harmless under digest-pinning
+    # — each deploy pins a NEW digest, which isn't present and so is pulled
+    # regardless of the policy. So Bunny owns this field too.
     ignore_changes = [
       container[0].image_tag,
       container[0].image_digest,
+      container[0].image_pull_policy,
     ]
   }
 }
