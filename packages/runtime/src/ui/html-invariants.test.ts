@@ -330,7 +330,22 @@ describe("HTML CSP invariants", () => {
 			repo: "r0",
 			workflow: "w",
 			queue: "q",
-			items: [{ a: 1 }, { b: 2 }],
+			items: [
+				{
+					seq: 1,
+					item: { a: 1 },
+					triggerKind: "cron",
+					triggerName: "tick",
+					enqueuedAt: new Date("2026-05-16T12:00:00Z"),
+				},
+				{
+					seq: 2,
+					item: { b: 2 },
+					triggerKind: "http",
+					triggerName: "submit",
+					enqueuedAt: new Date("2026-05-16T12:00:01Z"),
+				},
+			],
 			offset: 0,
 			total: 60,
 		});

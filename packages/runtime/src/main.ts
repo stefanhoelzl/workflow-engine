@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { apiMiddleware } from "./api/index.js";
 import {
@@ -12,6 +15,7 @@ import { createEventStore } from "./event-store.js";
 import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
+import { createQueueStore } from "./queue-store.js";
 import { createSandboxStore } from "./sandbox-store.js";
 import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
@@ -83,10 +87,19 @@ async function init() {
 	const storageBackend = createFsStorage(config.persistencePath);
 	await storageBackend.init();
 
-	// 2. Init EventStore. Opens the DuckDB database file at
-	//    `<persistencePath>/events.duckdb`; constant-time boot.
+	// 2. Open the shared DuckDB instance at `<persistencePath>/events.duckdb`.
+	//    Both EventStore and QueueStore connect against this single instance
+	//    on separate connections (DuckDB serializes writes at the storage
+	//    layer; per-store connections keep autocommit/batch boundaries clean).
+	const dbRoot = resolve(config.persistencePath);
+	await mkdir(dbRoot, { recursive: true });
+	const duckdbInstance = await DuckDBInstance.create(
+		join(dbRoot, "events.duckdb"),
+	);
+
 	const eventStore = await createEventStore({
 		persistenceRoot: config.persistencePath,
+		instance: duckdbInstance,
 		logger: runtimeLogger,
 		config: {
 			commitMaxRetries: config.eventStoreCommitMaxRetries,
@@ -94,6 +107,14 @@ async function init() {
 			sigtermFlushTimeoutMs: config.eventStoreSigtermFlushTimeoutMs,
 			retentionDays: config.eventStoreRetentionDays,
 		},
+	});
+
+	// QueueStore: DuckDB-backed FIFO queues. The host-side singleton consumed
+	// by every sandbox's queue.put / queue.get host handlers (see
+	// queue-host.ts + sandbox-store.ts).
+	const queueStore = await createQueueStore({
+		instance: duckdbInstance,
+		logger: runtimeLogger,
 	});
 
 	// Deprecation warning for removed filesystem-bootstrap env vars.
@@ -118,12 +139,13 @@ async function init() {
 		outputBytes: config.sandboxLimitOutputBytes,
 		pendingCallables: config.sandboxLimitPendingCallables,
 	});
+	// Lazy registry handle — the workflow registry is constructed later
 	const sandboxStore = createSandboxStore({
 		sandboxFactory,
 		logger: runtimeLogger,
 		keyStore,
 		maxCount: config.sandboxMaxCount,
-		queuesRoot: `${config.persistencePath}/queues`,
+		queueStore,
 	});
 
 	// 5. Create the executor (serializes per-(owner, sha) invocations;
@@ -168,7 +190,7 @@ async function init() {
 		keyStore,
 		backends: triggerBackends,
 		storageBackend,
-		queuesRoot: `${config.persistencePath}/queues`,
+		queueStore,
 	});
 	await registry.recover();
 	runtimeLogger.info("workflows.loaded", { count: registry.size });
@@ -219,7 +241,7 @@ async function init() {
 		queueMiddleware({
 			registry,
 			sessionMw,
-			queuesRoot: `${config.persistencePath}/queues`,
+			queueStore,
 		}),
 		apiMiddleware({
 			authRegistry,

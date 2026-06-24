@@ -1,6 +1,7 @@
 import type { Child } from "hono/jsx";
 import { ChevronIcon, ManualIcon, TriggerKindIcon } from "../icons.js";
 import { Layout } from "../layout.js";
+import { EntryRow } from "../shared/entry-row.js";
 
 const US_PER_MS = 1000;
 const US_PER_SECOND = 1_000_000;
@@ -315,28 +316,36 @@ function fragmentUrlForRow(row: InvocationRow): string | null {
 function Row({ row }: { row: InvocationRow }) {
 	const fragmentUrl = fragmentUrlForRow(row);
 	const statusCls = StatusClass(row);
-	const removedCls = row.removed ? " entry--removed" : "";
+	const removedCls = row.removed ? "entry--removed" : "";
+	const id = `inv-${row.id}`;
 	if (fragmentUrl === null) {
 		return (
-			<div class={`entry ${statusCls}${removedCls}`} id={`inv-${row.id}`}>
+			<EntryRow
+				id={id}
+				statusClass={statusCls}
+				summaryModifier="entry-summary--invocations"
+				extraClass={removedCls}
+			>
 				<RowCells row={row} expandable={false} />
-			</div>
+			</EntryRow>
 		);
 	}
 	return (
-		<details
-			class={`entry entry-expandable ${statusCls}${removedCls}`}
-			id={`inv-${row.id}`}
-			hx-get={fragmentUrl}
-			hx-trigger="toggle once"
-			hx-target="find .flame-slot"
-			hx-swap="innerHTML"
+		<EntryRow
+			id={id}
+			statusClass={statusCls}
+			summaryModifier="entry-summary--invocations"
+			extraClass={removedCls}
+			expand={{
+				kind: "htmx",
+				hxGet: fragmentUrl,
+				hxTarget: "find .flame-slot",
+			}}
+			summaryLabel="Expand invocation details"
+			body={<div class="flame-slot" />}
 		>
-			<summary class="entry-summary" aria-label="Expand invocation details">
-				<RowCells row={row} expandable={true} />
-			</summary>
-			<div class="flame-slot" />
-		</details>
+			<RowCells row={row} expandable={true} />
+		</EntryRow>
 	);
 }
 

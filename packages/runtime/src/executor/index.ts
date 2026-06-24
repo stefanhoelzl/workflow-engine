@@ -199,9 +199,18 @@ function createExecutor(options: ExecutorOptions): Executor {
 		let result: InvokeResult<unknown>;
 		try {
 			// Extras carry per-invocation context that plugins capture in
-			// `onBeforeRunStarted`. Currently only the queue plugin reads
-			// `extras.queue.{owner, repo}`; other plugins ignore it.
-			const extras = { queue: { owner, repo } };
+			// `onBeforeRunStarted`. The queue plugin reads `extras.queue.*`
+			// for its host-call args (see sandbox-stdlib/src/queue/types.ts);
+			// other plugins ignore it. owner is sandbox-stable so it lives in
+			// the plugin's Config; only per-run fields cross via extras.
+			const extras = {
+				queue: {
+					repo,
+					invocationId,
+					triggerKind: descriptor.kind,
+					triggerName: descriptor.name,
+				},
+			};
 			const runResult = await sb.run(descriptor.name, input, extras);
 			if (runResult.ok) {
 				result = { ok: true, output: runResult.result };

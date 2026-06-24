@@ -8,6 +8,7 @@ import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
 import { createRealEventStoreForTest } from "../test-utils/event-store.js";
+import { createTestQueueStore } from "../test-utils/queue-store.js";
 import type { TriggerSource } from "../triggers/source.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
@@ -139,7 +140,7 @@ async function mountWithBackends(backends: readonly TriggerSource[]) {
 		executor: stubExecutor,
 		backends,
 		keyStore: stubKeyStore,
-		queuesRoot: "/tmp/wfe-test-queues",
+		queueStore: createTestQueueStore(),
 	});
 	const handle = await createRealEventStoreForTest();
 	const eventStore = handle.store;

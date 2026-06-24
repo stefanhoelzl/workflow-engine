@@ -1,14 +1,21 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Hono, type MiddlewareHandler } from "hono";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ProducerMeta, QueueScope } from "../../queue-store.js";
 import { makeWorkflowManifest } from "../../test-utils/manifest.js";
+import { createTestQueueStore } from "../../test-utils/queue-store.js";
 import type {
 	WorkflowEntry,
 	WorkflowRegistry,
 } from "../../workflow-registry.js";
 import { queueMiddleware } from "./middleware.js";
+
+// ---------------------------------------------------------------------------
+// /queue middleware tests — rewritten post queues-on-duckdb. Population goes
+// through the typed queueStore accessor (the same surface used at runtime),
+// not via NDJSON files. Tenant-scope, pagination, auth, and the read-only
+// invariant are still asserted; the data path under test is the
+// queueStore.list/count surface, not the old fs-read primitive.
+// ---------------------------------------------------------------------------
 
 interface StubWorkflow {
 	readonly owner: string;
@@ -71,12 +78,22 @@ function memberSessionMw(orgs: readonly string[]): MiddlewareHandler {
 	};
 }
 
+function meta(over: Partial<ProducerMeta> = {}): ProducerMeta {
+	return {
+		enqueuedAt: new Date("2026-05-16T12:00:00Z"),
+		invocationId: "inv-test",
+		triggerKind: "cron",
+		triggerName: "everyFiveMinutes",
+		...over,
+	};
+}
+
 function mount(
 	registry: WorkflowRegistry,
-	queuesRoot: string,
+	queueStore: ReturnType<typeof createTestQueueStore>,
 	sessionMw: MiddlewareHandler,
 ) {
-	const m = queueMiddleware({ registry, sessionMw, queuesRoot });
+	const m = queueMiddleware({ registry, sessionMw, queueStore });
 	const app = new Hono();
 	app.all(m.match, m.handler);
 	if (m.match.endsWith("/*")) {
@@ -85,33 +102,27 @@ function mount(
 	return app;
 }
 
-let queuesRoot: string;
-// biome-ignore lint/complexity/useMaxParams: queue file path is the (owner, repo, workflow, queue) tuple plus the file content — flattening into an options object hurts test readability for a 5-arg helper used a handful of times in this file
-async function seedQueueFile(
-	owner: string,
-	repo: string,
-	workflow: string,
-	queue: string,
-	content: string,
-): Promise<void> {
-	const dir = join(queuesRoot, owner, repo, workflow);
-	await mkdir(dir, { recursive: true });
-	await writeFile(join(dir, `${queue}.ndjson`), content);
-}
+let queueStore: ReturnType<typeof createTestQueueStore>;
+beforeEach(() => {
+	queueStore = createTestQueueStore();
+});
 
-beforeEach(async () => {
-	queuesRoot = await mkdtemp(join(tmpdir(), "queue-mw-"));
-});
-afterEach(async () => {
-	await rm(queuesRoot, { recursive: true, force: true });
-});
+async function seed(
+	scope: QueueScope,
+	items: readonly unknown[],
+): Promise<void> {
+	for (const item of items) {
+		// biome-ignore lint/performance/noAwaitInLoops: FIFO insertion order is the test contract; parallel puts would race the global IDENTITY counter and assertions over item order would become non-deterministic
+		await queueStore.put(scope, item, meta());
+	}
+}
 
 describe("queue middleware — scope pages", () => {
 	it("renders empty state when no workflows declare queues", async () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w0", queues: [] },
 		]);
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0");
 		expect(res.status).toBe(200);
 		const html = await res.text();
@@ -122,21 +133,23 @@ describe("queue middleware — scope pages", () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "build", queues: ["jobs"] },
 		]);
-		await seedQueueFile("t0", "r0", "build", "jobs", '{"a":1}\n{"b":2}\n');
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		await seed({ owner: "t0", repo: "r0", workflow: "build", queue: "jobs" }, [
+			{ a: 1 },
+			{ b: 2 },
+		]);
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0/build");
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain(">jobs<");
-		expect(html).toContain(">2<"); // count
+		expect(html).toContain(">2<");
 	});
 
 	it("uses adaptive titles at root scope", async () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "build", queues: ["jobs"] },
 		]);
-		await seedQueueFile("t0", "r0", "build", "jobs", "");
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue");
 		expect(res.status).toBe(200);
 		const html = await res.text();
@@ -147,14 +160,14 @@ describe("queue middleware — scope pages", () => {
 		const registry = makeRegistry([
 			{ owner: "victim", repo: "r0", workflow: "w0", queues: ["q"] },
 		]);
-		const app = mount(registry, queuesRoot, memberSessionMw([]));
+		const app = mount(registry, queueStore, memberSessionMw([]));
 		for (const path of [
 			"/queue/victim",
 			"/queue/victim/r0",
 			"/queue/victim/r0/w0",
 			"/queue/victim/r0/w0/q/items",
 		]) {
-			// biome-ignore lint/performance/noAwaitInLoops: requests intentionally serial — each must complete before the next so a stray side-effect on one path can't pollute the next
+			// biome-ignore lint/performance/noAwaitInLoops: serial requests so a stray side-effect on one path can't pollute the next
 			const res = await app.request(path);
 			expect(res.status).toBe(404);
 		}
@@ -164,8 +177,7 @@ describe("queue middleware — scope pages", () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "build", queues: [] },
 		]);
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
-		// /queue/t0/r0/build still resolves (workflow exists) but renders empty
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0/build");
 		expect(res.status).toBe(200);
 		expect(await res.text()).toContain("No queues declared");
@@ -176,9 +188,13 @@ describe("queue middleware — scope pages", () => {
 			{ owner: "t0", repo: "r0", workflow: "build", queues: ["a"] },
 			{ owner: "victim", repo: "r0", workflow: "build", queues: ["b"] },
 		]);
-		await seedQueueFile("t0", "r0", "build", "a", '{"x":1}\n');
-		await seedQueueFile("victim", "r0", "build", "b", '{"y":1}\n');
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		await seed({ owner: "t0", repo: "r0", workflow: "build", queue: "a" }, [
+			{ x: 1 },
+		]);
+		await seed({ owner: "victim", repo: "r0", workflow: "build", queue: "b" }, [
+			{ y: 1 },
+		]);
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue");
 		const html = await res.text();
 		expect(html).toContain(">t0/r0/build/a<");
@@ -191,44 +207,43 @@ describe("queue middleware — items fragment", () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w", queues: ["q"] },
 		]);
-		await seedQueueFile("t0", "r0", "w", "q", '{"a":1}\n{"b":2}\n');
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		await seed({ owner: "t0", repo: "r0", workflow: "w", queue: "q" }, [
+			{ a: 1 },
+			{ b: 2 },
+		]);
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0/w/q/items");
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).not.toMatch(/<html\b/i);
 		expect(html).not.toMatch(/<body\b/i);
-		expect(html).toContain('class="queue-item"');
+		expect(html).toMatch(/id="qi-/);
 	});
 
 	it("paginates with offset, including a load-more when more remain", async () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w", queues: ["q"] },
 		]);
-		const lines = Array.from(
-			{ length: 60 },
-			(_, i) => `${JSON.stringify({ i })}\n`,
-		).join("");
-		await seedQueueFile("t0", "r0", "w", "q", lines);
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		const items = Array.from({ length: 60 }, (_, i) => ({ i }));
+		await seed({ owner: "t0", repo: "r0", workflow: "w", queue: "q" }, items);
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const r1 = await app.request("/queue/t0/r0/w/q/items");
 		const h1 = await r1.text();
-		// Default limit 50, so 50 items + load-more for offset=50 (10 left)
-		expect((h1.match(/class="queue-item"/g) ?? []).length).toBe(50);
+		expect((h1.match(/id="qi-/g) ?? []).length).toBe(50);
 		expect(h1).toContain("queue-load-more");
 		expect(h1).toContain("offset=50");
 
 		const r2 = await app.request("/queue/t0/r0/w/q/items?offset=50");
 		const h2 = await r2.text();
-		expect((h2.match(/class="queue-item"/g) ?? []).length).toBe(10);
+		expect((h2.match(/id="qi-/g) ?? []).length).toBe(10);
 		expect(h2).not.toContain("queue-load-more");
 	});
 
-	it("404s when queue is not declared even if file path were guessable", async () => {
+	it("404s when queue is not declared", async () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w", queues: ["declared"] },
 		]);
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0/w/undeclared/items");
 		expect(res.status).toBe(404);
 	});
@@ -237,11 +252,11 @@ describe("queue middleware — items fragment", () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w", queues: ["q"] },
 		]);
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
 		const res = await app.request("/queue/t0/r0/w/q/items");
 		expect(res.status).toBe(200);
 		const html = await res.text();
-		expect(html).not.toContain('class="queue-item"');
+		expect(html).not.toMatch(/id="qi-/);
 		expect(html).not.toContain("queue-load-more");
 		expect(html).toContain("Queue is empty");
 	});
@@ -250,15 +265,16 @@ describe("queue middleware — items fragment", () => {
 		const registry = makeRegistry([
 			{ owner: "t0", repo: "r0", workflow: "w", queues: ["q"] },
 		]);
-		const path = join(queuesRoot, "t0", "r0", "w", "q.ndjson");
-		await mkdir(join(queuesRoot, "t0", "r0", "w"), { recursive: true });
-		await writeFile(path, '{"a":1}\n{"b":2}\n');
-		const app = mount(registry, queuesRoot, memberSessionMw(["t0"]));
-		const res = await app.request("/queue/t0/r0/w/q/items");
-		expect(res.status).toBe(200);
-		// File state is unchanged after read.
-		const { readFile } = await import("node:fs/promises");
-		const content = await readFile(path, "utf8");
-		expect(content).toBe('{"a":1}\n{"b":2}\n');
+		const scope: QueueScope = {
+			owner: "t0",
+			repo: "r0",
+			workflow: "w",
+			queue: "q",
+		};
+		await seed(scope, [{ a: 1 }, { b: 2 }]);
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
+		await app.request("/queue/t0/r0/w/q/items");
+		// queue still has 2 items after the read
+		expect(await queueStore.count(scope)).toBe(2);
 	});
 });

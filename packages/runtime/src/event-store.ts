@@ -51,6 +51,11 @@ interface EventStoreOptions {
 	persistenceRoot: string;
 	logger: Logger;
 	config: EventStoreConfig;
+	// Optional pre-created DuckDB instance. When provided, event-store uses
+	// it (and the caller owns its lifecycle). When omitted, event-store
+	// creates its own instance from `<persistenceRoot>/events.duckdb` — the
+	// behavior tests rely on.
+	instance?: DuckDBInstance;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Kysely CTE builder types are deeply generic — constraining them further adds complexity without safety
@@ -193,7 +198,7 @@ async function createEventStore(
 	await mkdir(absoluteRoot, { recursive: true });
 	const dbPath = join(absoluteRoot, "events.duckdb");
 
-	const instance = await DuckDBInstance.create(dbPath);
+	const instance = options.instance ?? (await DuckDBInstance.create(dbPath));
 	const conn = await instance.connect();
 
 	async function exec(sql: string): Promise<void> {

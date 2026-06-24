@@ -50,15 +50,11 @@ function guest(): void {
 }
 
 export type {
-	QueueGetInput,
 	QueueGetResultWire,
-	QueueInputWire,
-	QueuePutInput,
 	QueuePutResultWire,
 	QueueResultWire,
 	QueueRunExtras,
 } from "./types.js";
-export type { Config } from "./worker.js";
 // biome-ignore lint/performance/noBarrelFile: the `?sandbox-plugin` vite transform discovers `worker` through this file's re-export; the guest pass DCEs worker.ts so the re-export costs nothing at runtime
 export { worker } from "./worker.js";
 export { dependsOn, guest, name, QUEUE_DISPATCHER_NAME };

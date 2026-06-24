@@ -256,10 +256,7 @@ describe("globals surface — R-14 enumeration", () => {
 	it("production plugin set adds exactly the documented globals over the baseline", async () => {
 		const baseline = await bootAndListGlobals(NOOP_PLUGINS);
 		const production = await bootAndListGlobals(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
-				owner: "owner",
-				queuesRoot: "/tmp/wfe-test-queues",
-			}),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
 		);
 
 		const added = diff(production, baseline);
@@ -289,10 +286,7 @@ describe("globals surface — R-14 enumeration", () => {
 	it("`__wfe_exports__` is present in both baseline and production (workflow-IIFE-installed)", async () => {
 		const baseline = await bootAndListGlobals(NOOP_PLUGINS);
 		const production = await bootAndListGlobals(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
-				owner: "owner",
-				queuesRoot: "/tmp/wfe-test-queues",
-			}),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
 		);
 		expect(baseline).toContain("__wfe_exports__");
 		expect(production).toContain("__wfe_exports__");
@@ -312,10 +306,7 @@ describe("globals surface — R-14 enumeration", () => {
 		"workflow",
 	] as const)("locked global %s rejects guest-side defineProperty redefinition", async (name) => {
 		const errorName = await bootAndTryLock(
-			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE, {
-				owner: "owner",
-				queuesRoot: "/tmp/wfe-test-queues",
-			}),
+			buildPluginDescriptors(WORKFLOW, STUB_KEY_STORE),
 			name,
 		);
 		expect(errorName).toBe("TypeError");

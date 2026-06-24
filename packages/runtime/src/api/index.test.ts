@@ -9,6 +9,7 @@ import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
 import type { SecretsKeyStore } from "../secrets/index.js";
 import { createRealEventStoreForTest } from "../test-utils/event-store.js";
+import { createTestQueueStore } from "../test-utils/queue-store.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -59,7 +60,7 @@ async function mountApi(opts: MountOpts) {
 		logger,
 		executor: stubExecutor,
 		keyStore: stubKeyStore,
-		queuesRoot: "/tmp/wfe-test-queues",
+		queueStore: createTestQueueStore(),
 	});
 	const eventStore = (await createRealEventStoreForTest()).store;
 	const middleware = apiMiddleware({

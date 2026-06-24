@@ -12,6 +12,7 @@ import { localProviderFactory } from "../auth/providers/local.js";
 import type { Executor } from "../executor/index.js";
 import { createKeyStore, readyCrypto } from "../secrets/index.js";
 import { createRealEventStoreForTest } from "../test-utils/event-store.js";
+import { createTestQueueStore } from "../test-utils/queue-store.js";
 import { createWorkflowRegistry } from "../workflow-registry.js";
 import { apiMiddleware } from "./index.js";
 
@@ -58,7 +59,7 @@ describe("GET /api/workflows/:owner/public-key", () => {
 			logger,
 			executor: stubExecutor,
 			keyStore,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const eventStore = (await createRealEventStoreForTest()).store;
 		const middleware = apiMiddleware({
