@@ -125,6 +125,10 @@ interface QueueStore {
 interface QueueStoreOptions {
 	readonly instance: DuckDBInstance;
 	readonly logger: Logger;
+	// Override the workflow-wide depth cap. Defaults to MAX_WORKFLOW_QUEUE_DEPTH.
+	// Exists so tests can exercise the cap with a small N instead of inserting
+	// the production magnitude (1000) durable rows one at a time.
+	readonly maxWorkflowDepth?: number;
 }
 
 // DuckDB does not support GENERATED ALWAYS AS IDENTITY ("Constraint not
@@ -163,10 +167,10 @@ function tooLargeError(scope: QueueScope, bytes: number): QueueError {
 	);
 }
 
-function fullError(scope: QueueScope): QueueError {
+function fullError(scope: QueueScope, cap: number): QueueError {
 	return new QueueError(
 		"queue.full",
-		`workflow "${scope.owner}/${scope.repo}/${scope.workflow}" queues are at capacity (${String(MAX_WORKFLOW_QUEUE_DEPTH)} items total across all queues)`,
+		`workflow "${scope.owner}/${scope.repo}/${scope.workflow}" queues are at capacity (${String(cap)} items total across all queues)`,
 	);
 }
 
@@ -230,6 +234,7 @@ async function createQueueStore(
 	options: QueueStoreOptions,
 ): Promise<QueueStore> {
 	const { instance, logger } = options;
+	const maxWorkflowDepth = options.maxWorkflowDepth ?? MAX_WORKFLOW_QUEUE_DEPTH;
 	const conn = await instance.connect();
 	await conn.run(CREATE_SEQUENCE_DDL);
 	await conn.run(CREATE_TABLE_DDL);
@@ -280,8 +285,8 @@ async function createQueueStore(
 			throw tooLargeError(scope, bytes);
 		}
 		const depth = await workflowDepth(scope);
-		if (depth >= MAX_WORKFLOW_QUEUE_DEPTH) {
-			throw fullError(scope);
+		if (depth >= maxWorkflowDepth) {
+			throw fullError(scope, maxWorkflowDepth);
 		}
 		await db
 			.insertInto("queue_items")

@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createQueueStore,
 	MAX_ITEM_BYTES,
-	MAX_WORKFLOW_QUEUE_DEPTH,
 	type ProducerMeta,
 	type QueueScope,
 	type QueueStore,
@@ -122,40 +121,66 @@ describe("QueueStore", () => {
 			expect(await store.count(SCOPE)).toBe(0);
 		});
 
-		it("rejects put when the workflow-wide depth cap is reached", async () => {
-			for (let i = 0; i < MAX_WORKFLOW_QUEUE_DEPTH; i++) {
-				// biome-ignore lint/performance/noAwaitInLoops: filling to cap is inherently sequential — we need ordered FIFO state, not throughput
-				await store.put(SCOPE, { i }, meta());
+		// The depth-cap tests use a dedicated in-memory store with a small
+		// injected cap: filling to the production magnitude (1000) one durable
+		// autocommit put at a time is slow enough to time out on CI disk, and
+		// the cap LOGIC is what's under test, not the constant's value.
+		const SMALL_CAP = 5;
+		async function withCappedStore(
+			body: (s: QueueStore) => Promise<void>,
+		): Promise<void> {
+			const capInstance = await DuckDBInstance.create(":memory:");
+			const capStore = await createQueueStore({
+				instance: capInstance,
+				logger: createTestLogger(),
+				maxWorkflowDepth: SMALL_CAP,
+			});
+			try {
+				await body(capStore);
+			} finally {
+				await capStore.close();
+				await capInstance.closeSync();
 			}
-			expect(await store.count(SCOPE)).toBe(MAX_WORKFLOW_QUEUE_DEPTH);
-			await expect(store.put(SCOPE, { i: 1000 }, meta())).rejects.toMatchObject(
-				{ code: "queue.full" },
-			);
-			expect(await store.count(SCOPE)).toBe(MAX_WORKFLOW_QUEUE_DEPTH);
+		}
+
+		it("rejects put when the workflow-wide depth cap is reached", async () => {
+			await withCappedStore(async (s) => {
+				for (let i = 0; i < SMALL_CAP; i++) {
+					// biome-ignore lint/performance/noAwaitInLoops: ordered fill to cap — FIFO state, not throughput
+					await s.put(SCOPE, { i }, meta());
+				}
+				expect(await s.count(SCOPE)).toBe(SMALL_CAP);
+				await expect(
+					s.put(SCOPE, { i: SMALL_CAP }, meta()),
+				).rejects.toMatchObject({ code: "queue.full" });
+				expect(await s.count(SCOPE)).toBe(SMALL_CAP);
+			});
 		});
 
 		it("the depth cap is shared across a workflow's queues, not per-queue", async () => {
-			const a: QueueScope = { ...SCOPE, queue: "a" };
-			const b: QueueScope = { ...SCOPE, queue: "b" };
-			// Fill queue "a" to the cap; queue "b" (same workflow) then has
-			// zero remaining budget.
-			for (let i = 0; i < MAX_WORKFLOW_QUEUE_DEPTH; i++) {
-				// biome-ignore lint/performance/noAwaitInLoops: ordered fill to cap
-				await store.put(a, { i }, meta());
-			}
-			await expect(store.put(b, { x: 1 }, meta())).rejects.toMatchObject({
-				code: "queue.full",
+			await withCappedStore(async (s) => {
+				const a: QueueScope = { ...SCOPE, queue: "a" };
+				const b: QueueScope = { ...SCOPE, queue: "b" };
+				// Fill queue "a" to the cap; queue "b" (same workflow) then has
+				// zero remaining budget.
+				for (let i = 0; i < SMALL_CAP; i++) {
+					// biome-ignore lint/performance/noAwaitInLoops: ordered fill to cap
+					await s.put(a, { i }, meta());
+				}
+				await expect(s.put(b, { x: 1 }, meta())).rejects.toMatchObject({
+					code: "queue.full",
+				});
+				// A different workflow has its own independent budget.
+				const otherWorkflow: QueueScope = {
+					owner: "acme",
+					repo: "foo",
+					workflow: "other",
+					queue: "a",
+				};
+				await expect(
+					s.put(otherWorkflow, { x: 1 }, meta()),
+				).resolves.toBeUndefined();
 			});
-			// A different workflow has its own independent budget.
-			const otherWorkflow: QueueScope = {
-				owner: "acme",
-				repo: "foo",
-				workflow: "other",
-				queue: "a",
-			};
-			await expect(
-				store.put(otherWorkflow, { x: 1 }, meta()),
-			).resolves.toBeUndefined();
 		});
 	});
 
