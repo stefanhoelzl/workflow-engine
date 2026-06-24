@@ -25,11 +25,12 @@ import type {
 	WsTriggerDescriptor,
 } from "./executor/types.js";
 import type { Logger } from "./logger.js";
+import type { QueueStore } from "./queue-store.js";
 import {
-	applyQueueDiff,
+	applyQueueDiffViaStore,
 	diffManifests,
-	reconcileQueueFiles,
-} from "./queue-fs-lifecycle.js";
+	reconcileQueueStoreOnBoot,
+} from "./queue-store-lifecycle.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 import type { StorageBackend } from "./storage/index.js";
@@ -561,12 +562,10 @@ interface WorkflowRegistryOptions {
 	// parallel with `Promise.allSettled`. The registry does NOT manage
 	// backend lifecycle (start/stop); the caller (main.ts) owns that.
 	readonly backends?: readonly TriggerSource[];
-	// Filesystem root for queue files (`<PERSISTENCE_PATH>/queues`). The
-	// registry diffs queue declarations on every upload and creates / unlinks
-	// files atomically with the metadata swap so the queue plugin's
-	// "file exists ⇔ queue declared" invariant holds across re-uploads,
-	// removed declarations, and removed workflows.
-	readonly queuesRoot: string;
+	// DuckDB-backed queue store. The registry diffs queue declarations on
+	// every upload and DELETEs rows for removed queues / workflows. The
+	// manifest is the sole declaration — adds are no-ops at lifecycle time.
+	readonly queueStore: QueueStore;
 }
 
 interface RegisterOwnerOptions {
@@ -932,18 +931,16 @@ function createWorkflowRegistry(
 			newWorkflows: state.workflows,
 		});
 		try {
-			await applyQueueDiff({
-				queuesRoot: options.queuesRoot,
+			await applyQueueDiffViaStore({
+				queueStore: options.queueStore,
 				owner,
 				repo,
-				removedWorkflows: queueDiff.removedWorkflows,
-				perWorkflow: queueDiff.perWorkflow,
-				newWorkflows: queueDiff.newWorkflows,
+				diff: queueDiff,
 				logger: options.logger,
 			});
 			return { ok: true };
 		} catch (err) {
-			const error = `failed to apply queue file lifecycle: ${err instanceof Error ? err.message : String(err)}`;
+			const error = `failed to apply queue store lifecycle: ${err instanceof Error ? err.message : String(err)}`;
 			options.logger.error("workflow-registry.queue-lifecycle-failed", {
 				owner,
 				repo,
@@ -1088,8 +1085,8 @@ function createWorkflowRegistry(
 
 	async function runBootQueueReconcile(): Promise<void> {
 		try {
-			await reconcileQueueFiles({
-				queuesRoot: options.queuesRoot,
+			await reconcileQueueStoreOnBoot({
+				queueStore: options.queueStore,
 				loadedWorkflows: snapshotLoadedWorkflows(),
 				logger: options.logger,
 			});

@@ -611,6 +611,18 @@ body {
 .entry,
 .entry-summary {
 	display: grid;
+	align-items: center;
+	gap: var(--sp-3);
+	padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 3px);
+}
+
+/* Per-surface grid template. Base `.entry-summary` selector intentionally
+ * omits `grid-template-columns` so each consumer surface picks its own
+ * shape via a modifier class. See ui-foundation §Shared expandable-list-row
+ * component (queues-on-duckdb change). */
+.entry-thead,
+.entry,
+.entry-summary--invocations {
 	grid-template-columns:
 		16px /* chevron */
 		20px /* kind icon */
@@ -618,9 +630,28 @@ body {
 		auto /* meta cell (dispatch glyph / status label) */
 		5em /* duration */
 		7.5em; /* age */
-	align-items: center;
-	gap: var(--sp-3);
-	padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 3px);
+}
+
+.entry-summary--queue {
+	grid-template-columns:
+		16px /* chevron */
+		20px /* kind icon */
+		minmax(0, 1fr) /* identity (›-separated, scope-aware) */
+		7.5em; /* age */
+}
+
+/* Trigger-kind status strip for queue rows (mirrors `.s-*` for invocations).
+ * Color comes from the existing `--kind-*` palette in ui-foundation. */
+.entry.k-cron::before {
+	background: var(--kind-rest);
+}
+.entry.k-http::before,
+.entry.k-imap::before,
+.entry.k-ws::before {
+	background: var(--kind-trigger);
+}
+.entry.k-manual::before {
+	background: var(--kind-action);
 }
 
 .entry-thead {
@@ -2458,16 +2489,24 @@ a.tree-row:hover .tree-label,
 	padding: var(--sp-2) 0;
 }
 
+/* `.queue-item` is the per-item modifier on the shared `.entry` row (see
+ * ui-foundation §Shared expandable-list-row component). The base `.entry`
+ * styles own the grid, hover, chevron, and status strip; here we only
+ * tweak the in-card padding so items sit flush in the card body. */
 .queue-item {
-	background: var(--bg);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	padding: var(--sp-2) var(--sp-3);
-	margin-bottom: var(--sp-2);
+	min-height: 32px;
 }
 
-.queue-item:last-child {
-	margin-bottom: 0;
+.queue-item-body {
+	padding: var(--sp-2) var(--sp-3) var(--sp-2)
+		calc(var(--sp-3) + 16px + var(--sp-3) + 20px + var(--sp-3));
+	border-top: 1px solid var(--border);
+	background: var(--bg);
+}
+
+.queue-item-tree {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
 }
 
 .queue-load-more {

@@ -1,5 +1,6 @@
-import type { WorkflowManifest } from "@workflow-engine/core";
+import { type WorkflowManifest, z } from "@workflow-engine/core";
 import type {
+	HostHandlers,
 	PluginDescriptor,
 	Sandbox,
 	SandboxFactory,
@@ -27,7 +28,8 @@ import hostCallActionPlugin from "./plugins/host-call-action.ts?sandbox-plugin";
 import secretsPlugin from "./plugins/secrets.ts?sandbox-plugin";
 import triggerPlugin from "./plugins/trigger.ts?sandbox-plugin";
 import wasiTelemetryPlugin from "./plugins/wasi-telemetry.ts?sandbox-plugin";
-import { buildQueueConfig } from "./queue-plugin-config.js";
+import { buildQueueHostHandlers } from "./queue-host.js";
+import type { QueueStore } from "./queue-store.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 
@@ -54,10 +56,11 @@ interface SandboxStoreOptions {
 	readonly logger: Logger;
 	readonly keyStore: SecretsKeyStore;
 	readonly maxCount: number;
-	// Persistence root for the queue plugin: `<PERSISTENCE_PATH>/queues`.
-	// Threaded into every per-sandbox queue config; queues outside this
-	// subtree are unreachable.
-	readonly queuesRoot: string;
+	// Host-side singleton consumed by per-sandbox queue host handlers.
+	// queueStore owns the DuckDB-backed FIFO storage. (No registry dependency:
+	// the queue handlers apply no name gate, so they never consult the live
+	// manifest — there is no construction cycle to break.)
+	readonly queueStore: QueueStore;
 }
 
 interface CacheEntry {
@@ -80,15 +83,9 @@ function storeKey(owner: string, sha: string): string {
 	return `${owner}/${sha}`;
 }
 
-interface BuildPluginDescriptorsOptions {
-	readonly owner: string;
-	readonly queuesRoot: string;
-}
-
 function buildPluginDescriptors(
 	workflow: WorkflowManifest,
 	keyStore: SecretsKeyStore,
-	opts: BuildPluginDescriptorsOptions,
 ): readonly PluginDescriptor[] {
 	// Per-plugin `Config` interfaces are structurally JSON-serializable but
 	// TS can't prove they satisfy the index-signature constraint of
@@ -106,13 +103,9 @@ function buildPluginDescriptors(
 		env: workflow.env,
 		plaintextStore,
 	} as unknown as PluginDescriptor["config"];
-	const queueConfig = Object.freeze(
-		buildQueueConfig({
-			owner: opts.owner,
-			workflow,
-			queuesRoot: opts.queuesRoot,
-		}),
-	) as unknown as PluginDescriptor["config"];
+	// The queue plugin is config-less transport: all per-workflow knowledge
+	// (declared set, validators) lives host-side in the queue host handlers
+	// (see buildQueueHostHandlersFor). The worker needs nothing at construction.
 	return [
 		{ ...wasiPlugin },
 		{ ...wasiTelemetryPlugin },
@@ -121,7 +114,7 @@ function buildPluginDescriptors(
 		{ ...fetchPlugin },
 		{ ...mailPlugin },
 		{ ...sqlPlugin },
-		{ ...queuePlugin, config: queueConfig },
+		{ ...queuePlugin },
 		{ ...timersPlugin },
 		{ ...consolePlugin },
 		{ ...hostCallActionPlugin, config: hostCallActionConfig },
@@ -130,9 +123,36 @@ function buildPluginDescriptors(
 	];
 }
 
+function buildQueueHostHandlersFor(
+	owner: string,
+	workflow: WorkflowManifest,
+	queueStore: QueueStore,
+): HostHandlers {
+	// Rehydrate per-queue Zod validators from the JSON Schemas in the manifest.
+	// One-time cost per sandbox construction; the resulting Map is held in the
+	// handler closure for the sandbox's lifetime. The map's keys are the
+	// declared queue names — a name absent from it is undeclared (accepted,
+	// but stored/returned without schema validation).
+	const validators = new Map<string, z.ZodType<unknown>>();
+	for (const q of workflow.queues) {
+		validators.set(
+			q.name,
+			z.fromJSONSchema(
+				q.schema as Record<string, unknown>,
+			) as z.ZodType<unknown>,
+		);
+	}
+	return buildQueueHostHandlers({
+		owner,
+		workflow: workflow.name,
+		validators,
+		queueStore,
+	});
+}
+
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups cache LRU bookkeeping, eviction sweep, and dispose drain
 function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
-	const { sandboxFactory, keyStore, logger, maxCount, queuesRoot } = options;
+	const { sandboxFactory, keyStore, logger, maxCount, queueStore } = options;
 	const cache = new Map<string, CacheEntry>();
 	const pendingDisposals = new Set<Promise<void>>();
 
@@ -144,10 +164,8 @@ function createSandboxStore(options: SandboxStoreOptions): SandboxStore {
 		return sandboxFactory.create({
 			source: bundleSource,
 			filename: `${workflow.name}.js`,
-			plugins: buildPluginDescriptors(workflow, keyStore, {
-				owner,
-				queuesRoot,
-			}),
+			plugins: buildPluginDescriptors(workflow, keyStore),
+			hostHandlers: buildQueueHostHandlersFor(owner, workflow, queueStore),
 		});
 	}
 

@@ -2,6 +2,21 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **Queues on DuckDB (2026-06-24).** **BREAKING (operator) + DATA LOSS.** Per-workflow durable FIFO queues move from per-tuple NDJSON files at `<PERSISTENCE_PATH>/queues/<owner>/<repo>/<workflow>/<queue>.ndjson` into a single `queue_items` table inside the existing `events.duckdb`. The pre-migration NDJSON contents are **not** migrated — every queue starts empty on first boot after the upgrade.
+
+    **Tenants do NOT need to rebuild or re-upload** — the manifest schema, the SDK surface (`defineQueue`, `q.put`, `q.get`), the typed `Queue<T>` API, and the per-item / per-queue caps (1024 bytes, 1000 items) are all unchanged. The migration is purely storage-layer and host-bridge.
+
+    **Pre-deploy steps (optional, per environment):**
+    - The legacy `<PERSISTENCE_PATH>/queues/` subtree is left on disk untouched (the new runtime neither reads nor writes it). It can be reclaimed after rollout: `rm -rf "$PERSISTENCE_PATH"/queues`. Leaving it in place is safe; it just consumes disk space proportional to the abandoned NDJSON contents.
+
+    **Behaviour notes.**
+    - `queue_items` rows carry producer metadata (`enqueuedAt`, `invocationId`, `triggerKind`, `triggerName`) stamped at `put` time and surfaced in the `/queue` UI row header. Guests still see only the item value via `get()`.
+    - The host-call channel (landed in `add-host-call-channel`) routes guest put/get through main-thread handlers; the sandbox-stdlib worker shrank to a thin RPC proxy. Per-queue Zod validators rehydrate **host-side**, once at sandbox construction.
+    - `QueueGone` now derives from the workflow registry's current manifest (not from filesystem `ENOENT`) — orphan invocations on a re-uploaded workflow see the typed error immediately.
+    - The `/queue` UI items fragment renders each item as the shared `EntryRow` component (also used by `/invocations`), with the trigger-kind icon as a left status strip; the expanded body lazily mounts `wfeJsonTree` over the item payload. Collapsed rows show no JSON preview.
+
+    **Rollback.** Revert the deploying tag and restart. The legacy NDJSON subtree is intact (`rm` was not run). Any queue data written **post**-cutover is lost on rollback (it lived only in `queue_items`, which the rolled-back code does not read).
+
 - **EventStore retention (2026-06-08).** Additive, operator-facing only. One new optional env var: `EVENT_STORE_RETENTION_DAYS` (integer days; unset or `0` disables retention — the default). When `> 0`, the runtime self-prunes invocations older than the window; the prune interval is **derived** (100× per window, i.e. every `retentionDays / 100` days) — there is no separate interval env var. Logs `event-store.prune-ok` / `event-store.prune-failed`; a failed prune never crashes the runtime. `DELETE` does not shrink `events.duckdb` on disk — it bounds future growth (file plateaus, space reused); recovering an already-full disk is a one-time `events.duckdb` wipe (see `docs/infrastructure.md` → "EventStore retention & disk recovery"). No tenant rebuild or re-upload required; no workflow-author-visible change.
 
 - **Invocations view rename (2026-05-03).** **BREAKING (URL).** `/dashboard/*` → `/invocations/*` (hard cutover, no redirect). The flamegraph fragment endpoint collapses its redundant segment: `/dashboard/:owner/:repo/invocations/:id/flamegraph` → `/invocations/:owner/:repo/:id/flamegraph`. The in-page tab label changes from "Dashboard" to "Invocations". Identifiers rename in lockstep (`DashboardPage` → `InvocationsPage`, `dashboardMiddleware` → `invocationsMiddleware`, file paths `ui/dashboard/` → `ui/invocations/`); out-of-tree code that imports these names must update. The OpenSpec capability `dashboard-list-view` is renamed to `invocations-list-view` in the same pass; cross-spec references update accordingly. Bundled in the same change: the sticky page header (breadcrumb + h1) is removed; synthetic `system.upload` rows now render with a leading accent-coloured upload-arrow icon and a right-side `UPLOAD` chip (the redundant `UPLOADED` status badge is dropped); terminal invocation rows now sort by `startedTs` descending so the visible timestamp on each row matches the sort order. No tenant rebuild or re-upload required.

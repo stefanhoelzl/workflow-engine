@@ -120,7 +120,52 @@ function errorFromSerialized(err: SerializedError): Error {
 // Serialize a host-side thrown error for the host-call-response channel.
 // Preserves a Zod `.issues` array when present so a main-side `args`/`result`
 // validation failure surfaces structured issues to the guest, mirroring the
-// bridge's error round-trip.
+// bridge's error round-trip. Own enumerable JSON-safe properties are captured
+// under `data` so typed error subclasses (e.g. QueueError carrying a `.code`
+// and an optional `.item`) round-trip with their payload intact;
+// `errorFromSerialized` re-attaches them as own properties on the worker side.
+function isJsonSafe(value: unknown): boolean {
+	if (
+		value === null ||
+		typeof value === "string" ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) {
+		return true;
+	}
+	if (Array.isArray(value)) {
+		return value.every(isJsonSafe);
+	}
+	if (typeof value === "object") {
+		return Object.values(value as Record<string, unknown>).every(isJsonSafe);
+	}
+	return false;
+}
+
+function captureErrorData(err: Error): Record<string, unknown> | undefined {
+	const data: Record<string, unknown> = {};
+	let any = false;
+	for (const key of Object.getOwnPropertyNames(err)) {
+		// `message`/`stack`/`name` already carried; `issues` is captured
+		// separately. Everything else with a JSON-safe value goes into `data`.
+		if (
+			key === "message" ||
+			key === "stack" ||
+			key === "name" ||
+			key === "issues"
+		) {
+			continue;
+		}
+		const value = (err as unknown as Record<string, unknown>)[key];
+		if (value === undefined || !isJsonSafe(value)) {
+			continue;
+		}
+		data[key] = value;
+		any = true;
+	}
+	return any ? data : undefined;
+}
+
 function serializeHostError(err: unknown): SerializedError {
 	if (err instanceof Error) {
 		const out: SerializedError = {
@@ -131,6 +176,10 @@ function serializeHostError(err: unknown): SerializedError {
 		const issues = (err as Error & { issues?: unknown }).issues;
 		if (issues !== undefined) {
 			out.issues = issues;
+		}
+		const data = captureErrorData(err);
+		if (data !== undefined) {
+			out.data = data;
 		}
 		return out;
 	}

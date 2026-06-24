@@ -121,10 +121,20 @@ describe("executor", () => {
 		expect(call[0]).toBe("trig");
 		expect(call[1]).toEqual({ hello: "world" });
 		// sb.run's 3rd arg carries per-invocation extras: the queue plugin
-		// reads `extras.queue.{owner, repo}` in `onBeforeRunStarted` to
-		// resolve queue file paths. Other plugins ignore the field.
+		// reads `extras.queue.{repo, invocationId, triggerKind, triggerName}`
+		// in `onBeforeRunStarted` to populate host-call args. Other plugins
+		// ignore the field. owner is sandbox-stable and lives in plugin config.
 		expect(call).toHaveLength(3);
-		expect(call[2]).toEqual({ queue: { owner: "t0", repo: "r0" } });
+		expect(call[2]).toMatchObject({
+			queue: {
+				repo: "r0",
+				triggerKind: "http",
+				triggerName: "trig",
+			},
+		});
+		// invocationId is generated per-run; assert it's a non-empty string.
+		const extras = call[2] as { queue: { invocationId: unknown } };
+		expect(typeof extras.queue.invocationId).toBe("string");
 
 		expect(seen).toHaveLength(1);
 		const first = seen[0];

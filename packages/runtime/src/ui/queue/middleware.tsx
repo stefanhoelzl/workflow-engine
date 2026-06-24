@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { ownerSet } from "../../auth/owner.js";
 import { requireOwnerMember } from "../../auth/owner-mw.js";
+import type { QueueStore } from "../../queue-store.js";
 import { createNotFoundHandler } from "../../services/content-negotiation.js";
 import type { Middleware } from "../../triggers/http.js";
 import type {
@@ -15,7 +16,6 @@ import {
 	type QueueCardData,
 	renderScopeQueuePage,
 } from "./page.js";
-import { countQueueItems, listQueueItems } from "./queue-read.js";
 
 // ---------------------------------------------------------------------------
 // /queue/* — operator UI for inspecting per-workflow durable FIFO queues.
@@ -40,7 +40,7 @@ const ITEMS_PAGE_SIZE = 50;
 interface QueueMiddlewareDeps {
 	readonly registry: WorkflowRegistry;
 	readonly sessionMw: MiddlewareHandler;
-	readonly queuesRoot: string;
+	readonly queueStore: QueueStore;
 }
 
 interface QueueRef {
@@ -91,11 +91,11 @@ function itemsUrl(ref: QueueRef): string {
 async function buildCardsForRefs(
 	refs: readonly QueueRef[],
 	scope: { owner?: string; repo?: string; workflow?: string },
-	queuesRoot: string,
+	queueStore: QueueStore,
 ): Promise<QueueCardData[]> {
 	const cards = await Promise.all(
 		refs.map(async (ref) => {
-			const count = await countQueueItems({ queuesRoot, ...ref });
+			const count = await queueStore.count(ref);
 			return {
 				owner: ref.owner,
 				repo: ref.repo,
@@ -209,7 +209,7 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 		const user = c.get("user");
 		const owners = sortedOwners(c);
 		const refs = refsFromEntries(entriesAcrossOwners(deps.registry, owners));
-		const cards = await buildCardsForRefs(refs, {}, deps.queuesRoot);
+		const cards = await buildCardsForRefs(refs, {}, deps.queueStore);
 		return c.html(
 			renderScopeQueuePage({
 				user: user?.login ?? "",
@@ -230,7 +230,7 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 		const user = c.get("user");
 		const owners = sortedOwners(c);
 		const refs = refsFromEntries(entriesForOwner(deps.registry, owner));
-		const cards = await buildCardsForRefs(refs, { owner }, deps.queuesRoot);
+		const cards = await buildCardsForRefs(refs, { owner }, deps.queueStore);
 		return c.html(
 			renderScopeQueuePage({
 				user: user?.login ?? "",
@@ -253,7 +253,7 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 		const cards = await buildCardsForRefs(
 			refs,
 			{ owner, repo },
-			deps.queuesRoot,
+			deps.queueStore,
 		);
 		return c.html(
 			renderScopeQueuePage({
@@ -284,7 +284,7 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 		const cards = await buildCardsForRefs(
 			refs,
 			{ owner, repo, workflow },
-			deps.queuesRoot,
+			deps.queueStore,
 		);
 		return c.html(
 			renderScopeQueuePage({
@@ -315,15 +315,21 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 			return c.notFound();
 		}
 		const offset = parseOffset(c);
-		const { items, total } = await listQueueItems({
-			queuesRoot: deps.queuesRoot,
-			owner,
-			repo,
-			workflow,
-			queue,
-			offset,
-			limit: ITEMS_PAGE_SIZE,
-		});
+		const scope = { owner, repo, workflow, queue };
+		const [rows, total] = await Promise.all([
+			deps.queueStore.list(scope, offset, ITEMS_PAGE_SIZE),
+			deps.queueStore.count(scope),
+		]);
+		// Hand the metadata-bearing rows directly to ItemsFragment; the
+		// EntryRow renderer reads triggerKind/triggerName/enqueuedAt for the
+		// collapsed summary line and item for the wfeJsonTree body.
+		const items = rows.map((r) => ({
+			seq: r.seq,
+			item: r.item,
+			triggerKind: r.triggerKind,
+			triggerName: r.triggerName,
+			enqueuedAt: r.enqueuedAt,
+		}));
 		const html = ItemsFragment({
 			owner,
 			repo,

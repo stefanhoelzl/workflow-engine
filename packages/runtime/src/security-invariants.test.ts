@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import { createTestLogger as makeLogger } from "./test-utils/logger.js";
 import { makeWorkflowManifest } from "./test-utils/manifest.js";
+import { createTestQueueStore } from "./test-utils/queue-store.js";
 
 const WORKFLOW = makeWorkflowManifest({
 	name: "demo",
@@ -63,7 +64,7 @@ function makeStore(): SandboxStore {
 		logger,
 		keyStore: stubKeyStore,
 		maxCount: 100,
-		queuesRoot: "/tmp/wfe-test-queues",
+		queueStore: createTestQueueStore(),
 	});
 }
 

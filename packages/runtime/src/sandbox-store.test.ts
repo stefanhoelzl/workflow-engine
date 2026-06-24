@@ -10,6 +10,7 @@ import { createSandboxStore, type SandboxStore } from "./sandbox-store.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
 import { createTestLogger } from "./test-utils/logger.js";
 import { makeWorkflowManifest } from "./test-utils/manifest.js";
+import { createTestQueueStore } from "./test-utils/queue-store.js";
 
 const stubKeyStore: SecretsKeyStore = {
 	getPrimary: () => ({
@@ -93,7 +94,7 @@ function makeStore(maxCount = 100): SandboxStore {
 		logger,
 		keyStore: stubKeyStore,
 		maxCount,
-		queuesRoot: "/tmp/wfe-test-queues",
+		queueStore: createTestQueueStore(),
 	});
 }
 
@@ -467,7 +468,7 @@ describe("sandbox-store: secrets plugin end-to-end", () => {
 			logger,
 			keyStore: realKeyStore,
 			maxCount: 100,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 
 		const workflow = makeWorkflowManifest({
@@ -635,7 +636,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 2,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -676,7 +677,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -700,7 +701,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 2,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const a = factory.buildNext();
 		const b = factory.buildNext();
@@ -744,7 +745,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		// First get: promise returned but never resolves.
 		const _ignored = store.get("o", workflowWithSha("a".repeat(64)), "src");
@@ -766,7 +767,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const resolvers: (() => void)[] = [];
 		const slow = makeFakeSandbox();
@@ -809,7 +810,7 @@ describe("sandbox-store: LRU eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		factory.buildQueue.push(makeFakeSandbox());
 		factory.buildQueue.push(makeFakeSandbox());
@@ -836,7 +837,7 @@ describe("sandbox-store: termination eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const sb1 = factory.buildNext();
 		const sb2 = factory.buildNext();
@@ -861,7 +862,7 @@ describe("sandbox-store: termination eviction", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const sb1 = factory.buildNext();
 		factory.buildNext();
@@ -885,7 +886,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const err = new Error("terminate failed");
 		const sb = makeFakeSandbox();
@@ -918,7 +919,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 10,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const a = makeFakeSandbox();
 		const b = makeFakeSandbox();
@@ -952,7 +953,7 @@ describe("sandbox-store: dispose error reporting", () => {
 			logger,
 			keyStore: stubKeyStore,
 			maxCount: 1,
-			queuesRoot: "/tmp/wfe-test-queues",
+			queueStore: createTestQueueStore(),
 		});
 		const failing = makeFakeSandbox();
 		const evictErr = new Error("evict-time terminate failed");

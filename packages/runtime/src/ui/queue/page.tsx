@@ -1,16 +1,20 @@
 import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
-import { ChevronIcon } from "../icons.js";
+import { ChevronIcon, TriggerKindIcon } from "../icons.js";
 import { Layout } from "../layout.js";
+import { EntryRow } from "../shared/entry-row.js";
 
 // ---------------------------------------------------------------------------
 // /queue/* — operator UI for inspecting per-workflow durable FIFO queues.
 //
 // Read-only. Cards are server-rendered with eager item counts; the body is
 // empty on initial render and a click-to-expand fetches a server-rendered
-// HTML fragment of the first 50 items (see `items-fragment.tsx`). Items
-// render via the shared `wfeJsonTree` Alpine component so the visual
-// affordance matches `result-dialog.js` after that file's migration.
+// HTML fragment of the first 50 items (see ItemsFragment below). Each item
+// renders as a shared EntryRow (ui-foundation §Shared expandable-list-row
+// component): collapsed line shows the trigger-kind icon, the producer
+// trigger name, and a relative age; expanded body renders the item payload
+// via the shared `wfeJsonTree` Alpine component. Collapsed rows show NO
+// JSON preview (queues-on-duckdb design §K).
 // ---------------------------------------------------------------------------
 
 interface QueueCardData {
@@ -131,26 +135,96 @@ function renderScopeQueuePage(options: ScopeQueuePageOptions): string {
 // ---------------------------------------------------------------------------
 // Items fragment — returned by GET /queue/:owner/:repo/:workflow/:queue/items.
 // Server-rendered HTML fragment (no <html>/<head>/<body>) appended into the
-// expanded card's body by Alpine. Each item renders via the shared JSON-tree
-// component; a "Load more" control is included when more items remain.
+// expanded card's body by Alpine. Each item renders as an `EntryRow` whose
+// summary shows producer metadata and whose body lazy-mounts a `wfeJsonTree`
+// view of the item payload.
 // ---------------------------------------------------------------------------
+
+interface ItemRow {
+	readonly seq: number;
+	readonly item: unknown;
+	readonly triggerKind: string;
+	readonly triggerName: string;
+	readonly enqueuedAt: Date;
+}
 
 interface ItemsFragmentOptions {
 	readonly owner: string;
 	readonly repo: string;
 	readonly workflow: string;
 	readonly queue: string;
-	readonly items: readonly unknown[];
+	readonly items: readonly ItemRow[];
 	readonly offset: number;
 	readonly total: number;
 }
 
-function ItemBlock({ item }: { item: unknown }) {
-	const json = JSON.stringify(item);
+function itemAnchor(o: {
+	owner: string;
+	repo: string;
+	workflow: string;
+	queue: string;
+	seq: number;
+}): string {
+	return `qi-${o.owner}-${o.repo}-${o.workflow}-${o.queue}-${String(o.seq)}`
+		.replace(/[^a-zA-Z0-9_-]/g, "-")
+		.toLowerCase();
+}
+
+function kindModifier(kind: string): string {
+	// Maps to the `.entry.k-*` strip selectors in workflow-engine.css. Unknown
+	// kinds get no modifier; the strip falls back to the default grey.
+	const known = new Set(["cron", "http", "imap", "manual", "ws"]);
+	return known.has(kind) ? `k-${kind}` : "";
+}
+
+function ItemRowEl({
+	owner,
+	repo,
+	workflow,
+	queue,
+	row,
+}: {
+	owner: string;
+	repo: string;
+	workflow: string;
+	queue: string;
+	row: ItemRow;
+}) {
+	const json = JSON.stringify(row.item);
+	const id = itemAnchor({ owner, repo, workflow, queue, seq: row.seq });
+	const enqueuedIso = row.enqueuedAt.toISOString();
 	return (
-		<article class="queue-item" x-data="wfeJsonTree" data-json={json}>
-			<div class="queue-item-tree" data-json-tree-mount={true} />
-		</article>
+		<EntryRow
+			id={id}
+			extraClass={`queue-item ${kindModifier(row.triggerKind)}`}
+			summaryModifier="entry-summary--queue"
+			summaryLabel="Expand queue item"
+			expand={{ kind: "inline" }}
+			body={
+				<div class="queue-item-body">
+					<div
+						class="queue-item-tree"
+						x-data="wfeJsonTree"
+						data-json={json}
+						data-json-tree-mount={true}
+					/>
+				</div>
+			}
+		>
+			<TriggerKindIcon
+				kind={row.triggerKind}
+				title={`${row.triggerKind} · ${row.triggerName}`}
+			/>
+			<span class="entry-identity">
+				<span class="entry-trigger">{row.triggerName}</span>
+			</span>
+			<time
+				class="entry-age"
+				datetime={enqueuedIso}
+				title={enqueuedIso}
+				data-relative="true"
+			/>
+		</EntryRow>
 	);
 }
 
@@ -189,8 +263,14 @@ function ItemsFragment(options: ItemsFragmentOptions): string {
 			{items.length === 0 && offset === 0 ? (
 				<div class="queue-empty">Queue is empty</div>
 			) : null}
-			{items.map((item) => (
-				<ItemBlock item={item} />
+			{items.map((row) => (
+				<ItemRowEl
+					owner={owner}
+					repo={repo}
+					workflow={workflow}
+					queue={queue}
+					row={row}
+				/>
 			))}
 			{hasMore ? (
 				<LoadMore
@@ -212,5 +292,10 @@ function rawFragment(html: string): ReturnType<typeof raw> {
 	return raw(html);
 }
 
-export type { ItemsFragmentOptions, QueueCardData, ScopeQueuePageOptions };
+export type {
+	ItemRow,
+	ItemsFragmentOptions,
+	QueueCardData,
+	ScopeQueuePageOptions,
+};
 export { ItemsFragment, rawFragment, renderScopeQueuePage, ScopeQueuePage };
