@@ -16,11 +16,74 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: ./.github/actions/deploy-image
+      - uses: docker/login-action@v4
         with:
-          tag: main
-          url: https://staging.workflow-engine.webredirect.org
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build + push :main, capturing the pushed digest. Staging runs on
+      # bunny.net Magic Containers (see infrastructure/bunny-staging.tf), which
+      # — unlike the VPS's podman-auto-update — does NOT auto-pull. The digest
+      # is the value we hand to the rolling update below.
+      - id: build
+        uses: ./.github/actions/docker-build
+        with:
+          push: "true"
+          tags: ghcr.io/${{ github.repository }}:main
+          git_sha: ${{ github.sha }}
+
+      # Resolve the Magic Containers app id by name (robust to an app
+      # recreation, which changes the id) for the rolling-update step below.
+      - name: Resolve Bunny staging app id
+        id: app
+        env:
+          BUNNYNET_API_KEY: ${{ secrets.BUNNYNET_API_KEY }}
+        run: |
+          set -euo pipefail
+          id=$(curl -fsS https://api.bunny.net/mc/apps \
+            -H "AccessKey: $BUNNYNET_API_KEY" \
+            | jq -r '[.. | objects | select(.name? == "wfe-staging") | .id] | first')
+          test -n "$id" && test "$id" != "null" \
+            || { echo "::error::wfe-staging app not found"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      # Trigger the rolling update by PATCHing the freshly-pushed digest —
+      # "updating the container image" is the only documented re-pull trigger
+      # (a /deploy or /restart call does NOT re-pull). Official bunny action,
+      # PINNED to a commit SHA (not @main): it receives BUNNYNET_API_KEY, so a
+      # moving ref would be a supply-chain risk. Passing both image_tag and
+      # image_digest sends both in the PATCH (verified in the action source) →
+      # the changing digest is what triggers the rollout. TF ignores the image
+      # tag/digest (lifecycle.ignore_changes), so this never fights tofu.
+      - name: Roll the Bunny staging app forward
+        uses: BunnyWay/actions/container-update-image@671d620bdaac002d2aa7f3dd0dda03dd99c5b749 # container-update-image@0.2.2
+        with:
+          api_key: ${{ secrets.BUNNYNET_API_KEY }}
+          app_id: ${{ steps.app.outputs.id }}
+          container: wfe
+          image_tag: main
+          image_digest: ${{ steps.build.outputs.digest }}
+
+      # No rollout-status API exists, so poll the public /readyz until the new
+      # sha is actually serving (mirrors the VPS deploy gate). 60 × 5 s = 5 min.
+      - name: Wait for /readyz to report the just-built sha
+        env:
+          URL: https://staging.workflow-engine.webredirect.org
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          for attempt in $(seq 1 60); do
+            got=$(curl -fsS "$URL/readyz" 2>/dev/null | jq -r '.version.gitSha // ""' || true)
+            if [[ "$got" == "$EXPECTED_SHA" ]]; then
+              echo "rollout converged: gitSha=$got"
+              exit 0
+            fi
+            echo "attempt $attempt: gitSha=$got expected=$EXPECTED_SHA"
+            sleep 5
+          done
+          echo "::error::/readyz never reported expected sha; last gitSha=$got"
+          exit 1
 
       - uses: ./.github/actions/setup-pnpm
 

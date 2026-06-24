@@ -28,6 +28,14 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    # Staging-only Magic Containers spike (bunny-staging.tf). Pin to a single
+    # minor — the provider is 0.x with frequent breaking minors, so bump
+    # deliberately and read the CHANGELOG. 0.15.x requires OpenTofu >= 1.11
+    # (we pin 1.11.6 above, so aligned).
+    bunnynet = {
+      source  = "BunnyWay/bunnynet"
+      version = "~> 0.15"
+    }
   }
 
   # Scaleway Object Storage is S3-compatible. Bucket is pre-created out-of-band.

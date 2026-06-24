@@ -113,3 +113,13 @@ variable "gh_oauth_client_secret_staging" {
   sensitive   = true
   description = "GitHub OAuth App client secret for staging."
 }
+
+# bunny.net API key for the Magic Containers staging spike (bunny-staging.tf).
+# "Team member API keys are not supported" (provider docs) — use an account
+# key. Sealed in encrypted tofu state at rest; supplied via TF_VAR_* / the
+# BUNNYNET_API_KEY GHA secret.
+variable "bunnynet_api_key" {
+  type        = string
+  sensitive   = true
+  description = "bunny.net account API key for the Magic Containers staging deployment."
+}

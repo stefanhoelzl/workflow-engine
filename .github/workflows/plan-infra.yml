@@ -49,6 +49,7 @@ jobs:
           TF_VAR_gh_oauth_client_secret_prod: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_SECRET_PROD }}
           TF_VAR_gh_oauth_client_id_staging: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_ID_STAGING }}
           TF_VAR_gh_oauth_client_secret_staging: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_SECRET_STAGING }}
+          TF_VAR_bunnynet_api_key: ${{ secrets.BUNNYNET_API_KEY }}
         run: |
           {
             echo '### Tofu plan'

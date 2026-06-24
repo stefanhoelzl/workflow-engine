@@ -1,5 +1,5 @@
-# Dynu A records pointing at the VPS public IP. The IP is stable across
-# instance stop/start (it's a separate `scaleway_instance_ip` resource).
+# Dynu zone lookup. The VPS public IP is stable across instance stop/start
+# (it's a separate `scaleway_instance_ip` resource).
 data "restapi_object" "zone" {
   path         = "/dns"
   search_key   = "name"
@@ -8,8 +8,12 @@ data "restapi_object" "zone" {
   id_attribute = "id"
 }
 
+# prod → A record at the VPS IP. staging is intentionally EXCLUDED here and
+# served by a separate CNAME resource below: Dynu rejects an in-place A→CNAME
+# type change (501 "Record type change is not allowed"), so the staging A
+# record must be destroyed and a CNAME created in its place.
 resource "restapi_object" "dns_a_record" {
-  for_each = local.envs
+  for_each = { for k, v in local.envs : k => v if k != "staging" }
 
   path          = "/dns/${data.restapi_object.zone.id}/record"
   update_method = "POST"
@@ -27,4 +31,29 @@ resource "restapi_object" "dns_a_record" {
   # `data` on apply. Without this flag, every subsequent refresh shows
   # perpetual drift wanting to remove those fields.
   ignore_server_additions = true
+}
+
+# staging → CNAME to the Bunny Magic Containers CDN host (cutover). A distinct
+# resource because Dynu forbids changing a record's type in place. A CNAME and
+# the old A record cannot coexist for the same name, so the A record must be
+# destroyed FIRST — apply this in two steps (see docs/infrastructure.md):
+#   1. tofu apply -target=restapi_object.dns_a_record   (destroys the staging A)
+#   2. tofu apply                                        (creates this CNAME)
+resource "restapi_object" "dns_staging_cname" {
+  path          = "/dns/${data.restapi_object.zone.id}/record"
+  update_method = "POST"
+  data = jsonencode({
+    domainId   = tonumber(data.restapi_object.zone.id)
+    nodeName   = local.envs["staging"].dns_node
+    recordType = "CNAME"
+    ttl        = 300
+    state      = true
+    # Dynu CNAME records carry the target hostname in `host`.
+    host = local.bunny_staging_cdn_host
+  })
+  id_attribute            = "id"
+  ignore_server_additions = true
+
+  # The custom hostname must exist on the Bunny pull zone before traffic lands.
+  depends_on = [bunnynet_pullzone_hostname.staging]
 }
