@@ -86,20 +86,27 @@ Because the `bunnynet` provider does NOT mark `env.value` as sensitive (it rende
 - **WHEN** `plan-infra` renders the plan into `$GITHUB_STEP_SUMMARY`
 - **THEN** the staging OAuth client secret and sealing key SHALL appear as `(sensitive value)`, not in cleartext
 
-### Requirement: Staging readiness probe on /readyz
+### Requirement: Staging readiness probe on /livez (not /readyz)
 
-The staging app SHALL declare a `readiness_probe` of type `http` with path `/readyz` against the container port so Bunny gates traffic on app readiness, mirroring the VPS `/readyz` contract.
+The staging app SHALL declare a `readiness_probe` of type `http` with path **`/livez`** against the container port — NOT `/readyz`. `/readyz` runs deep health checks that self-reach the app's own public `BASE_URL` (the `domain` and `webhooks` checks fetch `https://staging…/healthz` and `/webhooks/`). During a deploy, Bunny serves a "We're deploying" 503 on that hostname UNTIL the readiness probe passes, so gating readiness on `/readyz` deadlocks: the pod boots and listens but can never satisfy its own self-check, and Bunny retries the pod indefinitely. `/livez` returns 200 unconditionally once the process is listening, so the pod goes ready, Bunny routes traffic, and `/readyz`'s self-checks then pass. (The deploy pipeline still polls `/readyz` for the full-health + gitSha gate; only Bunny's traffic-gating probe uses `/livez`.)
 
-#### Scenario: Probe targets /readyz
+#### Scenario: Probe targets /livez
 
 - **WHEN** the rendered `bunnynet_compute_container_app` is inspected
-- **THEN** it SHALL declare a `readiness_probe` with `http` path `/readyz` on the container's listen port
+- **THEN** it SHALL declare a `readiness_probe` with `http` path `/livez` on the container's listen port
+
+#### Scenario: A redeploy recovers without a readiness deadlock
+
+- **GIVEN** the app is being redeployed (new image digest)
+- **WHEN** the new pod boots and begins listening
+- **THEN** `/livez` SHALL return 200 and Bunny SHALL mark the pod ready and route traffic
+- **AND** `/readyz` SHALL subsequently report `status: pass` once Bunny routes the app's own self-reach checks
 
 ### Requirement: Staging deploy rolls Bunny forward without Terraform image drift
 
 The `deploy-staging.yml` workflow SHALL, after building and pushing `ghcr.io/stefanhoelzl/workflow-engine:main` and capturing the pushed image digest, roll the staging app forward by updating the container's image to that digest (`image_tag: main` + `image_digest: <digest>`), and then poll the Bunny-served `/readyz` until `version.gitSha` equals the pushed `github.sha`. This step SHALL NOT invoke `tofu`. The image update MAY use the official `BunnyWay/actions/container-update-image` action or an equivalent inline `curl` PATCH of `/mc/apps/{id}/containers/{cid}`; if a third-party action is used it SHALL be pinned to a commit SHA (not a moving ref) because it receives `BUNNYNET_API_KEY`. The app id SHALL be resolved by name so the workflow survives an app recreation.
 
-Updating the container image is the only documented Magic Containers rolling-update trigger (a `/deploy` or `/restart` call does not re-pull), so a **changing digest** per deploy is required. Because CI mutates the image digest out-of-band and the `bunnynet` provider manages it as a resource attribute, the app resource SHALL declare `lifecycle { ignore_changes = [container[0].image_tag, container[0].image_digest] }` so Terraform does not revert the CI-set image. `container.image_tag` SHALL remain `"main"` with `image_pull_policy = "Always"`. The `plan-infra` empty-plan gate MUST remain green after a deploy.
+Updating the container image is the only documented Magic Containers rolling-update trigger (a `/deploy` or `/restart` call does not re-pull), so a **changing digest** per deploy is required. Because CI and Bunny's own deploy/rolling-update mutate container-image fields out-of-band and the `bunnynet` provider manages them as resource attributes, the app resource SHALL declare `lifecycle { ignore_changes = [container[0].image_tag, container[0].image_digest, container[0].image_pull_policy] }` so Terraform does not revert them. (`image_pull_policy` is included because Bunny resets it to its default `IfNotPresent` on deploy; this is harmless under digest-pinning, where each new digest is pulled regardless of policy.) `container.image_tag` SHALL remain `"main"` in config. The `plan-infra` empty-plan gate MUST remain green after a deploy.
 
 #### Scenario: Push to main rolls the Bunny app and confirms the SHA
 
