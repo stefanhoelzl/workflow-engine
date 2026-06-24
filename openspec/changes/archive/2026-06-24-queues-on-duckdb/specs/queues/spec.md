@@ -26,17 +26,17 @@ Every host-side read or write of `queue_items` SHALL go through a typed accessor
 
 ### Requirement: Item provenance metadata
 
-Every `queue_items` row SHALL carry metadata fields stamped by the host bridge at the moment of `put`: `enqueuedAt` (TIMESTAMPTZ), `invocationId` (the producing invocation's id from the dispatch context), `triggerKind` (the producing trigger's kind, as a free-form string), and `triggerName` (the producing trigger's declared export name). The metadata SHALL be visible to operators via the `/queue` UI (see `queues-ui`) and SHALL be queryable via the tenant-scoped accessor.
+Every `queue_items` row SHALL carry metadata fields stamped by the host at the moment of `put`: `enqueuedAt` (TIMESTAMPTZ), `invocationId` (the producing invocation's id from the dispatch context), `triggerKind` (the producing trigger's kind, as a free-form string), and `triggerName` (the producing trigger's declared export name). The metadata SHALL be visible to operators via the `/queue` UI (see `queues-ui`) and SHALL be queryable via the tenant-scoped accessor.
 
 The metadata SHALL NOT be exposed to guest code via the `get()` return value. The guest-facing `Queue<T>` contract SHALL remain `put(item: T) → void` and `get() → T | undefined`; the metadata SHALL be host-only / UI-only.
 
 `triggerKind` SHALL be stored as an open string with no database-level enum constraint. Unknown or future trigger kinds (e.g. a future "queue" trigger kind for queue-consumer triggers) SHALL be accepted and rendered with the default-glyph fallback in the UI per `ui-foundation` §"Distinct visual indicator per trigger kind".
 
-#### Scenario: Bridge stamps metadata at put
+#### Scenario: Host stamps metadata at put
 
 - **GIVEN** a guest invocation `inv-a3f2` triggered by cron trigger `everyFiveMinutes`
 - **WHEN** the guest calls `await q.put({url: "https://example.com"})`
-- **THEN** the inserted `queue_items` row SHALL have `invocation_id = "inv-a3f2"`, `trigger_kind = "cron"`, `trigger_name = "everyFiveMinutes"`, and `enqueuedAt` within 100 ms of the bridge entry time
+- **THEN** the inserted `queue_items` row SHALL have `invocationId = "inv-a3f2"`, `triggerKind = "cron"`, `triggerName = "everyFiveMinutes"`, and `enqueuedAt` within 100 ms of the host's INSERT time
 
 #### Scenario: Guest get() returns only the item value
 
@@ -48,12 +48,10 @@ The metadata SHALL NOT be exposed to guest code via the `get()` return value. Th
 
 #### Scenario: Unknown future trigger kind is accepted
 
-- **GIVEN** a hypothetical future dispatch context with `trigger_kind = "queue"` (a kind the existing `TriggerKindIcon` registry does not yet know)
-- **WHEN** the bridge stamps the row
+- **GIVEN** a hypothetical future dispatch context with `triggerKind = "queue"` (a kind the existing `TriggerKindIcon` registry does not yet know)
+- **WHEN** the host stamps the row
 - **THEN** the INSERT SHALL succeed (no DB-level enum rejection)
 - **AND** the `/queue` UI SHALL render the row with `TriggerKindIcon`'s default-glyph fallback
-
-## MODIFIED Requirements
 
 ### Requirement: Storage layout
 
@@ -77,7 +75,7 @@ The `seq` column SHALL draw its value from a global DuckDB sequence (`queue_item
 
 A queue's *existence* SHALL be determined by its presence in the workflow's manifest (`declaredQueues`); the queue's row count in `queue_items` MAY be zero for a declared queue with no items. No "empty file" or "queue row marker" SHALL be required.
 
-The runtime SHALL own the `queue_items` table exclusively; no other capability SHALL write to it.
+The runtime SHALL own the `queue_items` table exclusively; no other capability SHALL write to it. The guest-facing `Queue<T>` interface SHALL expose exactly `put` and `get`; no `peek`, `list`, `count`, or `inspect` operation SHALL be added to the SDK or the guest surface.
 
 #### Scenario: Declared empty queue has zero rows
 
@@ -94,49 +92,11 @@ The runtime SHALL own the `queue_items` table exclusively; no other capability S
 - **THEN** the `item JSON` column SHALL store the JSON value as DuckDB's JSON type
 - **AND** subsequent retrieval via `SELECT item FROM queue_items WHERE seq = ?` SHALL yield the original string value verbatim (no FIFO framing concerns apply — rows are not line-delimited)
 
-### Requirement: Durability contract
-
-A successful return from `put` SHALL guarantee that the inserted row survives `SIGKILL`, host crash, or power loss. A successful return from `get` SHALL guarantee that the deleted row remains deleted across the same failure modes. The runtime SHALL achieve this by issuing each `put` as a single autocommit `INSERT` statement and each `get` as a single autocommit `DELETE … RETURNING` statement against DuckDB; DuckDB's WAL `fsync` on autocommit SHALL provide the durability semantics.
-
-The bridge SHALL NOT batch queue operations or hold open transactions across the host-call boundary. Queue ops SHALL NOT be enrolled in the event-store's batched-commit transaction.
-
-#### Scenario: Put commits before bridge reply
-
-- **WHEN** the host bridge handles a `put` request
-- **THEN** the bridge SHALL execute `INSERT INTO queue_items (...) VALUES (...)` as a single autocommit statement
-- **AND** the bridge SHALL NOT send the reply to the sandbox proxy before the INSERT returns successfully
-- **AND** the bridge SHALL NOT wrap the INSERT in a multi-statement transaction
-
-#### Scenario: Get is crash-atomic via autocommit DELETE…RETURNING
-
-- **GIVEN** a queue with three rows
-- **WHEN** the host bridge handles a `get` request as `DELETE FROM queue_items WHERE … RETURNING item`
-- **AND** the runtime is `SIGKILL`'d at any point during the statement
-- **THEN** on subsequent boot, the table SHALL contain either all three rows (DELETE never committed) or exactly the two-row remainder (DELETE committed; popped row gone)
-- **AND** the table SHALL NEVER contain a torn state
-
-### Requirement: Per-item size cap
-
-The runtime SHALL reject `put` requests whose item, after `JSON.stringify`, exceeds 1024 UTF-8 bytes. The cap SHALL apply to the item payload alone; the producer metadata columns (`enqueuedAt`, `invocationId`, `triggerKind`, `triggerName`) SHALL NOT count toward the cap. Rejection SHALL surface as a typed `QueueItemTooLarge` error to the guest with `code = "queue.itemTooLarge"`, and no row SHALL be inserted.
-
-#### Scenario: Item exactly at the cap is accepted
-
-- **WHEN** an item whose `JSON.stringify` length is exactly 1024 bytes is `put`
-- **THEN** the call SHALL succeed
-- **AND** the `queue_items` table SHALL contain the new row
-
-#### Scenario: Item over the cap is rejected
-
-- **WHEN** an item whose `JSON.stringify` length is 1025 bytes is `put`
-- **THEN** the host bridge SHALL throw `QueueItemTooLarge` with `code = "queue.itemTooLarge"`
-- **AND** no row SHALL be inserted into `queue_items`
-- **AND** a `system.error` event with `name = "queue.put"` SHALL be emitted
-
 ### Requirement: Workflow-wide depth cap
 
 The runtime SHALL bound the total number of queue items per workflow, not per queue. A `put` SHALL be rejected when the count of `queue_items` rows for `(owner, repo, workflow)` — summed across ALL of that workflow's queue names — already reaches the cap at the moment of the check. Rejection SHALL surface as a typed `QueueFull` error with `code = "queue.full"`, and no row SHALL be inserted.
 
-The cap is workflow-wide (rather than per-queue) because there is no runtime queue-name gate (see "No queue-name gate; host validates declared queues only"): a per-queue cap would be trivially defeated by a tampered guest inventing unlimited names, each starting at zero depth. A workflow-wide cap bounds total storage on the shared `events.duckdb` regardless of how many names are used. The cap MAY alternatively be keyed at the tenant level (drop the `workflow` predicate) for a stronger bound at the cost of coupling unrelated workflows; the workflow-wide keying is the default because it couples only one author's own queues.
+The cap is workflow-wide (rather than per-queue) because there is no runtime queue-name gate (see "Config-less worker; host is the sole policy authority"): a per-queue cap would be trivially defeated by a tampered guest inventing unlimited names, each starting at zero depth. A workflow-wide cap bounds total storage on the shared `events.duckdb` regardless of how many names are used. The cap MAY alternatively be keyed at the tenant level (drop the `workflow` predicate) for a stronger bound at the cost of coupling unrelated workflows; the workflow-wide keying is the default because it couples only one author's own queues.
 
 The cap check SHALL be performed via `SELECT COUNT(*)` followed by `INSERT` in the same autocommit context. Under concurrent `put` calls within one workflow, snapshot isolation MAY allow the depth to transiently overflow the cap by the number of in-flight puts; items inserted during such an overrun SHALL remain valid and SHALL be consumed in FIFO order. Boot reconciliation SHALL NOT attempt to truncate overruns.
 
@@ -153,41 +113,6 @@ The cap check SHALL be performed via `SELECT COUNT(*)` followed by `INSERT` in t
 - **WHEN** a `put` to queue `b` is attempted
 - **THEN** the host bridge SHALL throw `QueueFull` (queue `b` has no remaining budget — the cap is workflow-wide)
 - **AND** a `put` to a queue belonging to a DIFFERENT workflow SHALL succeed (each workflow has an independent budget)
-
-### Requirement: Schema validation on put for declared queues
-
-The runtime SHALL validate every item against the queue's Zod validator (rehydrated host-side from the workflow's manifest JSON Schema at sandbox construction time) before INSERT, for queues that are DECLARED (i.e. have a validator in the per-sandbox map). Validation failure SHALL throw `QueueSchemaMismatch` with `code = "queue.schemaMismatch"` to the guest, and no row SHALL be inserted.
-
-A name with no validator is undeclared. Because the SDK statically binds authors to declared queue handles, an undeclared name is reachable only by a tampered guest; such a `put` SHALL be stored without schema validation (it pollutes only the guest's own tenant partition, is bounded by the workflow-wide cap, and is removed by boot reconciliation as a non-manifest tuple). This is acceptable because schema validation is an author-correctness contract, not a security boundary.
-
-#### Scenario: Invalid put to a declared queue rejected
-
-- **GIVEN** a declared queue with schema `z.object({url: z.string().url()})`
-- **WHEN** `put({url: "not-a-url"})` is called
-- **THEN** the host bridge SHALL throw `QueueSchemaMismatch`
-- **AND** no row SHALL be inserted into `queue_items`
-
-### Requirement: Schema validation on get for declared queues; bad item dropped
-
-For DECLARED queues, the runtime SHALL validate every popped item against the queue's CURRENT Zod validator (which MAY differ from the validator in force at `put` time after a re-upload). The bridge SHALL issue the `DELETE … RETURNING` statement in autocommit and SHALL perform validation **after** the DELETE has committed; the DELETE SHALL NOT be conditional on validation success and SHALL NOT be rolled back on validation failure. If validation fails, the bridge SHALL throw `QueueSchemaMismatch` to the guest with the dropped item AND the producer metadata fields (`invocationId`, `triggerKind`, `triggerName`, `enqueuedAt`) embedded in the error payload. The corresponding `system.error` event with `name = "queue.get"` SHALL carry the same fields for operator root-cause attribution. A popped item from an undeclared name (no validator) SHALL be returned as-is.
-
-#### Scenario: Schema regression drops the head item with producer metadata
-
-- **GIVEN** a declared queue containing one item enqueued under schema `S1` by invocation `inv-p1` via cron trigger `produceJobs` at time `T0`
-- **AND** the workflow has been re-uploaded with an incompatible schema `S2`
-- **WHEN** `await q.get()` is called
-- **THEN** the `queue_items` row SHALL no longer exist for this queue (the DELETE committed before validation ran)
-- **AND** the bridge SHALL throw `QueueSchemaMismatch` whose payload includes the dropped item AND `{invocationId: "inv-p1", triggerKind: "cron", triggerName: "produceJobs", enqueuedAt: T0}`
-- **AND** a `system.error` event with `name = "queue.get"` SHALL be emitted carrying the same payload
-
-#### Scenario: Validation occurs after the DELETE commits
-
-- **GIVEN** a declared queue with one item whose stored value will fail current-schema validation
-- **WHEN** `await q.get()` is called
-- **THEN** the bridge SHALL execute exactly one `DELETE … RETURNING` statement
-- **AND** the bridge SHALL NOT issue a `SELECT` to pre-validate the row
-- **AND** the bridge SHALL NOT issue a second pop attempt after validation throws
-- **AND** the row SHALL be gone from the table regardless of validation outcome
 
 ### Requirement: Orphaned in-flight invocations operate against their dispatch-time manifest
 
@@ -212,11 +137,11 @@ An invocation runs against the manifest it was dispatched under for its entire l
 
 ### Requirement: Config-less worker; host is the sole policy authority
 
-The queue plugin's sandbox-side worker SHALL be config-less: the runtime composer SHALL NOT inject any per-workflow config into the queue plugin descriptor. The worker SHALL carry no `owner`, `workflow`, `declaredQueues`, `validators`, `queuesRoot`, or schema field. All per-workflow knowledge (the declared-queue set and the per-queue validators) SHALL live MAIN-side in the queue host handlers, derived from the workflow manifest at sandbox construction.
+The queue plugin's sandbox-side worker SHALL be config-less: the runtime composer SHALL NOT inject any per-workflow config into the queue plugin descriptor. The worker SHALL carry no `owner`, `workflow`, `declaredQueues`, `validators`, `queuesRoot`, or schema field. All per-workflow knowledge (the per-queue validators) SHALL live MAIN-side in the queue host handlers, derived from the workflow manifest at sandbox construction.
 
 The worker SHALL be pure transport: it captures the per-invocation context (`repo`, `invocationId`, `triggerKind`, `triggerName`) from `RunInput.extras.queue`, routes by `op` to the matching host method (`queue.put` / `queue.get`), forwards the call, and maps host-side `QueueError`s back to the guest surface. The worker SHALL NOT validate the queue name, the op, or the item beyond the `op` discriminator required to pick a host method.
 
-Host-side validators SHALL be Zod validators rehydrated from JSON Schemas at sandbox construction and held in the per-sandbox handler closure, keyed by queue name. The validator map's key set is the declared-queue set — there is NO separate name gate. The host applies schema validation (declared queues only), the workflow-wide depth cap, the per-item size cap, and the `enqueuedAt` stamp.
+Host-side validators SHALL be Zod validators rehydrated from JSON Schemas at sandbox construction and held in the per-sandbox handler closure, keyed by queue name. There is NO runtime queue-name gate: the queue name is the only guest-controlled component of the storage key (`owner`/`repo`/`workflow` are host-stamped), so a guest can only ever address its own tenant partition — confidentiality does not depend on a name check. The host applies schema validation (declared queues only — those with a validator), the workflow-wide depth cap, the per-item size cap, and the `enqueuedAt` stamp.
 
 #### Scenario: Queue plugin descriptor carries no config
 
@@ -265,6 +190,125 @@ When the workflow registry processes an upload that adds a queue declaration, th
 - **THEN** the registry SHALL issue `DELETE FROM queue_items WHERE (owner, repo, workflow) = (o, r, w)`
 - **AND** all 17 rows SHALL be removed
 
+## MODIFIED Requirements
+
+### Requirement: Queue identity and scope
+
+The runtime SHALL identify a queue by the tuple `(owner, repo, workflow, queueName)`. The workflow `sha` SHALL NOT be part of the identity, so re-uploading the same workflow with a new bundle preserves the queue's data. Queues SHALL be scoped to one workflow file; no cross-workflow, cross-(owner, repo), or global queues exist. Identity is realized as the `(owner, repo, workflow, queue)` columns of `queue_items`; there is no `sha` column.
+
+#### Scenario: Re-upload preserves queue data
+
+- **GIVEN** a workflow `acme/widgets/orders.ts` declaring `defineQueue({name: "jobs", schema})` with three items already enqueued under `sha = A`
+- **WHEN** the workflow is re-uploaded with a code change producing `sha = B`, with the same `defineQueue({name: "jobs"})` declaration
+- **THEN** the `queue_items` rows for `(acme, widgets, orders, jobs)` SHALL be retained (the unchanged declaration is neither added nor removed in the upload diff, so no DELETE runs)
+- **AND** subsequent `get` calls SHALL pop the items in their original FIFO order
+
+#### Scenario: Cross-workflow access is impossible
+
+- **GIVEN** workflow `acme/widgets/a.ts` declares `defineQueue({name: "jobs"})` and workflow `acme/widgets/b.ts` declares `defineQueue({name: "jobs"})`
+- **WHEN** `b`'s handler calls `get()` on its `jobs` queue
+- **THEN** the runtime SHALL scope the query to `(acme, widgets, b, jobs)` (not `(acme, widgets, a, jobs)`)
+- **AND** items put by `a` SHALL NOT be visible to `b`
+
+### Requirement: At-most-once pop semantics
+
+The runtime SHALL atomically remove an item from the queue and return it to the caller of `get()`. If the caller's invocation crashes after `get()` returns but before the item is processed, the item SHALL NOT reappear in the queue. Empty queues SHALL return `undefined` from `get()`; the runtime SHALL NOT throw on empty. Atomicity is provided by the single autocommit `DELETE … RETURNING` statement (see "Durability contract").
+
+#### Scenario: Successful get removes the item
+
+- **GIVEN** a queue with items `[A, B, C]`
+- **WHEN** the handler calls `await q.get()` and receives `A`
+- **THEN** the `queue_items` rows for the queue SHALL contain only `B` and `C` after `get` returns
+- **AND** any subsequent `get` from any invocation SHALL pop `B` next
+
+#### Scenario: Empty queue returns undefined
+
+- **GIVEN** a queue with no items
+- **WHEN** the handler calls `await q.get()`
+- **THEN** the call SHALL resolve with `undefined`
+- **AND** no error event SHALL be emitted
+
+#### Scenario: At-most-once on invocation crash
+
+- **GIVEN** a queue with item `A`
+- **WHEN** the handler calls `await q.get()` and receives `A`
+- **AND** the trigger handler then throws an unhandled error
+- **THEN** item `A` SHALL NOT be present in the queue
+- **AND** the trigger SHALL be marked failed, but the queue state SHALL reflect the successful pop
+
+### Requirement: Durability contract
+
+A successful return from `put` SHALL guarantee that the inserted row survives `SIGKILL`, host crash, or power loss. A successful return from `get` SHALL guarantee that the deleted row remains deleted across the same failure modes. The runtime SHALL achieve this by issuing each `put` as a single autocommit `INSERT` statement and each `get` as a single autocommit `DELETE … RETURNING` statement against DuckDB; DuckDB's WAL `fsync` on autocommit SHALL provide the durability semantics.
+
+The bridge SHALL NOT batch queue operations or hold open transactions across the host-call boundary. Queue ops SHALL NOT be enrolled in the event-store's batched-commit transaction.
+
+#### Scenario: Put commits before bridge reply
+
+- **WHEN** the host bridge handles a `put` request
+- **THEN** the bridge SHALL execute `INSERT INTO queue_items (...) VALUES (...)` as a single autocommit statement
+- **AND** the bridge SHALL NOT send the reply to the sandbox proxy before the INSERT returns successfully
+- **AND** the bridge SHALL NOT wrap the INSERT in a multi-statement transaction
+
+#### Scenario: Get is crash-atomic via autocommit DELETE…RETURNING
+
+- **GIVEN** a queue with three rows
+- **WHEN** the host bridge handles a `get` request as `DELETE FROM queue_items WHERE … RETURNING item`
+- **AND** the runtime is `SIGKILL`'d at any point during the statement
+- **THEN** on subsequent boot, the table SHALL contain either all three rows (DELETE never committed) or exactly the two-row remainder (DELETE committed; popped row gone)
+- **AND** the table SHALL NEVER contain a torn state
+
+### Requirement: Per-item size cap
+
+The runtime SHALL reject `put` requests whose item, after `JSON.stringify`, exceeds 1024 UTF-8 bytes. The cap SHALL apply to the item payload alone; the producer metadata columns (`enqueuedAt`, `invocationId`, `triggerKind`, `triggerName`) SHALL NOT count toward the cap. Rejection SHALL surface as a typed `QueueItemTooLarge` error to the guest with `code = "queue.itemTooLarge"`, and no row SHALL be inserted.
+
+#### Scenario: Item exactly at the cap is accepted
+
+- **WHEN** an item whose `JSON.stringify` length is exactly 1024 bytes is `put`
+- **THEN** the call SHALL succeed
+- **AND** the `queue_items` table SHALL contain the new row
+
+#### Scenario: Item over the cap is rejected
+
+- **WHEN** an item whose `JSON.stringify` length is 1025 bytes is `put`
+- **THEN** the host bridge SHALL throw `QueueItemTooLarge` with `code = "queue.itemTooLarge"`
+- **AND** no row SHALL be inserted into `queue_items`
+- **AND** a `system.error` event with `name = "queue.put"` SHALL be emitted
+
+### Requirement: Schema validation on put
+
+The runtime SHALL validate every item against the queue's Zod validator (rehydrated host-side from the workflow's manifest JSON Schema at sandbox construction time) before INSERT, for queues that are DECLARED (i.e. have a validator in the per-sandbox map). Validation failure SHALL throw `QueueSchemaMismatch` with `code = "queue.schemaMismatch"` to the guest, and no row SHALL be inserted.
+
+A name with no validator is undeclared. Because the SDK statically binds authors to declared queue handles, an undeclared name is reachable only by a tampered guest; such a `put` SHALL be stored without schema validation (it pollutes only the guest's own tenant partition, is bounded by the workflow-wide cap, and is removed by boot reconciliation as a non-manifest tuple). This is acceptable because schema validation is an author-correctness contract, not a security boundary.
+
+#### Scenario: Invalid put to a declared queue rejected
+
+- **GIVEN** a declared queue with schema `z.object({url: z.string().url()})`
+- **WHEN** `put({url: "not-a-url"})` is called
+- **THEN** the host bridge SHALL throw `QueueSchemaMismatch`
+- **AND** no row SHALL be inserted into `queue_items`
+
+### Requirement: Schema validation on get; bad item dropped
+
+For DECLARED queues, the runtime SHALL validate every popped item against the queue's CURRENT Zod validator (which MAY differ from the validator in force at `put` time after a re-upload). The bridge SHALL issue the `DELETE … RETURNING` statement in autocommit and SHALL perform validation **after** the DELETE has committed; the DELETE SHALL NOT be conditional on validation success and SHALL NOT be rolled back on validation failure. If validation fails, the bridge SHALL throw `QueueSchemaMismatch` to the guest with the dropped item AND the producer metadata fields (`invocationId`, `triggerKind`, `triggerName`, `enqueuedAt`) embedded in the error payload. The corresponding `system.error` event with `name = "queue.get"` SHALL carry the same fields for operator root-cause attribution. A popped item from an undeclared name (no validator) SHALL be returned as-is.
+
+#### Scenario: Schema regression drops the head item with producer metadata
+
+- **GIVEN** a declared queue containing one item enqueued under schema `S1` by invocation `inv-p1` via cron trigger `produceJobs` at time `T0`
+- **AND** the workflow has been re-uploaded with an incompatible schema `S2`
+- **WHEN** `await q.get()` is called
+- **THEN** the `queue_items` row SHALL no longer exist for this queue (the DELETE committed before validation ran)
+- **AND** the bridge SHALL throw `QueueSchemaMismatch` whose payload includes the dropped item AND `{invocationId: "inv-p1", triggerKind: "cron", triggerName: "produceJobs", enqueuedAt: T0}`
+- **AND** a `system.error` event with `name = "queue.get"` SHALL be emitted carrying the same payload
+
+#### Scenario: Validation occurs after the DELETE commits
+
+- **GIVEN** a declared queue with one item whose stored value will fail current-schema validation
+- **WHEN** `await q.get()` is called
+- **THEN** the bridge SHALL execute exactly one `DELETE … RETURNING` statement
+- **AND** the bridge SHALL NOT issue a `SELECT` to pre-validate the row
+- **AND** the bridge SHALL NOT issue a second pop attempt after validation throws
+- **AND** the row SHALL be gone from the table regardless of validation outcome
+
 ### Requirement: Boot reconciliation sweep
 
 After `registry.recover()` runs at startup, the runtime SHALL execute a single SQL statement that DELETEs every row whose `(owner, repo, workflow, queue)` tuple is not present in the current manifests' declared queue set. The sweep SHALL tolerate an empty or absent `queue_items` table (treat as "no rows to reconcile"). The sweep SHALL log an info entry naming each removed tuple and its row count.
@@ -285,24 +329,6 @@ The previous file-system "missing file" reconciliation case SHALL NOT have an an
 - **THEN** no rows for `("owner", "repo", "workflow", "new")` SHALL be inserted by the sweep
 - **AND** a subsequent `put` SHALL succeed on the empty declared queue
 
-### Requirement: QueueNotDeclared for unknown names
-
-The host handler SHALL reject `put` and `get` requests whose `name` is not a member of the declared-queue set for the sandbox (and not present in the current workflow's manifest). Rejection SHALL throw `QueueNotDeclared` with `code = "queue.notDeclared"` before any SQL is constructed. Declared-set membership is the sole name gate: because the build pipeline regex-validates every declared queue name at upload time (`QUEUE_NAME_RE`), the declared set only ever contains valid names, so any name not in the set — including path-traversal-shaped strings — is uniformly rejected as `queue.notDeclared`. The host SHALL NOT re-validate `name` against a regex on the wire (the name is a column value, never a path; there is nothing to guard against).
-
-#### Scenario: Bridge call with unknown queue name
-
-- **GIVEN** the workflow declares `defineQueue({name: "jobs"})` but no `defineQueue({name: "ghost"})`
-- **WHEN** the host handler receives a request `{queue: "ghost", …}`
-- **THEN** the handler SHALL throw `QueueNotDeclared` with `code = "queue.notDeclared"`
-- **AND** no SQL SHALL be issued against `queue_items`
-
-#### Scenario: Path-traversal-shaped name is rejected as undeclared
-
-- **WHEN** the host handler receives a request `{queue: "../../other-tenant/workflow/q", …}` (e.g. via a tampered guest)
-- **THEN** the handler SHALL throw `QueueNotDeclared` because the name is not a member of the declared set
-- **AND** no SQL SHALL be issued against `queue_items`
-- **AND** no path-construction or filesystem operation SHALL be attempted (there are none — the name is a column value)
-
 ## REMOVED Requirements
 
 ### Requirement: On-disk layout
@@ -310,6 +336,30 @@ The host handler SHALL reject `put` and `get` requests whose `name` is not a mem
 **Reason**: Replaced by the `Storage layout` requirement, which stores queue contents in a DuckDB table rather than NDJSON files under `<PERSISTENCE_PATH>/queues/`.
 
 **Migration**: Existing NDJSON queue files are abandoned on upgrade; queues start empty on first boot after the upgrade. Documented in `docs/upgrades.md`.
+
+### Requirement: Per-queue depth cap
+
+**Reason**: Replaced by the `Workflow-wide depth cap` requirement. With no runtime queue-name gate, a per-queue cap is defeated by name-multiplication (inventing unlimited names, each starting at zero depth); the storage bound therefore moves to the workflow level (total rows across all of a workflow's queues).
+
+**Migration**: None. Hard cutover — no existing data is carried over. Authors whose workflows relied on each queue independently holding up to the old per-queue limit now share one workflow-wide budget.
+
+### Requirement: QueueGone on orphaned in-flight invocations
+
+**Reason**: The host applies no runtime queue-name gate and does not consult the live registry on `put`/`get`. An orphan in-flight invocation now operates against its dispatch-time manifest (see `Orphaned in-flight invocations operate against their dispatch-time manifest`), consistent with env/secrets/action-validators. `queue.gone` is retained only as the code for a host-call transport failure.
+
+**Migration**: None. Guest code that previously caught `QueueGone` after a concurrent re-upload will instead observe the op succeeding against its own partition; the written rows are GC'd by boot reconciliation.
+
+### Requirement: QueueNotDeclared for unknown names
+
+**Reason**: The host applies no queue-name gate. The queue name is the only guest-controlled component of the storage key (`owner`/`repo`/`workflow` are host-stamped), so a guest can only address its own tenant partition; confidentiality does not depend on a name check, and storage is bounded by the workflow-wide depth cap. The `queue.notDeclared` code is retained only for the worker's `op` discriminator (an op that is neither `put` nor `get`, reachable only by a tampered guest).
+
+**Migration**: None. Undeclared-name puts/gets (tampered-guest only) succeed against the guest's own partition without schema validation and are GC'd by boot reconciliation.
+
+### Requirement: Sandbox plugin config shape
+
+**Reason**: Replaced by the `Config-less worker; host is the sole policy authority` requirement. The worker carries no per-workflow config; all per-workflow knowledge lives host-side in the queue host handlers.
+
+**Migration**: None.
 
 ### Requirement: Atomic upload-time file lifecycle
 
@@ -319,9 +369,9 @@ The host handler SHALL reject `put` and `get` requests whose `name` is not a mem
 
 ### Requirement: Path-traversal defense in depth
 
-**Reason**: The queue name is no longer used as a filesystem path segment; it is a column value in a parameterized SQL statement. The path-traversal class no longer exists. Queue-name regex validation is preserved (folded into `QueueNotDeclared for unknown names`) as defense in depth against tampered guest input, but `O_NOFOLLOW` and symlink scenarios have no analog.
+**Reason**: The queue name is no longer used as a filesystem path segment; it is a column value in a parameterized SQL statement. The path-traversal class no longer exists. Queue-name regex validation survives at BUILD time (the SDK's `build-workflows.ts` validates every declared name against `QUEUE_NAME_RE`); there is no runtime name check, and `O_NOFOLLOW`/symlink scenarios have no analog.
 
-**Migration**: None. The regex check survives; only the FS-specific scenarios go away.
+**Migration**: None.
 
 ### Requirement: Host-side read-only inspection
 
