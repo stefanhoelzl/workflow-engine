@@ -84,6 +84,11 @@ const schema = z
 		),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_PATH: z.string(),
+		// Selects the StorageBackend implementation for workflow bundles.
+		// Defaults to "fs"; unknown values are carried through so the backend
+		// factory (`createStorage`) rejects them at boot with one clear error.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		STORAGE_BACKEND: z.string().default("fs"),
 		// libSQL connection. Required, no derivation from PERSISTENCE_PATH: a
 		// `file:…` URL selects the embedded on-disk database; a
 		// `libsql://…`/`https://…` URL selects a remote libSQL service. See
@@ -166,6 +171,7 @@ const schema = z
 		githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID,
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
 		persistencePath: env.PERSISTENCE_PATH,
+		storageBackend: env.STORAGE_BACKEND,
 		databaseUrl: env.DATABASE_URL,
 		databaseWal: env.DATABASE_WAL,
 		databaseAuthToken: env.DATABASE_AUTH_TOKEN,

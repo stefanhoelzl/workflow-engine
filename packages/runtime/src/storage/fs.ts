@@ -1,14 +1,11 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { StorageBackend } from "./index.js";
+import { NotFoundError, type StorageBackend } from "./index.js";
 
-function createFsStorage(root: string): StorageBackend {
+async function createFsStorage(root: string): Promise<StorageBackend> {
 	const absoluteRoot = resolve(root);
+	await mkdir(absoluteRoot, { recursive: true });
 	return {
-		async init() {
-			await mkdir(absoluteRoot, { recursive: true });
-		},
-
 		async write(path, data) {
 			const fullPath = join(absoluteRoot, path);
 			const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
@@ -19,8 +16,15 @@ function createFsStorage(root: string): StorageBackend {
 		},
 
 		async read(path) {
-			const buf = await readFile(join(absoluteRoot, path));
-			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+			try {
+				const buf = await readFile(join(absoluteRoot, path));
+				return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+					throw new NotFoundError(path);
+				}
+				throw err;
+			}
 		},
 
 		async *list(prefix) {
@@ -32,7 +36,9 @@ function createFsStorage(root: string): StorageBackend {
 				return;
 			}
 			const paths = entries
-				.filter((e) => e.isFile())
+				// `.tmp` files are write-staging artifacts from an interrupted
+				// `write` (writeFile then rename); they are never committed keys.
+				.filter((e) => e.isFile() && !e.name.endsWith(".tmp"))
 				.map((e) => {
 					const relative = e.parentPath.slice(dir.length);
 					return relative ? `${relative}/${e.name}` : e.name;

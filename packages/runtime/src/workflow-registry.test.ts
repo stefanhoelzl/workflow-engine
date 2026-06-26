@@ -439,8 +439,7 @@ describe("workflow registry: persistence and recovery", () => {
 
 	it("persists the owner tarball to workflows/<owner>.tar.gz when tarballBytes are provided", async () => {
 		const logger = createTestLogger();
-		const backend = createFsStorage(storageDir);
-		await backend.init();
+		const backend = await createFsStorage(storageDir);
 		registry = createWorkflowRegistry({
 			logger,
 			executor: makeExecutor(),
@@ -465,8 +464,7 @@ describe("workflow registry: persistence and recovery", () => {
 
 	it("recover() loads persisted owners from storage at startup", async () => {
 		const logger = createTestLogger();
-		const backend = createFsStorage(storageDir);
-		await backend.init();
+		const backend = await createFsStorage(storageDir);
 
 		const files = ownerFiles();
 		const tarballBytes = await packOwnerBundle(files);
@@ -487,8 +485,7 @@ describe("workflow registry: persistence and recovery", () => {
 
 	it("recover() skips non-.tar.gz keys and handles unreadable tarballs gracefully", async () => {
 		const logger = createTestLogger();
-		const backend = createFsStorage(storageDir);
-		await backend.init();
+		const backend = await createFsStorage(storageDir);
 
 		const validFiles = ownerFiles();
 		const validBytes = await packOwnerBundle(validFiles);
@@ -715,8 +712,7 @@ describe("workflow registry: backend reconfigure aggregation", () => {
 		const storageDir = await mkdtemp(join(tmpdir(), "wf-no-persist-on-fail-"));
 		try {
 			const logger = createTestLogger();
-			const storage = createFsStorage(storageDir);
-			await storage.init();
+			const storage = await createFsStorage(storageDir);
 			const http = stubBackend("http", "userConfig");
 			const registry = createWorkflowRegistry({
 				logger,

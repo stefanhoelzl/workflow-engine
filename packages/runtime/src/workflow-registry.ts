@@ -33,7 +33,7 @@ import {
 } from "./queue-store-lifecycle.js";
 import { decryptWorkflowSecrets } from "./secrets/decrypt-workflow.js";
 import type { SecretsKeyStore } from "./secrets/index.js";
-import type { StorageBackend } from "./storage/index.js";
+import { NotFoundError, type StorageBackend } from "./storage/index.js";
 import { buildException } from "./triggers/build-exception.js";
 import { buildFire } from "./triggers/build-fire.js";
 import { resolveSecretSentinels } from "./triggers/resolve-secret-sentinels.js";
@@ -1024,6 +1024,16 @@ function createWorkflowRegistry(
 				});
 			}
 		} catch (err) {
+			if (err instanceof NotFoundError) {
+				// Benign list -> read race: the key was listed but deleted before
+				// we read it. Skip it; the rest of recovery continues.
+				options.logger.warn("workflow-registry.recover-skipped-missing", {
+					owner,
+					repo,
+					key,
+				});
+				return;
+			}
 			options.logger.error("workflow-registry.recover-failed", {
 				owner,
 				repo,

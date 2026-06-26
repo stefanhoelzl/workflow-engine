@@ -27,7 +27,7 @@ import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
 import { secureHeadersMiddleware } from "./services/secure-headers.js";
 import { createServer } from "./services/server.js";
-import { createFsStorage } from "./storage/fs.js";
+import { createStorage } from "./storage/factory.js";
 import { createCronTriggerSource } from "./triggers/cron.js";
 import type { Middleware } from "./triggers/http.js";
 import { createHttpTriggerSource } from "./triggers/http.js";
@@ -110,9 +110,10 @@ async function init() {
 	});
 	logRegistry(runtimeLogger, authRegistry);
 
-	// 1. Init storage backend (FS, used by WorkflowRegistry for upload bundles).
-	const storageBackend = createFsStorage(config.persistencePath);
-	await storageBackend.init();
+	// 1. Construct the storage backend (selected by STORAGE_BACKEND, default
+	//    "fs"; used by WorkflowRegistry for upload bundles). The async factory
+	//    returns an already-initialized backend and fails fast on bad config.
+	const storageBackend = await createStorage(config);
 
 	// 2. Open the libSQL database named by DATABASE_URL. One libSQL client backs
 	//    both stores; each store gets its own Kysely instance typed to its

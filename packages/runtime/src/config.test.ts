@@ -159,6 +159,16 @@ describe("createConfig", () => {
 		).toThrow();
 	});
 
+	it("defaults STORAGE_BACKEND to fs when unset", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.storageBackend).toBe("fs");
+	});
+
+	it("accepts an explicit STORAGE_BACKEND=fs", () => {
+		const config = createConfig({ ...REQUIRED, STORAGE_BACKEND: "fs" });
+		expect(config.storageBackend).toBe("fs");
+	});
+
 	it("rejects missing SECRETS_PRIVATE_KEYS", () => {
 		// Pins the fail-fast contract: `SECRETS_PRIVATE_KEYS` is required at
 		// boot, not deferred to first decryption. Regressing this to
