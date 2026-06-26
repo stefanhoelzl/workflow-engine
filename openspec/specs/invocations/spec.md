@@ -357,7 +357,7 @@ Synthetic-invocation reconstruction (see "Synthetic invocation record from a sin
 
 ### Requirement: Executor emits invocation lifecycle log lines
 
-The runtime executor SHALL emit structured log lines for invocation lifecycle events. These log lines are independent of the durable archive (they go to the runtime logger, not to the events table) and SHALL be emitted after the corresponding `eventStore.record(event)` call returns, so that a logged lifecycle line implies a corresponding accumulator-or-DuckLake state transition.
+The runtime executor SHALL emit structured log lines for invocation lifecycle events. These log lines are independent of the durable archive (they go to the runtime logger, not to the events table) and SHALL be emitted after the corresponding `eventStore.record(event)` call returns, so that a logged lifecycle line implies a corresponding accumulator-or-libSQL state transition.
 
 The executor SHALL discriminate on `event.kind` and emit:
 

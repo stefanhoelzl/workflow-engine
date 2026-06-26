@@ -61,7 +61,7 @@ The runtime SHALL atomically remove an item from the queue and return it to the 
 
 ### Requirement: Durability contract
 
-A successful return from `put` SHALL guarantee that the inserted row survives `SIGKILL`, host crash, or power loss. A successful return from `get` SHALL guarantee that the deleted row remains deleted across the same failure modes. The runtime SHALL achieve this by issuing each `put` as a single autocommit `INSERT` statement and each `get` as a single autocommit `DELETE … RETURNING` statement against DuckDB; DuckDB's WAL `fsync` on autocommit SHALL provide the durability semantics.
+A successful return from `put` SHALL guarantee that the inserted row survives `SIGKILL`, host crash, or power loss. A successful return from `get` SHALL guarantee that the deleted row remains deleted across the same failure modes. The runtime SHALL achieve this by issuing each `put` as a single autocommit `INSERT` statement and each `get` as a single autocommit `DELETE … RETURNING` statement against libSQL; libSQL's WAL `fsync` on autocommit SHALL provide the durability semantics.
 
 The bridge SHALL NOT batch queue operations or hold open transactions across the host-call boundary. Queue ops SHALL NOT be enrolled in the event-store's batched-commit transaction.
 
@@ -178,7 +178,7 @@ Every host-side read or write of `queue_items` SHALL go through a typed accessor
 
 ### Requirement: Item provenance metadata
 
-Every `queue_items` row SHALL carry metadata fields stamped by the host at the moment of `put`: `enqueuedAt` (TIMESTAMPTZ), `invocationId` (the producing invocation's id from the dispatch context), `triggerKind` (the producing trigger's kind, as a free-form string), and `triggerName` (the producing trigger's declared export name). The metadata SHALL be visible to operators via the `/queue` UI (see `queues-ui`) and SHALL be queryable via the tenant-scoped accessor.
+Every `queue_items` row SHALL carry metadata fields stamped by the host at the moment of `put`: `enqueuedAt` (TEXT, ISO-8601), `invocationId` (the producing invocation's id from the dispatch context), `triggerKind` (the producing trigger's kind, as a free-form string), and `triggerName` (the producing trigger's declared export name). The metadata SHALL be visible to operators via the `/queue` UI (see `queues-ui`) and SHALL be queryable via the tenant-scoped accessor.
 
 The metadata SHALL NOT be exposed to guest code via the `get()` return value. The guest-facing `Queue<T>` contract SHALL remain `put(item: T) → void` and `get() → T | undefined`; the metadata SHALL be host-only / UI-only.
 
@@ -207,23 +207,24 @@ The metadata SHALL NOT be exposed to guest code via the `get()` return value. Th
 
 ### Requirement: Storage layout
 
-The runtime SHALL persist queue contents as rows in a single `queue_items` table inside the runtime's existing DuckDB instance at `<PERSISTENCE_PATH>/events.duckdb`. The table SHALL have the following schema:
+The runtime SHALL persist queue contents as rows in a single `queue_items` table inside the runtime's libSQL database at `<PERSISTENCE_PATH>/events.db` (shared with the event store). The table SHALL have the following schema:
 
-- `owner VARCHAR NOT NULL`
-- `repo VARCHAR NOT NULL`
-- `workflow VARCHAR NOT NULL`
-- `queue VARCHAR NOT NULL`
-- `seq BIGINT NOT NULL DEFAULT nextval('queue_items_seq')`
-- `enqueuedAt TIMESTAMPTZ NOT NULL`
-- `invocationId VARCHAR NOT NULL`
-- `triggerKind VARCHAR NOT NULL`
-- `triggerName VARCHAR NOT NULL`
-- `item JSON NOT NULL`
-- `PRIMARY KEY (owner, repo, workflow, queue, seq)`
+- `seq INTEGER PRIMARY KEY AUTOINCREMENT`
+- `owner TEXT NOT NULL`
+- `repo TEXT NOT NULL`
+- `workflow TEXT NOT NULL`
+- `queue TEXT NOT NULL`
+- `enqueuedAt TEXT NOT NULL`
+- `invocationId TEXT NOT NULL`
+- `triggerKind TEXT NOT NULL`
+- `triggerName TEXT NOT NULL`
+- `item TEXT NOT NULL`
+
+A secondary index over `(owner, repo, workflow, queue, seq)` SHALL exist to bound per-queue FIFO scans (replacing the prior composite primary key, which is now the single-column `seq` rowid).
 
 Column names use camelCase to match the existing event-store table convention (events table: `workflowSha`, etc.). The table name uses snake_case (`queue_items`) following standard SQL convention for multi-word identifiers.
 
-The `seq` column SHALL draw its value from a global DuckDB sequence (`queue_items_seq`), one counter across all queues, used solely for FIFO ordering. Implementation note: DuckDB does not support `GENERATED ALWAYS AS IDENTITY` ("Constraint not implemented!"); the equivalent global sequence pattern provides identical observable behavior — monotonic seq assignment in commit order, dense across all queues, never exposed to guests, never displayed to operators.
+The `seq` column SHALL be an `INTEGER PRIMARY KEY AUTOINCREMENT`: one monotonic counter across all queues, dense in commit order, used solely for FIFO ordering, never exposed to guests, never displayed to operators. The `AUTOINCREMENT` keyword is REQUIRED — without it, SQLite/libSQL may recycle a freed rowid after the DELETEs that popping causes, which would break monotonicity. (DuckDB's `CREATE SEQUENCE` / `nextval()` is not available in libSQL; `INTEGER PRIMARY KEY AUTOINCREMENT` provides the equivalent observable behavior.)
 
 A queue's *existence* SHALL be determined by its presence in the workflow's manifest (`declaredQueues`); the queue's row count in `queue_items` MAY be zero for a declared queue with no items. No "empty file" or "queue row marker" SHALL be required.
 
@@ -237,18 +238,25 @@ The runtime SHALL own the `queue_items` table exclusively; no other capability S
 - **AND** the queue SHALL still be considered "declared and present" because the manifest declares it
 - **AND** a subsequent `get()` SHALL return `undefined` without error
 
+#### Scenario: seq is monotonic and not reused after a pop
+
+- **GIVEN** a queue with three items at `seq` 1, 2, 3
+- **WHEN** the two oldest items are popped (deleting `seq` 1 and 2) and a new item is then put
+- **THEN** the new item SHALL receive a `seq` strictly greater than 3
+- **AND** no freed `seq` value (1 or 2) SHALL be reused
+
 #### Scenario: Newlines inside items do not break framing
 
 - **GIVEN** an item whose `JSON.stringify` form contains the substring `\n` inside a string field
 - **WHEN** the runtime inserts the item
-- **THEN** the `item JSON` column SHALL store the JSON value as DuckDB's JSON type
+- **THEN** the `item` column SHALL store the JSON value as TEXT
 - **AND** subsequent retrieval via `SELECT item FROM queue_items WHERE seq = ?` SHALL yield the original string value verbatim (no FIFO framing concerns apply — rows are not line-delimited)
 
 ### Requirement: Workflow-wide depth cap
 
 The runtime SHALL bound the total number of queue items per workflow, not per queue. A `put` SHALL be rejected when the count of `queue_items` rows for `(owner, repo, workflow)` — summed across ALL of that workflow's queue names — already reaches the cap at the moment of the check. Rejection SHALL surface as a typed `QueueFull` error with `code = "queue.full"`, and no row SHALL be inserted.
 
-The cap is workflow-wide (rather than per-queue) because there is no runtime queue-name gate (see "Config-less worker; host is the sole policy authority"): a per-queue cap would be trivially defeated by a tampered guest inventing unlimited names, each starting at zero depth. A workflow-wide cap bounds total storage on the shared `events.duckdb` regardless of how many names are used. The cap MAY alternatively be keyed at the tenant level (drop the `workflow` predicate) for a stronger bound at the cost of coupling unrelated workflows; the workflow-wide keying is the default because it couples only one author's own queues.
+The cap is workflow-wide (rather than per-queue) because there is no runtime queue-name gate (see "Config-less worker; host is the sole policy authority"): a per-queue cap would be trivially defeated by a tampered guest inventing unlimited names, each starting at zero depth. A workflow-wide cap bounds total storage on the shared `events.db` regardless of how many names are used. The cap MAY alternatively be keyed at the tenant level (drop the `workflow` predicate) for a stronger bound at the cost of coupling unrelated workflows; the workflow-wide keying is the default because it couples only one author's own queues.
 
 The cap check SHALL be performed via `SELECT COUNT(*)` followed by `INSERT` in the same autocommit context. Under concurrent `put` calls within one workflow, snapshot isolation MAY allow the depth to transiently overflow the cap by the number of in-flight puts; items inserted during such an overrun SHALL remain valid and SHALL be consumed in FIFO order. Boot reconciliation SHALL NOT attempt to truncate overruns.
 

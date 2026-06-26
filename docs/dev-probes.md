@@ -6,22 +6,19 @@ Recipes agents use to verify changes against `pnpm dev` (see `CLAUDE.md` §Dev v
 
 `curl` against `POST /webhooks/local-user/demo-repo/demo/<trigger>` (public webhooks; route shape is `/webhooks/<owner>/<repo>/<workflow>/<trigger>` — four segments), `/invocations/local-user/demo-repo` (session cookie), `/trigger/local-user/demo-repo/demo/<trigger>` (session cookie). Assert on status code + JSON/HTML content. To list workflows or trigger names, scrape the invocations view HTML — there is no `GET /api/workflows/<owner>` JSON listing.
 
-## EventStore (DuckLake)
+## EventStore (libSQL)
 
-Cold-start is constant-time: the DuckLake catalog opens directly, no per-invocation file scan. While the runtime is alive it holds an exclusive file lock on `.persistence/events.duckdb` (DuckDB-imposed, even for read-only attach), so external SELECTs against the live catalog are not viable. Use these probes instead:
+The event index and queues live in a libSQL embedded database at `.persistence/events.db`, opened in WAL mode. WAL permits a second reader concurrently with the live runtime, so you can SELECT against the live file directly. Probes:
 
 - **Confirm round-trip on a manual fire.** Trigger a workflow, then grep stdout for `event-store.commit-ok { id, owner, repo, rows, duration }` — that line is emitted exactly once per terminal commit. Absence of the line means the runtime never received the trigger or the commit failed (look for `event-store.commit-retry` / `event-store.commit-dropped` instead).
-- **Catalog file present.** `ls .persistence/events.duckdb` after the first fire — created on first boot.
+- **Database file present.** `ls .persistence/events.db` after the first fire — created on first boot. There is no `events.duckdb`.
 - **Lifecycle log lines.** The executor emits `invocation.started` / `invocation.completed` / `invocation.failed` independently of the durable archive (see `executor/log-lifecycle.ts`); grep stdout to confirm the application observed an invocation even if the commit was dropped.
-- **CHECKPOINT activity.** `event-store.checkpoint-run { durationMs, catalogBytesBefore, catalogBytesAfter, inlinedRowsFlushedApprox, trigger }` lines appear when DuckLake compacts inlined rows into Parquet. Force-trigger by spawning with `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS=1` and firing a few invocations.
-- **Inspect rows after the runtime exits.** Stop `pnpm dev` (it releases the lock on shutdown), then attach in another DuckDB process:
+- **Inspect rows against the live file.** WAL mode allows a concurrent reader (no need to stop `pnpm dev`). With the `sqlite3` CLI or any libSQL client:
   ```
-  duckdb -c "INSTALL ducklake; LOAD ducklake;
-             ATTACH 'ducklake:.persistence/events.duckdb' AS event_store
-                    (READ_ONLY, DATA_PATH '.persistence/events');
-             SELECT id, kind, owner, repo, name FROM event_store.events ORDER BY id, seq LIMIT 20;"
+  sqlite3 .persistence/events.db \
+    "SELECT id, kind, owner, repo, name FROM events ORDER BY id, seq LIMIT 20;"
   ```
-  Useful for verifying owner scoping, event-shape changes, or post-mortem of a specific terminal.
+  Useful for verifying owner scoping, event-shape changes, or post-mortem of a specific terminal. The `queue_items` table lives in the same file.
 
 ## Invocations view HTML scraping
 

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "@workflow-engine/tests";
 
-// Test #22 — queues-on-duckdb end-to-end. Exercises the full bridge:
+// Test #22 — queues end-to-end. Exercises the full bridge:
 // guest `q.put` crosses the host-call channel into the main-thread
 // `queue.put` handler, which validates, stamps producer metadata
 // (invocationId / triggerKind / triggerName / enqueuedAt), and INSERTs
-// into the `queue_items` table in `events.duckdb`. The complementary
+// into the `queue_items` table in `events.db`. The complementary
 // guest `q.get` is exercised through a manual drain trigger; the items
 // fragment endpoint is fetched authenticated to assert the producer
 // metadata reaches the `/queue` UI.
@@ -94,7 +94,7 @@ describe("queue round-trip via host-call channel", () => {
 				expect(html).toMatch(/class="[^"]*\bk-http\b[^"]*"/);
 				// Trigger name reaches the collapsed identity
 				expect(html).toContain("enqueueJob");
-				// Collapsed row does NOT show the item payload (queues-on-duckdb
+				// Collapsed row does NOT show the item payload (queues-on-libsql
 				// design §K + spec: "Collapsed row contains no item payload").
 				// The summary mustn't contain the URL strings — those live in
 				// the lazy JSON body attribute only (data-json="...").
@@ -138,7 +138,7 @@ describe("queue round-trip via host-call channel", () => {
 				// the bridge auto-captures, and `GuestFunctionDescription`
 				// has no `logOutput` hook today. This is a pre-existing
 				// asymmetry vs the put-side `logInput` privacy filter — not
-				// a regression caused by queues-on-duckdb. Adding a
+				// a regression caused by queues-on-libsql. Adding a
 				// `logOutput` hook is tracked as a follow-up on the sandbox
 				// package; this test asserts only that put-side privacy
 				// holds, which is what the queue worker's `logInput`

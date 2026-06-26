@@ -1,78 +1,72 @@
-import { copyFile, mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { DuckDBInstance } from "@duckdb/node-api";
+import { createClient } from "@libsql/client";
 import type { EventFilter, InvocationEvent } from "./types.js";
 
 // Source-of-truth for events emitted by the spawned child runtime.
 //
-// The runtime persists invocation events through plain DuckDB at
-// `<persistencePath>/events.duckdb` (see `packages/runtime/src/event-store.ts`).
-// DuckDB takes an exclusive file lock on the database while the runtime is
-// alive, so the framework cannot open the live file (read-only mode is also
-// blocked once a writer holds the lock).
-//
-// To observe committed events without contending for the lock, each poll
-// snapshots the DB file and its WAL to a fresh tmpdir, then opens the copy
-// with default mode (no other process holds a lock on the copy). DuckDB's
-// open replays the WAL into the copy automatically, so the snapshot reflects
-// every committed terminal up to the moment of cp. In-flight events live
-// only in the runtime's in-memory accumulator and are NOT visible here;
-// `archived: false` therefore returns no rows.
+// The runtime persists invocation events through libSQL at
+// `<persistencePath>/events.db` (see `packages/runtime/src/event-store.ts`).
+// The runtime opens the database in WAL mode, so this framework can open a
+// SECOND read connection on the same file concurrently with the live writer —
+// no file copy or snapshot is needed. In-flight events live only in the
+// runtime's in-memory accumulator and are NOT visible here; `archived: false`
+// therefore returns no rows.
 
-async function snapshotEventsDb(
-	persistencePath: string,
-): Promise<{ dbPath: string; cleanup: () => Promise<void> } | null> {
-	const livePath = join(persistencePath, "events.duckdb");
-	try {
-		await stat(livePath);
-	} catch {
-		return null;
+function parseJsonCol(value: unknown): unknown {
+	if (typeof value === "string") {
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
 	}
-	const dir = await mkdtemp(join(tmpdir(), "wfe-events-snap-"));
-	const dbPath = join(dir, "events.duckdb");
-	const walPath = join(dir, "events.duckdb.wal");
-	await copyFile(livePath, dbPath);
-	try {
-		await copyFile(`${livePath}.wal`, walPath);
-	} catch {
-		// WAL absent is fine — main file is the full state.
-	}
+	return value;
+}
+
+// libSQL returns TEXT/INTEGER columns as strings/numbers. Re-hydrate the JSON
+// columns and coerce numerics so the row matches the InvocationEvent shape the
+// runtime's own read path produces.
+function rowToEvent(row: Record<string, unknown>): InvocationEvent {
 	return {
-		dbPath,
-		cleanup: () => rm(dir, { recursive: true, force: true }),
-	};
+		...row,
+		seq: Number(row.seq),
+		ref: row.ref === null || row.ref === undefined ? null : Number(row.ref),
+		ts: row.ts === null || row.ts === undefined ? row.ts : Number(row.ts),
+		input: parseJsonCol(row.input),
+		output: parseJsonCol(row.output),
+		error: parseJsonCol(row.error),
+		meta: parseJsonCol(row.meta),
+	} as unknown as InvocationEvent;
 }
 
 async function readArchivedEvents(
 	persistencePath: string,
 ): Promise<InvocationEvent[]> {
-	const snap = await snapshotEventsDb(persistencePath);
-	if (!snap) {
+	const livePath = join(persistencePath, "events.db");
+	try {
+		await stat(livePath);
+	} catch {
 		return [];
 	}
+	const client = createClient({ url: `file:${livePath}` });
 	try {
-		const instance = await DuckDBInstance.create(snap.dbPath);
-		const conn = await instance.connect();
-		try {
-			const reader = await conn.runAndReadAll(
-				"SELECT * FROM events ORDER BY id, seq",
-			);
-			return reader.getRowObjects() as unknown as InvocationEvent[];
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			// Schema may not exist yet on a freshly-spawned runtime that has
-			// not initialised EventStore. Treat as no events.
-			if (msg.includes("does not exist") || msg.includes("Catalog Error")) {
-				return [];
-			}
-			throw err;
-		} finally {
-			conn.disconnectSync();
-			instance.closeSync();
+		const result = await client.execute(
+			"SELECT * FROM events ORDER BY id, seq",
+		);
+		return (result.rows as unknown as Record<string, unknown>[]).map(
+			rowToEvent,
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		// Schema may not exist yet on a freshly-spawned runtime that has not
+		// initialised EventStore. Treat as no events.
+		if (msg.includes("no such table") || msg.includes("does not exist")) {
+			return [];
 		}
+		throw err;
 	} finally {
-		await snap.cleanup();
+		client.close();
 	}
 }
 
@@ -85,11 +79,10 @@ function scanEvents(
 	opts: ScanOptions = {},
 ): Promise<InvocationEvent[]> {
 	if (opts.archived === false) {
-		// Pre-DuckLake the framework polled `pending/{id}/{seq}.json` files for
-		// in-flight events. Under the new architecture those events live only in
-		// the runtime's in-memory accumulator and are not externally observable.
-		// Tests that previously synced on `archived: false` must use an
-		// alternative signal (logs, HTTP response, manualTrigger return value).
+		// In-flight events live only in the runtime's in-memory accumulator and
+		// are not externally observable (committed-on-terminal). Tests that
+		// previously synced on `archived: false` must use an alternative signal
+		// (logs, HTTP response, manualTrigger return value).
 		return Promise.resolve([]);
 	}
 	return readArchivedEvents(persistencePath);

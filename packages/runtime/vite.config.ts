@@ -33,7 +33,7 @@ export default defineConfig({
 	ssr: {
 		target: "node",
 		noExternal: true,
-		external: ["@duckdb/node-bindings", "@jitl/quickjs-wasmfile-release-sync"],
+		external: ["@libsql/client", "@jitl/quickjs-wasmfile-release-sync"],
 	},
 	server: {
 		watch: {

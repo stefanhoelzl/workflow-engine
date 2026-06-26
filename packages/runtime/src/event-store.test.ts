@@ -1,14 +1,18 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Client } from "@libsql/client";
 import type { InvocationEvent } from "@workflow-engine/core";
+import type { Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createEventStore,
+	type Database,
 	type EventStore,
 	type EventStoreConfig,
 } from "./event-store.js";
 import type { Logger } from "./logger.js";
+import { openLibsqlDb } from "./test-utils/libsql.js";
 import { createTestLogger } from "./test-utils/logger.js";
 
 function defaultConfig(
@@ -44,21 +48,32 @@ describe("EventStore", () => {
 	let dir: string;
 	let store: EventStore;
 	let logger: Logger;
+	let db: Kysely<Database>;
+	// Every libSQL client opened during a test (the per-test db plus any reopen)
+	// so afterEach can close them all (db.destroy() is a no-op on the injected
+	// client; the client owns the file handle).
+	let clients: Client[];
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "event-store-test-"));
 		logger = createTestLogger();
+		const opened = openLibsqlDb<Database>(dir);
+		db = opened.db;
+		clients = [opened.client];
 	});
 
 	afterEach(async () => {
 		await store.drainAndClose();
+		for (const client of clients) {
+			client.close();
+		}
 		await rm(dir, { recursive: true, force: true });
 	});
 
 	describe("record() and query()", () => {
 		it("non-terminal events stay in the in-memory accumulator and are not queryable", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -72,7 +87,7 @@ describe("EventStore", () => {
 
 		it("terminal trigger.response commits the full accumulator", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -98,9 +113,37 @@ describe("EventStore", () => {
 			]);
 		});
 
+		it("orders by ISO-8601 'at' DESC, id DESC chronologically (string sort == time)", async () => {
+			store = await createEventStore({ db, logger, config: defaultConfig() });
+			// Distinct invocations whose request `at` spans ms precision and a
+			// multi-day gap — lexicographic TEXT order must match chronological.
+			const stamps: [string, string][] = [
+				["evt_1", "2026-01-01T00:00:00.000Z"],
+				["evt_2", "2026-01-01T00:00:00.005Z"],
+				["evt_3", "2027-02-05T12:34:56.789Z"],
+			];
+			for (const [id, at] of stamps) {
+				// biome-ignore lint/performance/noAwaitInLoops: seed sequentially so commit order is deterministic
+				await store.record(
+					makeEvent({ id, kind: "trigger.request", seq: 0, at }),
+				);
+				await store.record(
+					makeEvent({ id, kind: "trigger.response", seq: 1, ref: 0, at }),
+				);
+			}
+			const rows = await store
+				.query([{ owner: "acme", repo: "foo" }])
+				.where("kind", "=", "trigger.request")
+				.select(["id", "at"])
+				.orderBy("at", "desc")
+				.orderBy("id", "desc")
+				.execute();
+			expect(rows.map((r) => r.id)).toEqual(["evt_3", "evt_2", "evt_1"]);
+		});
+
 		it("terminal trigger.error commits identically", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -126,7 +169,7 @@ describe("EventStore", () => {
 
 		it("single-leaf trigger.exception commits immediately", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -149,7 +192,7 @@ describe("EventStore", () => {
 
 		it("query() with empty scope list throws", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -158,7 +201,7 @@ describe("EventStore", () => {
 
 		it("query() filters by (owner, repo)", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -211,7 +254,7 @@ describe("EventStore", () => {
 	describe("hasUploadEvent", () => {
 		it("returns false for unknown sha", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -222,7 +265,7 @@ describe("EventStore", () => {
 
 		it("returns true after a system.upload terminal commit", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -241,7 +284,7 @@ describe("EventStore", () => {
 
 		it("does not match cross-(owner, repo)", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -263,7 +306,7 @@ describe("EventStore", () => {
 	describe("ping", () => {
 		it("resolves on a healthy connection", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -274,7 +317,7 @@ describe("EventStore", () => {
 	describe("retry-then-drop on commit failure", () => {
 		it("happy-path commit emits commit-ok and no retry/drop log lines", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -300,7 +343,7 @@ describe("EventStore", () => {
 	describe("SIGTERM drain", () => {
 		it("commits in-flight invocations as trigger.error{kind:'shutdown'}", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -310,9 +353,11 @@ describe("EventStore", () => {
 			);
 			// drainAndClose synthesises a trigger.error{shutdown} and commits.
 			await store.drainAndClose();
-			// Re-open against the same dir to query the durable state.
+			// Re-open against the same file to query the durable state.
+			const reopened = openLibsqlDb<Database>(dir);
+			clients.push(reopened.client);
 			const reopen = await createEventStore({
-				persistenceRoot: dir,
+				db: reopened.db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -342,7 +387,7 @@ describe("EventStore", () => {
 
 		it("ignores record() after stop and warns", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -389,7 +434,7 @@ describe("EventStore", () => {
 	describe("prune", () => {
 		it("deletes fully-aged invocations, keeps recent ones, returns the invocation count", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -404,7 +449,7 @@ describe("EventStore", () => {
 
 		it("keeps a straddling call graph whole (max(at) newer than cutoff survives)", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -429,7 +474,7 @@ describe("EventStore", () => {
 
 		it("is a no-op when nothing is aged", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -443,7 +488,7 @@ describe("EventStore", () => {
 
 		it("returns 0 once the store is stopped", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -456,7 +501,7 @@ describe("EventStore", () => {
 	describe("scheduled retention", () => {
 		it("schedules nothing when retention is disabled", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig({ retentionDays: 0 }),
 			});
@@ -476,7 +521,7 @@ describe("EventStore", () => {
 
 		it("an enabled tick prunes aged invocations and logs prune-ok", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig({ retentionDays: 30 }),
 			});
@@ -506,7 +551,7 @@ describe("EventStore", () => {
 				const retentionDays = 30;
 				const intervalMs = (retentionDays * 86_400_000) / 100;
 				store = await createEventStore({
-					persistenceRoot: dir,
+					db,
 					logger,
 					config: defaultConfig({ retentionDays }),
 				});
@@ -538,7 +583,7 @@ describe("EventStore", () => {
 	describe("retention shutdown safety", () => {
 		it("drainAndClose clears the timer and no prune runs afterward", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig({ retentionDays: 30 }),
 			});
@@ -553,7 +598,7 @@ describe("EventStore", () => {
 	describe("retention durability across reopen", () => {
 		it("a committed prune persists; reopening shows only retained invocations", async () => {
 			store = await createEventStore({
-				persistenceRoot: dir,
+				db,
 				logger,
 				config: defaultConfig(),
 			});
@@ -561,8 +606,10 @@ describe("EventStore", () => {
 			await commitInvocation(store, "evt_recent", "2026-06-01T00:00:00.000Z");
 			await store.prune({ olderThan: new Date("2026-03-01T00:00:00.000Z") });
 			await store.drainAndClose();
+			const reopened = openLibsqlDb<Database>(dir);
+			clients.push(reopened.client);
 			const reopen = await createEventStore({
-				persistenceRoot: dir,
+				db: reopened.db,
 				logger,
 				config: defaultConfig(),
 			});

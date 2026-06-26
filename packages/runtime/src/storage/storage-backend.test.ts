@@ -37,7 +37,7 @@ describe("StorageBackend: fs", () => {
 	it("list yields matching paths", async () => {
 		await backend.write("workflows/a.tar.gz", new Uint8Array([1]));
 		await backend.write("workflows/b.tar.gz", new Uint8Array([2]));
-		await backend.write("events.duckdb", new Uint8Array([3]));
+		await backend.write("events.db", new Uint8Array([3]));
 
 		const results: string[] = [];
 		for await (const path of backend.list("workflows/")) {
@@ -46,7 +46,7 @@ describe("StorageBackend: fs", () => {
 
 		expect(results).toContain("workflows/a.tar.gz");
 		expect(results).toContain("workflows/b.tar.gz");
-		expect(results).not.toContain("events.duckdb");
+		expect(results).not.toContain("events.db");
 	});
 
 	it("list yields sorted paths", async () => {
@@ -77,7 +77,7 @@ describe("StorageBackend: fs", () => {
 	it("list yields paths recursively", async () => {
 		await backend.write("workflows/foo/bar.tar.gz", new Uint8Array([1]));
 		await backend.write("workflows/foo/baz.tar.gz", new Uint8Array([2]));
-		await backend.write("events.duckdb", new Uint8Array([3]));
+		await backend.write("events.db", new Uint8Array([3]));
 
 		const results: string[] = [];
 		for await (const path of backend.list("workflows/")) {
@@ -86,6 +86,6 @@ describe("StorageBackend: fs", () => {
 
 		expect(results).toContain("workflows/foo/bar.tar.gz");
 		expect(results).toContain("workflows/foo/baz.tar.gz");
-		expect(results).not.toContain("events.duckdb");
+		expect(results).not.toContain("events.db");
 	});
 });

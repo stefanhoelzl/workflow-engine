@@ -12,7 +12,7 @@
 		"build": "tsc --build"
 	},
 	"dependencies": {
-		"@duckdb/node-api": "1.5.2-r.1",
+		"@libsql/client": "^0.8.0",
 		"@workflow-engine/core": "workspace:*",
 		"@workflow-engine/runtime": "workspace:*",
 		"@workflow-engine/sdk": "workspace:*",

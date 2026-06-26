@@ -1,6 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import type { InvocationEvent } from "@workflow-engine/core";
 import type { SelectQueryBuilder } from "kysely";
 import {
@@ -11,6 +9,7 @@ import {
 	type EventStore,
 	type Scope,
 } from "../event-store.js";
+import { createTempLibsqlDb } from "./libsql.js";
 import { createTestLogger } from "./logger.js";
 
 // Test helper: a minimal `EventStore` whose `record` captures every event in
@@ -73,14 +72,14 @@ interface RealEventStoreHandle {
 	dispose: () => Promise<void>;
 }
 
-// Boots a real EventStore against a temp FS directory. The DuckDB database
-// file lives under that directory; on dispose, the directory is removed.
+// Boots a real EventStore against a temp libSQL `file:` database. On dispose,
+// the store drains, the client closes, and the temp directory is removed.
 // Suitable for integration-style tests that need real Kysely queries against
 // the events table.
 async function createRealEventStoreForTest(): Promise<RealEventStoreHandle> {
-	const dir = await mkdtemp(join(tmpdir(), "event-store-test-"));
+	const tmp = await createTempLibsqlDb<Database>();
 	const store = await createEventStore({
-		persistenceRoot: dir,
+		db: tmp.db,
 		logger: createTestLogger(),
 		config: {
 			commitMaxRetries: 0,
@@ -92,8 +91,11 @@ async function createRealEventStoreForTest(): Promise<RealEventStoreHandle> {
 	return {
 		store,
 		dispose: async () => {
+			// drainAndClose destroys the Kysely handle (no-op on the injected
+			// client); tmp.dispose then closes the client and removes the dir.
 			await store.drainAndClose();
-			await rm(dir, { recursive: true, force: true });
+			tmp.client.close();
+			await rm(tmp.dir, { recursive: true, force: true });
 		},
 	};
 }

@@ -363,22 +363,6 @@ The `ScenarioState` interface SHALL expose all of the following fields, even whe
 - **WHEN** `state.fetches.byLabel("missing")` is called and no fetch carried that label
 - **THEN** the lookup SHALL throw an error naming the missing label
 
-### Requirement: Event source via filesystem polling
-
-`state.events` and `.waitForEvent` SHALL source invocation events from the spawned child's persistence directory (`pending/*.json` for in-flight, `archive/*.json` for terminal). The framework SHALL NOT subscribe to runtime log lines for invocation events.
-
-#### Scenario: Events read from persistence dir
-
-- **WHEN** an `.expect` callback reads `state.events`
-- **THEN** the framework SHALL read all files under `<persistencePath>/pending/` and `<persistencePath>/archive/` and parse each as JSON
-- **AND** SHALL return the parsed events
-
-#### Scenario: No log-line subscription for events
-
-- **WHEN** the runtime emits an `invocation.completed` log line
-- **THEN** the framework SHALL NOT use that line as a sync point for `.waitForEvent`
-- **AND** the test's view of events SHALL come exclusively from filesystem reads
-
 ### Requirement: Log observation with auto-scoping
 
 `state.logs` SHALL be a snapshot of structured pino log lines from the spawned child's stdout, scoped to lines emitted since the test's `mark()`. The framework SHALL auto-mark at each test's `beforeEach`.
@@ -507,7 +491,7 @@ The framework SHALL run vitest workers in parallel (default = one per CPU). With
 The framework SHALL ship the following end-to-end tests, each testing one invariant that cannot be covered by in-process or unit tests:
 
 1. Sealed secret round-trip + log redaction
-2. Cold start from DuckLake catalog (committed invocations remain queryable across graceful restart)
+2. Cold start from the libSQL event store (committed invocations remain queryable across graceful restart)
 3. Graceful SIGTERM drain (in-flight invocation surfaces as a `trigger.error{kind:"shutdown"}` synthetic terminal in the archive after respawn)
 4. Health endpoint shape
 5. Workflow re-upload + sandbox eviction log line
@@ -526,9 +510,8 @@ The framework SHALL ship the following end-to-end tests, each testing one invari
 18. sendMail happy path + SMTP password log redaction
 19. Owner/repo scoping (same workflow name under multiple `(owner, repo)` tuples)
 20. wsTrigger protocol adapter
-21. CHECKPOINT survives restart (multiple invocations across DuckLake checkpoint cycles remain queryable after respawn)
 
-The previous "SIGKILL crash recovery (engine_crashed event after respawn)" test is removed. Under `event-store-ducklake`, the per-event WAL is gone and SIGKILL during an in-flight invocation deliberately loses it — there is no `engine_crashed` synthetic terminal to assert on. The graceful-shutdown contract is exercised by the rewritten test #3 (SIGTERM synthesises `trigger.error{kind:"shutdown"}`); the durable round-trip contract is exercised by the new test #2 (cold start from catalog).
+The previous "SIGKILL crash recovery (engine_crashed event after respawn)" test is removed: the per-event WAL is gone and SIGKILL during an in-flight invocation deliberately loses it — there is no `engine_crashed` synthetic terminal to assert on. The former "CHECKPOINT survives restart" test is also removed: libSQL has no application-visible checkpoint cycle to exercise. The graceful-shutdown contract is exercised by test #3 (SIGTERM synthesises `trigger.error{kind:"shutdown"}`); the durable round-trip contract is exercised by test #2 (cold start from the libSQL event store).
 
 #### Scenario: Each test exists
 
@@ -592,4 +575,20 @@ Additional close-code paths (`1011` handler-throw, `1012` reconfigure, heartbeat
 - **THEN** the new test file SHALL contain at least two `test(...)` calls
 - **AND** one SHALL exercise the happy-path send/receive
 - **AND** one SHALL exercise the 1007 close path via `sendRaw` + `closed`
+
+### Requirement: Event source via the persisted event store
+
+`state.events` and `.waitForEvent` SHALL source committed invocation events from the spawned child's libSQL database (`<persistencePath>/events.db`) by opening a **second** `@libsql/client` read connection on that file (WAL mode permits concurrent readers alongside the live runtime) and querying the `events` table. The framework SHALL NOT copy or snapshot the database file, and SHALL NOT subscribe to runtime log lines for invocation events. Only committed events are observable — events still held in the EventStore's in-memory accumulator for an in-flight invocation are not yet on disk and therefore are not visible to the harness (consistent with the `event-store` accumulator/commit-on-terminal model).
+
+#### Scenario: Events read from the libSQL database
+
+- **WHEN** an `.expect` callback reads `state.events`
+- **THEN** the framework SHALL query the `events` table via a second `@libsql/client` read connection on `<persistencePath>/events.db`
+- **AND** SHALL return the parsed events
+
+#### Scenario: No log-line subscription for events
+
+- **WHEN** the runtime emits an `invocation.completed` log line
+- **THEN** the framework SHALL NOT use that line as a sync point for `.waitForEvent`
+- **AND** the test's view of events SHALL come exclusively from reads of the libSQL database
 

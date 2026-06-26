@@ -3,12 +3,10 @@
 ## Purpose
 
 Define the production container image for the workflow-engine: a multi-stage Dockerfile at `infrastructure/Dockerfile` built with `podman` during local `tofu apply` and with `docker/build-push-action` in CI. Owns the build-stage / production-stage split (node:24-slim for building, distroless/nodejs24-debian13 for production), the workflow-bundle placement inside the image, and the native-dependency tree required at runtime.
-
 ## Requirements
-
 ### Requirement: Multi-stage Dockerfile produces a minimal production image
 
-The repository SHALL contain a `Dockerfile` at `infrastructure/Dockerfile` that uses a multi-stage build. The build stage SHALL use `node:24-slim` with corepack-enabled pnpm to install dependencies, run workspace builds in topological order via `pnpm -r build` (which is equivalent to explicit per-package invocations but self-updates when packages are added), and deploy production dependencies via `pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy`. The runtime's built artefacts (`packages/runtime/dist/*`) SHALL be copied into `/app/deploy/`. The production stage SHALL use `gcr.io/distroless/nodejs24-debian13` and contain only `/app/deploy` (with the bundled JS + shamefully-hoisted `node_modules/` with native DuckDB + quickjs-wasi bindings + patched `fetch-blob`).
+The repository SHALL contain a `Dockerfile` at `infrastructure/Dockerfile` that uses a multi-stage build. The build stage SHALL use `node:24-slim` with corepack-enabled pnpm to install dependencies, run workspace builds in topological order via `pnpm -r build` (which is equivalent to explicit per-package invocations but self-updates when packages are added), and deploy production dependencies via `pnpm deploy --prod --shamefully-hoist --filter @workflow-engine/runtime /app/deploy`. The runtime's built artefacts (`packages/runtime/dist/*`) SHALL be copied into `/app/deploy/`. The production stage SHALL use `gcr.io/distroless/nodejs24-debian13` and contain only `/app/deploy` (with the bundled JS + shamefully-hoisted `node_modules/` with native libSQL (`@libsql/client`) + quickjs-wasi bindings + patched `fetch-blob`).
 
 The image SHALL NOT contain workflow bundles baked into the filesystem. Workflows are uploaded at runtime per tenant via `POST /api/workflows/<tenant>` and persisted through the `StorageBackend` to `workflows/<tenant>.tar.gz` (per `multi-tenant-workflows`). The image SHALL NOT set any `WORKFLOW_DIR` environment variable — that variable no longer exists.
 
@@ -21,13 +19,13 @@ The image SHALL be built by `podman build` via the `image/local` OpenTofu module
 - **WHEN** `tofu apply` runs against the local environment
 - **THEN** the image SHALL be built successfully via podman
 - **AND** the resulting image SHALL be loaded into the kind cluster
-- **AND** the image SHALL contain the runtime bundle, shamefully-hoisted `node_modules/` (with DuckDB + quickjs-wasi native bindings + patched fetch-blob), and the distroless Node.js runtime
+- **AND** the image SHALL contain the runtime bundle, shamefully-hoisted `node_modules/` (with libSQL + quickjs-wasi native bindings + patched fetch-blob), and the distroless Node.js runtime
 
 #### Scenario: Image runs the runtime
 
 - **WHEN** the built image is started with required environment variables set
 - **THEN** the container SHALL start the Node.js process with the bundled entry point
-- **AND** native dependencies (DuckDB, quickjs-wasi) SHALL be resolvable from the hoisted `node_modules/`
+- **AND** native dependencies (libSQL, quickjs-wasi) SHALL be resolvable from the hoisted `node_modules/`
 - **AND** the runtime SHALL accept HTTP requests on the configured port
 
 #### Scenario: No workflows baked into the image
@@ -35,7 +33,7 @@ The image SHALL be built by `podman build` via the `image/local` OpenTofu module
 - **WHEN** the built image is inspected
 - **THEN** there SHALL NOT be a `/workflows` directory
 - **AND** no `WORKFLOW_DIR` ENV line SHALL be present
-- **AND** workflow bundles SHALL be loaded at runtime from the configured `StorageBackend` (FS or S3) rather than the filesystem
+- **AND** workflow bundles SHALL be loaded at runtime from the configured `StorageBackend` rather than the filesystem
 
 #### Scenario: Sandbox worker artifact is built
 
@@ -91,3 +89,4 @@ The Dockerfile SHALL invoke `pnpm -r build` to produce every workspace package's
 - **WHEN** `pnpm -r build` runs during stage 1
 - **THEN** `@workflow-engine/sandbox`'s build SHALL complete before `@workflow-engine/runtime`'s build begins
 - **AND** `packages/sandbox/dist/src/worker.js` SHALL exist on disk before `pnpm deploy --prod` runs
+

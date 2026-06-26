@@ -94,8 +94,8 @@ function describe(
 			}
 			if (spec) {
 				// `fs.rm({recursive: true})` occasionally hits ENOTEMPTY when
-				// the runtime's last DuckLake CHECKPOINT raced with shutdown
-				// and left fresh Parquet files appearing during the recursive
+				// the runtime's last libSQL write (WAL checkpoint) raced with
+				// shutdown and left fresh files appearing during the recursive
 				// walk. Retry a few times before surfacing the error.
 				const path = spec.persistencePath;
 				for (let attempt = 0; attempt < 5; attempt += 1) {

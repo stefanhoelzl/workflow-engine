@@ -1,15 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DuckDBInstance } from "@duckdb/node-api";
+import type { Client } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createQueueStore,
+	type Database,
 	MAX_ITEM_BYTES,
 	type ProducerMeta,
 	type QueueScope,
 	type QueueStore,
 } from "./queue-store.js";
+import { openLibsqlDb, openMemoryLibsqlDb } from "./test-utils/libsql.js";
 import { createTestLogger } from "./test-utils/logger.js";
 
 const SCOPE: QueueScope = {
@@ -31,21 +33,22 @@ function meta(over: Partial<ProducerMeta> = {}): ProducerMeta {
 
 describe("QueueStore", () => {
 	let dir: string;
-	let instance: DuckDBInstance;
+	let client: Client;
 	let store: QueueStore;
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "queue-store-test-"));
-		instance = await DuckDBInstance.create(join(dir, "events.duckdb"));
+		const opened = openLibsqlDb<Database>(dir);
+		client = opened.client;
 		store = await createQueueStore({
-			instance,
+			db: opened.db,
 			logger: createTestLogger(),
 		});
 	});
 
 	afterEach(async () => {
 		await store.close();
-		await instance.closeSync();
+		client.close();
 		await rm(dir, { recursive: true, force: true });
 	});
 
@@ -129,9 +132,9 @@ describe("QueueStore", () => {
 		async function withCappedStore(
 			body: (s: QueueStore) => Promise<void>,
 		): Promise<void> {
-			const capInstance = await DuckDBInstance.create(":memory:");
+			const cap = openMemoryLibsqlDb<Database>();
 			const capStore = await createQueueStore({
-				instance: capInstance,
+				db: cap.db,
 				logger: createTestLogger(),
 				maxWorkflowDepth: SMALL_CAP,
 			});
@@ -139,7 +142,7 @@ describe("QueueStore", () => {
 				await body(capStore);
 			} finally {
 				await capStore.close();
-				await capInstance.closeSync();
+				cap.client.close();
 			}
 		}
 
@@ -373,18 +376,43 @@ describe("QueueStore", () => {
 	describe("durability across instance reopen", () => {
 		// Stand-in for the crash test: close cleanly, reopen, confirm rows
 		// survive. Full SIGKILL fault injection would need a child process.
-		it("rows persist across DuckDBInstance close + reopen", async () => {
+		it("rows persist across libSQL client close + reopen", async () => {
 			await store.put(SCOPE, { url: "survive-me" }, meta());
 			await store.close();
-			await instance.closeSync();
-			// Reopen
-			instance = await DuckDBInstance.create(join(dir, "events.duckdb"));
+			client.close();
+			// Reopen against the same file
+			const reopened = openLibsqlDb<Database>(dir);
+			client = reopened.client;
 			store = await createQueueStore({
-				instance,
+				db: reopened.db,
 				logger: createTestLogger(),
 			});
 			const popped = await store.get(SCOPE);
 			expect(popped?.item).toEqual({ url: "survive-me" });
+		});
+	});
+
+	describe("seq monotonicity", () => {
+		it("does not reuse a seq after a pop (AUTOINCREMENT)", async () => {
+			// Enqueue three, pop the two oldest, enqueue one more. The new item's
+			// seq must exceed all prior seqs — never a recycled freed rowid.
+			for (const n of [0, 1, 2]) {
+				// biome-ignore lint/performance/noAwaitInLoops: enqueue sequentially so seq is assigned in order
+				await store.put(SCOPE, { n }, meta());
+			}
+			const seqsBefore = (await store.list(SCOPE, 0, 10)).map((r) => r.seq);
+			await store.get(SCOPE);
+			await store.get(SCOPE);
+			await store.put(SCOPE, { n: "new" }, meta());
+			const after = await store.list(SCOPE, 0, 10);
+			const maxBefore = Math.max(...seqsBefore);
+			const newRow = after.find(
+				(r) => JSON.stringify(r.item) === JSON.stringify({ n: "new" }),
+			);
+			expect(newRow?.seq).toBeGreaterThan(maxBefore);
+			// none of the freed seqs (the two popped) reappear
+			const popped = seqsBefore.slice(0, 2);
+			expect(after.every((r) => !popped.includes(r.seq))).toBe(true);
 		});
 	});
 });

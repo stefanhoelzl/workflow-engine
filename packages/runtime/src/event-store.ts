@@ -1,13 +1,9 @@
-import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { DuckDBInstance } from "@duckdb/node-api";
-import { DuckDbDialect } from "@oorabona/kysely-duckdb";
 import type { InvocationEvent } from "@workflow-engine/core";
-import { CompiledQuery, Kysely, type SelectQueryBuilder, sql } from "kysely";
+import { type Kysely, type SelectQueryBuilder, sql } from "kysely";
 import type { Logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
-// EventStore — plain DuckDB on disk + Kysely query surface
+// EventStore — libSQL on disk (via an injected Kysely<Database>) + query surface
 // ---------------------------------------------------------------------------
 
 interface EventsTable {
@@ -43,19 +39,18 @@ interface EventStoreConfig {
 
 interface PruneOptions {
 	// Wall-clock cutoff: invocations whose every event is older than this are
-	// deleted. Compared against the `at` column (TIMESTAMPTZ), never `ts`.
+	// deleted. Compared against the `at` column (TEXT ISO-8601), never `ts`.
 	olderThan: Date;
 }
 
 interface EventStoreOptions {
-	persistenceRoot: string;
+	// libSQL-backed Kysely instance, built by the caller from the configured
+	// connection (`file:<PERSISTENCE_PATH>/events.db`). The caller owns the
+	// underlying client's lifecycle; `drainAndClose` only destroys this Kysely
+	// handle (which is a no-op on the injected client).
+	db: Kysely<Database>;
 	logger: Logger;
 	config: EventStoreConfig;
-	// Optional pre-created DuckDB instance. When provided, event-store uses
-	// it (and the caller owns its lifecycle). When omitted, event-store
-	// creates its own instance from `<persistenceRoot>/events.duckdb` — the
-	// behavior tests rely on.
-	instance?: DuckDBInstance;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Kysely CTE builder types are deeply generic — constraining them further adds complexity without safety
@@ -96,22 +91,25 @@ CREATE TABLE IF NOT EXISTS events (
 	seq INTEGER NOT NULL,
 	kind TEXT NOT NULL,
 	ref INTEGER,
-	"at" TIMESTAMPTZ NOT NULL,
-	ts BIGINT NOT NULL,
+	"at" TEXT NOT NULL,
+	ts INTEGER NOT NULL,
 	owner TEXT NOT NULL,
 	repo TEXT NOT NULL,
 	workflow TEXT NOT NULL,
 	workflowSha TEXT NOT NULL,
 	name TEXT NOT NULL,
-	input JSON,
-	output JSON,
-	error JSON,
-	meta JSON,
+	input TEXT,
+	output TEXT,
+	error TEXT,
+	meta TEXT,
 	PRIMARY KEY (id, seq)
 )`;
 
-const CREATE_OWNER_REPO_INDEX_DDL =
-	"CREATE INDEX IF NOT EXISTS events_owner_repo_idx ON events (owner, repo)";
+// Composite index serving the scope + kind + time-ordered dashboard reads. On a
+// row store this narrower index (vs the former owner/repo-only one) is required
+// to keep hot-repo reads sub-millisecond rather than scanning the whole partition.
+const CREATE_DASH_INDEX_DDL =
+	'CREATE INDEX IF NOT EXISTS events_dash_idx ON events (owner, repo, kind, "at")';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -138,8 +136,9 @@ function isTerminal(kind: string): boolean {
 	return TERMINAL_KINDS.has(kind);
 }
 
-// DuckDB surfaces PK violations as "Constraint Error: Duplicate key … violates primary key constraint".
-const PK_VIOLATION_RE = /constraint|primary key|duplicate key/i;
+// libSQL/SQLite surfaces PK violations as "UNIQUE constraint failed: events.id, events.seq"
+// (SQLITE_CONSTRAINT_PRIMARYKEY); "constraint" is the stable substring across engines.
+const PK_VIOLATION_RE = /constraint|primary key|duplicate key|unique/i;
 
 function isPrimaryKeyViolation(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
@@ -193,25 +192,10 @@ interface PendingInvocation {
 async function createEventStore(
 	options: EventStoreOptions,
 ): Promise<EventStore> {
-	const { persistenceRoot, logger, config } = options;
-	const absoluteRoot = resolve(persistenceRoot);
-	await mkdir(absoluteRoot, { recursive: true });
-	const dbPath = join(absoluteRoot, "events.duckdb");
+	const { db, logger, config } = options;
 
-	const instance = options.instance ?? (await DuckDBInstance.create(dbPath));
-	const conn = await instance.connect();
-
-	async function exec(sql: string): Promise<void> {
-		await conn.run(sql);
-	}
-
-	await exec(CREATE_TABLE_DDL);
-	await exec(CREATE_OWNER_REPO_INDEX_DDL);
-
-	const rawDb = new Kysely<Database>({
-		dialect: new DuckDbDialect({ database: instance }),
-	});
-	const db = rawDb;
+	await sql.raw(CREATE_TABLE_DDL).execute(db);
+	await sql.raw(CREATE_DASH_INDEX_DDL).execute(db);
 
 	const accumulator = new Map<string, PendingInvocation>();
 	let stopped = false;
@@ -219,7 +203,7 @@ async function createEventStore(
 	let firstPruneTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// Serialize all writes (commits and prunes) so two writes never run
-	// concurrently on the single DuckDB connection. A failed write doesn't
+	// concurrently on the single libSQL connection. A failed write doesn't
 	// poison the chain — the next write still runs.
 	let writeChain: Promise<unknown> = Promise.resolve();
 	function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -325,35 +309,37 @@ async function createEventStore(
 
 	// Delete whole invocations whose most recent event is older than the cutoff.
 	// Grouping by id with `max("at")` keeps a straddling call graph intact. The
-	// CHECKPOINT returns freed blocks to DuckDB's reusable free list (it does NOT
-	// shrink the file on disk — see openspec event-store retention spec).
+	// count and delete run in one transaction. libSQL/SQLite reuses freed pages
+	// for later writes; the file plateaus at its high-water mark and is not shrunk
+	// here (reclaiming disk is an out-of-band operator action — see the spec).
 	async function prune({ olderThan }: PruneOptions): Promise<number> {
 		if (stopped) {
 			return 0;
 		}
-		return await runExclusive(async () => {
-			const cutoff = olderThan.toISOString();
-			const countResult = await sql<{ c: number | bigint }>`
-				SELECT count(*) AS c FROM (
-					SELECT id FROM events
-					GROUP BY id
-					HAVING max("at") < ${cutoff}::TIMESTAMPTZ
-				)
-			`.execute(db);
-			const invocations = Number(countResult.rows[0]?.c ?? 0);
-			if (invocations === 0) {
-				return 0;
-			}
-			await sql`
-				DELETE FROM events WHERE id IN (
-					SELECT id FROM events
-					GROUP BY id
-					HAVING max("at") < ${cutoff}::TIMESTAMPTZ
-				)
-			`.execute(db);
-			await conn.run("CHECKPOINT");
-			return invocations;
-		});
+		return await runExclusive(() =>
+			db.transaction().execute(async (trx) => {
+				const cutoff = olderThan.toISOString();
+				const countResult = await sql<{ c: number | bigint }>`
+					SELECT count(*) AS c FROM (
+						SELECT id FROM events
+						GROUP BY id
+						HAVING max("at") < ${cutoff}
+					)
+				`.execute(trx);
+				const invocations = Number(countResult.rows[0]?.c ?? 0);
+				if (invocations === 0) {
+					return 0;
+				}
+				await sql`
+					DELETE FROM events WHERE id IN (
+						SELECT id FROM events
+						GROUP BY id
+						HAVING max("at") < ${cutoff}
+					)
+				`.execute(trx);
+				return invocations;
+			}),
+		);
 	}
 
 	const store: EventStore = {
@@ -413,7 +399,7 @@ async function createEventStore(
 		},
 
 		async ping(): Promise<void> {
-			await db.executeQuery(CompiledQuery.raw("SELECT 1"));
+			await sql`SELECT 1`.execute(db);
 		},
 
 		with(name: string, fn: CteCallback): CteChain {

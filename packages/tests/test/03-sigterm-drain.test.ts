@@ -2,11 +2,10 @@ import { describe, expect, test } from "@workflow-engine/tests";
 
 // Test #3 — SIGTERM graceful drain.
 //
-// Under the new event-store-ducklake architecture, in-flight invocations
-// live only in the runtime's in-memory accumulator. SIGTERM triggers a
-// drain that synthesises `trigger.error{kind:"shutdown"}` for any
-// invocation that has not yet reached a natural terminal, commits each to
-// the DuckLake catalog, and exits.
+// In-flight invocations live only in the runtime's in-memory accumulator.
+// SIGTERM triggers a drain that synthesises `trigger.error{kind:"shutdown"}`
+// for any invocation that has not yet reached a natural terminal, commits each
+// to the libSQL event store, and exits.
 //
 // This test fires a long-running webhook handler (sleep 30s) and SIGTERMs
 // while the handler is still sleeping. `sandboxStore.dispose()` drains
