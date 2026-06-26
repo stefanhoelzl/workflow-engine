@@ -243,16 +243,18 @@ Both app Quadlet units SHALL carry `Label=io.containers.autoupdate=registry`. Th
 
 The Caddyfile SHALL be rendered by tofu (via `templatefile()`) with one site block per env:
 
-- `workflow-engine.webredirect.org { tls <acme-email> ; reverse_proxy 127.0.0.1:8081 }`
-- `staging.workflow-engine.webredirect.org { tls <acme-email> ; reverse_proxy 127.0.0.1:8082 }`
+- `workflow-engine.stho.net { tls <acme-email> ; reverse_proxy 127.0.0.1:8081 }`
+- `staging.workflow-engine.stho.net { tls <acme-email> ; reverse_proxy 127.0.0.1:8082 }`
+
+The hostnames SHALL be composed from a `base_domain` variable (default `stho.net`) as `workflow-engine.${base_domain}` and `staging.workflow-engine.${base_domain}`, so a future domain change is a single-variable edit. Note: staging's public hostname is served by Bunny Magic Containers, not the VPS; the staging site block remains rendered for the warm-fallback path but is not the live staging frontend.
 
 Caddy's automatic HTTPS SHALL provide HTTP→HTTPS redirect, HSTS, and TLS termination via Let's Encrypt HTTP-01 ACME. ACME state SHALL persist on the host volume mounted at `/data` (i.e. `/srv/caddy/data` on the host).
 
-#### Scenario: Both hostnames serve a publicly-trusted cert
+#### Scenario: Prod hostname serves a publicly-trusted cert
 
-- **GIVEN** the Dynu CNAMEs have propagated to the VPS IP and Caddy has completed ACME
-- **WHEN** an external client runs `curl -I https://workflow-engine.webredirect.org` and `curl -I https://staging.workflow-engine.webredirect.org`
-- **THEN** both SHALL return `200` (or whatever the app returns) with a valid Let's Encrypt-issued chain
+- **GIVEN** the Bunny DNS A record for `workflow-engine.stho.net` has propagated to the VPS IP and Caddy has completed ACME
+- **WHEN** an external client runs `curl -I https://workflow-engine.stho.net`
+- **THEN** it SHALL return `200` (or whatever the app returns) with a valid Let's Encrypt-issued chain
 
 ### Requirement: Caddy SHALL NOT enforce authentication
 
@@ -331,38 +333,6 @@ Multi-key staged rotation (concurrent decrypt against retired key + seal against
 - **WHEN** a subsequent apply runs without taint
 - **THEN** the key value SHALL be unchanged
 - **AND** the env file's `SECRETS_PRIVATE_KEYS` line SHALL be byte-identical
-
-### Requirement: Dynu CNAMEs owned by tofu
-
-The project SHALL manage two Dynu DNS records:
-
-- `workflow-engine.webredirect.org` → VPS public IP (or its DNS name). **Unchanged by this change.**
-- `staging.workflow-engine.webredirect.org` → the **Bunny CDN endpoint host** (a CNAME to the Magic Containers CDN endpoint's `*.b-cdn.net` hostname). This record is re-targeted from the VPS IP to Bunny to cut staging traffic over to Magic Containers.
-
-The hostname itself is unchanged, so `BASE_URL` and the staging GitHub OAuth callback remain valid across the cutover. The VPS staging stack — `wfe-staging.container`, `/etc/wfe/staging.env`, the `/srv/wfe/staging` Block Storage volume and its mount, and the Caddy `staging.workflow-engine.webredirect.org` site block — SHALL all be retained, running, and unedited as a live warm fallback (still auto-pulling `:main`). Switching staging back to the VPS SHALL be a hand-edit of this single record's target back to the VPS IP followed by `tofu apply`; the project SHALL NOT introduce a `staging_backend` toggle variable.
-
-Records SHALL be created via the existing dynu provider, parameterised by `var.dynu_api_key`. TTL SHALL be small enough (≤ 300 s) that DNS-level corrections during validation propagate quickly.
-
-#### Scenario: Prod CNAME resolves to the VPS
-
-- **GIVEN** tofu apply has completed and Dynu propagation has occurred
-- **WHEN** `dig workflow-engine.webredirect.org` is run from an external resolver
-- **THEN** it SHALL resolve to the Scaleway VPS public IP
-
-#### Scenario: Staging hostname resolves to the Bunny CDN endpoint
-
-- **GIVEN** tofu apply has completed and Dynu propagation has occurred
-- **WHEN** `dig staging.workflow-engine.webredirect.org` is run from an external resolver
-- **THEN** it SHALL resolve (via CNAME) to the Bunny Magic Containers CDN endpoint host
-- **AND** the VPS staging Quadlet, env file, volume, mount, and Caddy site block SHALL still be present and running on the VPS
-
-#### Scenario: Switching staging back to the VPS is a one-record edit
-
-- **GIVEN** staging is served by Bunny and the VPS staging stack is still running on `:main`
-- **WHEN** the operator re-targets the `staging.workflow-engine.webredirect.org` record back to the VPS IP and runs `tofu apply`
-- **THEN** the plan SHALL show only that one DNS record changing
-- **AND** no `staging_backend` variable SHALL be required to perform the switch
-- **AND** Caddy SHALL re-issue the staging cert automatically once DNS points back at the VPS
 
 ### Requirement: Lock file committed and gitignore boundaries
 
@@ -537,4 +507,38 @@ The swapfile SHALL be created in a `managed_exec`-style one-shot (`fallocate` th
 - **WHEN** the entries are removed from source and `tofu apply` runs
 - **THEN** the apply SHALL `disable --now swapfile.swap`, remove the unit, and remove `/swapfile`
 - **AND** `/etc/fstab` SHALL contain no swap line for `/swapfile`
+
+### Requirement: Bunny DNS records owned by tofu
+
+The project SHALL manage exactly two DNS records under the `stho.net` zone via the `bunnynet` provider. The zone SHALL be referenced through a `data "bunnynet_dns_zone"` lookup (read-only); the project SHALL NOT own or create the `stho.net` zone, its apex, or any record other than the two below.
+
+- `workflow-engine.stho.net` → **A record** to the Scaleway VPS public IP (`scaleway_instance_ip.vps.address`).
+- `staging.workflow-engine.stho.net` → **CNAME** to the Bunny Magic Containers CDN endpoint host (`*.b-cdn.net`).
+
+Both records SHALL set `ttl = 300`. `BASE_URL`, the Caddy prod site block, and the staging `bunnynet_pullzone_hostname` SHALL all use the same `base_domain`-composed hostnames. The project SHALL NOT reference the Dynu API, the `restapi` provider, or `var.dynu_api_key`.
+
+Switching staging back to the VPS SHALL be a hand-edit of the staging record from a CNAME (Bunny CDN host) to an A record (VPS IP) followed by `tofu apply`; the project SHALL NOT introduce a `staging_backend` toggle variable.
+
+#### Scenario: Prod A record resolves to the VPS
+
+- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
+- **WHEN** `dig workflow-engine.stho.net` is run from an external resolver
+- **THEN** it SHALL resolve to the Scaleway VPS public IP
+
+#### Scenario: Staging hostname resolves to the Bunny CDN endpoint
+
+- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
+- **WHEN** `dig staging.workflow-engine.stho.net` is run from an external resolver
+- **THEN** it SHALL resolve (via CNAME) to the Bunny Magic Containers CDN endpoint host
+
+#### Scenario: No Dynu / restapi provider remains
+
+- **WHEN** the rendered `infrastructure/` project and its `.terraform.lock.hcl` are inspected
+- **THEN** there SHALL be no `restapi` provider, no `provider "restapi"` block, no `Mastercard/restapi` lockfile entry, and no `var.dynu_api_key` reference
+
+#### Scenario: tofu does not own the stho.net zone
+
+- **WHEN** the DNS configuration is inspected
+- **THEN** the `stho.net` zone SHALL be referenced via a `data "bunnynet_dns_zone"` source (not a `resource`)
+- **AND** only the two `workflow-engine` subdomain records SHALL be managed; the apex and any sibling records SHALL NOT appear in the plan
 
