@@ -83,7 +83,7 @@ The CLI source code SHALL live inside `@workflow-engine/sdk` at `src/cli/`. The 
 The CLI SHALL POST the built tarball to `<url>/api/workflows/<owner>/<repo>`. The `<url>` SHALL be resolved with the following precedence:
 
 1. `--url <url>` flag, if provided.
-2. Built-in default: `https://workflow-engine.webredirect.org`.
+2. Built-in default: `https://workflow-engine.stho.net`.
 
 The `<owner>` and `<repo>` path segments SHALL be resolved from:
 
@@ -97,7 +97,7 @@ The CLI SHALL NOT read any environment variable for the URL or for the owner/rep
 #### Scenario: Default URL used when no flag
 
 - **WHEN** `wfe upload --repo acme/demo` is invoked with no `--url` flag
-- **THEN** the CLI SHALL POST to `https://workflow-engine.webredirect.org/api/workflows/acme/demo`
+- **THEN** the CLI SHALL POST to `https://workflow-engine.stho.net/api/workflows/acme/demo`
 
 #### Scenario: Flag overrides default URL
 
@@ -425,3 +425,4 @@ The check SHALL run after citty has resolved `--help` and `--version`, which sho
 - **WHEN** `wfe upload --help` is invoked
 - **THEN** the CLI SHALL print citty's generated help to stdout and exit `0`
 - **AND** SHALL NOT print any `unknown option` message
+

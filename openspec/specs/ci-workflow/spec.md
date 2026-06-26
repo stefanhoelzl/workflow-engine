@@ -274,7 +274,7 @@ The repository's `main` branch ruleset SHALL list `plan (vps)` in its `required_
 
 ### Requirement: Staging demo workflow upload step
 
-The staging deploy workflow SHALL, after the readiness gate succeeds (see "Staging readiness gate before upload"), upload the monorepo's `workflows/` bundle to the staging runtime at `https://staging.workflow-engine.webredirect.org`. The upload SHALL authenticate as `github:user:stefanhoelzl` using a fine-grained Personal Access Token stored in the repository secret `GH_UPLOAD_TOKEN`, which SHALL be passed to the upload step as the `GITHUB_TOKEN` environment variable. The CLI SHALL auto-detect the target `(owner, repo)` scope from `git remote get-url origin` (yielding `stefanhoelzl/workflow-engine`).
+The staging deploy workflow SHALL, after the readiness gate succeeds (see "Staging readiness gate before upload"), upload the monorepo's `workflows/` bundle to the staging runtime at `https://staging.workflow-engine.stho.net`. The upload SHALL authenticate as `github:user:stefanhoelzl` using a fine-grained Personal Access Token stored in the repository secret `GH_UPLOAD_TOKEN`, which SHALL be passed to the upload step as the `GITHUB_TOKEN` environment variable. The CLI SHALL auto-detect the target `(owner, repo)` scope from `git remote get-url origin` (yielding `stefanhoelzl/workflow-engine`).
 
 Upload failure SHALL fail the deploy job. The step SHALL NOT use `continue-on-error`.
 
@@ -282,7 +282,7 @@ Upload failure SHALL fail the deploy job. The step SHALL NOT use `continue-on-er
 
 - **GIVEN** the readiness gate confirms the new image is running on staging
 - **WHEN** the upload step runs
-- **THEN** `wfe upload --url https://staging.workflow-engine.webredirect.org` SHALL be invoked against `stefanhoelzl/workflow-engine`
+- **THEN** `wfe upload --url https://staging.workflow-engine.stho.net` SHALL be invoked against `stefanhoelzl/workflow-engine`
 - **AND** the `GITHUB_TOKEN` env SHALL be the `GH_UPLOAD_TOKEN` secret value
 - **AND** the staging runtime SHALL respond `204 No Content`
 - **AND** the deploy job SHALL succeed
@@ -298,11 +298,10 @@ Upload failure SHALL fail the deploy job. The step SHALL NOT use `continue-on-er
 
 - **WHEN** the `deploy-prod` workflow runs
 - **THEN** it SHALL NOT upload the `workflows/` bundle
-- **AND** `GH_UPLOAD_TOKEN` SHALL NOT be referenced by `deploy-prod.yml`
 
 ### Requirement: Staging readiness gate before upload
 
-Before invoking the upload step, the staging deploy workflow SHALL poll `https://staging.workflow-engine.webredirect.org/readyz` until both of the following hold:
+Before invoking the upload step, the staging deploy workflow SHALL poll `https://staging.workflow-engine.stho.net/readyz` until both of the following hold:
 
 1. The response status is `200`.
 2. The response JSON's `version.gitSha` field equals `${{ github.sha }}` — i.e. the new image (not a previously-running one) is the one serving requests.
@@ -361,7 +360,6 @@ The repository SHALL provide a composite GitHub Action at `.github/actions/deplo
 - **WHEN** `.github/workflows/{deploy-prod,deploy-staging}.yml` are inspected
 - **THEN** each contains exactly one `uses: ./.github/actions/deploy-image` step
 - **AND** that step is the only place the build / push / readyz-poll logic lives
-
 
 ### Requirement: PR publish-shape smoke test
 
@@ -514,3 +512,4 @@ The publish step SHALL use `npm publish <tarball>` rather than `pnpm publish`, b
 - **WHEN** the publish job publishes any version `$VERSION`
 - **THEN** both `@workflow-engine/core@$VERSION` and `@workflow-engine/sdk@$VERSION` SHALL be published in the same job run
 - **AND** the SDK's published tarball SHALL declare its `@workflow-engine/core` dependency as `$VERSION` (not `workspace:*`)
+
