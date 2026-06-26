@@ -41,6 +41,12 @@ PodmanArgs=--memory=${memory_max}
 # `--env-file` parser quirks (Podman's env-file reader mis-splits values
 # with commas — e.g. AUTH_ALLOW ends up as one giant entry).
 Environment=PERSISTENCE_PATH=/data
+# Embedded libSQL on the /data volume. DATABASE_URL is required; the file path
+# resolves under the bind mount. WAL on so out-of-process readers work. A future
+# remote (Bunny Database) cutover sets DATABASE_URL to a libsql:// URL and adds
+# DATABASE_AUTH_TOKEN to the secret env file (auth material), dropping WAL.
+Environment=DATABASE_URL=file:/data/events.db
+Environment=DATABASE_WAL=true
 Environment=PORT=8080
 Environment=AUTH_PROVIDER=github
 Environment=BASE_URL=${base_url}

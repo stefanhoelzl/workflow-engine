@@ -84,6 +84,23 @@ const schema = z
 		),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		PERSISTENCE_PATH: z.string(),
+		// libSQL connection. Required, no derivation from PERSISTENCE_PATH: a
+		// `file:…` URL selects the embedded on-disk database; a
+		// `libsql://…`/`https://…` URL selects a remote libSQL service. See
+		// `openspec/specs/runtime-config/spec.md` "Database connection config
+		// fields".
+		// biome-ignore lint/style/useNamingConvention: env var name
+		DATABASE_URL: z.string(),
+		// Embedded-only `PRAGMA journal_mode=WAL` toggle. `z.stringbool` (not
+		// `z.coerce.boolean`, which treats the string "false" as truthy). Default
+		// false; embedded boot paths opt in to keep concurrent out-of-process
+		// readers (e2e harness, operator tooling) working.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		DATABASE_WAL: z.stringbool().default(false),
+		// Remote libSQL auth token. Sealed secret (never logged); its presence
+		// selects the remote client variant.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		DATABASE_AUTH_TOKEN: z.exactOptional(z.string().transform(createSecret)),
 		// biome-ignore lint/style/useNamingConvention: env var name
 		BASE_URL: z.exactOptional(z.string()),
 		// biome-ignore lint/style/useNamingConvention: env var name
@@ -121,6 +138,20 @@ const schema = z
 			.nonnegative()
 			.default(0),
 	})
+	// Fail closed on a contradictory remote-plus-embedded-pragma intent: a remote
+	// auth token alongside the embedded WAL pragma. No other scheme↔variant
+	// cross-validation — a remote URL without a token, or a token alongside a
+	// `file:` URL, surfaces at connect time, not here.
+	.superRefine((env, ctx) => {
+		if (env.DATABASE_AUTH_TOKEN !== undefined && env.DATABASE_WAL) {
+			ctx.addIssue({
+				code: "custom",
+				message:
+					"DATABASE_AUTH_TOKEN (remote) and DATABASE_WAL=true (embedded pragma) are mutually exclusive",
+				path: ["DATABASE_WAL"],
+			});
+		}
+	})
 	.transform((env) => ({
 		logLevel: env.LOG_LEVEL,
 		port: env.PORT,
@@ -135,6 +166,9 @@ const schema = z
 		githubOauthClientId: env.GITHUB_OAUTH_CLIENT_ID,
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
 		persistencePath: env.PERSISTENCE_PATH,
+		databaseUrl: env.DATABASE_URL,
+		databaseWal: env.DATABASE_WAL,
+		databaseAuthToken: env.DATABASE_AUTH_TOKEN,
 		baseUrl: env.BASE_URL,
 		localDeployment: env.LOCAL_DEPLOYMENT,
 		secretsPrivateKeys: env.SECRETS_PRIVATE_KEYS,
