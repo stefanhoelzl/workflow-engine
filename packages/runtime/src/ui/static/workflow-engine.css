@@ -628,8 +628,11 @@ body {
 		20px /* kind icon */
 		minmax(0, 1fr) /* identity */
 		auto /* meta cell (dispatch glyph / status label) */
-		5em /* duration */
-		7.5em; /* age */
+		5rem /* duration */
+		7.5rem; /* age */
+	/* duration/age tracks use rem (not em) so they resolve to identical pixel
+	 * widths in `.entry-thead` (which shrinks font-size to --fs-xs) and in body
+	 * rows; em would size the header columns smaller and misalign the values. */
 }
 
 .entry-summary--queue {
@@ -637,7 +640,7 @@ body {
 		16px /* chevron */
 		20px /* kind icon */
 		minmax(0, 1fr) /* identity (›-separated, scope-aware) */
-		7.5em; /* age */
+		7.5rem; /* age — rem (not em) to stay aligned across font-size contexts */
 }
 
 /* Trigger-kind status strip for queue rows (mirrors `.s-*` for invocations).
