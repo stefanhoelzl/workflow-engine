@@ -48,10 +48,10 @@ variable "ssh_port" {
   description = "Non-default SSH port. Eliminates drive-by botnet noise on port 22."
 }
 
-variable "dynu_api_key" {
+variable "base_domain" {
   type        = string
-  sensitive   = true
-  description = "Dynu API key for managing CNAME/A records under webredirect.org."
+  default     = "stho.net"
+  description = "Apex domain (a Bunny DNS zone, owned out-of-band) under which the env hostnames are composed: workflow-engine.<base_domain> and staging.workflow-engine.<base_domain>. Swapping domains is a single-variable change."
 }
 
 variable "acme_email" {
@@ -88,8 +88,8 @@ variable "app_data_volume_iops" {
 }
 
 # Per-env GitHub OAuth App credentials. Two distinct OAuth Apps in the
-# GitHub UI — one with callback URL https://workflow-engine.webredirect.org/...,
-# one with https://staging.workflow-engine.webredirect.org/... .
+# GitHub UI — one with callback URL https://workflow-engine.stho.net/...,
+# one with https://staging.workflow-engine.stho.net/... .
 variable "gh_oauth_client_id_prod" {
   type        = string
   sensitive   = true

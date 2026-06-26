@@ -66,12 +66,12 @@ pnpm dev
 GITHUB_TOKEN=<gh-token> pnpm exec wfe upload
 ```
 
-The CLI defaults to `https://workflow-engine.webredirect.org` and infers `--repo <owner>/<name>` from `git remote get-url origin`. CLI options:
+The CLI defaults to `https://workflow-engine.stho.net` and infers `--repo <owner>/<name>` from `git remote get-url origin`. CLI options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <owner>/<name>` | parsed from `origin` remote | Target repo. Required if not in a github.com checkout. |
-| `--url <url>` | `https://workflow-engine.webredirect.org` | Runtime base URL. Pass `http://localhost:8080` for local dev. |
+| `--url <url>` | `https://workflow-engine.stho.net` | Runtime base URL. Pass `http://localhost:8080` for local dev. |
 | `--token <ghp_…>` | `$GITHUB_TOKEN` | GitHub personal access token. |
 
 For local-provider auth (against a server with `LOCAL_DEPLOYMENT=1`) substitute `--user <name>` for `--token`. `--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive — see `SECURITY.md` §4 "CLI authentication".

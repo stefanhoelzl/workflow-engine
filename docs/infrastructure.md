@@ -12,10 +12,10 @@ One Scaleway VPS (Debian 12) hosts both prod and staging. Three rootless Podman 
 
 URLs:
 
-- Prod: <https://workflow-engine.webredirect.org>
-- Staging: <https://staging.workflow-engine.webredirect.org>
+- Prod: <https://workflow-engine.stho.net>
+- Staging: <https://staging.workflow-engine.stho.net>
 
-DNS: Dynu A records owned by tofu, point at the VPS public IP (`scaleway_instance_ip` — stable across instance stop/start).
+DNS: Bunny DNS records owned by tofu under the `stho.net` zone (referenced via a `data "bunnynet_dns_zone"` lookup; the zone itself is owned out-of-band). Prod is an A record at the VPS public IP (`scaleway_instance_ip` — stable across instance stop/start); staging is a CNAME at the Bunny Magic Containers CDN host.
 
 ## Storage
 
@@ -54,7 +54,7 @@ infrastructure/
                       # (swap, service enables), managed_ufw (80/443)
   caddy.tf            # Caddy quadlet + Caddyfile
   apps.tf             # wfe-prod + wfe-staging quadlets + env-file delivery
-  dns.tf              # Dynu A records
+  dns.tf              # Bunny DNS records (A prod, CNAME staging)
   outputs.tf
   files/              # Quadlet + Caddyfile templates
 ```
@@ -73,7 +73,7 @@ State backend: Scaleway Object Storage (S3-compatible). Client-side encrypted vi
 
 `deploy-staging.yml` runs on push to `main`:
 1. Build + push `ghcr.io/stefanhoelzl/workflow-engine:main` (with `--build-arg GIT_SHA=${{ github.sha }}`).
-2. Poll `https://staging.workflow-engine.webredirect.org/readyz` until `version.gitSha === ${{ github.sha }}`. Auto-update timer fires every 1 min.
+2. Poll `https://staging.workflow-engine.stho.net/readyz` until `version.gitSha === ${{ github.sha }}`. Auto-update timer fires every 1 min.
 3. Run `wfe upload` for the demo workflows.
 
 `deploy-prod.yml` runs on push to `release`, gated by `environment: production` (required reviewer):
@@ -154,7 +154,6 @@ Secrets:
 - `TF_VAR_state_passphrase` — client-side state encryption
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — Scaleway Object Storage credentials for the S3 backend
 - `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID`, `SCW_DEFAULT_ORGANIZATION_ID` — Scaleway provider credentials
-- `TF_VAR_dynu_api_key` — Dynu API key for DNS records
 - `TF_VAR_acme_email` — Let's Encrypt account email
 - `GH_OAUTH_CLIENT_ID_PROD`, `GH_OAUTH_CLIENT_SECRET_PROD` — prod GitHub OAuth App
 - `GH_OAUTH_CLIENT_ID_STAGING`, `GH_OAUTH_CLIENT_SECRET_STAGING` — staging GitHub OAuth App
@@ -238,7 +237,7 @@ journalctl -u caddy -f | grep -E 'certificate|acme|err'
 ```
 
 Common causes:
-- Dynu CNAME not yet propagated → `dig` from an external resolver.
+- Bunny DNS record not yet propagated → `dig` from an external resolver.
 - Port 80 firewall rule missing → `sudo ufw status`.
 - LE rate-limit hit (5 failed challenges/hour per domain) → wait 1 hour.
 
@@ -380,7 +379,7 @@ Staging is being trialled on **bunny.net Magic Containers** in parallel with the
 - One `bunnynet_compute_container_app` `wfe-staging`: image `ghcr.io/stefanhoelzl/workflow-engine:main` (public registry resolved via the `bunnynet_compute_container_imageregistry` data source — `username = ""`, no token), `autoscaling_min = max = 1`, region `DE` (Frankfurt), `image_pull_policy = "Always"` (no pinned digest), a `/data` volume, a `/readyz` readiness probe, and an env block that mirrors the VPS staging Quadlet (including reuse of `random_bytes.secrets_key["staging"]` so bundles unseal against either backend).
 - A **CDN** endpoint (`origin_ssl = false`) for managed HTTPS — the staging replacement for Caddy's TLS termination.
 
-**Not yet wired (pending thin-apply discovery — see the change's `tasks.md` §1.5/§4):** the staging Dynu record cutover (A → CNAME to the Bunny `*.b-cdn.net` host) and the `deploy-staging.yml` rollout step. Both depend on confirming that a same-tag rollout re-pulls the new `:main` digest and that `data "bunnynet_pullzone"` resolves the app-owned pull zone.
+**Live:** staging resolves via the Bunny DNS CNAME (`dns.tf`) to the app's CDN pull-zone host, and `deploy-staging.yml` rolls it forward by PATCHing the container image digest. The custom hostname's managed TLS is brought up by a two-step targeted apply (DNS records first, then a full apply once `dig` confirms propagation) — see the load-bearing `bunnynet_pullzone_hostname` comment in `bunny-staging.tf`.
 
 ### Durability — accept-loss
 
@@ -398,7 +397,7 @@ The Bunny `readiness_probe` targets **`/livez`** (pure process-liveness), NOT `/
 
 ### Switching staging back to the VPS
 
-There is **no `staging_backend` toggle variable** (low expected bounce). To revert: hand-edit the `staging.workflow-engine.webredirect.org` record in `dns.tf` back to the VPS IP (A record) and `tofu apply`. The VPS staging app is still live on current `:main`, and Caddy re-issues the staging cert automatically once DNS points back. The plan shows only that one record changing.
+There is **no `staging_backend` toggle variable** (low expected bounce). To revert: change the `staging.workflow-engine.stho.net` record in `dns.tf` from a CNAME (Bunny CDN host) back to an A record at the VPS IP and `tofu apply`. The VPS staging app is still live on current `:main`, and Caddy re-issues the staging cert automatically once DNS points back. The plan shows only that one record changing.
 
 ### SQL engine memory
 

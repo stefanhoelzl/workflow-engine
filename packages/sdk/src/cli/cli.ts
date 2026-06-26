@@ -4,7 +4,7 @@ import { build, NoWorkflowsFoundError } from "./build.js";
 import { detectGitRemote } from "./git-remote.js";
 import { upload } from "./upload.js";
 
-const DEFAULT_URL = "https://workflow-engine.webredirect.org";
+const DEFAULT_URL = "https://workflow-engine.stho.net";
 const REPO_FLAG_RE = /^([^/]+)\/([^/]+)$/;
 
 interface ResolvedScope {
