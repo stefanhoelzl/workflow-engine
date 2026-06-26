@@ -69,7 +69,7 @@ jobs:
       # sha is actually serving (mirrors the VPS deploy gate). 60 × 5 s = 5 min.
       - name: Wait for /readyz to report the just-built sha
         env:
-          URL: https://staging.workflow-engine.webredirect.org
+          URL: https://staging.workflow-engine.stho.net
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -e
@@ -96,4 +96,4 @@ jobs:
           WEBHOOK_TOKEN: staging-webhook-token
           IMAP_USER: staging-imap-user
           IMAP_PASSWORD: staging-imap-password
-        run: pnpm exec wfe upload --url https://staging.workflow-engine.webredirect.org
+        run: pnpm exec wfe upload --url https://staging.workflow-engine.stho.net

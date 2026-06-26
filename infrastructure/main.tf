@@ -12,10 +12,6 @@ terraform {
       source  = "scaleway/scaleway"
       version = "~> 2.50"
     }
-    restapi = {
-      source  = "Mastercard/restapi"
-      version = "~> 3.0"
-    }
     null = {
       source  = "hashicorp/null"
       version = "~> 3.2"
@@ -70,16 +66,6 @@ provider "scaleway" {
   zone            = var.scaleway_zone
   project_id      = var.scaleway_project_id
   organization_id = var.scaleway_organization_id
-}
-
-provider "restapi" {
-  uri                  = "https://api.dynu.com/v2"
-  write_returns_object = true
-  headers = {
-    accept       = "application/json"
-    Content-Type = "application/json"
-    API-Key      = var.dynu_api_key
-  }
 }
 
 # Public IPv4 — survives stop/start cycles, so DNS records remain valid even
@@ -220,8 +206,8 @@ resource "scaleway_instance_server" "vps" {
 locals {
   envs = {
     prod = {
-      domain             = "workflow-engine.webredirect.org"
-      dns_node           = ""
+      domain             = "workflow-engine.${var.base_domain}"
+      dns_node           = "workflow-engine"
       port               = 8081
       image_ref          = "${var.app_image}:release"
       data_dir           = "/srv/wfe/prod"
@@ -234,8 +220,8 @@ locals {
       retention_days = 90
     }
     staging = {
-      domain             = "staging.workflow-engine.webredirect.org"
-      dns_node           = "staging"
+      domain             = "staging.workflow-engine.${var.base_domain}"
+      dns_node           = "staging.workflow-engine"
       port               = 8082
       image_ref          = "${var.app_image}:main"
       data_dir           = "/srv/wfe/staging"

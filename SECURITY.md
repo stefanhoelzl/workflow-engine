@@ -1969,7 +1969,7 @@ Additional main-thread secrets rules on top of the K8s-centric rules above:
 - Cloud-init (deploy user, sshd, sudoers, ufw, fail2ban, sysctl, podman-auto-update timer override): `infrastructure/cloud-init.yaml`
 - App Quadlets + env-file delivery: `infrastructure/apps.tf`, `infrastructure/files/wfe.container.tmpl`
 - Caddy Quadlet + Caddyfile: `infrastructure/caddy.tf`, `infrastructure/files/caddy.container.tmpl`, `infrastructure/files/Caddyfile.tmpl`
-- Dynu A records: `infrastructure/dns.tf`
+- Bunny DNS records (A prod, CNAME staging): `infrastructure/dns.tf`
 - Apply workflow (operator): `.github/workflows/apply-infra.yml`
 - Plan gate: `.github/workflows/plan-infra.yml`
 - Build + push (no infra side effects): `.github/workflows/deploy-prod.yml`, `.github/workflows/deploy-staging.yml`

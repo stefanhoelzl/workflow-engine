@@ -22,7 +22,7 @@ jobs:
       - uses: ./.github/actions/deploy-image
         with:
           tag: release
-          url: https://workflow-engine.webredirect.org
+          url: https://workflow-engine.stho.net
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
   # Publish @workflow-engine/core and @workflow-engine/sdk to npm via

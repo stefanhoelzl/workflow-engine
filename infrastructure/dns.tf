@@ -1,59 +1,35 @@
-# Dynu zone lookup. The VPS public IP is stable across instance stop/start
-# (it's a separate `scaleway_instance_ip` resource).
-data "restapi_object" "zone" {
-  path         = "/dns"
-  search_key   = "name"
-  search_value = "workflow-engine.webredirect.org"
-  results_key  = "domains"
-  id_attribute = "id"
+# DNS on Bunny DNS, managed via the existing bunnynet provider. The stho.net
+# zone is owned out-of-band (registered at Scaleway, delegated to Bunny's
+# kiki/coco.bunny.net nameservers); we reference it READ-ONLY via a data source
+# and manage only the two workflow-engine subdomain records — never the apex or
+# any sibling record. The VPS public IP is stable across instance stop/start
+# (a separate scaleway_instance_ip resource), so the prod A record stays valid
+# even if the instance is replaced.
+data "bunnynet_dns_zone" "stho" {
+  domain = var.base_domain
 }
 
-# prod → A record at the VPS IP. staging is intentionally EXCLUDED here and
-# served by a separate CNAME resource below: Dynu rejects an in-place A→CNAME
-# type change (501 "Record type change is not allowed"), so the staging A
-# record must be destroyed and a CNAME created in its place.
-resource "restapi_object" "dns_a_record" {
-  for_each = { for k, v in local.envs : k => v if k != "staging" }
-
-  path          = "/dns/${data.restapi_object.zone.id}/record"
-  update_method = "POST"
-  data = jsonencode({
-    domainId    = tonumber(data.restapi_object.zone.id)
-    nodeName    = each.value.dns_node
-    recordType  = "A"
-    ttl         = 300
-    state       = true
-    ipv4Address = scaleway_instance_ip.vps.address
-  })
-  id_attribute = "id"
-  # Mastercard restapi provider merges the API response (including
-  # response-only fields like `content`, `statusCode`, `updatedOn`) into
-  # `data` on apply. Without this flag, every subsequent refresh shows
-  # perpetual drift wanting to remove those fields.
-  ignore_server_additions = true
+# prod → A record at the VPS IP. `name` is relative to the zone, so the FQDN
+# workflow-engine.${base_domain} becomes name = "workflow-engine".
+resource "bunnynet_dns_record" "prod_a" {
+  zone  = data.bunnynet_dns_zone.stho.id
+  name  = local.envs["prod"].dns_node
+  type  = "A"
+  value = scaleway_instance_ip.vps.address
+  ttl   = 300
 }
 
-# staging → CNAME to the Bunny Magic Containers CDN host (cutover). A distinct
-# resource because Dynu forbids changing a record's type in place. A CNAME and
-# the old A record cannot coexist for the same name, so the A record must be
-# destroyed FIRST — apply this in two steps (see docs/infrastructure.md):
-#   1. tofu apply -target=restapi_object.dns_a_record   (destroys the staging A)
-#   2. tofu apply                                        (creates this CNAME)
-resource "restapi_object" "dns_staging_cname" {
-  path          = "/dns/${data.restapi_object.zone.id}/record"
-  update_method = "POST"
-  data = jsonencode({
-    domainId   = tonumber(data.restapi_object.zone.id)
-    nodeName   = local.envs["staging"].dns_node
-    recordType = "CNAME"
-    ttl        = 300
-    state      = true
-    # Dynu CNAME records carry the target hostname in `host`.
-    host = local.bunny_staging_cdn_host
-  })
-  id_attribute            = "id"
-  ignore_server_additions = true
-
-  # The custom hostname must exist on the Bunny pull zone before traffic lands.
-  depends_on = [bunnynet_pullzone_hostname.staging]
+# staging → CNAME to the Bunny Magic Containers CDN host. Deliberately NOT
+# depends_on the pullzone hostname: the cutover is a two-step targeted apply
+# (see docs/infrastructure.md + the change's design.md). Step 1 applies ONLY
+# these records so the CNAME propagates; step 2 (full apply) then lets Bunny
+# validate the hostname's Let's Encrypt cert against the already-live CNAME. A
+# depends_on here would drag the hostname into step 1 and make validation race
+# DNS propagation, risking an LE lockout.
+resource "bunnynet_dns_record" "staging_cname" {
+  zone  = data.bunnynet_dns_zone.stho.id
+  name  = local.envs["staging"].dns_node
+  type  = "CNAME"
+  value = local.bunny_staging_cdn_host
+  ttl   = 300
 }

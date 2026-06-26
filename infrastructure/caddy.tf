@@ -27,8 +27,14 @@ locals {
       group   = "deploy"
       sudo    = false
       stage   = "pre"
-      # No reload here: caddy_quadlet's stage-post restart picks it up.
-      on_change  = ""
+      # Reload Caddy when the Caddyfile content changes (e.g. a domain/site
+      # edit) so the new config actually takes effect. On FIRST apply caddy.service
+      # doesn't exist yet at this stage-pre point — the `|| true` guard swallows
+      # that, and caddy_quadlet's stage-post create starts Caddy fresh against the
+      # already-written file. On subsequent Caddyfile-only changes the service
+      # exists and restarts cleanly. (Without this, a Caddyfile-only change lands
+      # on disk but Caddy keeps serving the old in-memory config.)
+      on_change  = "uid=$(id -u wfe-caddy 2>/dev/null) && [ -n \"$uid\" ] && sudo /usr/sbin/runuser -u wfe-caddy -- env XDG_RUNTIME_DIR=/run/user/$uid /bin/systemctl --user restart caddy.service 2>/dev/null || true"
       on_destroy = "rm -f /etc/caddy/Caddyfile"
     }
     caddy_quadlet = {

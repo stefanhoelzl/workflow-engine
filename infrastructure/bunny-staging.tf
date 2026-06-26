@@ -2,16 +2,14 @@
 # Staging on bunny.net Magic Containers (spike)
 #
 # Staging-ONLY deployment running in parallel with the VPS. Prod stays entirely
-# on the VPS, untouched. See openspec/changes/staging-bunny-magic-containers and
-# docs/infrastructure.md "Staging on bunny.net Magic Containers".
+# on the VPS, untouched. See openspec/changes/archive/2026-06-24-staging-bunny-
+# magic-containers and docs/infrastructure.md "Staging on bunny.net Magic
+# Containers".
 #
-# NOT wired here yet — intentionally deferred until the thin-apply confirms the
-# discovery questions (tasks.md §1.5 / §4):
-#   - the staging Dynu record cutover (A → CNAME to the Bunny CDN host), and
-#   - the deploy-staging.yml rollout step.
-# Both depend on: does a same-tag rollout re-pull the new :main digest, and does
-# `data "bunnynet_pullzone"` resolve an app-owned pull zone. The VPS staging
-# stack stays a live warm fallback throughout.
+# Live: the staging hostname (staging.workflow-engine.<base_domain>) resolves via
+# the Bunny DNS CNAME (dns.tf) to this app's CDN pull-zone host, and deploy-
+# staging.yml rolls it forward by PATCHing the container image digest. The VPS
+# staging stack stays a live warm fallback (still auto-pulling :main).
 # ─────────────────────────────────────────────────────────────────────────────
 
 provider "bunnynet" {
@@ -33,7 +31,7 @@ locals {
   # backend (VPS or Bunny) unseal — keeping the VPS a usable warm fallback.
   bunny_staging = local.envs["staging"]
 
-  # The app's CDN pull-zone *.b-cdn.net host (pull zone 6058886). The Dynu
+  # The app's CDN pull-zone *.b-cdn.net host (pull zone 6058886). The Bunny DNS
   # staging CNAME (dns.tf) targets this. NOTE: this changes if the app / pull
   # zone is ever recreated — re-read it with:
   #   tofu state show bunnynet_compute_container_app.staging | grep pullzone_id
@@ -205,21 +203,23 @@ resource "bunnynet_compute_container_app" "staging" {
 # the endpoint's read-only pullzone_id (no data lookup needed — resolves the
 # §4.1 question).
 #
-# TWO-PHASE CUTOVER (load-bearing — Bunny's documented flow). Bunny issues the
-# free Let's Encrypt cert at the moment tls_enabled flips true, and that
-# validation REQUIRES the CNAME to already point at Bunny — otherwise it fails
-# with "domain is not pointing to our servers". So:
-#   Phase 1 (this state): tls_enabled = false, force_ssl = false. The hostname
-#     registers on the pull zone (no cert attempt) and dns.tf flips the CNAME to
-#     Bunny in the same apply. Staging is served over HTTP during this phase.
-#   Phase 2 (after DNS propagates, ~5 min): set both to true and re-apply. The
-#     cert now validates. Do NOT thrash phase-2 applies (LE lockout ~1 week);
-#     wait for `dig` to show the CNAME live first.
+# LOAD-BEARING CUTOVER ORDERING (Bunny's documented flow). Bunny issues the
+# free Let's Encrypt cert at the moment tls_enabled is true, and that validation
+# REQUIRES this hostname's CNAME to already resolve to Bunny — otherwise it
+# fails with "domain is not pointing to our servers". `tls_enabled` stays true
+# in committed config; the ordering is enforced by a TWO-STEP TARGETED APPLY so
+# the empty-plan gate still converges (see docs/infrastructure.md + the
+# migrate-domain-stho-net change's design.md):
+#   Step 1: tofu apply -target=bunnynet_dns_record.prod_a \
+#                       -target=bunnynet_dns_record.staging_cname  (DNS only)
+#   Step 2 (after `dig` shows the CNAME live, ~5 min): full `tofu apply`. Bunny
+#     now validates the cert first try. Do NOT run step 2 before `dig` confirms
+#     propagation — a premature validation can trigger an LE lockout (~1 week).
 resource "bunnynet_pullzone_hostname" "staging" {
   pullzone = bunnynet_compute_container_app.staging.container[0].endpoint[0].cdn[0].pullzone_id
   name     = local.bunny_staging.domain
-  # Phase 2: DNS now points at Bunny, so the managed Let's Encrypt cert can
-  # validate. force_ssl redirects HTTP→HTTPS at the edge.
+  # DNS resolves to Bunny (step 1 applied + propagated), so the managed Let's
+  # Encrypt cert validates. force_ssl redirects HTTP→HTTPS at the edge.
   tls_enabled = true
   force_ssl   = true
 }
