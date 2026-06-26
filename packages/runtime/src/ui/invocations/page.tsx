@@ -1,5 +1,5 @@
 import type { Child } from "hono/jsx";
-import { ChevronIcon, ManualIcon, TriggerKindIcon } from "../icons.js";
+import { ManualIcon, TriggerKindIcon } from "../icons.js";
 import { Layout } from "../layout.js";
 import { EntryRow } from "../shared/entry-row.js";
 
@@ -255,13 +255,7 @@ function StatusClass(row: InvocationRow): string {
 	return "";
 }
 
-function RowCells({
-	row,
-	expandable,
-}: {
-	row: InvocationRow;
-	expandable: boolean;
-}) {
+function RowCells({ row }: { row: InvocationRow }) {
 	const duration =
 		row.completedTs === null
 			? "—"
@@ -269,16 +263,6 @@ function RowCells({
 	const startedIso = toIsoString(row.startedAt);
 	return (
 		<>
-			{expandable ? (
-				<span class="entry-expand-chevron" aria-hidden="true">
-					<ChevronIcon />
-				</span>
-			) : (
-				<span
-					class="entry-expand-chevron entry-expand-chevron--placeholder"
-					aria-hidden="true"
-				/>
-			)}
 			<LeadingKindIcon row={row} />
 			<Identity row={row} />
 			<MetaCell row={row} />
@@ -326,7 +310,7 @@ function Row({ row }: { row: InvocationRow }) {
 				summaryModifier="entry-summary--invocations"
 				extraClass={removedCls}
 			>
-				<RowCells row={row} expandable={false} />
+				<RowCells row={row} />
 			</EntryRow>
 		);
 	}
@@ -344,7 +328,7 @@ function Row({ row }: { row: InvocationRow }) {
 			summaryLabel="Expand invocation details"
 			body={<div class="flame-slot" />}
 		>
-			<RowCells row={row} expandable={true} />
+			<RowCells row={row} />
 		</EntryRow>
 	);
 }
