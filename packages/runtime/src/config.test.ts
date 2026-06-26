@@ -9,6 +9,7 @@ const STUB_SK_B64 = "A".repeat(44);
 const REQUIRED = {
 	SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}`,
 	PERSISTENCE_PATH: "/tmp/wfe-test",
+	DATABASE_URL: "file:/tmp/wfe-test/events.db",
 };
 
 describe("createConfig", () => {
@@ -236,6 +237,68 @@ describe("createConfig", () => {
 		expect(() =>
 			createConfig({ ...REQUIRED, EVENT_STORE_RETENTION_DAYS: "-1" }),
 		).toThrow();
+	});
+
+	it("parses an embedded DATABASE_URL with WAL", () => {
+		const config = createConfig({
+			...REQUIRED,
+			DATABASE_URL: "file:/data/events.db",
+			DATABASE_WAL: "true",
+		});
+		expect(config.databaseUrl).toBe("file:/data/events.db");
+		expect(config.databaseWal).toBe(true);
+		expect(config.databaseAuthToken).toBeUndefined();
+	});
+
+	it("rejects missing DATABASE_URL", () => {
+		expect(() =>
+			createConfig({
+				SECRETS_PRIVATE_KEYS: `k1:${STUB_SK_B64}`,
+				PERSISTENCE_PATH: "/tmp/wfe-test",
+			}),
+		).toThrow();
+	});
+
+	it("DATABASE_WAL defaults to false when unset", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.databaseWal).toBe(false);
+	});
+
+	it("DATABASE_WAL parses the string 'false' as false (not coerce-boolean)", () => {
+		const config = createConfig({ ...REQUIRED, DATABASE_WAL: "false" });
+		expect(config.databaseWal).toBe(false);
+	});
+
+	it("DATABASE_AUTH_TOKEN is Secret-wrapped and redacts but reveals", () => {
+		const config = createConfig({
+			...REQUIRED,
+			DATABASE_URL: "libsql://db.example",
+			DATABASE_AUTH_TOKEN: "tok_abc",
+		});
+		expect(config.databaseAuthToken).toBeDefined();
+		expect(JSON.stringify(config.databaseAuthToken)).toBe('"[redacted]"');
+		expect(JSON.stringify(config)).not.toContain("tok_abc");
+		expect(config.databaseAuthToken?.reveal()).toBe("tok_abc");
+	});
+
+	it("rejects a contradictory remote token + WAL=true", () => {
+		expect(() =>
+			createConfig({
+				...REQUIRED,
+				DATABASE_URL: "libsql://db.example",
+				DATABASE_AUTH_TOKEN: "tok_abc",
+				DATABASE_WAL: "true",
+			}),
+		).toThrow();
+	});
+
+	it("accepts a remote DATABASE_URL without a token (fails later, not at parse)", () => {
+		const config = createConfig({
+			...REQUIRED,
+			DATABASE_URL: "libsql://db.example",
+		});
+		expect(config.databaseUrl).toBe("libsql://db.example");
+		expect(config.databaseAuthToken).toBeUndefined();
 	});
 });
 

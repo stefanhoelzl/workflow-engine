@@ -289,6 +289,37 @@ systemctl --user start wfe-prod
 
 The events table is recreated empty on boot. After this one-time reset, enable lever 1 so the file plateaus instead of growing again. (Sizing the volume to fit the plateau, or isolating `/srv/wfe` on its own volume, is the durable blast-radius fix and is tracked separately.)
 
+## Database connection (`DATABASE_URL`) & the remote-libSQL flip
+
+The libSQL connection for the EventStore + per-workflow queues is named by **three env vars** (parsed in `packages/runtime/src/config.ts`):
+
+- `DATABASE_URL` — **required**. `file:…` = embedded on-disk; `libsql://…`/`https://…` = remote libSQL service (Bunny Database). No derivation from `PERSISTENCE_PATH` (which still roots the `workflows/` bundle tree).
+- `DATABASE_WAL` — embedded-only `PRAGMA journal_mode=WAL` toggle (default `false`). Keep it `true` for any embedded deployment so out-of-process readers (operator tooling, the e2e harness) can read while the runtime writes; without WAL, libSQL uses rollback-journal mode where readers and the writer block each other.
+- `DATABASE_AUTH_TOKEN` — remote auth token. Sealed secret (redacted in logs/plan output); its presence selects the remote client variant.
+
+Today **all environments run embedded**: the VPS Quadlet template and `bunny-staging.tf` set `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true`. `main.ts` builds one `@libsql/client` from these and injects it into both Kysely stores; the remote variant is the same dialect over the network.
+
+### Flipping an environment to a remote Bunny Database (future cutover)
+
+This is a deliberate, staging-first operation — **not** done by the prep change that introduced the seam.
+
+1. **Provision** a Bunny Database (remote libSQL) instance in the target region; obtain its `libsql://…` URL and an auth token.
+2. **Staging first.** On the staging app set `DATABASE_URL=libsql://…` and add `DATABASE_AUTH_TOKEN=…` as a **secret** (env-file / sealed TF var on the VPS; a `sensitive` env on Magic Containers). **Remove `DATABASE_WAL`** (or leave it `false`) — setting `DATABASE_AUTH_TOKEN` together with `DATABASE_WAL=true` fails closed at boot.
+   - Common mistake: a `libsql://` URL **without** the token does *not* fail at config parse — it routes to the embedded code path and surfaces a confusing connect/runtime error. Always set the token in the same change as the remote URL.
+3. **Verify** against the pre-prod checklist below before touching prod.
+4. **Prod.** Repeat on the prod app once staging is healthy.
+5. **Rollback.** Revert the env back to `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true` and restart. The local `events.db` resumes (its data is independent of the remote service; both directions are accept-loss on the local volume).
+
+### Pre-prod verification checklist (Bunny Database is public preview)
+
+The libSQL client deps keep caret ranges (`@libsql/client ^0.8.0`, `@libsql/kysely-libsql ^0.4.1`); the preview service can churn, so before pointing prod at it, confirm on staging:
+
+- **Cold-start latency.** Bunny Database spins down when idle; measure the first dashboard read after an idle period. There is **no read-path retry** in the runtime today — a cold-start surfaces as a failed query the user must retry. If this bites, add read-path retry (tracked, not built).
+- **Auth-token rotation.** Confirm rotating `DATABASE_AUTH_TOKEN` + restart reconnects cleanly.
+- **TLS / region.** Confirm the remote endpoint's TLS and that its region matches the app region (latency + data residency).
+- **Hrana protocol negotiation.** Confirm the pinned client version negotiates against Bunny's libSQL server (run a real query through both stores). The transport follows the URL scheme — `libsql://` uses a long-lived WebSocket (which an idle spin-down may kill), `https://` is stateless per request; pick via the URL scheme and verify whichever you choose survives an idle cycle.
+- **Single-writer.** Remote libSQL has **no** file-level write exclusion at all; the single-writer guarantee rests **entirely** on the instance-count pin (`autoscaling_min=max=1`, sequential rollout). Confirm no config path can run two instances against the same remote DB. An app-level lease/fence is a future option, not built.
+
 ## SDK publishing to npm
 
 `@workflow-engine/sdk` and `@workflow-engine/core` publish to npm on every push to `release` whose diff touches `packages/sdk` or `packages/core`. Auth is via npm trusted publishing (OIDC) — there is no long-lived `NPM_AUTOMATION_TOKEN` in repo secrets. Workflow: `.github/workflows/deploy-prod.yml` job `publish-npm`.

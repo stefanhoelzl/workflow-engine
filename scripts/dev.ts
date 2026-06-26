@@ -180,10 +180,15 @@ async function runUpload(port: number): Promise<void> {
 const DEV_SECRETS_PRIVATE_KEYS = `k1:${randomBytes(32).toString("base64")}`;
 
 function runtimeEnv(port: number): NodeJS.ProcessEnv {
+	const persistencePath = resolve(rootDir, ".persistence");
 	return {
 		...process.env,
 		PORT: String(port),
-		PERSISTENCE_PATH: resolve(rootDir, ".persistence"),
+		PERSISTENCE_PATH: persistencePath,
+		// Embedded libSQL on disk, WAL on so hot-reload restarts and any
+		// out-of-process reader can read concurrently. DATABASE_URL is required.
+		DATABASE_URL: `file:${resolve(persistencePath, "events.db")}`,
+		DATABASE_WAL: "true",
 		BASE_URL: `http://localhost:${String(port)}`,
 		AUTH_ALLOW: "local:local-user,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",

@@ -71,6 +71,10 @@ async function spawnRuntime(spec: SpawnSpec): Promise<SpawnedChild> {
 		HOME: process.env.HOME,
 		PORT: String(spec.port),
 		PERSISTENCE_PATH: spec.persistencePath,
+		// Embedded libSQL on disk; WAL on so the harness's second read connection
+		// can read the live file concurrently with the runtime's writes.
+		DATABASE_URL: `file:${join(spec.persistencePath, "events.db")}`,
+		DATABASE_WAL: "true",
 		BASE_URL: `http://127.0.0.1:${String(spec.port)}`,
 		AUTH_ALLOW: "local:dev,local:alice:acme,local:bob",
 		LOCAL_DEPLOYMENT: "1",

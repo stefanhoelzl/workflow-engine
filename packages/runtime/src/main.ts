@@ -1,6 +1,4 @@
-import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { createClient } from "@libsql/client";
+import { type Client, createClient } from "@libsql/client";
 import { LibsqlDialect } from "@libsql/kysely-libsql";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
 import { Kysely } from "kysely";
@@ -42,6 +40,27 @@ import { queueMiddleware } from "./ui/queue/middleware.js";
 import { staticMiddleware } from "./ui/static/middleware.js";
 import { triggerMiddleware } from "./ui/trigger/middleware.js";
 import { createWorkflowRegistry } from "./workflow-registry.js";
+
+// Embedded (`{ wal }`) vs remote (`{ authToken }`) libSQL client. The variant is
+// chosen by `DATABASE_AUTH_TOKEN` presence (see config.ts). Remote uses the same
+// dialect over the network with no local pragma; embedded runs the WAL pragma
+// (iff `wal`) so out-of-process readers (e2e harness, operator tooling) can read
+// the live file concurrently. The DB directory is assumed to already exist.
+type SqlClientOptions = { authToken: string } | { wal: boolean };
+
+async function buildSqlClient(
+	url: string,
+	options: SqlClientOptions,
+): Promise<Client> {
+	if ("authToken" in options) {
+		return createClient({ url, authToken: options.authToken });
+	}
+	const client = createClient({ url });
+	if (options.wal) {
+		await client.execute("PRAGMA journal_mode=WAL");
+	}
+	return client;
+}
 
 function logRegistry(
 	logger: ReturnType<typeof createLogger>,
@@ -95,16 +114,18 @@ async function init() {
 	const storageBackend = createFsStorage(config.persistencePath);
 	await storageBackend.init();
 
-	// 2. Open the libSQL database file at `<persistencePath>/events.db`.
-	//    One libSQL client backs both stores; each store gets its own Kysely
-	//    instance typed to its table(s). The client is closed at shutdown after
-	//    both stores drain (db.destroy() is a no-op on an injected client).
-	const dbRoot = resolve(config.persistencePath);
-	await mkdir(dbRoot, { recursive: true });
-	const sqlClient = createClient({ url: `file:${join(dbRoot, "events.db")}` });
-	// WAL mode lets out-of-process readers (e.g. the e2e harness, operator
-	// tooling) read the live file concurrently with the runtime's writes.
-	await sqlClient.execute("PRAGMA journal_mode=WAL");
+	// 2. Open the libSQL database named by DATABASE_URL. One libSQL client backs
+	//    both stores; each store gets its own Kysely instance typed to its
+	//    table(s). The client is closed at shutdown after both stores drain
+	//    (db.destroy() is a no-op on an injected client). DATABASE_AUTH_TOKEN
+	//    presence selects the remote variant; otherwise embedded with optional
+	//    WAL. The DB directory is assumed to already exist.
+	const sqlClient = await buildSqlClient(
+		config.databaseUrl,
+		config.databaseAuthToken === undefined
+			? { wal: config.databaseWal }
+			: { authToken: config.databaseAuthToken.reveal() },
+	);
 	const eventDb = new Kysely<EventDatabase>({
 		dialect: new LibsqlDialect({ client: sqlClient }),
 	});

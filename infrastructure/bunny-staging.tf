@@ -141,6 +141,18 @@ resource "bunnynet_compute_container_app" "staging" {
       name  = "BASE_URL"
       value = "https://${local.bunny_staging.domain}"
     }
+    # Embedded libSQL on the /data volume. Staging stays on-disk; the remote
+    # (Bunny Database) cutover is a later change that sets DATABASE_URL to a
+    # libsql:// URL + a DATABASE_AUTH_TOKEN secret. DATABASE_WAL keeps WAL on so
+    # out-of-process readers work.
+    env {
+      name  = "DATABASE_URL"
+      value = "file:/data/events.db"
+    }
+    env {
+      name  = "DATABASE_WAL"
+      value = "true"
+    }
     env {
       name  = "EVENT_STORE_RETENTION_DAYS"
       value = tostring(local.bunny_staging.retention_days)

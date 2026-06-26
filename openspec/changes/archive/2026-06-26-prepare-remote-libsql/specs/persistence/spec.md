@@ -1,9 +1,5 @@
-# Persistence Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Provide crash-resilient invocation persistence using pending/archive lifecycle records, ensuring invocations survive process restarts through atomic writes and startup recovery.
-## Requirements
 ### Requirement: Capability deprecated
 
 The `persistence` capability SHALL be considered deprecated and is retained as
@@ -20,4 +16,3 @@ is a `libsql://…`/`https://…` URL.
 - **WHEN** the operator inspects the persistence root
 - **THEN** there SHALL NOT be any `pending/` directory
 - **AND** there SHALL NOT be any `archive/{id}.json` files
-
