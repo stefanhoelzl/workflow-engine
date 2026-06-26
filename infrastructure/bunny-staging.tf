@@ -58,7 +58,7 @@ resource "bunnynet_compute_container_app" "staging" {
   autoscaling_min     = 1
   autoscaling_max     = 1
 
-  # One persistent volume for the DuckDB EventStore + uploaded bundles.
+  # One persistent volume for the libSQL EventStore (events.db) + uploaded bundles.
   # Accept-loss: bunny volumes have no backups/replication and reattachment
   # across reschedule is not guaranteed (public preview). Documented, not
   # mitigated — staging data is low-stakes and CI re-uploads demo bundles.

@@ -2,6 +2,14 @@
 
 Tenant rebuild/re-upload requirements per change. Each entry: dated, BREAKING marker if applicable, migration recipe.
 
+- **SQL store: DuckDB → libSQL, on disk (2026-06-26).** **BREAKING (operator) + DATA LOSS.** The event index and per-workflow queues move from a DuckDB file (`<PERSISTENCE_PATH>/events.duckdb`) to a libSQL embedded database file (`<PERSISTENCE_PATH>/events.db`), accessed via `@libsql/client` + the `@libsql/kysely-libsql` Kysely dialect. There is **no data migration** — the new schema is created on first boot and all prior event/queue history is discarded (consistent with the accept-loss volume policy).
+
+    **Tenants do NOT need to rebuild or re-upload** — no SDK, manifest, or workflow-author-visible change. The migration is storage-layer + host-wiring only.
+
+    **Operator recipe.** On deploy, the runtime creates a fresh `events.db`. Reclaim the legacy DuckDB artefacts: `rm -f /srv/wfe/<env>/events.duckdb /srv/wfe/<env>/events.duckdb.wal && rm -rf /srv/wfe/<env>/events/`. `PERSISTENCE_PATH` is retained (it still roots the libSQL file **and** the `workflows/` tenant bundles). No new env vars in this change; `DATABASE_URL`/auth-token for a remote libSQL service are a separate later change.
+
+    **Schema notes.** Timestamp columns are `TEXT` (ISO-8601); `events` gains a composite read index `(owner, repo, kind, "at")`; `queue_items.seq` is `INTEGER PRIMARY KEY AUTOINCREMENT`. The former `EVENT_STORE_CHECKPOINT_*` and `PERSISTENCE_S3_*` env vars (already absent from code) are removed from the spec.
+
 - **Queues on DuckDB (2026-06-24).** **BREAKING (operator) + DATA LOSS.** Per-workflow durable FIFO queues move from per-tuple NDJSON files at `<PERSISTENCE_PATH>/queues/<owner>/<repo>/<workflow>/<queue>.ndjson` into a single `queue_items` table inside the existing `events.duckdb`. The pre-migration NDJSON contents are **not** migrated — every queue starts empty on first boot after the upgrade.
 
     **Tenants do NOT need to rebuild or re-upload** — the manifest schema, the SDK surface (`defineQueue`, `q.put`, `q.get`), the typed `Queue<T>` API, and the per-item / per-queue caps (1024 bytes, 1000 items) are all unchanged. The migration is purely storage-layer and host-bridge.

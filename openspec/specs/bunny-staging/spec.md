@@ -22,7 +22,7 @@ The `infrastructure/` project SHALL declare the `bunnynet` provider and exactly 
 
 ### Requirement: Staging persistent volume mounted at /data
 
-The staging app SHALL declare one `bunnynet` volume mounted at `/data` so the DuckDB EventStore and uploaded tenant bundles have a persistence path. Durability is **accept-loss**: Bunny volumes have no backups or replication and reattachment across reschedule is not guaranteed. This change SHALL NOT add backup, replication, sentinel, or forced-reschedule instrumentation; the risk SHALL be documented, not mitigated.
+The staging app SHALL declare one `bunnynet` volume mounted at `/data` so the libSQL EventStore database (`events.db`) and uploaded tenant bundles have a persistence path. Durability is **accept-loss**: Bunny volumes have no backups or replication and reattachment across reschedule is not guaranteed. This change SHALL NOT add backup, replication, sentinel, or forced-reschedule instrumentation; the risk SHALL be documented, not mitigated.
 
 #### Scenario: Volume mounted at the persistence path
 

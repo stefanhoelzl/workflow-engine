@@ -2,6 +2,10 @@ FROM node:24-slim AS build
 
 WORKDIR /app
 
+# Native-binding runtime lib for the build stage. The SQL engine (libSQL,
+# `@libsql/client`) and quickjs-wasi ship prebuilt Rust/native bindings;
+# libatomic1 covers atomic intrinsics some prebuilts reference. Harmless if
+# unused. The distroless runtime loads the bindings without extra apt packages.
 RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable

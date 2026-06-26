@@ -1,7 +1,7 @@
-// Upload-time + boot-time lifecycle for the DuckDB-backed queue_items table,
+// Upload-time + boot-time lifecycle for the libSQL-backed queue_items table,
 // owned by the workflow registry.
 //
-// Surfaces (post queues-on-duckdb migration):
+// Surfaces (post queues-on-libsql migration):
 //   • diffManifests        — pure diff of old vs new manifests, returns the
 //                            list of (workflow, queueName) tuples whose
 //                            declaration was removed and the list of

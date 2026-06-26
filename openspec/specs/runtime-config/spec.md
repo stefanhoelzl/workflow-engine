@@ -82,60 +82,6 @@ This field gates (a) the local auth provider factory inclusion in `buildProvider
 - **WHEN** `createConfig` is called without `LOCAL_DEPLOYMENT`
 - **THEN** the result SHALL have `localDeployment: undefined`
 
-### Requirement: S3 persistence configuration
-
-The config schema SHALL accept the following environment variables for S3 backend configuration:
-
-| Env Var | Required | Description |
-|---------|----------|-------------|
-| `PERSISTENCE_S3_BUCKET` | Yes (for S3) | S3 bucket name |
-| `PERSISTENCE_S3_ACCESS_KEY_ID` | Yes (for S3) | Access key ID |
-| `PERSISTENCE_S3_SECRET_ACCESS_KEY` | Yes (for S3) | Secret access key |
-| `PERSISTENCE_S3_ENDPOINT` | No | Custom endpoint URL (for MinIO, R2, etc.) |
-| `PERSISTENCE_S3_REGION` | No | AWS region |
-
-All S3 fields SHALL be optional at the schema level. The schema SHALL apply a refine rule that rejects a configuration where `PERSISTENCE_S3_BUCKET` is set but either `PERSISTENCE_S3_ACCESS_KEY_ID` or `PERSISTENCE_S3_SECRET_ACCESS_KEY` is missing.
-
-`PERSISTENCE_S3_ACCESS_KEY_ID` and `PERSISTENCE_S3_SECRET_ACCESS_KEY` SHALL be returned as `Secret`-wrapped values (see "Secret wrapper for sensitive config values"). All other S3 fields SHALL be returned as plain strings. Consumers that need the cleartext credential (notably `createS3Storage`) SHALL call `.reveal()` at the point of use.
-
-#### Scenario: S3 config fully provided
-
-- **WHEN** `createConfig` is called with `{ PERSISTENCE_S3_BUCKET: "my-bucket", PERSISTENCE_S3_ACCESS_KEY_ID: "key", PERSISTENCE_S3_SECRET_ACCESS_KEY: "secret" }`
-- **THEN** the result SHALL have `persistenceS3Bucket: "my-bucket"`
-- **AND** `persistenceS3AccessKeyId.reveal()` SHALL equal `"key"`
-- **AND** `persistenceS3SecretAccessKey.reveal()` SHALL equal `"secret"`
-
-#### Scenario: S3 credentials redact on serialization
-
-- **WHEN** `createConfig` is called with valid S3 config including `PERSISTENCE_S3_SECRET_ACCESS_KEY: "supersecret"`
-- **AND** the resulting config object is serialized via `JSON.stringify`
-- **THEN** the output SHALL NOT contain the substring `"supersecret"`
-- **AND** the output SHALL contain `"[redacted]"` in place of the credential values
-
-#### Scenario: S3 config with optional fields
-
-- **WHEN** `createConfig` is called with S3 bucket, credentials, and `{ PERSISTENCE_S3_ENDPOINT: "http://minio:9000", PERSISTENCE_S3_REGION: "eu-central-1" }`
-- **THEN** the result SHALL have `persistenceS3Endpoint: "http://minio:9000"` and `persistenceS3Region: "eu-central-1"`
-
-#### Scenario: No S3 config provided
-
-- **WHEN** `createConfig` is called without any `PERSISTENCE_S3_*` variables
-- **THEN** all S3 config fields SHALL be `undefined`
-
-#### Scenario: Bucket set without credentials
-
-- **WHEN** `createConfig` is called with `PERSISTENCE_S3_BUCKET` set but either `PERSISTENCE_S3_ACCESS_KEY_ID` or `PERSISTENCE_S3_SECRET_ACCESS_KEY` missing
-- **THEN** `createConfig` SHALL throw a validation error identifying the missing credential
-
-### Requirement: Backend selection is mutually exclusive
-
-If both `PERSISTENCE_PATH` and `PERSISTENCE_S3_BUCKET` are set, the config SHALL reject the configuration with a validation error.
-
-#### Scenario: Both FS and S3 configured
-
-- **WHEN** `createConfig` is called with both `PERSISTENCE_PATH` and `PERSISTENCE_S3_BUCKET` set
-- **THEN** it SHALL throw a validation error indicating only one persistence backend can be configured
-
 ### Requirement: BASE_URL configuration
 The config schema SHALL accept an optional `BASE_URL` environment variable. It SHALL be a string and SHALL have no default value. When provided, it SHALL be available as `baseUrl` in the config object.
 
@@ -468,14 +414,13 @@ The config fields SHALL NOT be wrapped with `createSecret` (they are non-secret 
 
 ### Requirement: EVENT_STORE_* config fields
 
-The runtime SHALL accept six new environment variables under the `EVENT_STORE_*` namespace, all coerced to numbers via Zod with the defaults specified below. These tune the EventStore's checkpoint cadence, commit retry policy, and SIGTERM drain budget. All are optional; production environments override defaults via the deployment manifest.
+The runtime SHALL accept three environment variables under the `EVENT_STORE_*` namespace, all coerced to numbers via Zod with the defaults specified below. These tune the EventStore's commit retry policy and SIGTERM drain budget. All are optional; production environments override defaults via the deployment manifest.
 
-- `EVENT_STORE_CHECKPOINT_INTERVAL_MS` — default `3_600_000` (1 h). Floor on background `CHECKPOINT` cadence; the operation runs at most this often by timer, plus on-demand when thresholds trip.
-- `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS` — default `100_000`. Threshold trigger: when DuckLake's inlined-row count exceeds this, `CHECKPOINT` runs without waiting for the timer.
-- `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES` — default `10_485_760` (10 MiB). Threshold trigger: when the catalog file size exceeds this, `CHECKPOINT` runs without waiting for the timer.
-- `EVENT_STORE_COMMIT_MAX_RETRIES` — default `5`. Maximum number of retries on a transient DuckLake commit failure before the invocation is dropped.
+- `EVENT_STORE_COMMIT_MAX_RETRIES` — default `5`. Maximum number of retries on a transient commit failure before the invocation is dropped.
 - `EVENT_STORE_COMMIT_BACKOFF_MS` — default `500`. Base backoff between retry attempts; exponential, capped at a sensible upper bound.
-- `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` — default `60_000` (60 s). Maximum time the SIGTERM drain spends committing in-flight invocations. MUST be less than the K8s `terminationGracePeriodSeconds`.
+- `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` — default `60_000` (60 s). Maximum time the SIGTERM drain spends committing in-flight invocations. MUST be less than the deployment's termination grace period.
+
+There SHALL NOT be any `EVENT_STORE_CHECKPOINT_*` variables — libSQL has no application-visible checkpoint operation, so the former checkpoint-cadence tuning no longer exists.
 
 The config schema SHALL annotate each field with the same `// biome-ignore lint/style/useNamingConvention: env var name` comment used by the existing `PERSISTENCE_*` and `SANDBOX_LIMIT_*` families.
 
@@ -483,18 +428,15 @@ The config schema SHALL annotate each field with the same `// biome-ignore lint/
 
 - **GIVEN** the runtime starts with no `EVENT_STORE_*` env vars set
 - **WHEN** the config is parsed
-- **THEN** the parsed config SHALL contain `EVENT_STORE_CHECKPOINT_INTERVAL_MS = 3_600_000`
-- **AND** `EVENT_STORE_CHECKPOINT_MAX_INLINED_ROWS = 100_000`
-- **AND** `EVENT_STORE_CHECKPOINT_MAX_CATALOG_BYTES = 10_485_760`
-- **AND** `EVENT_STORE_COMMIT_MAX_RETRIES = 5`
+- **THEN** the parsed config SHALL contain `EVENT_STORE_COMMIT_MAX_RETRIES = 5`
 - **AND** `EVENT_STORE_COMMIT_BACKOFF_MS = 500`
 - **AND** `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS = 60_000`
 
 #### Scenario: Env var overrides default
 
-- **GIVEN** the runtime starts with `EVENT_STORE_CHECKPOINT_INTERVAL_MS=300000`
+- **GIVEN** the runtime starts with `EVENT_STORE_COMMIT_BACKOFF_MS=1000`
 - **WHEN** the config is parsed
-- **THEN** the parsed config SHALL contain `EVENT_STORE_CHECKPOINT_INTERVAL_MS = 300_000`
+- **THEN** the parsed config SHALL contain `EVENT_STORE_COMMIT_BACKOFF_MS = 1_000`
 
 #### Scenario: Non-numeric env var fails parsing
 

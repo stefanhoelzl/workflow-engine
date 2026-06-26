@@ -57,7 +57,7 @@ interface SandboxStoreOptions {
 	readonly keyStore: SecretsKeyStore;
 	readonly maxCount: number;
 	// Host-side singleton consumed by per-sandbox queue host handlers.
-	// queueStore owns the DuckDB-backed FIFO storage. (No registry dependency:
+	// queueStore owns the libSQL-backed FIFO storage. (No registry dependency:
 	// the queue handlers apply no name gate, so they never consult the live
 	// manifest — there is no construction cycle to break.)
 	readonly queueStore: QueueStore;

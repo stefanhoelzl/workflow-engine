@@ -1,7 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { DuckDBInstance } from "@duckdb/node-api";
+import { createClient } from "@libsql/client";
+import { LibsqlDialect } from "@libsql/kysely-libsql";
 import { createSandboxFactory } from "@workflow-engine/sandbox";
+import { Kysely } from "kysely";
 import { apiMiddleware } from "./api/index.js";
 import {
 	buildProviderFactories,
@@ -11,11 +13,17 @@ import {
 import { authMiddleware, loginPageMiddleware } from "./auth/routes.js";
 import { sessionMiddleware } from "./auth/session-mw.js";
 import { createConfig } from "./config.js";
-import { createEventStore } from "./event-store.js";
+import {
+	createEventStore,
+	type Database as EventDatabase,
+} from "./event-store.js";
 import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
-import { createQueueStore } from "./queue-store.js";
+import {
+	createQueueStore,
+	type Database as QueueDatabase,
+} from "./queue-store.js";
 import { createSandboxStore } from "./sandbox-store.js";
 import { createKeyStore, readyCrypto } from "./secrets/index.js";
 import type { Service } from "./services/index.js";
@@ -87,19 +95,25 @@ async function init() {
 	const storageBackend = createFsStorage(config.persistencePath);
 	await storageBackend.init();
 
-	// 2. Open the shared DuckDB instance at `<persistencePath>/events.duckdb`.
-	//    Both EventStore and QueueStore connect against this single instance
-	//    on separate connections (DuckDB serializes writes at the storage
-	//    layer; per-store connections keep autocommit/batch boundaries clean).
+	// 2. Open the libSQL database file at `<persistencePath>/events.db`.
+	//    One libSQL client backs both stores; each store gets its own Kysely
+	//    instance typed to its table(s). The client is closed at shutdown after
+	//    both stores drain (db.destroy() is a no-op on an injected client).
 	const dbRoot = resolve(config.persistencePath);
 	await mkdir(dbRoot, { recursive: true });
-	const duckdbInstance = await DuckDBInstance.create(
-		join(dbRoot, "events.duckdb"),
-	);
+	const sqlClient = createClient({ url: `file:${join(dbRoot, "events.db")}` });
+	// WAL mode lets out-of-process readers (e.g. the e2e harness, operator
+	// tooling) read the live file concurrently with the runtime's writes.
+	await sqlClient.execute("PRAGMA journal_mode=WAL");
+	const eventDb = new Kysely<EventDatabase>({
+		dialect: new LibsqlDialect({ client: sqlClient }),
+	});
+	const queueDb = new Kysely<QueueDatabase>({
+		dialect: new LibsqlDialect({ client: sqlClient }),
+	});
 
 	const eventStore = await createEventStore({
-		persistenceRoot: config.persistencePath,
-		instance: duckdbInstance,
+		db: eventDb,
 		logger: runtimeLogger,
 		config: {
 			commitMaxRetries: config.eventStoreCommitMaxRetries,
@@ -109,11 +123,11 @@ async function init() {
 		},
 	});
 
-	// QueueStore: DuckDB-backed FIFO queues. The host-side singleton consumed
+	// QueueStore: libSQL-backed FIFO queues. The host-side singleton consumed
 	// by every sandbox's queue.put / queue.get host handlers (see
 	// queue-host.ts + sandbox-store.ts).
 	const queueStore = await createQueueStore({
-		instance: duckdbInstance,
+		db: queueDb,
 		logger: runtimeLogger,
 	});
 
@@ -258,6 +272,10 @@ async function init() {
 			await Promise.allSettled(triggerBackends.map((s) => s.stop()));
 			await sandboxStore.dispose();
 			await eventStore.drainAndClose();
+			await queueStore.close();
+			// Close the shared libSQL client last — both stores have released
+			// their Kysely handles (no-ops on the injected client) by now.
+			sqlClient.close();
 		},
 	};
 

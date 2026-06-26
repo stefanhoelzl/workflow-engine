@@ -2,55 +2,31 @@
 
 ## Purpose
 
-Provide an in-memory DuckDB-based invocation index that implements BusConsumer, enabling SQL queries over invocation lifecycle records for the dashboard.
+Provide a libSQL-backed invocation index that implements BusConsumer, enabling SQL queries over invocation lifecycle records for the dashboard.
 ## Requirements
 ### Requirement: EventStore is the sole consumer of invocation lifecycle events
 
 The runtime SHALL host a single `EventStore` component that owns durable storage of invocation events and serves all queries over them. There SHALL NOT be an event bus, a separate persistence consumer, a recovery scan path, or a logging consumer in the runtime; their responsibilities collapse into the executor (lifecycle logging) and the EventStore (durable archive + queries).
 
-EventStore SHALL be created via `createEventStore({ persistenceRoot, logger, config })`, where `persistenceRoot` is the absolute filesystem path under which the DuckDB database file lives, `logger` is the runtime logger, and `config` carries the `EVENT_STORE_*` settings. The factory SHALL return a Promise that resolves once the DuckDB database file has been opened (creating it on first boot, or replaying its WAL on subsequent boots).
+EventStore SHALL be created via `createEventStore({ db, logger, config })`, where `db` is a libSQL-backed `Kysely<Database>` (the caller builds it from the configured connection, e.g. `file:<PERSISTENCE_PATH>/events.db`, and owns the underlying client's lifecycle), `logger` is the runtime logger, and `config` carries the `EVENT_STORE_*` settings. The factory SHALL return a Promise that resolves once the schema has been ensured (idempotent `CREATE TABLE/INDEX IF NOT EXISTS`).
 
-#### Scenario: Factory opens the database and resolves ready
+#### Scenario: Factory ensures the schema and resolves ready
 
-- **WHEN** `createEventStore({ persistenceRoot, logger, config })` is awaited against an empty directory
+- **WHEN** `createEventStore({ db, logger, config })` is awaited against a fresh libSQL database
 - **THEN** the returned object exposes `record`, `query`, `hasUploadEvent`, `ping`, `drainAndClose`
-- **AND** the file `<persistenceRoot>/events.duckdb` has been created
+- **AND** the `events` table and its read index exist
 - **AND** the connection is ready to accept `record` and `query` calls
 
 #### Scenario: Factory opens an existing database without scanning per-invocation files
 
-- **GIVEN** an existing `<persistenceRoot>/events.duckdb` containing a million archived invocations
+- **GIVEN** an existing libSQL `events.db` containing a million archived invocations
 - **WHEN** `createEventStore` is awaited
 - **THEN** the factory SHALL NOT enumerate, list, or read per-invocation archive files
-- **AND** the factory SHALL resolve in time bounded by the database file open + WAL replay, not by historical event count
-
-### Requirement: DuckDB-backed durable archive
-
-EventStore SHALL persist invocation events using a plain DuckDB database file at `<persistenceRoot>/events.duckdb`. There SHALL NOT be a separate Parquet directory, a lakehouse catalog, or any DuckDB extension load (`ducklake`, `httpfs`) at boot.
-
-The events table SHALL have columns: `id` (text), `seq` (integer), `kind` (text), `ref` (integer, nullable), `at` (TIMESTAMPTZ), `ts` (BIGINT, monotonic µs), `owner` (text NOT NULL), `repo` (text NOT NULL), `workflow` (text), `workflowSha` (text), `name` (text), `input` (JSON, nullable), `output` (JSON, nullable), `error` (JSON, nullable), `meta` (JSON, nullable).
-
-The events table SHALL declare `PRIMARY KEY (id, seq)`. EventStore SHALL also create a secondary index on `(owner, repo)` to bound scope-filtered scans.
-
-Idempotency is enforced by the `PRIMARY KEY (id, seq)` constraint. The in-memory accumulator continues to evict on successful commit; PK violations during retry are treated as fatal (see "Bounded retry then drop") because pre-eviction structurally prevents legitimate duplicate inserts — a PK conflict signals a logic bug, not a transient.
-
-#### Scenario: Database file is created at the configured path
-
-- **GIVEN** a fresh `PERSISTENCE_PATH=/var/lib/wfe`
-- **WHEN** EventStore initialises and commits an invocation under `(owner: "acme", repo: "foo")`
-- **THEN** `/var/lib/wfe/events.duckdb` SHALL exist
-- **AND** no `/var/lib/wfe/events/` Parquet directory SHALL be created
-
-#### Scenario: Events table declares PRIMARY KEY (id, seq)
-
-- **GIVEN** a freshly-initialised EventStore
-- **WHEN** the schema is inspected via `PRAGMA table_info(events)` or `SHOW TABLES`
-- **THEN** the events table SHALL declare a `PRIMARY KEY` over `(id, seq)`
-- **AND** an index on `(owner, repo)` SHALL exist
+- **AND** the factory SHALL resolve in time bounded by ensuring the schema, not by historical event count
 
 ### Requirement: record() accumulates events and commits per terminal invocation
 
-EventStore SHALL expose `record(event: InvocationEvent): Promise<void>`. Each call SHALL append the event to an in-memory accumulator keyed by `event.id`. On terminal events (`event.kind === "trigger.response"` or `event.kind === "trigger.error"`), `record` SHALL commit the full accumulated event list for that id as a single DuckLake transaction (`INSERT INTO events VALUES …` for every event), then evict the accumulator entry.
+EventStore SHALL expose `record(event: InvocationEvent): Promise<void>`. Each call SHALL append the event to an in-memory accumulator keyed by `event.id`. On terminal events (`event.kind === "trigger.response"` or `event.kind === "trigger.error"`), `record` SHALL commit the full accumulated event list for that id as a single batch insert (`INSERT INTO events VALUES …` for every event), then evict the accumulator entry.
 
 Non-terminal events SHALL NOT trigger any storage I/O. There SHALL NOT be per-event durability; in-flight events live only in RAM.
 
@@ -61,7 +37,7 @@ Non-terminal events SHALL NOT trigger any storage I/O. There SHALL NOT be per-ev
 - **GIVEN** an EventStore with an empty accumulator
 - **WHEN** `record({ kind: "action.request", id: "evt_a", seq: 1, … })` is called
 - **THEN** the accumulator entry for `evt_a` SHALL contain that event
-- **AND** no DuckLake write SHALL have occurred
+- **AND** no write to the events table SHALL have occurred
 
 #### Scenario: Terminal event commits the entire accumulated list atomically
 
@@ -80,7 +56,7 @@ Non-terminal events SHALL NOT trigger any storage I/O. There SHALL NOT be per-ev
 
 ### Requirement: Bounded retry then drop on commit failure
 
-When a DuckDB commit fails (file I/O error, lock contention), EventStore SHALL retry with exponential backoff. The maximum number of attempts is `EVENT_STORE_COMMIT_MAX_RETRIES` (default 5). The base backoff between attempts is `EVENT_STORE_COMMIT_BACKOFF_MS` (default 500 ms), doubling each attempt up to a sensible cap. On each retry attempt, EventStore SHALL log `event-store.commit-retry { id, owner, repo, attempt, error }`.
+When a commit fails (file I/O error, lock contention), EventStore SHALL retry with exponential backoff. The maximum number of attempts is `EVENT_STORE_COMMIT_MAX_RETRIES` (default 5). The base backoff between attempts is `EVENT_STORE_COMMIT_BACKOFF_MS` (default 500 ms), doubling each attempt up to a sensible cap. On each retry attempt, EventStore SHALL log `event-store.commit-retry { id, owner, repo, attempt, error }`.
 
 If the commit fails with a `PRIMARY KEY` constraint violation, EventStore SHALL NOT retry. PK violations indicate a logic bug (the accumulator pre-eviction makes legitimate duplicates structurally impossible). EventStore SHALL log `event-store.commit-dropped { id, owner, repo, reason: "primary-key-violation", error }`, evict the accumulator entry, and continue.
 
@@ -118,7 +94,7 @@ If all transient retries are exhausted, EventStore SHALL log `event-store.commit
 
 ### Requirement: SIGTERM drain commits in-flight invocations
 
-On SIGTERM, EventStore SHALL drain in-flight invocations within `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` (default 60 000 ms). Before draining, `drainAndClose` SHALL clear the retention timer (if one was scheduled) so that no new prune starts during shutdown. For each invocation in the accumulator, EventStore SHALL synthesise a terminal `trigger.error { reason: "shutdown" }` event with the next seq number, append it to the accumulator, and commit. After all accumulator entries are drained or the timeout elapses, EventStore SHALL close the DuckDB connection and resolve.
+On SIGTERM, EventStore SHALL drain in-flight invocations within `EVENT_STORE_SIGTERM_FLUSH_TIMEOUT_MS` (default 60 000 ms). Before draining, `drainAndClose` SHALL clear the retention timer (if one was scheduled) so that no new prune starts during shutdown. For each invocation in the accumulator, EventStore SHALL synthesise a terminal `trigger.error { reason: "shutdown" }` event with the next seq number, append it to the accumulator, and commit. After all accumulator entries are drained or the timeout elapses, EventStore SHALL destroy its Kysely handle and resolve (the caller closes the shared libSQL client).
 
 `drainAndClose` SHALL NOT add prune execution time to the drain budget: it guarantees no *new* prune starts once shutting down, but a prune already in flight that does not finish before process exit is cut off by the exit. Because each prune is a single atomic DELETE, an interrupted prune rolls back on next open with no partial deletion, and is retried on the next boot's schedule.
 
@@ -132,7 +108,7 @@ If the timeout elapses before all invocations are drained, the remaining in-flig
 - **WHEN** SIGTERM is delivered and the drain runs to completion within the timeout
 - **THEN** the events table SHALL contain a `trigger.error { reason: "shutdown" }` terminal row for both `evt_a` and `evt_b`
 - **AND** the accumulator SHALL be empty
-- **AND** the DuckDB connection SHALL be closed
+- **AND** the Kysely handle SHALL be destroyed
 
 #### Scenario: Drain timeout logs and drops the remaining
 
@@ -165,7 +141,7 @@ SIGKILL, OOM, force-delete, kernel panic, or any unclean process death SHALL cau
 
 EventStore SHALL expose `query(scopes: readonly Scope[]): SelectQueryBuilder<Database, "events", object>` where `Scope = { owner: string; repo: string }`. The returned builder SHALL be pre-filtered to rows whose `(owner, repo)` is in the supplied allow-list. An empty `scopes` argument SHALL throw — empty allow-lists must never compile to a tautological `WHERE 1=0` or `WHERE 1=1` and silently leak or hide data.
 
-The query path SHALL execute against the DuckLake-attached events table. Partition pruning on `(owner, repo)` SHALL bound scan cost to the relevant Parquet files.
+The query path SHALL execute against the libSQL `events` table. The `(owner, repo, kind, "at")` index SHALL bound scope-filtered, kind-filtered, time-ordered scan cost.
 
 #### Scenario: Single-scope query returns only that owner/repo's rows
 
@@ -194,33 +170,17 @@ EventStore SHALL expose `hasUploadEvent(owner: string, repo: string, workflow: s
 - **WHEN** `hasUploadEvent("acme", "foo", "main", "sha-never-uploaded")` resolves
 - **THEN** the result SHALL be `false`
 
-### Requirement: ping verifies the DuckLake connection
-
-EventStore SHALL expose `ping(): Promise<void>` that runs `SELECT 1` against the DuckDB connection holding the DuckLake catalog. `ping()` SHALL resolve on success and reject on failure. The readiness endpoint (`/readyz`) consumes this to determine whether the runtime is serving.
-
-#### Scenario: Ping succeeds when the connection is healthy
-
-- **WHEN** `ping()` is awaited on a healthy EventStore
-- **THEN** it SHALL resolve with no value
-
-#### Scenario: Ping rejects when the connection is broken
-
-- **GIVEN** the DuckDB connection has been closed
-- **WHEN** `ping()` is awaited
-- **THEN** it SHALL reject with the underlying connection error
-
 ### Requirement: Single-writer is a deployment contract
 
-EventStore SHALL NOT implement runtime split-brain coordination. DuckDB acquires an exclusive file lock on `events.duckdb` at open. A second writer process attempting to open the same file SHALL fail fast with a lock error and exit non-zero; the running writer's data SHALL NOT be affected.
+EventStore SHALL NOT implement runtime split-brain coordination. The single-writer guarantee rests entirely on the deployment contract: at most one runtime instance exists per env. Unlike DuckDB, embedded libSQL does NOT acquire an exclusive lock at open — a second process could open the same file and contend at write time rather than failing fast — so the guarantee is assumed from the deployment shape, not enforced by the store.
 
-The deployment contract is encoded in the `infrastructure` capability: exactly one Quadlet `wfe-<env>.container` unit per env on a single VPS, with `podman-auto-update.timer` rotating the unit sequentially (stop, pull, start) on the same data dir. There is no orchestrator that could spawn a second concurrent process for the same env, and the upgrade path has no overlap window between an old and new container holding the file. EventStore therefore relies on the deployment shape, not on an internal fence.
+The deployment contract is encoded in two capabilities: `infrastructure` declares exactly one Quadlet `wfe-<env>.container` unit per env on a single VPS, with `podman-auto-update.timer` rotating the unit sequentially (stop, pull, start) on the same data dir and no overlap window between old and new containers; `bunny-staging` pins `autoscaling_min = autoscaling_max = 1` and `regions_max_allowed = 1`. There is no orchestrator that could spawn a second concurrent process for the same env. (Pointing the store at a remote libSQL service, where no file-level exclusion exists at all, is out of scope here and treated by the separate remote-backend change.)
 
-#### Scenario: Second writer fails fast on file lock
+#### Scenario: Single instance is guaranteed by infrastructure
 
-- **GIVEN** a runtime process holding `<persistenceRoot>/events.duckdb` open
-- **WHEN** a second process invokes `createEventStore` against the same path
-- **THEN** the second factory SHALL reject with a lock error
-- **AND** the first process SHALL continue serving without data loss or corruption
+- **GIVEN** an env whose infrastructure pins the instance count to exactly 1 (one Quadlet unit with sequential rotation, or `autoscaling_min = autoscaling_max = 1`)
+- **WHEN** a deploy rotates the runtime
+- **THEN** there SHALL be no overlap window in which two runtime processes hold the same `events.db` for that env
 
 ### Requirement: Module exports
 
@@ -233,11 +193,11 @@ The runtime SHALL export `createEventStore`, the `EventStore` interface, the Kys
 
 ### Requirement: Time-based retention prune
 
-EventStore SHALL expose a public `prune({ olderThan })` method that deletes aged invocations and returns the number of invocations deleted. `olderThan` is a wall-clock cutoff. `prune` SHALL delete an invocation only when **every** event sharing its `id` is older than the cutoff, evaluated as `max("at") < olderThan` grouped by `id`, so an invocation's call graph is never partially deleted. The cutoff SHALL be compared against the `at` column (TIMESTAMPTZ wall-clock), NOT `ts` (which is a monotonic value not comparable to wall-clock time).
+EventStore SHALL expose a public `prune({ olderThan })` method that deletes aged invocations and returns the number of invocations deleted. `olderThan` is a wall-clock cutoff. `prune` SHALL delete an invocation only when **every** event sharing its `id` is older than the cutoff, evaluated as `max("at") < olderThan` grouped by `id`, so an invocation's call graph is never partially deleted. The cutoff SHALL be compared against the `at` column (TEXT ISO-8601 wall-clock, which sorts lexicographically in chronological order), NOT `ts` (a monotonic value not comparable to wall-clock time).
 
-The deletion SHALL run as a single statement on the EventStore's single read-write connection, serialized with commits so a prune and a commit never execute concurrently on the connection. After deleting, `prune` SHALL issue a `CHECKPOINT` so freed blocks return to DuckDB's reusable free list and the WAL is flushed.
+The count and the delete SHALL run within a single transaction on the EventStore's single read-write connection, serialized with commits so a prune and a commit never execute concurrently on the connection.
 
-`prune` SHALL NOT shrink the `events.duckdb` file on disk — DuckDB reuses freed space for subsequent writes, so the file plateaus at its high-water mark rather than returning space to the OS. Reclaiming already-consumed disk is an out-of-band operator action, not part of `prune`.
+`prune` SHALL NOT shrink the `events.db` file on disk — libSQL/SQLite reuses freed pages for subsequent writes, so the file plateaus at its high-water mark rather than returning space to the OS. Reclaiming already-consumed disk is an out-of-band operator action, not part of `prune`. There is no `CHECKPOINT` step.
 
 #### Scenario: Prune deletes only fully-aged invocations
 
@@ -289,4 +249,43 @@ A scheduled prune that fails SHALL be caught, SHALL log `event-store.prune-faile
 - **THEN** an `event-store.prune-failed { error }` log line SHALL have been emitted
 - **AND** the runtime process SHALL still be running
 - **AND** the timer SHALL remain scheduled so the next tick retries
+
+### Requirement: libSQL-backed durable archive
+
+EventStore SHALL persist invocation events using a libSQL embedded database file at `<persistenceRoot>/events.db`, accessed via `@libsql/client` through Kysely with the `@libsql/kysely-libsql` dialect. There SHALL NOT be a separate Parquet directory, a lakehouse catalog, a DuckDB file, or any DuckDB/DuckLake/`httpfs` artefact.
+
+The events table SHALL have columns: `id` (TEXT), `seq` (INTEGER), `kind` (TEXT), `ref` (INTEGER, nullable), `at` (TEXT, ISO-8601 wall-clock), `ts` (INTEGER, monotonic milliseconds), `owner` (TEXT NOT NULL), `repo` (TEXT NOT NULL), `workflow` (TEXT), `workflowSha` (TEXT), `name` (TEXT), `input` (TEXT JSON, nullable), `output` (TEXT JSON, nullable), `error` (TEXT JSON, nullable), `meta` (TEXT JSON, nullable). JSON values are stringified by the application on write and parsed on read.
+
+The events table SHALL declare `PRIMARY KEY (id, seq)`. EventStore SHALL also create a composite secondary index on `(owner, repo, kind, "at")` to serve the scope-filtered, kind-filtered, time-ordered dashboard reads (this replaces the prior `(owner, repo)`-only index; on a row store the narrower index is required to keep hot-repo reads sub-millisecond rather than scanning the whole owner/repo partition).
+
+Idempotency is enforced by the `PRIMARY KEY (id, seq)` constraint. The in-memory accumulator continues to evict on successful commit; PK violations during retry are treated as fatal (see "Bounded retry then drop") because pre-eviction structurally prevents legitimate duplicate inserts — a PK conflict signals a logic bug, not a transient.
+
+#### Scenario: Database file is created at the configured path
+
+- **GIVEN** a fresh `PERSISTENCE_PATH=/var/lib/wfe`
+- **WHEN** EventStore initialises and commits an invocation under `(owner: "acme", repo: "foo")`
+- **THEN** `/var/lib/wfe/events.db` SHALL exist
+- **AND** no `/var/lib/wfe/events.duckdb` file and no `/var/lib/wfe/events/` Parquet directory SHALL be created
+
+#### Scenario: Events table declares PRIMARY KEY (id, seq) and the read index
+
+- **GIVEN** a freshly-initialised EventStore
+- **WHEN** the schema is inspected via `PRAGMA table_info(events)` / `PRAGMA index_list(events)`
+- **THEN** the events table SHALL declare a `PRIMARY KEY` over `(id, seq)`
+- **AND** a composite index over `(owner, repo, kind, "at")` SHALL exist
+
+### Requirement: ping verifies the libSQL connection
+
+EventStore SHALL expose `ping(): Promise<void>` that runs `SELECT 1` against the libSQL connection. `ping()` SHALL resolve on success and reject on failure. The readiness endpoint (`/readyz`) consumes this to determine whether the runtime is serving.
+
+#### Scenario: Ping succeeds when the connection is healthy
+
+- **WHEN** `ping()` is awaited on a healthy EventStore
+- **THEN** it SHALL resolve with no value
+
+#### Scenario: Ping rejects when the connection is broken
+
+- **GIVEN** the libSQL connection has been closed
+- **WHEN** `ping()` is awaited
+- **THEN** it SHALL reject with the underlying connection error
 

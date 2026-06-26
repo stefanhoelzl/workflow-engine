@@ -248,7 +248,7 @@ Caddy retries on its own backoff (default: every 9 min for the first hour, expon
 
 Check: `journalctl -u wfe-prod -u wfe-staging | grep -i oom`.
 
-Each app's memory budget is a hard cap on the container *payload* cgroup (`PodmanArgs=--memory=` in the Quadlet, fed by `memory_max` in `local.envs`), so it is visible from inside the container as `/sys/fs/cgroup/memory.max` — software that auto-sizes from detected memory (DuckDB sizes its buffer pool to 80% of it) sees the real budget instead of host RAM. It also keeps each app's blast radius contained to its own unit on STARDUST1-S. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
+Each app's memory budget is a hard cap on the container *payload* cgroup (`PodmanArgs=--memory=` in the Quadlet, fed by `memory_max` in `local.envs`), so it is visible from inside the container as `/sys/fs/cgroup/memory.max` — software that auto-sizes from detected memory (e.g. V8's heap) sees the real budget instead of host RAM. It also keeps each app's blast radius contained to its own unit on STARDUST1-S. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
 1. Inspect the workload — sandbox worker leak? Action with unbounded buffer?
 2. Bump `memory_max` in `infrastructure/main.tf` (`local.envs`) and re-apply.
 3. If both apps need more, upgrade the VPS commercial type (`var.instance_type`) and re-apply (instance is recreated).
@@ -262,7 +262,7 @@ The auto-update timer hasn't ticked yet. Wait up to 60 s. If still stale after 5
 
 ## EventStore retention & disk recovery
 
-The EventStore (`<data_dir>/events.duckdb`) appends one row per invocation event and, by default, never deletes them. On the shared root volume this grows unbounded and can fill the disk. Two independent levers:
+The EventStore (`<data_dir>/events.db`, libSQL) appends one row per invocation event and, by default, never deletes them. On the shared root volume this grows unbounded and can fill the disk. Two independent levers:
 
 **1. Bound future growth — opt-in time-based retention.**
 
@@ -270,11 +270,11 @@ Set on the app's Quadlet unit (`Environment=` in `wfe.container.tmpl`, or `/etc/
 
 - `EVENT_STORE_RETENTION_DAYS` — integer days; invocations whose most recent event is older than this are pruned. **Unset or `0` disables retention** (the default). Six months = `180`. The prune interval is **derived** from this — the runtime prunes 100× per window (every `retentionDays / 100` days), so there is no separate interval knob. (Prod `90` → ~21.6h cadence; staging `1` → ~14.4 min.)
 
-The runtime self-prunes on this schedule: it deletes whole invocations older than the window and issues a `CHECKPOINT`. A failed prune logs `event-store.prune-failed` and retries on the next tick; it never crashes the runtime. A successful run logs `event-store.prune-ok { invocations, durationMs }`.
+The runtime self-prunes on this schedule: it deletes whole invocations older than the window in a single transaction. A failed prune logs `event-store.prune-failed` and retries on the next tick; it never crashes the runtime. A successful run logs `event-store.prune-ok { invocations, durationMs }`.
 
-> **Important:** `DELETE` does **not** shrink the `.duckdb` file on disk — DuckDB reuses the freed space for future writes, so the file *plateaus* at roughly one retention window's worth of data rather than returning space to the OS. Retention bounds *future* growth; it does **not** recover disk already consumed (see lever 2).
+> **Important:** `DELETE` does **not** shrink the `events.db` file on disk — libSQL/SQLite reuses the freed pages for future writes, so the file *plateaus* at roughly one retention window's worth of data rather than returning space to the OS. Retention bounds *future* growth; it does **not** recover disk already consumed (see lever 2; `VACUUM` would reclaim it but is not run automatically).
 
-> **First prune on a large DB:** if you enable retention on an already-bloated `events.duckdb` without wiping it first, the first prune is a single large `DELETE` that briefly serializes ahead of live event commits — event recording can lag for the duration (triggers still execute; nothing is lost). Prefer the wipe below before enabling on a bloated DB.
+> **First prune on a large DB:** if you enable retention on an already-bloated `events.db` without wiping it first, the first prune is a single large `DELETE` that briefly serializes ahead of live event commits — event recording can lag for the duration (triggers still execute; nothing is lost). Prefer the wipe below before enabling on a bloated DB.
 
 **2. Recover disk already consumed — one-time wipe.**
 
@@ -283,7 +283,7 @@ Because `DELETE` won't return space, recover a full disk by recreating the DB fi
 ```
 # as the app's host user (e.g. wfe-prod), per environment
 systemctl --user stop wfe-prod
-rm -f /srv/wfe/prod/events.duckdb /srv/wfe/prod/events.duckdb.wal
+rm -f /srv/wfe/prod/events.db /srv/wfe/prod/events.db-wal /srv/wfe/prod/events.db-shm
 systemctl --user start wfe-prod
 ```
 
@@ -369,9 +369,9 @@ The Bunny `readiness_probe` targets **`/livez`** (pure process-liveness), NOT `/
 
 There is **no `staging_backend` toggle variable** (low expected bounce). To revert: hand-edit the `staging.workflow-engine.webredirect.org` record in `dns.tf` back to the VPS IP (A record) and `tofu apply`. The VPS staging app is still live on current `:main`, and Caddy re-issues the staging cert automatically once DNS points back. The plan shows only that one record changing.
 
-### DuckDB memory — deferred, observe-only
+### SQL engine memory
 
-No DuckDB `memory_limit` is wired for the Bunny app. On the VPS, the per-container `--memory=` cap is load-bearing — it makes `/sys/fs/cgroup/memory.max` reflect the budget so DuckDB sizes its buffer pool correctly; without it DuckDB sized to **80% of host RAM and got OOM-killed, rotating the session-sealing key and breaking logins** (see the Quadlet template comment and "App OOM" above). On Bunny we deliberately **assume auto-detect works and observe**: the change's `## Cluster smoke (human)` captures `MemTotal /proc/meminfo`, `/sys/fs/cgroup/memory.max`, `nproc`, and DuckDB `current_setting('memory_limit')`. Those values decide whether a future `memory_limit` fix is warranted; none is applied now.
+libSQL (SQLite) does **not** auto-size a buffer pool to host RAM the way DuckDB did — its page cache is small and bounded (default a few MiB), so the DuckDB "sized to 80% of host RAM and got OOM-killed" failure mode no longer applies and no `memory_limit` knob is needed. The per-container `--memory=` cap remains load-bearing for the *runtime as a whole* (notably V8's heap; see the Quadlet template comment and "App OOM" above), just not for the SQL engine specifically.
 
 ## References
 

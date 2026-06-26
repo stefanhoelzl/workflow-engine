@@ -585,7 +585,7 @@ describe("POST /api/workflows/:owner/:repo — system.upload emission", () => {
 
 	it("dedup gate works against a freshly bootstrapped event store (post-restart-equivalent)", async () => {
 		// First "boot": upload, then drop the bus + eventStore. Persist
-		// nothing — the dedup query reads from the same in-memory DuckDB so
+		// nothing — the dedup query reads from the same libSQL store so
 		// to simulate restart we instead pre-populate a fresh store with the
 		// expected event and verify the second upload skips emission.
 		const sha = "c".repeat(64);

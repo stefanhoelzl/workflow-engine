@@ -99,7 +99,7 @@ The check SHALL NOT depend on the contents of the `events` table or on any tenan
 - **AND** SHALL return `"status":"pass"` with the round-trip duration in ms as `observedValue`
 
 #### Scenario: Eventstore check fails
-- **GIVEN** the event store ping throws an error (DuckDB unavailable or query error)
+- **GIVEN** the event store ping throws an error (libSQL unavailable or query error)
 - **WHEN** the eventstore check runs
 - **THEN** it SHALL return `"status":"fail"` with the error message in `"output"`
 

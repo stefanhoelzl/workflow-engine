@@ -562,7 +562,7 @@ interface WorkflowRegistryOptions {
 	// parallel with `Promise.allSettled`. The registry does NOT manage
 	// backend lifecycle (start/stop); the caller (main.ts) owns that.
 	readonly backends?: readonly TriggerSource[];
-	// DuckDB-backed queue store. The registry diffs queue declarations on
+	// libSQL-backed queue store. The registry diffs queue declarations on
 	// every upload and DELETEs rows for removed queues / workflows. The
 	// manifest is the sole declaration — adds are no-ops at lifecycle time.
 	readonly queueStore: QueueStore;

@@ -1,10 +1,8 @@
-import type { DuckDBInstance } from "@duckdb/node-api";
-import { DuckDbDialect } from "@oorabona/kysely-duckdb";
-import { Kysely, sql } from "kysely";
+import { type Generated, type Kysely, sql } from "kysely";
 import type { Logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
-// QueueStore — per-workflow durable FIFO queues backed by DuckDB.
+// QueueStore — per-workflow durable FIFO queues backed by libSQL.
 //
 // All access to the `queue_items` table goes through this module. Every
 // public method requires a fully-qualified tenant tuple at the type level;
@@ -16,27 +14,26 @@ import type { Logger } from "./logger.js";
 const MAX_ITEM_BYTES = 1024;
 // Depth cap is WORKFLOW-wide, not per-queue: it bounds the total item count
 // across ALL of a workflow's queues (owner, repo, workflow). This is the
-// availability backstop on the shared events.duckdb — because there is no
+// availability backstop on the shared events.db — because there is no
 // runtime name gate (any name a tampered guest supplies is accepted), a
 // per-queue cap would be defeated by inventing unlimited names. A
 // workflow-wide cap bounds total storage regardless of how many names are
 // used. (Tenant-wide — drop the `workflow` predicate from the count — would
 // be a stronger bound at the cost of coupling unrelated workflows.)
 const MAX_WORKFLOW_QUEUE_DEPTH = 1000;
-// Microseconds-to-milliseconds divisor for DuckDB TIMESTAMPTZ values.
-const MICROS_PER_MS = 1000n;
 
 // Column names use camelCase to match the event-store table convention
 // (events table: id, seq, kind, "at", workflowSha, …). The table name uses
 // snake_case (queue_items) because there's no existing multi-word table to
-// anchor against; "events" is single-word.
+// anchor against; "events" is single-word. `enqueuedAt` is stored as TEXT
+// (ISO-8601); `seq` is an AUTOINCREMENT rowid the DB assigns on insert.
 interface QueueItemsTable {
 	owner: string;
 	repo: string;
 	workflow: string;
 	queue: string;
-	seq: number;
-	enqueuedAt: Date;
+	seq: Generated<number>;
+	enqueuedAt: string;
 	invocationId: string;
 	triggerKind: string;
 	triggerName: string;
@@ -44,7 +41,7 @@ interface QueueItemsTable {
 }
 
 interface Database {
-	// biome-ignore lint/style/useNamingConvention: SQL table name; DuckDB convention for multi-word tables is snake_case
+	// biome-ignore lint/style/useNamingConvention: SQL table name; snake_case is the SQL convention for multi-word tables
 	queue_items: QueueItemsTable;
 }
 
@@ -123,7 +120,7 @@ interface QueueStore {
 }
 
 interface QueueStoreOptions {
-	readonly instance: DuckDBInstance;
+	readonly db: Kysely<Database>;
 	readonly logger: Logger;
 	// Override the workflow-wide depth cap. Defaults to MAX_WORKFLOW_QUEUE_DEPTH.
 	// Exists so tests can exercise the cap with a small N instead of inserting
@@ -131,26 +128,24 @@ interface QueueStoreOptions {
 	readonly maxWorkflowDepth?: number;
 }
 
-// DuckDB does not support GENERATED ALWAYS AS IDENTITY ("Constraint not
-// implemented!"). We use a global sequence + DEFAULT nextval() instead,
-// which yields the same observable property: monotonic seq assignment in
-// commit order, dense across all queues, never exposed to guests.
-const CREATE_SEQUENCE_DDL = `
-CREATE SEQUENCE IF NOT EXISTS queue_items_seq
-`;
+// libSQL has no sequence type; `seq` is an `INTEGER PRIMARY KEY AUTOINCREMENT`
+// rowid. The AUTOINCREMENT keyword is REQUIRED — without it SQLite/libSQL may
+// recycle a freed rowid after the DELETEs that popping causes, breaking the
+// monotonic, never-reused FIFO ordering. This yields the same observable
+// property as DuckDB's former `nextval()` sequence: dense, monotonic seq in
+// commit order, never exposed to guests.
 const CREATE_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS queue_items (
-	owner          VARCHAR     NOT NULL,
-	repo           VARCHAR     NOT NULL,
-	workflow       VARCHAR     NOT NULL,
-	queue          VARCHAR     NOT NULL,
-	seq            BIGINT      NOT NULL DEFAULT nextval('queue_items_seq'),
-	enqueuedAt     TIMESTAMPTZ NOT NULL,
-	invocationId   VARCHAR     NOT NULL,
-	triggerKind    VARCHAR     NOT NULL,
-	triggerName    VARCHAR     NOT NULL,
-	item           JSON        NOT NULL,
-	PRIMARY KEY (owner, repo, workflow, queue, seq)
+	seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+	owner          TEXT NOT NULL,
+	repo           TEXT NOT NULL,
+	workflow       TEXT NOT NULL,
+	queue          TEXT NOT NULL,
+	enqueuedAt     TEXT NOT NULL,
+	invocationId   TEXT NOT NULL,
+	triggerKind    TEXT NOT NULL,
+	triggerName    TEXT NOT NULL,
+	item           TEXT NOT NULL
 )`;
 
 // Index supports both the tenant-tuple WHERE (used by every accessor method)
@@ -185,19 +180,10 @@ function toDate(value: unknown): Date {
 	if (value instanceof Date) {
 		return value;
 	}
+	// `enqueuedAt` is stored as TEXT (ISO-8601); libSQL returns it as a string.
+	// Accept number too (epoch ms) for robustness.
 	if (typeof value === "string" || typeof value === "number") {
 		return new Date(value);
-	}
-	// DuckDB driver surfaces TIMESTAMPTZ as DuckDBTimestampTZValue carrying
-	// a `micros` bigint (microseconds since epoch). Convert to ms for Date.
-	if (
-		value !== null &&
-		typeof value === "object" &&
-		"micros" in value &&
-		typeof (value as { micros: unknown }).micros === "bigint"
-	) {
-		const micros = (value as { micros: bigint }).micros;
-		return new Date(Number(micros / MICROS_PER_MS));
 	}
 	throw new Error(
 		`queue-store: cannot coerce enqueuedAt value of type ${typeof value}`,
@@ -233,16 +219,10 @@ function tupleKey(t: {
 async function createQueueStore(
 	options: QueueStoreOptions,
 ): Promise<QueueStore> {
-	const { instance, logger } = options;
+	const { db, logger } = options;
 	const maxWorkflowDepth = options.maxWorkflowDepth ?? MAX_WORKFLOW_QUEUE_DEPTH;
-	const conn = await instance.connect();
-	await conn.run(CREATE_SEQUENCE_DDL);
-	await conn.run(CREATE_TABLE_DDL);
-	await conn.run(CREATE_INDEX_DDL);
-
-	const db = new Kysely<Database>({
-		dialect: new DuckDbDialect({ database: instance }),
-	});
+	await sql.raw(CREATE_TABLE_DDL).execute(db);
+	await sql.raw(CREATE_INDEX_DDL).execute(db);
 
 	// Per-queue count — used by the /queue UI for card stats.
 	async function count(scope: QueueScope): Promise<number> {
@@ -295,19 +275,18 @@ async function createQueueStore(
 				repo: scope.repo,
 				workflow: scope.workflow,
 				queue: scope.queue,
-				enqueuedAt: producer.enqueuedAt,
+				enqueuedAt: producer.enqueuedAt.toISOString(),
 				invocationId: producer.invocationId,
 				triggerKind: producer.triggerKind,
 				triggerName: producer.triggerName,
 				item: json,
-				// biome-ignore lint/suspicious/noExplicitAny: seq column has a DB-side DEFAULT (nextval); Kysely's generated type still requires it, so cast away the omission
-			} as any)
+			})
 			.execute();
 	}
 
 	async function get(scope: QueueScope): Promise<PoppedRow | undefined> {
 		// DELETE … WHERE seq = (SELECT MIN(seq) WHERE tenant) RETURNING …
-		// Single autocommit statement; DuckDB serializes writes. Validation
+		// Single autocommit statement; libSQL serializes writes. Validation
 		// of the popped item is the bridge's responsibility, AFTER commit.
 		const result = await sql<{
 			item: unknown;
@@ -367,10 +346,10 @@ async function createQueueStore(
 	}
 
 	async function removeDeclaration(scope: WorkflowQueueScope): Promise<number> {
-		// Kysely's DuckDB dialect doesn't surface affected-row counts on
-		// DELETE; use RETURNING so we can count rows ourselves.
+		// Count deleted rows via RETURNING (uniform across drivers) rather than
+		// relying on an affected-row count.
 		if (scope.queue !== undefined) {
-			const result = await sql<{ seq: bigint }>`
+			const result = await sql<{ seq: number }>`
 				DELETE FROM queue_items
 				WHERE owner = ${scope.owner}
 					AND repo = ${scope.repo}
@@ -380,7 +359,7 @@ async function createQueueStore(
 			`.execute(db);
 			return result.rows.length;
 		}
-		const result = await sql<{ seq: bigint }>`
+		const result = await sql<{ seq: number }>`
 			DELETE FROM queue_items
 			WHERE owner = ${scope.owner}
 				AND repo = ${scope.repo}
@@ -425,14 +404,14 @@ async function createQueueStore(
 	}
 
 	async function ping(): Promise<void> {
-		await conn.run("SELECT 1");
+		await sql`SELECT 1`.execute(db);
 	}
 
 	async function close(): Promise<void> {
-		// Kysely connection close is best-effort; the underlying DuckDBInstance
-		// is owned by the caller (main.ts) and closed there.
+		// Destroys this Kysely handle only; the underlying libSQL client is owned
+		// by the caller (main.ts) and closed there (db.destroy() is a no-op on an
+		// injected client).
 		await db.destroy();
-		conn.disconnectSync();
 	}
 
 	return {
@@ -448,6 +427,7 @@ async function createQueueStore(
 }
 
 export type {
+	Database,
 	PoppedRow,
 	ProducerMeta,
 	QueueErrorCode,
