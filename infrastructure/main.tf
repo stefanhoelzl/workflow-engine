@@ -32,6 +32,19 @@ terraform {
       source  = "BunnyWay/bunnynet"
       version = "~> 0.15"
     }
+    # One-shot authenticated HTTP calls to the Bunny Database management API —
+    # mint (PUT …/auth/generate) and, on destroy, revoke (POST …/auth/revoke)
+    # the libSQL access token for staging (bunny-staging.tf). A Bunny Database
+    # token is shown-once, non-idempotent to create, and has no read-back, so it
+    # cannot be a `bunnynet_database` attribute; `restful_operation` performs the
+    # action and captures the token. Source is `magodo/restful` — the OpenTofu-
+    # registry namespace for the provider published on the Terraform registry as
+    # Mastercard/restful (`registry.opentofu.org` has no `mastercard/restful`).
+    # Pin the patch line — 0.x provider with breaking minors.
+    restful = {
+      source  = "magodo/restful"
+      version = "~> 0.25.2"
+    }
   }
 
   # Scaleway Object Storage is S3-compatible. Bucket is pre-created out-of-band.

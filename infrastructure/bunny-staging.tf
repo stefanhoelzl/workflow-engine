@@ -14,6 +14,16 @@ provider "bunnynet" {
   api_key = var.bunnynet_api_key
 }
 
+# Talks to the Bunny Database management API (https://api.bunny.net/database) to
+# mint the staging libSQL access token. Same account credential the bunnynet
+# provider uses (AccessKey header = var.bunnynet_api_key) — no new secret.
+provider "restful" {
+  base_url = "https://api.bunny.net/database"
+  header = {
+    AccessKey = var.bunnynet_api_key
+  }
+}
+
 # Public GitHub Container Registry (ghcr.io). `username = ""` selects bunny's
 # built-in PUBLIC registry connection — no token needed for a public image.
 # `container.image_registry` is a numeric ID, which is why this data source
@@ -52,10 +62,11 @@ resource "random_bytes" "staging_secrets_key" {
 }
 
 # Durable bundle storage for staging. The Magic Containers volume is accept-loss,
-# so workflow bundles (workflows/<owner>/<repo>.tar.gz) live here instead — only
-# events.db stays on the local /data volume. Prod (VPS) stays on the `fs` backend.
-# Frankfurt (DE) main region matches the staging app region and the Scaleway
-# fr-par footprint.
+# so workflow bundles (workflows/<owner>/<repo>.tar.gz) live here instead. The
+# event-store/queue database lives on the managed Bunny Database below — so the
+# staging container holds NO local state and needs no volume. Prod (VPS) stays on
+# the `fs` backend. Frankfurt (DE) main region matches the staging app region and
+# the Scaleway fr-par footprint.
 #
 # The read-write access key is the resource's own `password` attribute (provider-
 # marked sensitive), wired straight into the app env below — no TF_VAR / GHA
@@ -64,6 +75,47 @@ resource "bunnynet_storage_zone" "staging_bundles" {
   name      = "wfe-staging-bundles"
   region    = "DE"
   zone_tier = "Standard"
+}
+
+# Managed Bunny Database (libSQL) backing staging's event-store + per-workflow
+# queues. Single primary in Frankfurt (DE) to match the always-on container
+# region; no read replicas (single writer, lowest latency).
+#
+# Accept-loss, like the bundle zone: Bunny Database is in public preview (1 GB/DB,
+# NO automatic backups or replication). Staging data is low-stakes and CI re-
+# uploads demo bundles every boot. The provider outputs only `id` + `url`; the
+# access token is minted separately below.
+resource "bunnynet_database" "staging" {
+  name            = "wfe-staging"
+  regions_primary = ["DE"]
+}
+
+# Mint the libSQL access token in-tofu, mirroring how the staging sealing key
+# (random_bytes.staging_secrets_key) is generated into state. A Bunny Database
+# token is shown-once + non-idempotent + has no read-back, so it is NOT a
+# bunnynet_database attribute — this one-shot PUT performs the action and captures
+# the JWT. `use_sensitive_output` keeps the token in `sensitive_output` so it
+# never reaches the plan-infra step summary (the bunnynet provider does NOT mark
+# env.value sensitive, so the source attribute must be).
+#
+# restful_operation is create-only (no Read, no drift re-issue): with a static
+# path/method/body it never re-mints on plan. `path` interpolates the database id,
+# so a database REPLACEMENT correctly re-mints for the new id. On destroy it POSTs
+# the revoke endpoint — which invalidates ALL tokens for THIS database (safe now:
+# this DB is staging's sole consumer; a future-prod hazard if ever shared).
+resource "restful_operation" "staging_db_token" {
+  path   = "/v2/databases/${bunnynet_database.staging.id}/auth/generate"
+  method = "PUT"
+
+  body = {
+    authorization = "full-access"
+    expires_at    = null
+  }
+
+  use_sensitive_output = true
+
+  delete_method = "POST"
+  delete_path   = "/v2/databases/${bunnynet_database.staging.id}/auth/revoke"
 }
 
 resource "bunnynet_compute_container_app" "staging" {
@@ -83,15 +135,11 @@ resource "bunnynet_compute_container_app" "staging" {
   autoscaling_min     = 1
   autoscaling_max     = 1
 
-  # One persistent volume for the libSQL EventStore (events.db) + uploaded bundles.
-  # Accept-loss: bunny volumes have no backups/replication and reattachment
-  # across reschedule is not guaranteed (public preview). Documented, not
-  # mitigated — staging data is low-stakes and CI re-uploads demo bundles.
-  volume {
-    name = "data"
-    size = var.app_data_volume_size_gb
-  }
-
+  # No volume: staging is fully stateless. The event-store/queue database is on
+  # the managed Bunny Database and workflow bundles are on Bunny Edge Storage
+  # (both remote, declared above) — nothing is written to local disk. PERSISTENCE_PATH
+  # stays set (the runtime config requires it) but is never touched when
+  # STORAGE_BACKEND=bunny + a remote DATABASE_URL are in effect.
   container {
     name = "wfe"
 
@@ -105,11 +153,6 @@ resource "bunnynet_compute_container_app" "staging" {
     image_name        = "workflow-engine"
     image_tag         = "main"
     image_pull_policy = "Always"
-
-    volumemount {
-      name = "data"
-      path = "/data"
-    }
 
     # CDN endpoint = managed HTTPS, the staging replacement for Caddy's TLS
     # termination. origin_ssl = false → edge-to-container is plaintext HTTP,
@@ -166,17 +209,19 @@ resource "bunnynet_compute_container_app" "staging" {
       name  = "BASE_URL"
       value = "https://${local.bunny_staging.domain}"
     }
-    # Embedded libSQL on the /data volume. Staging stays on-disk; the remote
-    # (Bunny Database) cutover is a later change that sets DATABASE_URL to a
-    # libsql:// URL + a DATABASE_AUTH_TOKEN secret. DATABASE_WAL keeps WAL on so
-    # out-of-process readers work.
+    # Remote managed Bunny Database (libSQL). DATABASE_AUTH_TOKEN selects the
+    # runtime's remote client variant; its presence forbids DATABASE_WAL=true
+    # (the config superRefine fails closed at boot), so DATABASE_WAL is omitted
+    # entirely (defaults false). The token comes from the in-tofu mint's
+    # sensitive_output so it stays redacted in plan output. DATABASE_URL is the
+    # provisioned database's connection URL.
     env {
-      name  = "DATABASE_URL"
-      value = "file:/data/events.db"
+      name  = "DATABASE_AUTH_TOKEN"
+      value = restful_operation.staging_db_token.sensitive_output.token
     }
     env {
-      name  = "DATABASE_WAL"
-      value = "true"
+      name  = "DATABASE_URL"
+      value = bunnynet_database.staging.url
     }
     env {
       name  = "EVENT_STORE_RETENTION_DAYS"
