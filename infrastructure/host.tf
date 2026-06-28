@@ -24,10 +24,9 @@ locals {
       shell  = "/usr/sbin/nologin"
       subuid = "100000-165535"
     }
-    "wfe-staging" = {
-      shell  = "/usr/sbin/nologin"
-      subuid = "165536-231071"
-    }
+    # 165536-231071 was wfe-staging's range; left as a gap on purpose.
+    # Renumbering wfe-caddy down would invalidate its on-disk subuid-mapped
+    # ownership of /srv/caddy. Ranges must stay non-overlapping and stable.
     "wfe-caddy" = {
       shell  = "/usr/sbin/nologin"
       subuid = "231072-296607"
@@ -36,15 +35,14 @@ locals {
 
   # Convenience: list of tenant user keys, used to generate per-user dirs +
   # timer-override files below.
-  tenants = ["wfe-prod", "wfe-staging", "wfe-caddy"]
+  tenants = ["wfe-prod", "wfe-caddy"]
 
   # Per-env data volumes (defined in main.tf). The format script resolves each
   # device by matching the volume UUID (the segment after the zone in the
   # resource id `<zone>/<uuid>`) against the block device's virtio serial.
   # Spec format consumed by files/wfe-data-format.sh.tmpl: "<uuid>:<fs-label>".
   data_volume_ids = {
-    prod    = scaleway_block_volume.prod.id
-    staging = scaleway_block_volume.staging.id
+    prod = scaleway_block_volume.prod.id
   }
   data_volume_specs = [
     for env, vid in local.data_volume_ids :
@@ -85,7 +83,6 @@ locals {
       # which has no read access to peers (mode 0700 owned by other user).
       "/srv/wfe"          = { mode = "0755", owner = "root", group = "root" }
       "/srv/wfe/prod"     = { mode = "0700", owner = "wfe-prod", group = "wfe-prod" }
-      "/srv/wfe/staging"  = { mode = "0700", owner = "wfe-staging", group = "wfe-staging" }
       "/srv/caddy"        = { mode = "0755", owner = "root", group = "root" }
       "/srv/caddy/data"   = { mode = "0700", owner = "wfe-caddy", group = "wfe-caddy" }
       "/srv/caddy/config" = { mode = "0700", owner = "wfe-caddy", group = "wfe-caddy" }

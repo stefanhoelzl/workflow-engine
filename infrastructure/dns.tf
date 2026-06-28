@@ -28,7 +28,7 @@ resource "bunnynet_dns_record" "prod_a" {
 # DNS propagation, risking an LE lockout.
 resource "bunnynet_dns_record" "staging_cname" {
   zone  = data.bunnynet_dns_zone.stho.id
-  name  = local.envs["staging"].dns_node
+  name  = local.bunny_staging.dns_node
   type  = "CNAME"
   value = local.bunny_staging_cdn_host
   ttl   = 300

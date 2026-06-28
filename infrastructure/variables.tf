@@ -68,13 +68,13 @@ variable "caddy_image" {
 variable "app_image" {
   type        = string
   default     = "ghcr.io/stefanhoelzl/workflow-engine"
-  description = "App image repository. Tag is :release for prod, :main for staging — chosen per-env in apps.tf."
+  description = "App image repository. Tag is :release for prod (apps.tf) and :main for staging (bunny-staging.tf)."
 }
 
-# Per-env persistence Block Storage volumes (sbs_5k). One volume per app env,
-# attached to the VPS via additional_volume_ids and mounted at /srv/wfe/<env>.
-# 5 GB is the SBS minimum; volumes resize UP live (no replacement). The root
-# local SSD is untouched — attaching these is a stop/start, not a rebuild.
+# Persistence Block Storage sizing (sbs_5k). Used by the prod VPS data volume
+# (attached via additional_volume_ids, mounted at /srv/wfe/prod) and by the
+# Bunny staging /data volume. 5 GB is the SBS minimum; volumes resize UP live
+# (no replacement). The root local SSD is untouched — attaching is a stop/start.
 variable "app_data_volume_size_gb" {
   type        = number
   default     = 5

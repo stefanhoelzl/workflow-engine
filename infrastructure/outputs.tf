@@ -9,8 +9,13 @@ output "ssh_port" {
 }
 
 output "urls" {
-  value       = { for name, cfg in local.envs : name => "https://${cfg.domain}" }
-  description = "Per-env public URL — TLS terminated by Caddy via LE ACME."
+  # VPS envs (prod) get their TLS from Caddy/LE ACME; staging runs on Bunny
+  # Magic Containers (managed HTTPS), so its URL comes from local.bunny_staging.
+  value = merge(
+    { for name, cfg in local.envs : name => "https://${cfg.domain}" },
+    { staging = "https://${local.bunny_staging.domain}" },
+  )
+  description = "Per-env public URL. prod: TLS via Caddy/LE ACME; staging: Bunny managed HTTPS."
 }
 
 output "deploy_ssh_private_key" {

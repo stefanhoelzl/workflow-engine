@@ -1,8 +1,5 @@
-# host-security-baseline Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change migrate-to-vps. Update Purpose after archive.
-## Requirements
 ### Requirement: Privilege isolation: deploy administers; per-tenant wfe-* run unprivileged
 
 The host SHALL maintain two distinct privileged-user classes with non-overlapping responsibilities:
@@ -74,21 +71,6 @@ The subuid ranges SHALL be declared explicitly per managed-user entry and SHALL 
 - **AND** each entry's range SHALL be at least 65536 ids
 - **AND** no two ranges SHALL overlap
 
-### Requirement: Host firewall default-deny
-
-The host firewall SHALL default-deny all inbound traffic and explicitly allow only `80/tcp`, `443/tcp`, and the configured SSH port. Outbound traffic SHALL be unrestricted. The FORWARD chain SHALL be set to ACCEPT (`DEFAULT_FORWARD_POLICY="ACCEPT"` in `/etc/default/ufw`, plus `ufw default allow routed`) so that containers on the Podman bridge network (`10.88.0.0/16` by default) can egress to the public Internet — without this, container DNS lookups, image pulls, and Caddy ACME requests are silently dropped at the FORWARD chain. The INPUT chain stays default-deny; this loosens FORWARD only.
-
-#### Scenario: Unprivileged ports are not reachable from outside
-
-- **GIVEN** the firewall is active
-- **WHEN** a remote scan probes ports `81`, `8080`, `8081`, `8082`, `5432`, etc.
-- **THEN** every probe SHALL fail (filtered or refused)
-
-#### Scenario: 80, 443, and the SSH port are reachable
-
-- **WHEN** a remote client probes `80/tcp`, `443/tcp`, and the configured SSH port
-- **THEN** each connection SHALL succeed
-
 ### Requirement: Workload binds restricted to loopback
 
 Every **app** Quadlet unit SHALL publish its container port only on `127.0.0.1` of the host (`PublishPort=127.0.0.1:<host>:<container>`). Caddy SHALL be the sole process bound to `0.0.0.0:80`, `0.0.0.0:443`, and `0.0.0.0:443/udp`; Caddy uses `Network=host` (not bridge networking with PublishPort) so it can reach the apps on `127.0.0.1:<port>` without bridge-loopback isolation.
@@ -99,16 +81,6 @@ Every **app** Quadlet unit SHALL publish its container port only on `127.0.0.1` 
 - **WHEN** a remote client probes `<vps-ip>:8081`
 - **THEN** the probe SHALL fail
 - **AND** the same port SHALL be reachable when `curl` is run from the VPS itself against `127.0.0.1:8081`
-
-### Requirement: Unprivileged port floor lowered for Caddy
-
-The host SHALL set `net.ipv4.ip_unprivileged_port_start=80` so the rootless Caddy container can bind ports 80 and 443. The sysctl SHALL be applied via `/etc/sysctl.d/` so it persists across reboots.
-
-#### Scenario: Sysctl persists after reboot
-
-- **GIVEN** the sysctl has been applied via cloud-init
-- **WHEN** the VPS is rebooted
-- **THEN** `sysctl net.ipv4.ip_unprivileged_port_start` SHALL print `80`
 
 ### Requirement: Per-Quadlet resource ceilings
 
@@ -131,61 +103,15 @@ Values SHALL be sized so the sum across all units, plus a kernel + page-cache re
 - **WHEN** `/sys/fs/cgroup/memory.max` is read from inside the container
 - **THEN** it SHALL equal the configured budget in bytes (e.g. `367001600` for `350m`), not `max`
 
-### Requirement: Swapfile
+### Requirement: Operator log access via group membership
 
-The VPS SHALL provision a 1 GiB swapfile at `/swapfile`, persisted in `/etc/fstab`. STARDUST1-S has 1 GB physical RAM; per-Quadlet `MemoryMax=` keeps individual workloads bounded, but the swapfile absorbs transient bursts (Node sandbox spawns, page cache pressure, apt upgrades) without OOM-killing a unit. The swapfile creation in cloud-init SHALL be idempotent (skip if `/swapfile` already exists).
+The `deploy` user SHALL be a member of the `adm` and `systemd-journal` groups so that `journalctl -u wfe-prod -u caddy` works without sudo. The NOPASSWD sudo allowlist is intentionally narrow (systemctl operations only); broadening it to include `journalctl` would mix log access with privileged actions and complicate the audit story.
 
-#### Scenario: Swapfile is active after boot
+#### Scenario: Operator reads journal without sudo
 
-- **GIVEN** the VPS has finished cloud-init
-- **WHEN** the operator runs `swapon --show`
-- **THEN** `/swapfile` SHALL appear with size 1 GiB
-
-### Requirement: SSH hardening
-
-The sshd configuration SHALL:
-
-- Listen on a non-default port (configurable, default 2222) — port 22 SHALL NOT be open in the firewall.
-- Disable root login over SSH (`PermitRootLogin no`).
-- Disable password and keyboard-interactive auth (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`).
-- Restrict accepted users to `deploy` only (`AllowUsers deploy`).
-- Set `MaxAuthTries 3` and `LoginGraceTime 20s`.
-
-#### Scenario: Root SSH is rejected
-
-- **WHEN** an attacker attempts `ssh root@<vps-ip>` on the configured SSH port
-- **THEN** the connection SHALL be closed by the server with no auth opportunity
-
-#### Scenario: Password auth is rejected
-
-- **WHEN** a client connects to the SSH port with key-based auth disabled and presents a password
-- **THEN** authentication SHALL fail without prompting
-
-#### Scenario: A non-deploy user is rejected even with a valid key
-
-- **GIVEN** another local account `bob` with a valid SSH key in its authorized_keys
-- **WHEN** `ssh bob@<vps-ip>` is attempted on the configured SSH port
-- **THEN** the connection SHALL be rejected by the AllowUsers policy
-
-### Requirement: fail2ban with sshd jail
-
-`fail2ban` SHALL be installed and enabled with the `sshd` jail active. After 5 failed authentication attempts within the jail's findtime window the source IP SHALL be banned for at least 1 hour.
-
-#### Scenario: Brute-forcer is banned
-
-- **WHEN** an IP makes 5 failed SSH auth attempts within fail2ban's findtime
-- **THEN** subsequent connections from that IP to the SSH port SHALL be dropped at the firewall
-- **AND** `fail2ban-client status sshd` SHALL list the IP as banned
-
-### Requirement: Secret env file modes
-
-Every per-env secret file at `/etc/wfe/<env>.env` SHALL be mode `0600` and owned by `deploy:deploy`. The parent directory `/etc/wfe/` SHALL be mode `0700` and owned by `deploy:deploy`.
-
-#### Scenario: Secret files are not world-readable
-
-- **WHEN** an operator runs `ls -l /etc/wfe/`
-- **THEN** every `*.env` entry SHALL show mode `-rw-------` (0600) and owner `deploy deploy`
-- **AND** the directory itself SHALL show mode `drwx------` (0700)
+- **GIVEN** an SSH session as `deploy`
+- **WHEN** `journalctl -u wfe-prod.service --no-pager -n 50` is run
+- **THEN** the command SHALL succeed and emit recent journal lines for the unit
 
 ### Requirement: Caddyfile and env-file directory layout
 
@@ -210,51 +136,3 @@ Rationale for /etc/wfe mode 0711: tenants must traverse to read their own env fi
 - **WHEN** the operator inspects `/srv/wfe/prod`, `/srv/caddy/data`
 - **THEN** each SHALL be owned by the corresponding `wfe-<tenant>` user, not by `deploy`
 - **AND** mode SHALL be `0700`
-
-### Requirement: Operator log access via group membership
-
-The `deploy` user SHALL be a member of the `adm` and `systemd-journal` groups so that `journalctl -u wfe-prod -u caddy` works without sudo. The NOPASSWD sudo allowlist is intentionally narrow (systemctl operations only); broadening it to include `journalctl` would mix log access with privileged actions and complicate the audit story.
-
-#### Scenario: Operator reads journal without sudo
-
-- **GIVEN** an SSH session as `deploy`
-- **WHEN** `journalctl -u wfe-prod.service --no-pager -n 50` is run
-- **THEN** the command SHALL succeed and emit recent journal lines for the unit
-
-### Requirement: Unattended security upgrades
-
-The VPS SHALL run an unattended-upgrades-equivalent service that automatically applies security updates from the OS distribution's security suite. Reboot-on-kernel-update SHALL NOT be automatic; the operator manually reboots after kernel CVE patches.
-
-#### Scenario: Security update lands without operator action
-
-- **GIVEN** a Debian security advisory publishes a fix for an installed package
-- **WHEN** the next unattended-upgrades cycle runs
-- **THEN** the package SHALL be upgraded automatically
-- **AND** an entry SHALL appear in `/var/log/unattended-upgrades/unattended-upgrades.log`
-
-### Requirement: Worker→main host-call trust boundary
-
-The worker→main host-call channel SHALL be treated as a trust boundary, given as explicit treatment in `SECURITY.md §2`.
-
-Handler arguments SHALL be validated on the main thread before the handler accesses any host singleton. Each handler SHALL be scoped to the sandbox's `(owner, workflow)` — the scope SHALL be captured when the runtime builds the per-sandbox `hostHandlers` map and SHALL NOT be widened by caller-supplied arguments. A handler SHALL fail closed if asked to operate outside its `(owner, workflow)` scope.
-
-`callHost` SHALL NOT be reachable by guest code; only plugin worker-side code may issue host-calls. Adding a new host method SHALL require the same explicit security treatment as adding a new sandbox global or public guest-function descriptor.
-
-#### Scenario: Args validated before any singleton access
-
-- **GIVEN** a host method backed by a main-thread singleton
-- **WHEN** a host-call arrives with args that fail the method's contract
-- **THEN** validation SHALL reject on the main side before the singleton is touched
-
-#### Scenario: Handler cannot cross its owner/workflow scope
-
-- **GIVEN** a handler built for sandbox `(ownerA, workflowA)`
-- **WHEN** a host-call supplies arguments that name `ownerB`
-- **THEN** the handler SHALL remain scoped to `(ownerA, workflowA)` and SHALL NOT read or write `ownerB` data
-
-#### Scenario: Guest code cannot issue host-calls
-
-- **GIVEN** guest workflow code attempting to invoke a host method directly
-- **WHEN** it tries to reach the host-call channel
-- **THEN** no host-call primitive SHALL be reachable from guest scope
-
