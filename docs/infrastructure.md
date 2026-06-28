@@ -297,18 +297,30 @@ The libSQL connection for the EventStore + per-workflow queues is named by **thr
 - `DATABASE_WAL` — embedded-only `PRAGMA journal_mode=WAL` toggle (default `false`). Keep it `true` for any embedded deployment so out-of-process readers (operator tooling, the e2e harness) can read while the runtime writes; without WAL, libSQL uses rollback-journal mode where readers and the writer block each other.
 - `DATABASE_AUTH_TOKEN` — remote auth token. Sealed secret (redacted in logs/plan output); its presence selects the remote client variant.
 
-Today **all environments run embedded**: the VPS Quadlet template and `bunny-staging.tf` set `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true`. `main.ts` builds one `@libsql/client` from these and injects it into both Kysely stores; the remote variant is the same dialect over the network.
+**Staging (Bunny Magic Containers) runs remote; prod (VPS) runs embedded.** `bunny-staging.tf` points `DATABASE_URL` at a managed Bunny Database and sets `DATABASE_AUTH_TOKEN`; the VPS Quadlet template sets `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true`. `main.ts` builds one `@libsql/client` from these and injects it into both Kysely stores; the remote variant is the same dialect over the network.
 
-### Flipping an environment to a remote Bunny Database (future cutover)
+### Staging on a managed Bunny Database (live, fully stateless)
 
-This is a deliberate, staging-first operation — **not** done by the prep change that introduced the seam.
+The Bunny Magic Containers staging app's event-store + per-workflow queues run on a managed Bunny Database (libSQL). Combined with the Bunny Edge Storage bundle backend (below), **staging holds no local state at all** — there is no `/data` volume; the container is fully stateless. It is provisioned and wired **entirely in tofu** — one `tofu apply` brings up the whole stack, no out-of-band token step:
 
-1. **Provision** a Bunny Database (remote libSQL) instance in the target region; obtain its `libsql://…` URL and an auth token.
-2. **Staging first.** On the staging app set `DATABASE_URL=libsql://…` and add `DATABASE_AUTH_TOKEN=…` as a **secret** (env-file / sealed TF var on the VPS; a `sensitive` env on Magic Containers). **Remove `DATABASE_WAL`** (or leave it `false`) — setting `DATABASE_AUTH_TOKEN` together with `DATABASE_WAL=true` fails closed at boot.
-   - Common mistake: a `libsql://` URL **without** the token does *not* fail at config parse — it routes to the embedded code path and surfaces a confusing connect/runtime error. Always set the token in the same change as the remote URL.
-3. **Verify** against the pre-prod checklist below before touching prod.
-4. **Prod.** Repeat on the prod app once staging is healthy.
-5. **Rollback.** Revert the env back to `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true` and restart. The local `events.db` resumes (its data is independent of the remote service; both directions are accept-loss on the local volume).
+- `bunnynet_database.staging` (region `DE`, no replicas) creates the database; its read-only `url` output feeds the container's `DATABASE_URL`.
+- `restful_operation.staging_db_token` mints the access token in the same apply via `PUT https://api.bunny.net/database/v2/databases/{id}/auth/generate` (`authorization=full-access`), authenticated with the existing account API key (`var.bunnynet_api_key` as the `AccessKey` header — no new secret). The JWT is captured into `sensitive_output` and fed to `DATABASE_AUTH_TOKEN`. This mirrors how the staging sealing key (`random_bytes.staging_secrets_key`) is generated into state.
+- `DATABASE_WAL` is **omitted** — `DATABASE_AUTH_TOKEN` present together with `DATABASE_WAL=true` fails closed at config parse.
+- `PERSISTENCE_PATH=/data` stays set (config-required) but is never touched at runtime when `STORAGE_BACKEND=bunny` + a remote `DATABASE_URL` are in effect (`createFsStorage` is not called and the libSQL client is HTTP-only).
+
+**Apply.** `apply-infra` (or a local `tofu apply`) creates the database, mints the token, and rolls the staging container env. The plan is non-empty (new resources + env diff + volume removal) — agents surface the apply need; they do not run `apply`.
+
+**Rollback.** Revert the change (`git revert`) — that restores the `/data` volume and `DATABASE_URL=file:/data/events.db` + `DATABASE_WAL=true`. For a hot env-only rollback without re-adding a volume, point `DATABASE_URL` at an ephemeral path (`file:/tmp/events.db`) and drop `DATABASE_AUTH_TOKEN`; the local DB resumes accept-loss (data is independent of the remote service either way).
+
+**Caveats (Bunny Database is public preview):**
+- **Accept-loss.** 1 GB/DB, **no automatic backups or replication**; the prior embedded staging event history is dropped on cutover. Same posture as the bundle zone — documented, not mitigated; CI re-uploads demo bundles every boot.
+- **Token mint is non-idempotent and the token lives in state.** `restful_operation` is create-only (no read-back), so it never re-mints on plan; a database *replacement* re-mints for the new id. The JWT is in tofu state (encrypted at rest via the `encryption {}` block) and redacted from the `plan-infra` summary via `sensitive_output` — consistent with `random_bytes.staging_secrets_key`.
+- ⚠️ **Revoke is database-wide.** The destroy-time `POST …/auth/revoke` invalidates **all** tokens for that database. Safe today (this DB is staging's sole consumer); a hazard if any other consumer ever shares it.
+- **`url` scheme is resolved at apply.** Bunny returns the connection URL (`libsql://` vs `https://`) — confirm `@libsql/client` negotiates it cleanly via the smoke; transport follows the scheme (see the checklist's Hrana note).
+
+### Flipping prod to a remote Bunny Database (future cutover)
+
+Prod stays embedded on the VPS. When promoting, repeat the staging shape on the prod app once it passes the checklist below. **Do not reuse staging's database or token** — provision a separate prod `bunnynet_database` and mint its own token (revoke is database-wide, so a shared token would couple the two).
 
 ### Pre-prod verification checklist (Bunny Database is public preview)
 
@@ -389,7 +401,7 @@ bunny volumes are **public preview**: **no backups, no replication**, and reatta
 
 ### Bundle storage on Bunny Edge Storage
 
-To remove the accept-loss window for bundles, staging's workflow bundle tree (`workflows/<owner>/<repo>.tar.gz`) lives in a durable **Bunny Edge Storage zone** instead of the accept-loss `/data` volume. `events.db` stays on the local volume (addressed by `DATABASE_URL=file:/data/events.db`); the two stores are independent axes.
+To remove the accept-loss window for bundles, staging's workflow bundle tree (`workflows/<owner>/<repo>.tar.gz`) lives in a durable **Bunny Edge Storage zone** instead of a local volume. The event-store/queue database lives on the managed **Bunny Database** (see "Staging on a managed Bunny Database" above); the two stores are independent axes. With both remote, staging keeps **no** local state and runs with **no `/data` volume** at all.
 
 `bunny-staging.tf` declares one `bunnynet_storage_zone` `wfe-staging-bundles` (main region `DE`/Frankfurt, `Standard` tier). The staging app selects it with `STORAGE_BACKEND=bunny` plus:
 
