@@ -1,15 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Staging on bunny.net Magic Containers (spike)
+# Staging on bunny.net Magic Containers
 #
-# Staging-ONLY deployment running in parallel with the VPS. Prod stays entirely
-# on the VPS, untouched. See openspec/changes/archive/2026-06-24-staging-bunny-
-# magic-containers and docs/infrastructure.md "Staging on bunny.net Magic
-# Containers".
+# Bunny is the SOLE staging backend. Prod stays entirely on the VPS, untouched;
+# there is no VPS staging stack and no warm fallback. See docs/infrastructure.md
+# "Staging on bunny.net Magic Containers".
 #
 # Live: the staging hostname (staging.workflow-engine.<base_domain>) resolves via
 # the Bunny DNS CNAME (dns.tf) to this app's CDN pull-zone host, and deploy-
-# staging.yml rolls it forward by PATCHing the container image digest. The VPS
-# staging stack stays a live warm fallback (still auto-pulling :main).
+# staging.yml rolls it forward by PATCHing the container image digest.
 # ─────────────────────────────────────────────────────────────────────────────
 
 provider "bunnynet" {
@@ -26,10 +24,15 @@ data "bunnynet_compute_container_imageregistry" "github_public" {
 }
 
 locals {
-  # Reuse the existing staging config so auth/retention stay in sync with the
-  # VPS env, and reuse staging's sealing key so bundles uploaded against either
-  # backend (VPS or Bunny) unseal — keeping the VPS a usable warm fallback.
-  bunny_staging = local.envs["staging"]
+  # Staging config. Bunny is staging's only home, so this lives here (its sole
+  # consumer) rather than in local.envs (which enumerates VPS-hosted envs).
+  # dns.tf's staging CNAME and outputs.tf's staging URL also read from here.
+  bunny_staging = {
+    domain         = "staging.workflow-engine.${var.base_domain}"
+    dns_node       = "staging.workflow-engine"
+    auth_allow     = "github:user:stefanhoelzl"
+    retention_days = 1
+  }
 
   # The app's CDN pull-zone *.b-cdn.net host (pull zone 6058886). The Bunny DNS
   # staging CNAME (dns.tf) targets this. NOTE: this changes if the app / pull
@@ -37,6 +40,15 @@ locals {
   #   tofu state show bunnynet_compute_container_app.staging | grep pullzone_id
   #   curl -s https://api.bunny.net/pullzone/<id> -H "AccessKey: $KEY" | grep -o '[a-z0-9-]*\.b-cdn\.net'
   bunny_staging_cdn_host = "mc-p5hgd353u8.b-cdn.net"
+}
+
+# Per-Bunny-app X25519 sealing key for the workflow-secrets feature. Standalone
+# (not the apps.tf random_bytes.secrets_key map, which is keyed over local.envs =
+# VPS envs only). 32 random bytes, base64-encoded; runtime format `keyId:base64`.
+# Generated once, preserved across applies. Rotate with
+# `tofu taint random_bytes.staging_secrets_key` + apply.
+resource "random_bytes" "staging_secrets_key" {
+  length = 32
 }
 
 resource "bunnynet_compute_container_app" "staging" {
@@ -173,7 +185,7 @@ resource "bunnynet_compute_container_app" "staging" {
     }
     env {
       name  = "SECRETS_PRIVATE_KEYS"
-      value = "v1:${random_bytes.secrets_key["staging"].base64}"
+      value = "v1:${random_bytes.staging_secrets_key.base64}"
     }
   }
 

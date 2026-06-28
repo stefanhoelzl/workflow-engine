@@ -4,16 +4,17 @@ Production runbook for the single-VPS deployment. Local-dev instructions live in
 
 ## Topology
 
-One Scaleway VPS (Debian 12) hosts both prod and staging. Three rootless Podman + systemd Quadlet units:
+One Scaleway VPS (Debian 12) hosts **prod only**. Two rootless Podman + systemd Quadlet units:
 
 - `caddy.service` — TLS-terminating reverse proxy. Binds `0.0.0.0:80` and `0.0.0.0:443`. Let's Encrypt certs via the built-in HTTP-01 ACME client; state on the host bind mount `/srv/caddy/data`.
 - `wfe-prod.service` — image `ghcr.io/stefanhoelzl/workflow-engine:release`. Binds `127.0.0.1:8081 → :8080`. Persistence at `/srv/wfe/prod` (a dedicated Block Storage volume).
-- `wfe-staging.service` — image `ghcr.io/stefanhoelzl/workflow-engine:main`. Binds `127.0.0.1:8082 → :8080`. Persistence at `/srv/wfe/staging` (a dedicated Block Storage volume).
+
+Staging does **not** run on the VPS — it runs on bunny.net Magic Containers (see "Staging on bunny.net Magic Containers" below).
 
 URLs:
 
-- Prod: <https://workflow-engine.stho.net>
-- Staging: <https://staging.workflow-engine.stho.net>
+- Prod: <https://workflow-engine.stho.net> (VPS)
+- Staging: <https://staging.workflow-engine.stho.net> (Bunny Magic Containers)
 
 DNS: Bunny DNS records owned by tofu under the `stho.net` zone (referenced via a `data "bunnynet_dns_zone"` lookup; the zone itself is owned out-of-band). Prod is an A record at the VPS public IP (`scaleway_instance_ip` — stable across instance stop/start); staging is a CNAME at the Bunny Magic Containers CDN host.
 
@@ -23,9 +24,8 @@ DNS: Bunny DNS records owned by tofu under the `stho.net` zone (referenced via a
 | --- | --- | --- | --- |
 | root | local SSD (`l_ssd`, 10 GB) | `/` (OS, container images, `/srv/caddy` ACME) | No — rebuilt by cloud-init |
 | prod data | Block Storage (`sbs_5k`, 5 GB) | `/srv/wfe/prod` | **Yes** — `scaleway_block_volume.prod`, `prevent_destroy = true` |
-| staging data | Block Storage (`sbs_5k`, 5 GB) | `/srv/wfe/staging` | **Yes** — `scaleway_block_volume.staging` (plain, re-creatable) |
 
-The two data volumes are standalone `scaleway_block_volume` resources attached via the instance's `additional_volume_ids` (a stop/start, not a rebuild). Activation is fully systemd-routed so it needs no new sudoers verbs:
+The prod data volume is a standalone `scaleway_block_volume` resource attached via the instance's `additional_volume_ids` (a stop/start, not a rebuild). Activation is fully systemd-routed so it needs no new sudoers verbs:
 
 - `wfe-data-format.service` (root oneshot) runs `/usr/local/sbin/wfe-data-format.sh`, which `mkfs.ext4 -L wfe-<env>` a volume **only when `blkid -p` finds no signature** — a reattached/already-formatted volume is never reformatted. It resolves the raw device by matching the volume UUID against the block device's virtio serial (`/dev/disk/by-id` is empty on this instance).
 - `srv-wfe-<env>.mount` units mount by `/dev/disk/by-label/wfe-<env>` with `nofail`, ordered `After=`/`Requires=` the format service.
@@ -48,13 +48,14 @@ infrastructure/
   main.tf             # backend, providers, server, IP, security group
   variables.tf
   cloud-init.yaml     # bootstrap minimum: deploy user, sudoers, sshd port, ufw allow-ssh, FORWARD policy
-  host.tf             # in-place host config: managed_users (wfe-prod/staging/caddy),
+  host.tf             # in-place host config: managed_users (wfe-prod/caddy),
                       # managed_dirs, managed_packages, managed_files (sshd hardening,
                       # fail2ban jail, sysctl, podman timer override), managed_exec
                       # (swap, service enables), managed_ufw (80/443)
   caddy.tf            # Caddy quadlet + Caddyfile
-  apps.tf             # wfe-prod + wfe-staging quadlets + env-file delivery
-  dns.tf              # Bunny DNS records (A prod, CNAME staging)
+  apps.tf             # wfe-prod quadlet + env-file delivery
+  bunny-staging.tf    # staging on Bunny Magic Containers (sole staging backend)
+  dns.tf              # Bunny DNS records (A prod, CNAME staging→Bunny)
   outputs.tf
   files/              # Quadlet + Caddyfile templates
 ```
@@ -117,7 +118,7 @@ Adding a new tenant (e.g., `wfe-experimental`) is a tofu-only operation: add an 
 
 When you do need to edit the cloud-init bootstrap minimum (rare — SSH key rotation, sshd port change, sudoers verb addition, FORWARD policy change), `tofu apply` automatically replaces the VPS. The trigger is a sha256 of the rendered cloud-init content, captured by `terraform_data.cloud_init_bootstrap`; when the hash flips, `lifecycle { replace_triggered_by = [...] }` on `scaleway_instance_server.vps` forces replacement. (Without this, the Scaleway provider would just update `user_data` in place — but cloud-init only runs at first boot, so the new content would never take effect.)
 
-VPS replacement destroys the local SSD root — but **`/srv/wfe/{prod,staging}` now live on Block Storage volumes, which detach from the destroyed instance and reattach to its replacement, so env data survives the rebuild with no rsync ritual.** On the new box the `wfe-data-format.service` sees the existing filesystem (`blkid -p`) and skips `mkfs`; the `srv-wfe-<env>.mount` units remount by label. The only ephemeral state is `/srv/caddy/data` (ACME), which Caddy re-issues automatically.
+VPS replacement destroys the local SSD root — but **`/srv/wfe/prod` now lives on a Block Storage volume, which detaches from the destroyed instance and reattaches to its replacement, so env data survives the rebuild with no rsync ritual.** On the new box the `wfe-data-format.service` sees the existing filesystem (`blkid -p`) and skips `mkfs`; the `srv-wfe-prod.mount` unit remounts by label. The only ephemeral state is `/srv/caddy/data` (ACME), which Caddy re-issues automatically.
 
 ```bash
 # 1. (Optional) back up ACME state to avoid a re-issue round; env data needs no backup.
@@ -125,12 +126,12 @@ rsync -aAX deploy@<host>:/srv/caddy/data /tmp/caddy-pre-apply-$(date +%F)
 
 # 2. Apply the change. tofu will plan a `-/+ destroy and then create
 # replacement` for scaleway_instance_server.vps — that's expected. The
-# scaleway_block_volume.{prod,staging} resources are NOT replaced; they detach
-# and reattach. (prevent_destroy on prod is an extra guard.)
+# scaleway_block_volume.prod resource is NOT replaced; it detaches and
+# reattaches. (prevent_destroy on prod is an extra guard.)
 tofu -chdir=infrastructure apply
 
-# 3. Wait for the new VPS to come up. The data volumes reattach and remount
-# automatically; verify with `findmnt /srv/wfe/prod /srv/wfe/staging`.
+# 3. Wait for the new VPS to come up. The prod data volume reattaches and
+# remounts automatically; verify with `findmnt /srv/wfe/prod`.
 ```
 
 **Forcing a rebuild without a content edit.** If you need to re-bake the bootstrap minimum without changing the source (e.g., to rotate the in-memory session-sealing password by recycling all containers), run `tofu -chdir=infrastructure taint scaleway_instance_server.vps && tofu apply`. Env data on the Block Storage volumes survives; only `/srv/caddy/data` is re-issued.
@@ -180,18 +181,18 @@ chmod 600 ~/.ssh/wfe_deploy
 ssh -i ~/.ssh/wfe_deploy -p 2222 deploy@<vps-ip>
 ```
 
-State-passphrase loss = no SSH-key fallback. `/srv/wfe/<env>` and `/srv/caddy/data` have no off-box backup (line ~246 follow-up), so a state-passphrase-loss event today is total data loss until the off-box backup follow-up lands.
+State-passphrase loss = no SSH-key fallback. `/srv/wfe/prod` and `/srv/caddy/data` have no off-box backup (line ~246 follow-up), so a state-passphrase-loss event today is total data loss until the off-box backup follow-up lands.
 
-Container workloads run as separate per-tenant users (`wfe-prod`, `wfe-staging`, `wfe-caddy`) — none of them have SSH access (`AllowUsers deploy` only), no sudoers, no privileged group memberships. A successful sandbox+container escape lands the attacker on one of these unprivileged tenant users with no path to escalate to deploy.
+Container workloads run as separate per-tenant users (`wfe-prod`, `wfe-caddy`) — none of them have SSH access (`AllowUsers deploy` only), no sudoers, no privileged group memberships. A successful sandbox+container escape lands the attacker on one of these unprivileged tenant users with no path to escalate to deploy.
 
 Once on the box:
 
-- Inspect logs: `journalctl -u wfe-prod -u wfe-staging -u caddy --since "1 hour ago"`
-- Check unit status: `systemctl status wfe-prod wfe-staging caddy`
+- Inspect logs: `journalctl -u wfe-prod -u caddy --since "1 hour ago"`
+- Check unit status: `systemctl status wfe-prod caddy`
 - Check auto-update: `journalctl -u podman-auto-update.service` and `systemctl list-timers podman-auto-update.timer`
 - Force a deploy now: `sudo systemctl start podman-auto-update.service`
 - Inspect Caddy ACME state: `ls -la /srv/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/`
-- Inspect persistence: `sudo ls /srv/wfe/{prod,staging}/` (mode 0700 owned by the corresponding `wfe-<env>` user — sudo needed to read as deploy)
+- Inspect persistence: `sudo ls /srv/wfe/prod/` (mode 0700 owned by `wfe-prod` — sudo needed to read as deploy)
 - Inspect a tenant's containers: `sudo -u wfe-prod podman ps` (deploy can sudo to any user via the broad allowlist)
 
 The `deploy` user has NOPASSWD sudo for the converge primitives the in-place mechanism needs: `install`, `tee`, `rm`, `chmod`, `chown`, `systemctl`, `useradd`/`usermod`/`userdel`, `ufw`, `apt-get`, `sysctl`, `swapon`/`swapoff`, `fallocate`, `mkswap` (full list in `infrastructure/files/sudoers_deploy`). This is effectively root-by-sudo. The trust boundary that protects this privilege from a host-side attacker is the **SSH-key boundary**: deploy's private key lives only in tofu state at rest, AES-GCM-encrypted. The post-S1/I11 attacker lands as `wfe-*` (unprivileged), not as deploy. See `SECURITY.md` §"Privilege isolation" and `openspec/specs/host-security-baseline/spec.md`.
@@ -245,7 +246,7 @@ Caddy retries on its own backoff (default: every 9 min for the first hour, expon
 
 **App OOM.**
 
-Check: `journalctl -u wfe-prod -u wfe-staging | grep -i oom`.
+Check: `journalctl -u wfe-prod | grep -i oom`.
 
 Each app's memory budget is a hard cap on the container *payload* cgroup (`PodmanArgs=--memory=` in the Quadlet, fed by `memory_max` in `local.envs`), so it is visible from inside the container as `/sys/fs/cgroup/memory.max` — software that auto-sizes from detected memory (e.g. V8's heap) sees the real budget instead of host RAM. It also keeps each app's blast radius contained to its own unit on STARDUST1-S. The 1 GiB swapfile absorbs transient bursts. If OOM kills become recurrent:
 1. Inspect the workload — sandbox worker leak? Action with unbounded buffer?
@@ -363,20 +364,20 @@ The trusted-publisher binding is exact: it pins to the workflow file path AND th
 
 ## Risks (carry these in your head)
 
-- **No off-box backups / snapshots.** `/srv/wfe/{prod,staging}` now persist across VPS replacement (Block Storage volumes; prod is `prevent_destroy`), so a rebuild is no longer data loss. But there is still no snapshot or off-box copy, so an accidental volume delete or a Block Storage-side loss is unrecovered until users re-upload bundles via `wfe upload`. Scheduled snapshots are the remaining follow-up. `/srv/caddy/data` remains ephemeral (auto-re-issued).
+- **No off-box backups / snapshots.** `/srv/wfe/prod` now persists across VPS replacement (Block Storage volume; `prevent_destroy`), so a rebuild is no longer data loss. But there is still no snapshot or off-box copy, so an accidental volume delete or a Block Storage-side loss is unrecovered until users re-upload bundles via `wfe upload`. Scheduled snapshots are the remaining follow-up. `/srv/caddy/data` remains ephemeral (auto-re-issued).
 - **No rollback for infra.** Cutover is one-way; fix-forward is the only mode. App rollback (`git revert` + auto-update) is the fast path for app bugs.
-- **Single VPS, single region.** Hardware failure causes downtime until manual re-provision.
-- **Host kernel is the only compute/memory isolation boundary** between prod and staging (disk is now isolated — each env has its own Block Storage volume, so neither can exhaust the other's space). Mitigated by `unattended-upgrades`.
+- **Single VPS, single region.** Hardware failure causes prod downtime until manual re-provision. (Staging is unaffected — it runs on Bunny.)
+- **Host kernel is the only compute/memory isolation boundary** between the prod app and Caddy on the VPS. Mitigated by `unattended-upgrades`. (Prod and staging no longer share a host at all — staging is on Bunny.)
 
-## Staging on bunny.net Magic Containers (spike)
+## Staging on bunny.net Magic Containers
 
-Staging is being trialled on **bunny.net Magic Containers** in parallel with the VPS. This is a spike to develop intuition about the platform; **prod stays entirely on the VPS**. The VPS staging stack (`wfe-staging.container`, `/etc/wfe/staging.env`, the `/srv/wfe/staging` volume + mount, the Caddy `staging.*` site block) is **kept running, unedited, as a live warm fallback** (still auto-pulling `:main`). See `openspec/changes/staging-bunny-magic-containers/` for the full design.
+Staging runs **exclusively on bunny.net Magic Containers**. **Prod stays entirely on the VPS.** There is no VPS staging stack and no warm fallback — the VPS hosts only `wfe-prod` + `caddy`. See `openspec/changes/archive/2026-06-24-staging-bunny-magic-containers/` for the original platform design.
 
 ### What tofu manages
 
 `infrastructure/bunny-staging.tf` declares (via the `bunnynet` provider, pinned `~> 0.15`, key `var.bunnynet_api_key` ← `BUNNYNET_API_KEY`):
 
-- One `bunnynet_compute_container_app` `wfe-staging`: image `ghcr.io/stefanhoelzl/workflow-engine:main` (public registry resolved via the `bunnynet_compute_container_imageregistry` data source — `username = ""`, no token), `autoscaling_min = max = 1`, region `DE` (Frankfurt), `image_pull_policy = "Always"` (no pinned digest), a `/data` volume, a `/readyz` readiness probe, and an env block that mirrors the VPS staging Quadlet (including reuse of `random_bytes.secrets_key["staging"]` so bundles unseal against either backend).
+- One `bunnynet_compute_container_app` `wfe-staging`: image `ghcr.io/stefanhoelzl/workflow-engine:main` (public registry resolved via the `bunnynet_compute_container_imageregistry` data source — `username = ""`, no token), `autoscaling_min = max = 1`, region `DE` (Frankfurt), `image_pull_policy = "Always"` (no pinned digest), a `/data` volume, a `/livez` readiness probe, and an env block carrying the staging config + secrets, including its own standalone `random_bytes.staging_secrets_key` workflow-secrets sealing key.
 - A **CDN** endpoint (`origin_ssl = false`) for managed HTTPS — the staging replacement for Caddy's TLS termination.
 
 **Live:** staging resolves via the Bunny DNS CNAME (`dns.tf`) to the app's CDN pull-zone host, and `deploy-staging.yml` rolls it forward by PATCHing the container image digest. The custom hostname's managed TLS is brought up by a two-step targeted apply (DNS records first, then a full apply once `dig` confirms propagation) — see the load-bearing `bunnynet_pullzone_hostname` comment in `bunny-staging.tf`.
@@ -394,10 +395,6 @@ Because CI/Bunny mutate container-image fields out-of-band and the provider mana
 ### Readiness probe MUST be /livez, not /readyz
 
 The Bunny `readiness_probe` targets **`/livez`** (pure process-liveness), NOT `/readyz`. `/readyz` runs deep checks that self-reach the app's own public `BASE_URL` (`domain` → `…/healthz`, `webhooks` → `…/webhooks/`). During a deploy Bunny serves a "We're deploying" **503** on that hostname *until* readiness passes — so gating readiness on `/readyz` **deadlocks**: the pod boots and listens fine but can never satisfy its own self-check, and Bunny retries the pod forever (staging stuck serving 503). `/livez` returns 200 the moment the process listens → the pod goes ready → Bunny routes → and then `/readyz`'s self-checks pass. The deploy pipeline still polls `/readyz` (the full-health + gitSha gate); only Bunny's traffic-gating probe uses `/livez`. Note Bunny's `min=max=1` deploys have a brief 503 downtime window (it can't run the new pod alongside the old with one node-bound volume) — acceptable for staging.
-
-### Switching staging back to the VPS
-
-There is **no `staging_backend` toggle variable** (low expected bounce). To revert: change the `staging.workflow-engine.stho.net` record in `dns.tf` from a CNAME (Bunny CDN host) back to an A record at the VPS IP and `tofu apply`. The VPS staging app is still live on current `:main`, and Caddy re-issues the staging cert automatically once DNS points back. The plan shows only that one record changing.
 
 ### SQL engine memory
 

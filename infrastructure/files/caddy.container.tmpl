@@ -11,7 +11,7 @@ After=network-online.target
 # user — so on-host escape lands the attacker on wfe-caddy, not root).
 Image=${caddy_image}
 # Host networking: Caddy shares the host's netns so it can reach the
-# wfe-{prod,staging} apps on 127.0.0.1:{8081,8082}. With bridge networking,
+# wfe-prod app on 127.0.0.1:8081. With bridge networking,
 # 127.0.0.1 inside the container would be the container's loopback (Caddy
 # talking to itself) and the upstream proxy would 502. PublishPort= is
 # unnecessary with Network=host — Caddy binds 80/443 directly on the host.

@@ -1,11 +1,9 @@
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- Local Stack (infrastructure/local/)                    -->
-<!-- ═══════════════════════════════════════════════════════ -->
+## RENAMED Requirements
 
-## Purpose
+- **FROM:** `Quadlet units for caddy, wfe-prod, wfe-staging` **TO:** `Quadlet units for caddy and wfe-prod`
 
-Reusable Terraform modules for the local (kind) and production (UpCloud) stacks.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Single flat tofu project at infrastructure/
 
 The repository SHALL contain exactly one OpenTofu project at `infrastructure/` with no `envs/<name>/` subdirectories. The project owns the Scaleway VPS, the prod app Quadlet unit, the Caddy unit, the Caddyfile, the Bunny DNS records for prod and staging, and the Scaleway Object Storage bucket reference for state. All operations run as `tofu -chdir=infrastructure {init|plan|apply}`.
@@ -16,34 +14,6 @@ The repository SHALL contain exactly one OpenTofu project at `infrastructure/` w
 - **THEN** `infrastructure/main.tf`, `infrastructure/variables.tf`, and `infrastructure/cloud-init.yaml` SHALL exist
 - **AND** `infrastructure/envs/` SHALL NOT exist
 - **AND** `infrastructure/modules/{kubernetes,object-storage,app-instance,baseline,caddy}/` SHALL NOT exist
-
-### Requirement: Pinned OpenTofu version
-
-The `infrastructure/` project SHALL declare an exact-patch `required_version` (e.g. `"1.11.6"`, not a range) so all clients — operator local + every CI job invoking `tofu` — resolve the same version. The pin is required because `tofu init` writes version-specific `h1:` hashes into `.terraform.lock.hcl`, and the repo's lockfile-drift gate (`git diff --exit-code infrastructure/.terraform.lock.hcl` in `ci.yml`) fails when CI's `tofu init` produces a different set of hashes than the operator's last commit.
-
-The CI jobs that invoke `tofu` (`ci.yml`, `plan-infra.yml`) SHALL set `opentofu/setup-opentofu`'s `tofu_version` input to the same exact value declared in `required_version`. Bumping the pinned version SHALL update both `infrastructure/main.tf` and every `setup-opentofu` invocation in the same PR.
-
-#### Scenario: Wrong-version tofu refuses to init
-
-- **GIVEN** an operator runs `tofu version` returning a version that does not exactly match `required_version` (e.g. `1.10.0` or `1.12.0` against a pin of `1.11.6`)
-- **WHEN** they run `tofu -chdir=infrastructure init`
-- **THEN** tofu SHALL refuse with a version-constraint error
-
-#### Scenario: CI tofu matches the pin
-
-- **WHEN** the rendered `.github/workflows/ci.yml` and `.github/workflows/plan-infra.yml` are inspected
-- **THEN** every `opentofu/setup-opentofu@v*` step SHALL set `with.tofu_version` to a literal version string
-- **AND** that string SHALL equal `infrastructure/main.tf#required_version`
-
-### Requirement: Tofu state on Scaleway Object Storage
-
-The project SHALL configure the `s3` backend pointing at a Scaleway Object Storage bucket, with a custom `endpoint` (e.g. `https://s3.fr-par.scw.cloud`), `region` set to a Scaleway region, and `skip_credentials_validation = true` and `skip_region_validation = true` (Scaleway is S3-compatible but not AWS). Client-side state encryption SHALL be configured via the `encryption` block using a passphrase from `TF_VAR_state_passphrase` so state at rest never contains unencrypted secrets.
-
-#### Scenario: State backend is reachable
-
-- **GIVEN** valid `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for Scaleway Object Storage
-- **WHEN** the operator runs `tofu -chdir=infrastructure init`
-- **THEN** init SHALL succeed and acquire a lock against the Scaleway bucket
 
 ### Requirement: Single Scaleway VPS
 
@@ -65,44 +35,6 @@ The instance SHALL additionally attach one persistent Block Storage volume for t
 - **THEN** the plan SHALL NOT show `scaleway_instance_server.vps` being replaced
 - **AND** the plan MAY show the server stopping/starting to perform the attach
 - **AND** the root volume SHALL retain its existing `size_in_gb` and `volume_type`
-
-### Requirement: Host configuration converges in place
-
-The infrastructure project SHALL apply changes to host configuration (files, directories, installed packages, container-runtime users, service states, firewall rules, kernel parameters, swap) on the running VPS without provisioning a fresh VPS. Editing managed host configuration SHALL NOT cause `scaleway_instance_server.vps` to be replaced.
-
-The convergence mechanism SHALL satisfy the following properties:
-
-- **State-tracked declarations.** The set of currently-declared managed entries SHALL be derivable from the project's tofu state. Removing an auto-clean entry from the project source SHALL cause the corresponding host artifact (file removed, ufw rule deleted, swap deactivated, user removed, etc.) to be removed on the next apply.
-- **Idempotent operations.** Each managed entry's create/update operation SHALL be safe to re-run without observable effect when the host is already converged to the declared state. Re-applying with no source change SHALL be a no-op against the host.
-- **Restart hooks per entry.** Each entry MAY declare a follow-up command (`on_change`) that runs after the entry is created or updated. The command SHALL run before any downstream entry that depends on the changed entry.
-- **Ordered convergence.** Entries SHALL converge in an order that respects category dependencies: container-runtime users exist before directories that are chowned to them; directories exist before files are written into them; packages are installed before files belonging to those packages are written; app units are restarted only after their env files exist.
-- **Auto-clean removal.** Removing a managed entry's declaration SHALL cause the corresponding host artifact to be removed on the next apply. Each entry's `on_destroy` hook SHALL stop any associated service (if applicable) before removing the file/rule/etc. There is no PINNED opt-out — the contract is uniform: declaration removed → artifact removed.
-
-The mechanism is NOT required to detect or self-heal hand-edits made on the host between applies. Apply rewrites declared content from template, so drift on managed paths self-heals on the next apply that touches that entry.
-
-#### Scenario: Content edit applies in place
-
-- **GIVEN** the VPS is provisioned and a managed file's content is edited in source
-- **WHEN** `tofu apply` runs
-- **THEN** the plan SHALL show only in-place changes — no `scaleway_instance_server.vps` replacement
-- **AND** the file's content on the host SHALL match the new template after apply
-- **AND** any declared `on_change` hook for that entry SHALL have fired
-- **AND** `/srv/wfe/<env>` data SHALL be unchanged
-
-#### Scenario: Re-applying with no source change is a no-op
-
-- **GIVEN** a previous tofu apply succeeded and no source has changed since
-- **WHEN** `tofu apply` runs again
-- **THEN** the plan SHALL show no changes
-- **AND** no managed entry's content SHALL be rewritten to the host
-- **AND** no `on_change` hook SHALL fire
-
-#### Scenario: Entry removed from source
-
-- **GIVEN** a managed entry (e.g., a sshd drop-in, a sysctl, a ufw rule, a Quadlet, an env file) is removed from the project source
-- **WHEN** `tofu apply` runs
-- **THEN** the corresponding host artifact SHALL no longer exist
-- **AND** any declared `on_destroy` hook (including service-stop steps for Quadlet/env-file entries) SHALL have fired
 
 ### Requirement: Managed user accounts
 
@@ -192,7 +124,7 @@ The `null_resource.wait_cloud_init` resource SHALL invoke `cloud-init status --w
 - **THEN** the plan SHALL show `scaleway_instance_server.vps` being replaced
 - **AND** `/srv/wfe/prod` data SHALL be intact after the rebuild because it lives on a Block Storage volume that detaches and reattaches (no off-host rsync required)
 
-### Requirement: Quadlet units for caddy and wfe-prod
+### Requirement: Quadlet units for caddy, wfe-prod, wfe-staging
 
 The project SHALL render two Quadlet `.container` files as **user-mode** systemd units under each tenant's `/home/<user>/.config/containers/systemd/` via the in-place convergence mechanism. Quadlets SHALL NOT be placed at the system-mode path `/etc/containers/systemd/`. The Quadlet's `User=` directive SHALL NOT be set (that directive sets the in-container UID, not the host process user — host-level rootless requires user-mode placement, not the `User=` directive).
 
@@ -228,18 +160,6 @@ The Quadlet entries are managed entries with stage `post` and on-change hook tha
 - **AND** `wfe-prod.service` SHALL restart with the new content
 - **AND** `caddy.service` SHALL be unaffected
 
-### Requirement: Tag-based auto-update
-
-Both app Quadlet units SHALL carry `Label=io.containers.autoupdate=registry`. The system-wide `podman-auto-update.timer` SHALL be overridden via a drop-in `/etc/systemd/system/podman-auto-update.timer.d/override.conf` to fire every 1 minute (`OnUnitActiveSec=1min`). Image references in Quadlet files SHALL be tag-based (`:release`, `:main`) and SHALL NOT pin a digest.
-
-#### Scenario: A new image push triggers a restart within 1 minute
-
-- **GIVEN** `wfe-prod.service` is running image `ghcr.io/.../workflow-engine:release@sha256:OLD`
-- **AND** a new image is pushed to `ghcr.io/.../workflow-engine:release@sha256:NEW`
-- **WHEN** `podman-auto-update.timer` fires (within 60 seconds)
-- **THEN** podman SHALL pull `:release@sha256:NEW`
-- **AND** `wfe-prod.service` SHALL be restarted on the new image
-
 ### Requirement: Caddyfile renders one site block per env
 
 The Caddyfile SHALL be rendered by tofu (via `templatefile()`) with one site block per VPS app env. The VPS hosts only prod:
@@ -255,15 +175,6 @@ Caddy's automatic HTTPS SHALL provide HTTP→HTTPS redirect, HSTS, and TLS termi
 - **GIVEN** the Bunny DNS A record for `workflow-engine.stho.net` has propagated to the VPS IP and Caddy has completed ACME
 - **WHEN** an external client runs `curl -I https://workflow-engine.stho.net`
 - **THEN** it SHALL return `200` (or whatever the app returns) with a valid Let's Encrypt-issued chain
-
-### Requirement: Caddy SHALL NOT enforce authentication
-
-Caddy SHALL act exclusively as TLS termination + reverse proxy + HTTPS redirect. It SHALL NOT mount any authentication module, forward-auth integration, or basic-auth directive. Per-route authentication is owned entirely by the app's `apiAuthMiddleware` and `sessionMiddleware` (see the `auth` capability).
-
-#### Scenario: Caddyfile contains no auth directives
-
-- **WHEN** the rendered Caddyfile is inspected
-- **THEN** it SHALL NOT contain `forward_auth`, `basicauth`, `jwt`, or any directive that authenticates incoming requests
 
 ### Requirement: Apps bind only to loopback
 
@@ -296,60 +207,99 @@ Each `/srv/wfe/<env>` path SHALL be the **mount point of that env's dedicated Bl
 - **AND** they SHALL NOT include `DATABASE_AUTH_TOKEN`
 - **AND** the `file:` path SHALL resolve under the `/data` bind mount (`/srv/wfe/<env>`)
 
-### Requirement: Per-env secret env files
+### Requirement: Per-env persistence on dedicated block volumes
 
-Per-env env files at `/etc/wfe/<env>.env` SHALL contain ONLY values whose presence in tofu state is an acceptable trade-off (the `encryption {}` block AES-GCM-encrypts state at rest with `var.state_passphrase`). Currently those values are: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SECRETS_PRIVATE_KEYS` (auto-generated; see "Auto-generated workflow-secrets sealing key" below).
+The project SHALL declare one `scaleway_block_volume` resource for the prod app env, of type `sbs_5k` (5 000 IOPS tier), minimum size 5 GB, attached to the VPS via `additional_volume_ids`. The prod volume SHALL declare `lifecycle { prevent_destroy = true }` so `tofu destroy` or accidental removal fails loud.
 
-The env file is a managed entry in the convergence mechanism with: stage `pre`; mode `0600`; owner `wfe-<env>:wfe-<env>` (so the tenant's user-mode systemd can read it via `EnvironmentFile=`); on-change hook `sudo runuser -u wfe-<env> -- env XDG_RUNTIME_DIR=/run/user/$(id -u wfe-<env>) /bin/systemctl --user restart wfe-<env>.service` (with a `|| true` swallow so the first-apply case where the unit doesn't yet exist is non-fatal). Auto-clean removal: removing the entry from source stops the tenant's service and removes the file. The parent directory `/etc/wfe/` is mode `0711` so cross-tenant traversal is allowed but listing is owner-only; per-file `0600` mode prevents cross-tenant reads of secret content.
+Each volume SHALL be activated on the host via a uniform pattern owned by the in-place convergence mechanism:
 
-Non-secret config (`AUTH_ALLOW`, `BASE_URL`, `AUTH_PROVIDER`, `PERSISTENCE_PATH`, `PORT`, `DATABASE_URL`, `DATABASE_WAL`) SHALL be passed via Quadlet `Environment=` directives, not via the env file. Justification: Podman's `--env-file` parser mis-splits comma-bearing values (notably `AUTH_ALLOW`); `--env KEY=VALUE` (one per `Environment=` directive) is parsed correctly. A future remote-backend cutover that introduces `DATABASE_AUTH_TOKEN` SHALL place it in the secret env file (it is auth material), not in a `Environment=` directive.
+- **Format (in a `managed_exec`-style one-shot):** the device SHALL be formatted `ext4` with a filesystem label `wfe-<env>` ONLY when `blkid -p <device>` reports no existing filesystem/partition signature. An already-formatted device SHALL NOT be reformatted. This guard is the sole protection against destroying existing data; a single `blkid -p` probe is sufficient.
+- **Device identification:** the format step SHALL resolve the target device deterministically (e.g. via `/dev/disk/by-id/*<volume-id>*`), NOT by size and NOT by kernel device-order naming.
+- **Mount (via a systemd `.mount` unit declared as a managed file):** a `srv-wfe-<env>.mount` unit SHALL mount the volume at `/srv/wfe/<env>` by `LABEL=wfe-<env>` with the `nofail` option (a detached/missing volume SHALL NOT wedge boot). The unit is a managed file: its `on_change` hook SHALL `daemon-reload` and `enable --now` the unit; its `on_destroy` hook SHALL `disable --now` and remove the unit. Mount configuration SHALL NOT be expressed as an `/etc/fstab` append.
+- **Ordering:** the volume SHALL be mounted before the env's app container starts, so the container never writes into the bare mount point on the root filesystem.
+- **Ownership handoff:** after mounting, a freshly-formatted volume root (owned `root:root` by `mkfs`, including `lost+found`) SHALL be `chown -R`'d to the env's tenant user and `chmod 0700`, so the container's `:U` bind-mount flag (which recursively chowns the source into the tenant's subuid range, performed as the unprivileged tenant) can operate. This chown SHALL be guarded on root-ownership so a reattached, already-subuid-owned volume is left untouched.
 
-The implementation SHALL NOT use `local_file` or `local_sensitive_file` (those leak secrets through additional state attributes beyond the consuming managed entry's hash trigger).
+Each app Quadlet SHALL declare `ExecStartPre=/usr/bin/mountpoint -q /srv/wfe/<env>` so that, if the volume is not mounted, the container fails to start (loud failure surfaced by `/readyz`) rather than silently writing to non-durable root storage.
 
-#### Scenario: A secret rotation triggers a unit restart in place
+#### Scenario: First apply formats and mounts an empty volume
 
-- **GIVEN** `TF_VAR_gh_oauth_client_secret_prod` is updated in the operator's secret store
-- **WHEN** `tofu apply` is re-run
-- **THEN** the rendered env-file content differs from the previous apply
-- **AND** the managed entry's content hash trigger flips → the file is rewritten to `/etc/wfe/prod.env`
-- **AND** `wfe-prod.service` SHALL be restarted
-- **AND** the plan SHALL NOT show `scaleway_instance_server.vps` being replaced
+- **GIVEN** a freshly attached, unformatted Block Storage volume for an env
+- **WHEN** `tofu apply` converges the host
+- **THEN** the device SHALL be formatted `ext4` with label `wfe-<env>`
+- **AND** `srv-wfe-<env>.mount` SHALL be active, mounting it at `/srv/wfe/<env>`
+- **AND** the mount root SHALL be `chown`'d to the tenant so the container's `:U` flag succeeds
+- **AND** the env's app container SHALL start and write its persistence under that mount
 
-#### Scenario: Database connection env is non-secret on the VPS
+#### Scenario: Freshly formatted volume root is handed to the tenant
 
-- **WHEN** the operator inspects how `DATABASE_URL` and `DATABASE_WAL` reach a VPS app
-- **THEN** they SHALL be passed via Quadlet `Environment=` directives, not via `/etc/wfe/<env>.env`
+- **GIVEN** a newly `mkfs`'d volume whose root and `lost+found` are owned `root:root`
+- **WHEN** the mount is enabled and the ownership handoff runs
+- **THEN** the mount root SHALL be `chown -R`'d to the env's tenant user and `chmod 0700`
+- **AND** the container's `:U` recursive chown into the subuid range SHALL succeed (no `operation not permitted`)
+- **AND** a subsequently reattached, already-subuid-owned volume SHALL NOT be re-chowned
 
-### Requirement: Auto-generated workflow-secrets sealing key
+#### Scenario: An already-formatted volume is never reformatted
 
-The project SHALL declare `random_bytes.secrets_key` per env (32 bytes each, base64-encoded). The env file SHALL render `SECRETS_PRIVATE_KEYS=v1:${random_bytes.secrets_key[<env>].base64}` so the runtime's workflow-secrets feature has its sealing key. The key is generated once on first apply and preserved across applies (state-tracked). Rotation: `tofu taint 'random_bytes.secrets_key["<env>"]'` then apply.
+- **GIVEN** a Block Storage volume that already contains an `ext4` filesystem with data
+- **WHEN** `tofu apply` converges the host (e.g. after a VPS replacement reattached the volume)
+- **THEN** `blkid -p` SHALL detect the existing signature
+- **AND** `mkfs` SHALL NOT run
+- **AND** the prior data SHALL remain intact after mount
 
-Multi-key staged rotation (concurrent decrypt against retired key + seal against new) is NOT supported by this scheme — it would require manual `keyId:base64,keyId:base64` composition. Single-key auto-generation is sufficient until uploaded bundles reference older keyIds.
+#### Scenario: Container refuses to start when its volume is unmounted
 
-#### Scenario: Key persists across applies
+- **GIVEN** the env's Block Storage volume failed to attach or mount (and `nofail` allowed boot to continue)
+- **WHEN** the env's app container unit is started
+- **THEN** the `ExecStartPre` `mountpoint -q /srv/wfe/<env>` check SHALL fail
+- **AND** the container SHALL NOT start
+- **AND** no persistence SHALL be written to the bare mount point on the root filesystem
 
-- **GIVEN** an apply has generated `random_bytes.secrets_key["prod"]`
-- **WHEN** a subsequent apply runs without taint
-- **THEN** the key value SHALL be unchanged
-- **AND** the env file's `SECRETS_PRIVATE_KEYS` line SHALL be byte-identical
+#### Scenario: Prod volume is protected from destruction
 
-### Requirement: Lock file committed and gitignore boundaries
+- **GIVEN** the prod `scaleway_block_volume` declares `prevent_destroy = true`
+- **WHEN** an operator runs `tofu destroy` or removes the resource from source and applies
+- **THEN** tofu SHALL refuse with a `prevent_destroy` error rather than deleting the volume
 
-`infrastructure/.terraform.lock.hcl` SHALL be committed. `infrastructure/.terraform/` SHALL be gitignored. The runner-local `/tmp/wfe-secrets/` directory SHALL never be in the repository (created and removed by the GHA workflow).
+#### Scenario: Declaration removal cleans the mount unit
 
-#### Scenario: Lock file is tracked
+- **GIVEN** a `srv-wfe-<env>.mount` managed-file entry exists in tofu state
+- **WHEN** the entry is removed from source and `tofu apply` runs
+- **THEN** the apply SHALL `disable --now` the unit and remove `srv-wfe-<env>.mount` from the host
+- **AND** no `/etc/fstab` line for `/srv/wfe/<env>` SHALL remain (none was ever written)
 
-- **WHEN** the operator runs `git ls-files infrastructure/`
-- **THEN** `.terraform.lock.hcl` SHALL appear
+### Requirement: Bunny DNS records owned by tofu
 
-### Requirement: kind-based local env removed
+The project SHALL manage exactly two DNS records under the `stho.net` zone via the `bunnynet` provider. The zone SHALL be referenced through a `data "bunnynet_dns_zone"` lookup (read-only); the project SHALL NOT own or create the `stho.net` zone, its apex, or any record other than the two below.
 
-The `infrastructure/envs/local/` directory, the `kind` provider usage, the `pnpm local:up*` scripts, the `local.secrets.auto.tfvars(.example)?` files, and any "Cluster smoke (human)" pattern in CLAUDE.md SHALL all be removed. `pnpm dev` SHALL be the only documented local mode.
+- `workflow-engine.stho.net` → **A record** to the Scaleway VPS public IP (`scaleway_instance_ip.vps.address`).
+- `staging.workflow-engine.stho.net` → **CNAME** to the Bunny Magic Containers CDN endpoint host (`*.b-cdn.net`).
 
-#### Scenario: kind is gone from the repo
+Both records SHALL set `ttl = 300`. `BASE_URL`, the Caddy prod site block, and the staging `bunnynet_pullzone_hostname` SHALL all use the same `base_domain`-composed hostnames. The project SHALL NOT reference the Dynu API, the `restapi` provider, or `var.dynu_api_key`.
 
-- **WHEN** the repo is grep'd for `kind` provider, `pnpm local:up`, or `infrastructure/envs/local`
-- **THEN** no occurrence SHALL remain
+Staging runs exclusively on Bunny Magic Containers; there is no VPS staging backend to switch to, and the project SHALL NOT introduce a `staging_backend` toggle variable.
+
+#### Scenario: Prod A record resolves to the VPS
+
+- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
+- **WHEN** `dig workflow-engine.stho.net` is run from an external resolver
+- **THEN** it SHALL resolve to the Scaleway VPS public IP
+
+#### Scenario: Staging hostname resolves to the Bunny CDN endpoint
+
+- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
+- **WHEN** `dig staging.workflow-engine.stho.net` is run from an external resolver
+- **THEN** it SHALL resolve (via CNAME) to the Bunny Magic Containers CDN endpoint host
+
+#### Scenario: No Dynu / restapi provider remains
+
+- **WHEN** the rendered `infrastructure/` project and its `.terraform.lock.hcl` are inspected
+- **THEN** there SHALL be no `restapi` provider, no `provider "restapi"` block, no `Mastercard/restapi` lockfile entry, and no `var.dynu_api_key` reference
+
+#### Scenario: tofu does not own the stho.net zone
+
+- **WHEN** the DNS configuration is inspected
+- **THEN** the `stho.net` zone SHALL be referenced via a `data "bunnynet_dns_zone"` source (not a `resource`)
+- **AND** only the two `workflow-engine` subdomain records SHALL be managed; the apex and any sibling records SHALL NOT appear in the plan
 
 ### Requirement: Daily disk cleanup service
 
@@ -428,116 +378,3 @@ The timer SHALL NOT run as the `deploy` user or any rootless tenant. It SHALL ru
 - **THEN** the failure SHALL be recorded in `journalctl -u disk-cleanup.service`
 - **AND** the timer SHALL remain enabled and SHALL fire again at the next scheduled time
 - **AND** no other systemd unit SHALL be restarted, stopped, or marked failed as a side effect
-
-### Requirement: Per-env persistence on dedicated block volumes
-
-The project SHALL declare one `scaleway_block_volume` resource for the prod app env, of type `sbs_5k` (5 000 IOPS tier), minimum size 5 GB, attached to the VPS via `additional_volume_ids`. The prod volume SHALL declare `lifecycle { prevent_destroy = true }` so `tofu destroy` or accidental removal fails loud.
-
-Each volume SHALL be activated on the host via a uniform pattern owned by the in-place convergence mechanism:
-
-- **Format (in a `managed_exec`-style one-shot):** the device SHALL be formatted `ext4` with a filesystem label `wfe-<env>` ONLY when `blkid -p <device>` reports no existing filesystem/partition signature. An already-formatted device SHALL NOT be reformatted. This guard is the sole protection against destroying existing data; a single `blkid -p` probe is sufficient.
-- **Device identification:** the format step SHALL resolve the target device deterministically (e.g. via `/dev/disk/by-id/*<volume-id>*`), NOT by size and NOT by kernel device-order naming.
-- **Mount (via a systemd `.mount` unit declared as a managed file):** a `srv-wfe-<env>.mount` unit SHALL mount the volume at `/srv/wfe/<env>` by `LABEL=wfe-<env>` with the `nofail` option (a detached/missing volume SHALL NOT wedge boot). The unit is a managed file: its `on_change` hook SHALL `daemon-reload` and `enable --now` the unit; its `on_destroy` hook SHALL `disable --now` and remove the unit. Mount configuration SHALL NOT be expressed as an `/etc/fstab` append.
-- **Ordering:** the volume SHALL be mounted before the env's app container starts, so the container never writes into the bare mount point on the root filesystem.
-- **Ownership handoff:** after mounting, a freshly-formatted volume root (owned `root:root` by `mkfs`, including `lost+found`) SHALL be `chown -R`'d to the env's tenant user and `chmod 0700`, so the container's `:U` bind-mount flag (which recursively chowns the source into the tenant's subuid range, performed as the unprivileged tenant) can operate. This chown SHALL be guarded on root-ownership so a reattached, already-subuid-owned volume is left untouched.
-
-Each app Quadlet SHALL declare `ExecStartPre=/usr/bin/mountpoint -q /srv/wfe/<env>` so that, if the volume is not mounted, the container fails to start (loud failure surfaced by `/readyz`) rather than silently writing to non-durable root storage.
-
-#### Scenario: First apply formats and mounts an empty volume
-
-- **GIVEN** a freshly attached, unformatted Block Storage volume for an env
-- **WHEN** `tofu apply` converges the host
-- **THEN** the device SHALL be formatted `ext4` with label `wfe-<env>`
-- **AND** `srv-wfe-<env>.mount` SHALL be active, mounting it at `/srv/wfe/<env>`
-- **AND** the mount root SHALL be `chown`'d to the tenant so the container's `:U` flag succeeds
-- **AND** the env's app container SHALL start and write its persistence under that mount
-
-#### Scenario: Freshly formatted volume root is handed to the tenant
-
-- **GIVEN** a newly `mkfs`'d volume whose root and `lost+found` are owned `root:root`
-- **WHEN** the mount is enabled and the ownership handoff runs
-- **THEN** the mount root SHALL be `chown -R`'d to the env's tenant user and `chmod 0700`
-- **AND** the container's `:U` recursive chown into the subuid range SHALL succeed (no `operation not permitted`)
-- **AND** a subsequently reattached, already-subuid-owned volume SHALL NOT be re-chowned
-
-#### Scenario: An already-formatted volume is never reformatted
-
-- **GIVEN** a Block Storage volume that already contains an `ext4` filesystem with data
-- **WHEN** `tofu apply` converges the host (e.g. after a VPS replacement reattached the volume)
-- **THEN** `blkid -p` SHALL detect the existing signature
-- **AND** `mkfs` SHALL NOT run
-- **AND** the prior data SHALL remain intact after mount
-
-#### Scenario: Container refuses to start when its volume is unmounted
-
-- **GIVEN** the env's Block Storage volume failed to attach or mount (and `nofail` allowed boot to continue)
-- **WHEN** the env's app container unit is started
-- **THEN** the `ExecStartPre` `mountpoint -q /srv/wfe/<env>` check SHALL fail
-- **AND** the container SHALL NOT start
-- **AND** no persistence SHALL be written to the bare mount point on the root filesystem
-
-#### Scenario: Prod volume is protected from destruction
-
-- **GIVEN** the prod `scaleway_block_volume` declares `prevent_destroy = true`
-- **WHEN** an operator runs `tofu destroy` or removes the resource from source and applies
-- **THEN** tofu SHALL refuse with a `prevent_destroy` error rather than deleting the volume
-
-#### Scenario: Declaration removal cleans the mount unit
-
-- **GIVEN** a `srv-wfe-<env>.mount` managed-file entry exists in tofu state
-- **WHEN** the entry is removed from source and `tofu apply` runs
-- **THEN** the apply SHALL `disable --now` the unit and remove `srv-wfe-<env>.mount` from the host
-- **AND** no `/etc/fstab` line for `/srv/wfe/<env>` SHALL remain (none was ever written)
-
-### Requirement: Swap activated via a systemd .swap unit
-
-The swapfile SHALL be created in a `managed_exec`-style one-shot (`fallocate` the file, `chmod 0600`, `mkswap`, each idempotent) and activated via a `swapfile.swap` systemd unit declared as a managed file — NOT via an `/etc/fstab` swap line. The unit's `on_change` hook SHALL `daemon-reload` and `enable --now swapfile.swap`; its `on_destroy` hook SHALL `disable --now swapfile.swap` and remove the unit and the swapfile. Removing the declaration SHALL leave no `/etc/fstab` residue (none is written).
-
-#### Scenario: Swap is active after apply
-
-- **GIVEN** the VPS is provisioned and the change is applied
-- **WHEN** the operator runs `swapon --show` on the host
-- **THEN** `/swapfile` SHALL appear as active swap
-- **AND** `systemctl status swapfile.swap` SHALL report the unit `active`
-
-#### Scenario: Swap declaration removal cleans the host without fstab residue
-
-- **GIVEN** the swap managed entries exist in tofu state
-- **WHEN** the entries are removed from source and `tofu apply` runs
-- **THEN** the apply SHALL `disable --now swapfile.swap`, remove the unit, and remove `/swapfile`
-- **AND** `/etc/fstab` SHALL contain no swap line for `/swapfile`
-
-### Requirement: Bunny DNS records owned by tofu
-
-The project SHALL manage exactly two DNS records under the `stho.net` zone via the `bunnynet` provider. The zone SHALL be referenced through a `data "bunnynet_dns_zone"` lookup (read-only); the project SHALL NOT own or create the `stho.net` zone, its apex, or any record other than the two below.
-
-- `workflow-engine.stho.net` → **A record** to the Scaleway VPS public IP (`scaleway_instance_ip.vps.address`).
-- `staging.workflow-engine.stho.net` → **CNAME** to the Bunny Magic Containers CDN endpoint host (`*.b-cdn.net`).
-
-Both records SHALL set `ttl = 300`. `BASE_URL`, the Caddy prod site block, and the staging `bunnynet_pullzone_hostname` SHALL all use the same `base_domain`-composed hostnames. The project SHALL NOT reference the Dynu API, the `restapi` provider, or `var.dynu_api_key`.
-
-Staging runs exclusively on Bunny Magic Containers; there is no VPS staging backend to switch to, and the project SHALL NOT introduce a `staging_backend` toggle variable.
-
-#### Scenario: Prod A record resolves to the VPS
-
-- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
-- **WHEN** `dig workflow-engine.stho.net` is run from an external resolver
-- **THEN** it SHALL resolve to the Scaleway VPS public IP
-
-#### Scenario: Staging hostname resolves to the Bunny CDN endpoint
-
-- **GIVEN** tofu apply has completed and Bunny DNS propagation has occurred
-- **WHEN** `dig staging.workflow-engine.stho.net` is run from an external resolver
-- **THEN** it SHALL resolve (via CNAME) to the Bunny Magic Containers CDN endpoint host
-
-#### Scenario: No Dynu / restapi provider remains
-
-- **WHEN** the rendered `infrastructure/` project and its `.terraform.lock.hcl` are inspected
-- **THEN** there SHALL be no `restapi` provider, no `provider "restapi"` block, no `Mastercard/restapi` lockfile entry, and no `var.dynu_api_key` reference
-
-#### Scenario: tofu does not own the stho.net zone
-
-- **WHEN** the DNS configuration is inspected
-- **THEN** the `stho.net` zone SHALL be referenced via a `data "bunnynet_dns_zone"` source (not a `resource`)
-- **AND** only the two `workflow-engine` subdomain records SHALL be managed; the apex and any sibling records SHALL NOT appear in the plan
-

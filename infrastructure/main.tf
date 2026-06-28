@@ -24,8 +24,8 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
-    # Staging-only Magic Containers spike (bunny-staging.tf). Pin to a single
-    # minor — the provider is 0.x with frequent breaking minors, so bump
+    # Staging on Magic Containers (bunny-staging.tf) + Bunny DNS (dns.tf). Pin to
+    # a single minor — the provider is 0.x with frequent breaking minors, so bump
     # deliberately and read the CHANGELOG. 0.15.x requires OpenTofu >= 1.11
     # (we pin 1.11.6 above, so aligned).
     bunnynet = {
@@ -143,13 +143,6 @@ resource "scaleway_block_volume" "prod" {
   }
 }
 
-resource "scaleway_block_volume" "staging" {
-  name       = "wfe-staging-data"
-  iops       = var.app_data_volume_iops
-  size_in_gb = var.app_data_volume_size_gb
-  # No prevent_destroy: staging is disposable and must stay freely re-creatable.
-}
-
 resource "scaleway_instance_server" "vps" {
   name              = "wfe"
   type              = var.instance_type
@@ -157,12 +150,11 @@ resource "scaleway_instance_server" "vps" {
   ip_id             = scaleway_instance_ip.vps.id
   security_group_id = scaleway_instance_security_group.vps.id
 
-  # Attach the two per-env data volumes. Both are SBS (block) volumes, so this
-  # is an in-place stop/start attach — the local-SSD root_volume below is
-  # unchanged (changing its size_in_gb would force a rebuild; we don't).
+  # Attach the prod data volume. It's an SBS (block) volume, so this is an
+  # in-place stop/start attach — the local-SSD root_volume below is unchanged
+  # (changing its size_in_gb would force a rebuild; we don't).
   additional_volume_ids = [
     scaleway_block_volume.prod.id,
-    scaleway_block_volume.staging.id,
   ]
 
   # Replace the VPS when the cloud-init bootstrap content changes — see
@@ -219,20 +211,9 @@ locals {
       # EventStore retention window in days (prune interval derived as days/100).
       retention_days = 90
     }
-    staging = {
-      domain             = "staging.workflow-engine.${var.base_domain}"
-      dns_node           = "staging.workflow-engine"
-      port               = 8082
-      image_ref          = "${var.app_image}:main"
-      data_dir           = "/srv/wfe/staging"
-      memory_max         = "350m"
-      runtime_user       = "wfe-staging"
-      gh_oauth_client_id = var.gh_oauth_client_id_staging
-      gh_oauth_secret    = var.gh_oauth_client_secret_staging
-      auth_allow         = "github:user:stefanhoelzl"
-      # EventStore retention window in days (prune interval derived as days/100).
-      retention_days = 1
-    }
+    # Staging is NOT a VPS env — it runs on Bunny Magic Containers
+    # (bunny-staging.tf). The config Bunny needs lives there, in
+    # local.bunny_staging. Adding a *VPS* env is a new key here.
   }
 
   # SSH connection block shared by every provisioner.
