@@ -1,8 +1,7 @@
-# bunny-staging Specification
+# bunny-staging Specification (delta)
 
-## Purpose
-TBD - created by archiving change staging-bunny-magic-containers. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Magic Containers staging app via the bunnynet provider
 
 The `infrastructure/` project SHALL declare the `bunnynet` provider and exactly one `bunnynet_compute_container_app` resource for staging. The app SHALL reference image `ghcr.io/stefanhoelzl/workflow-engine:main` (a `linux/amd64` image), SHALL set `autoscaling_min` and `autoscaling_max` both to `1`, and SHALL pin a single EU region (Frankfurt) via `regions_required`. The container SHALL expose the app's listen port (8080) and SHALL set `PERSISTENCE_PATH=/data`.
@@ -33,40 +32,6 @@ The staging app SHALL select the Bunny Edge Storage bundle backend by setting `S
 - **AND** `STORAGE_BUNNY_ACCESS_KEY` SHALL be wired from the `bunnynet_storage_zone` resource's `password` attribute
 - **AND** `PERSISTENCE_PATH` SHALL still be `/data`
 
-### Requirement: CDN endpoint provides managed HTTPS for staging
-
-The staging app SHALL expose a CDN-type endpoint (NOT Anycast) routing HTTP(S) to the container's 8080 port, providing automatic TLS. The hostname `staging.workflow-engine.stho.net` SHALL be attachable to this endpoint as a custom hostname (`bunnynet_pullzone_hostname`, `tls_enabled = true`, `force_ssl = true`) so `BASE_URL` and the GitHub OAuth callback resolve to the same public host.
-
-Because Bunny issues the managed Let's Encrypt cert at the moment `tls_enabled` is true and only if the hostname's CNAME already resolves to Bunny, the staging DNS CNAME (see the `infrastructure` capability) SHALL be created and propagated BEFORE the apply that registers/validates this hostname — achieved by a two-step targeted apply (records first, full apply after `dig` confirms). The hostname SHALL be composed from the `base_domain` variable.
-
-#### Scenario: CDN endpoint serves the staging hostname over HTTPS
-
-- **GIVEN** the staging Bunny DNS CNAME for `staging.workflow-engine.stho.net` points at the Bunny CDN endpoint and Bunny has issued the cert
-- **WHEN** an external client runs `curl -I https://staging.workflow-engine.stho.net/livez`
-- **THEN** the response SHALL be served over a valid TLS chain
-- **AND** the endpoint type SHALL be CDN, not Anycast
-
-### Requirement: CDN SHALL NOT cache dynamic routes (gating observation)
-
-The deployment SHALL rely on Bunny's CDN defaults with no pre-built edge rules. Before this deployment shape is ever proposed for prod, it SHALL be verified by observation that the CDN does not cache dynamic (authenticated/owner-scoped) responses — only `/static/*` (which the app marks `Cache-Control: public, max-age=…, immutable`) may be cached. A cache hit on a dynamic route is a cross-owner data leak (`SECURITY.md §4`). If observation shows dynamic routes being cached, the deployment SHALL be remediated with an edge rule forcing cache-time 0 except `/static/*`, or by switching the endpoint to Anycast.
-
-#### Scenario: Dynamic routes observed uncached
-
-- **WHEN** a dynamic route is requested twice as two different sessions via `curl -D-`
-- **THEN** the responses SHALL show no CDN cache hit (`cdn-cache: MISS` or no caching)
-- **AND** each session SHALL receive only its own response (no cross-session bleed)
-
-#### Scenario: Static assets may be cached
-
-- **WHEN** a `/static/*` asset is requested
-- **THEN** it MAY be served from CDN cache (the app marks it immutable)
-
-#### Scenario: Caching of a dynamic route forces remediation
-
-- **GIVEN** the curl observation shows a dynamic route served from CDN cache
-- **WHEN** the deployment is assessed
-- **THEN** it SHALL NOT be advanced toward prod until an edge rule (cache-time 0 except `/static/*`) or an Anycast endpoint removes the dynamic-route caching
-
 ### Requirement: Staging secrets as plaintext env on the platform
 
 The staging app's `bunnynet` `env` block SHALL carry the staging configuration and secrets (`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `AUTH_ALLOW`, `BASE_URL`, `PORT`, `PERSISTENCE_PATH`, the workflow-secrets sealing key, `STORAGE_BUNNY_ACCESS_KEY`, and the Bunny Database access token `DATABASE_AUTH_TOKEN`). Configuration and OAuth/sealing secrets are sourced from `TF_VAR_*` values; two exceptions are sourced from resource attributes rather than `TF_VAR` inputs — `STORAGE_BUNNY_ACCESS_KEY` from the `bunnynet_storage_zone` resource's `password` attribute, and `DATABASE_AUTH_TOKEN` from the in-tofu token mint (the `restful_operation` resource's response output). Because Magic Containers has no secret store, env values are plaintext at the platform. Secret values SHALL NOT appear in committed `*.tfvars`; they SHALL be encrypted at rest only in tofu state (the existing `encryption {}` block).
@@ -85,46 +50,15 @@ Because the `bunnynet` provider does NOT mark `env.value` as sensitive (it rende
 - **WHEN** `plan-infra` renders the plan into `$GITHUB_STEP_SUMMARY`
 - **THEN** the staging OAuth client secret, the sealing key, the storage access key, and `DATABASE_AUTH_TOKEN` SHALL appear as `(sensitive value)`, not in cleartext
 
-### Requirement: Staging readiness probe on /livez (not /readyz)
+## REMOVED Requirements
 
-The staging app SHALL declare a `readiness_probe` of type `http` with path **`/livez`** against the container port — NOT `/readyz`. `/readyz` runs deep health checks that self-reach the app's own public `BASE_URL` (the `domain` and `webhooks` checks fetch `https://staging…/healthz` and `/webhooks/`). During a deploy, Bunny serves a "We're deploying" 503 on that hostname UNTIL the readiness probe passes, so gating readiness on `/readyz` deadlocks: the pod boots and listens but can never satisfy its own self-check, and Bunny retries the pod indefinitely. `/livez` returns 200 unconditionally once the process is listening, so the pod goes ready, Bunny routes traffic, and `/readyz`'s self-checks then pass. (The deploy pipeline still polls `/readyz` for the full-health + gitSha gate; only Bunny's traffic-gating probe uses `/livez`.)
+### Requirement: Staging persistent volume mounted at /data
 
-#### Scenario: Probe targets /livez
+**Reason**: Staging is now fully stateless. With the event-store/queue database on the managed Bunny Database and workflow bundles on the Bunny Edge Storage zone, nothing is written to local disk — the `/data` volume and its `volumemount` are removed. The runtime never touches `PERSISTENCE_PATH` under `STORAGE_BACKEND=bunny` + a remote `DATABASE_URL` (`createFsStorage` is not constructed; the libSQL client is HTTP-only).
 
-- **WHEN** the rendered `bunnynet_compute_container_app` is inspected
-- **THEN** it SHALL declare a `readiness_probe` with `http` path `/livez` on the container's listen port
+**Migration**: Remove the `volume {}` block and the container `volumemount {}` from `bunnynet_compute_container_app.staging`. Keep `PERSISTENCE_PATH=/data` in the env (the config field is still required) — it needs no backing volume. The prior embedded `events.db` on the volume is discarded (accept-loss).
 
-#### Scenario: A redeploy recovers without a readiness deadlock
-
-- **GIVEN** the app is being redeployed (new image digest)
-- **WHEN** the new pod boots and begins listening
-- **THEN** `/livez` SHALL return 200 and Bunny SHALL mark the pod ready and route traffic
-- **AND** `/readyz` SHALL subsequently report `status: pass` once Bunny routes the app's own self-reach checks
-
-### Requirement: Staging deploy rolls Bunny forward without Terraform image drift
-
-The `deploy-staging.yml` workflow SHALL, after building and pushing `ghcr.io/stefanhoelzl/workflow-engine:main` and capturing the pushed image digest, roll the staging app forward by updating the container's image to that digest (`image_tag: main` + `image_digest: <digest>`), and then poll the Bunny-served `/readyz` until `version.gitSha` equals the pushed `github.sha`. This step SHALL NOT invoke `tofu`. The image update MAY use the official `BunnyWay/actions/container-update-image` action or an equivalent inline `curl` PATCH of `/mc/apps/{id}/containers/{cid}`; if a third-party action is used it SHALL be pinned to a commit SHA (not a moving ref) because it receives `BUNNYNET_API_KEY`. The app id SHALL be resolved by name so the workflow survives an app recreation.
-
-Updating the container image is the only documented Magic Containers rolling-update trigger (a `/deploy` or `/restart` call does not re-pull), so a **changing digest** per deploy is required. Because CI and Bunny's own deploy/rolling-update mutate container-image fields out-of-band and the `bunnynet` provider manages them as resource attributes, the app resource SHALL declare `lifecycle { ignore_changes = [container[0].image_tag, container[0].image_digest, container[0].image_pull_policy] }` so Terraform does not revert them. (`image_pull_policy` is included because Bunny resets it to its default `IfNotPresent` on deploy; this is harmless under digest-pinning, where each new digest is pulled regardless of policy.) `container.image_tag` SHALL remain `"main"` in config. The `plan-infra` empty-plan gate MUST remain green after a deploy.
-
-#### Scenario: Push to main rolls the Bunny app and confirms the SHA
-
-- **WHEN** a commit is pushed to `main` and the image is pushed to `:main`
-- **THEN** the workflow SHALL trigger a Bunny rollout for the staging app
-- **AND** SHALL poll `/readyz` until `version.gitSha === <github.sha>`
-- **AND** no step SHALL invoke `tofu`
-
-#### Scenario: A CI deploy does not break the empty-plan gate
-
-- **GIVEN** the staging app has been rolled forward by a CI deploy
-- **WHEN** `plan-infra` runs on a subsequent PR
-- **THEN** the plan SHALL be empty for the staging app's image fields (no drift to revert)
-
-#### Scenario: Bunny API key is the only new deploy secret
-
-- **WHEN** `.github/workflows/deploy-staging.yml` is inspected
-- **THEN** the only secret added for the Bunny rollout SHALL be `BUNNYNET_API_KEY`
-- **AND** no `TF_VAR_*` or SSH key SHALL be referenced by the rollout step
+## ADDED Requirements
 
 ### Requirement: Staging Bunny Database provisioning and in-tofu token mint
 
@@ -159,4 +93,3 @@ The access token SHALL be minted in-tofu via the `magodo/restful` provider's `re
 - **WHEN** the repository and CI secrets are inspected
 - **THEN** there SHALL be no `TF_VAR_*`/GHA secret carrying a pre-minted `DATABASE_AUTH_TOKEN`
 - **AND** the only Bunny credential consumed SHALL be the existing account API key `var.bunnynet_api_key`
-
