@@ -169,6 +169,46 @@ describe("createConfig", () => {
 		expect(config.storageBackend).toBe("fs");
 	});
 
+	it("defaults all STORAGE_BUNNY_* fields to undefined", () => {
+		const config = createConfig(REQUIRED);
+		expect(config.storageBunnyEndpoint).toBeUndefined();
+		expect(config.storageBunnyStorageZone).toBeUndefined();
+		expect(config.storageBunnyAccessKey).toBeUndefined();
+	});
+
+	it("parses STORAGE_BUNNY_* fields and Secret-wraps the access key", () => {
+		const config = createConfig({
+			...REQUIRED,
+			STORAGE_BACKEND: "bunny",
+			STORAGE_BUNNY_ENDPOINT: "storage.bunnycdn.com",
+			STORAGE_BUNNY_STORAGE_ZONE: "wfe-staging-bundles",
+			STORAGE_BUNNY_ACCESS_KEY: "abc123",
+		});
+		expect(config.storageBunnyEndpoint).toBe("storage.bunnycdn.com");
+		expect(config.storageBunnyStorageZone).toBe("wfe-staging-bundles");
+		expect(config.storageBunnyAccessKey?.reveal()).toBe("abc123");
+	});
+
+	it("redacts STORAGE_BUNNY_ACCESS_KEY on serialization", () => {
+		const config = createConfig({
+			...REQUIRED,
+			STORAGE_BUNNY_ACCESS_KEY: "supersecret",
+		});
+		const json = JSON.stringify(config);
+		expect(json).not.toContain("supersecret");
+		expect(json).toContain("[redacted]");
+		expect(inspect(config.storageBunnyAccessKey)).toBe("[redacted]");
+	});
+
+	it("carries STORAGE_BACKEND=bunny through without requiring bunny fields", () => {
+		// The config layer does not enumerate backends or cross-validate per-
+		// backend config; the factory asserts presence at boot. So parsing
+		// succeeds even with no STORAGE_BUNNY_* set.
+		const config = createConfig({ ...REQUIRED, STORAGE_BACKEND: "bunny" });
+		expect(config.storageBackend).toBe("bunny");
+		expect(config.storageBunnyAccessKey).toBeUndefined();
+	});
+
 	it("rejects missing SECRETS_PRIVATE_KEYS", () => {
 		// Pins the fail-fast contract: `SECRETS_PRIVATE_KEYS` is required at
 		// boot, not deferred to first decryption. Regressing this to

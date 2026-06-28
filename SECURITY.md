@@ -1819,6 +1819,7 @@ This section describes the production target: a single Scaleway VPS running root
 | App `wfe-staging` | Loopback only | `127.0.0.1:8082` → container `:8080` | `wfe-staging` (rootless Podman) | Caddy (loopback) |
 | libSQL | Process-local | — | — | One app process only (embedded on-disk database at `/srv/wfe/<env>/events.db`) |
 | GitHub API | External egress | 443 | — | App containers (OAuth handshake + token validation) |
+| Bunny Edge Storage | External egress | 443 | — | Staging app (Magic Containers, `STORAGE_BACKEND=bunny`) — bundle read/write to the storage **origin** `storage.bunnycdn.com` (never a CDN pull zone, so reads are fresh) |
 | ghcr.io | External egress | 443 | — | `podman-auto-update.timer` (registry HEAD + image pull) |
 | Let's Encrypt ACME | External egress | 443 | — | Caddy (issuance + renewal) |
 
@@ -1906,8 +1907,10 @@ The current production target is a single Scaleway VPS. Posture summary:
 9. **NEVER add a new environment variable that holds a secret without wrapping it in `Secret`.** The end-to-end chain is:
    (a) add the secret to GHA secrets and reference it in `apply-infra.yml`'s heredoc that renders `/tmp/wfe-secrets/<env>.env`;
    (b) the `managed_files_apps["wfe_env_<env>"]` content-hash trigger detects the change automatically (no edit needed there);
-   (c) in the runtime config schema, compose the field's Zod schema with `.transform(createSecret)` so the value self-redacts on `JSON.stringify`, `String()`, and `util.inspect` (canonical examples: `GITHUB_OAUTH_CLIENT_SECRET` in `packages/runtime/src/config.ts`);
+   (c) in the runtime config schema, compose the field's Zod schema with `.transform(createSecret)` so the value self-redacts on `JSON.stringify`, `String()`, and `util.inspect` (canonical examples: `GITHUB_OAUTH_CLIENT_SECRET` and `STORAGE_BUNNY_ACCESS_KEY` in `packages/runtime/src/config.ts`);
    (d) reveal only at the boundary that hands the cleartext to the receiving client; never log the cleartext.
+
+   Exception to (a)/(b): the staging `STORAGE_BUNNY_ACCESS_KEY` does not flow through `/etc/wfe/<env>.env`. It is the `bunnynet_storage_zone` resource's `password` attribute (provider-marked sensitive) wired directly into the Magic Containers app env — no GHA secret, redacted in the `plan-infra` summary. It is still `Secret`-wrapped per (c) and revealed only at the Bunny HTTP `AccessKey` header per (d).
 10. **Assume "internal" is not a perimeter.** Any new component on the box must justify its own auth / isolation story, not rely on "it's only on the loopback".
 11. **When adding a new long-running workload**, add a Quadlet `.container` template under `infrastructure/files/`, render it via a `local.managed_files_*` map entry (consumed by the unified convergence mechanism in `main.tf`), set a memory ceiling (`PodmanArgs=--memory=` on the payload cgroup if the workload contains memory-auto-sizing software like V8; plain `[Service] MemoryMax=` is acceptable otherwise — see `host-security-baseline` §"Per-Quadlet resource ceilings") and bind to `127.0.0.1` (unless it's a public-facing ingress). Containers MUST run rootless under a dedicated tenant user — add a corresponding entry to `local.managed_users` with its own non-overlapping subuid range, and declare `User=<tenant>` in the Quadlet. Never set `User=root`, `User=deploy`, or use `--privileged`.
 12. **NEVER raise the per-env app process count above 1** without first migrating the auth sealing password out of in-memory state (see §4 A15, R-I13, and the `auth` capability's "Single-replica invariant" requirement). The constraint is structurally enforced by having one Quadlet unit per env — a change that adds a second concurrent process for the same env (HPA-equivalent, second `wfe-prod-2.container`, etc.) silently breaks auth.
