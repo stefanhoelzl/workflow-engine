@@ -114,7 +114,8 @@
 				"**/test-fakes.ts",
 				"**/test-helpers.ts",
 				"**/test-harness.ts",
-				"**/test-descriptors.ts"
+				"**/test-descriptors.ts",
+				"**/storage/conformance-suite.ts"
 			],
 			"linter": {
 				"rules": {
@@ -152,8 +153,10 @@
 			}
 		},
 		{
-			// AWS SDK shape uses PascalCase externally; the adapter must mirror it.
-			"includes": ["**/storage/s3.ts"],
+			// Object-store APIs use PascalCase externally (AWS SDK shapes, the
+			// Bunny Edge Storage `AccessKey` header + listing fields); the storage
+			// adapters must mirror it.
+			"includes": ["**/storage/s3.ts", "**/storage/bunny.ts"],
 			"linter": {
 				"rules": {
 					"style": {

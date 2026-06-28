@@ -379,12 +379,29 @@ Staging runs **exclusively on bunny.net Magic Containers**. **Prod stays entirel
 
 - One `bunnynet_compute_container_app` `wfe-staging`: image `ghcr.io/stefanhoelzl/workflow-engine:main` (public registry resolved via the `bunnynet_compute_container_imageregistry` data source — `username = ""`, no token), `autoscaling_min = max = 1`, region `DE` (Frankfurt), `image_pull_policy = "Always"` (no pinned digest), a `/data` volume, a `/livez` readiness probe, and an env block carrying the staging config + secrets, including its own standalone `random_bytes.staging_secrets_key` workflow-secrets sealing key.
 - A **CDN** endpoint (`origin_ssl = false`) for managed HTTPS — the staging replacement for Caddy's TLS termination.
+- One `bunnynet_storage_zone` `wfe-staging-bundles` (region `DE`, `Standard` tier) holding the durable bundle tree (see "Bundle storage on Bunny Edge Storage" below).
 
 **Live:** staging resolves via the Bunny DNS CNAME (`dns.tf`) to the app's CDN pull-zone host, and `deploy-staging.yml` rolls it forward by PATCHing the container image digest. The custom hostname's managed TLS is brought up by a two-step targeted apply (DNS records first, then a full apply once `dig` confirms propagation) — see the load-bearing `bunnynet_pullzone_hostname` comment in `bunny-staging.tf`.
 
 ### Durability — accept-loss
 
-bunny volumes are **public preview**: **no backups, no replication**, and reattachment across a reschedule is **not guaranteed** (a node disk replacement yields an empty volume). There is **no recovery path**. This is accepted: staging data is low-stakes and `deploy-staging.yml` re-uploads the demo bundles on every deploy, so an empty-volume event is largely self-healing for bundles and only loses low-stakes event history.
+bunny volumes are **public preview**: **no backups, no replication**, and reattachment across a reschedule is **not guaranteed** (a node disk replacement yields an empty volume). There is **no recovery path**. This is accepted: staging data is low-stakes and `deploy-staging.yml` re-uploads the demo bundles on every deploy, so an empty-volume event is largely self-healing for bundles and only loses low-stakes event history. Note that with bundle storage moved to Bunny Edge Storage (below), the volume now only holds `events.db`; an empty-volume event loses event history but **not** the uploaded bundles.
+
+### Bundle storage on Bunny Edge Storage
+
+To remove the accept-loss window for bundles, staging's workflow bundle tree (`workflows/<owner>/<repo>.tar.gz`) lives in a durable **Bunny Edge Storage zone** instead of the accept-loss `/data` volume. `events.db` stays on the local volume (addressed by `DATABASE_URL=file:/data/events.db`); the two stores are independent axes.
+
+`bunny-staging.tf` declares one `bunnynet_storage_zone` `wfe-staging-bundles` (main region `DE`/Frankfurt, `Standard` tier). The staging app selects it with `STORAGE_BACKEND=bunny` plus:
+
+- `STORAGE_BUNNY_ENDPOINT=storage.bunnycdn.com` — the DE main-region storage **origin** host. The backend reads/writes the origin directly, **never a CDN pull zone**, so a re-uploaded bundle is never served stale to `recover()`.
+- `STORAGE_BUNNY_STORAGE_ZONE` — the zone name.
+- `STORAGE_BUNNY_ACCESS_KEY` — the zone resource's `password` attribute (provider-marked sensitive), wired straight into the env. **No new `TF_VAR` / GHA secret** is introduced for it, and it is redacted in the `plan-infra` step summary.
+
+The runtime's Bunny backend does a status-keyed boot probe (401/403 = bad key → crash; 200/empty zone = healthy) and does **not** retry; a transient blip at boot crashes the container, which Bunny restarts. The first `deploy-staging` after cutover re-uploads bundles into the (initially empty) zone.
+
+**Scope:** staging only (Bunny is the sole staging backend). Prod stays on `STORAGE_BACKEND=fs` (local disk on the VPS). Flipping prod later is a config-only change (set the same vars on the prod unit).
+
+**Rollback:** set `STORAGE_BACKEND=fs` (or unset) on the staging app and redeploy; bundles fall back to the local volume on the next upload. The zone can be left idle or destroyed.
 
 ### Deploy & drift control
 

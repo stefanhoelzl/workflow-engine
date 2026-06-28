@@ -89,6 +89,23 @@ const schema = z
 		// factory (`createStorage`) rejects them at boot with one clear error.
 		// biome-ignore lint/style/useNamingConvention: env var name
 		STORAGE_BACKEND: z.string().default("fs"),
+		// Bunny Edge Storage backend config. All optional at the schema level: the
+		// config layer does not enumerate backends. When STORAGE_BACKEND=bunny the
+		// factory (`createStorage`) asserts these are present and fails fast at
+		// boot. ENDPOINT is the storage origin host (e.g. storage.bunnycdn.com),
+		// never a CDN pull zone. See `openspec/specs/runtime-config/spec.md`
+		// "STORAGE_BUNNY_* config fields".
+		// biome-ignore lint/style/useNamingConvention: env var name
+		STORAGE_BUNNY_ENDPOINT: z.exactOptional(z.string()),
+		// biome-ignore lint/style/useNamingConvention: env var name
+		STORAGE_BUNNY_STORAGE_ZONE: z.exactOptional(z.string()),
+		// Zone read-write access key. Secret-wrapped here (a config concern,
+		// applied regardless of backend); revealed only at the HTTP `AccessKey`
+		// header inside the Bunny backend.
+		// biome-ignore lint/style/useNamingConvention: env var name
+		STORAGE_BUNNY_ACCESS_KEY: z.exactOptional(
+			z.string().transform(createSecret),
+		),
 		// libSQL connection. Required, no derivation from PERSISTENCE_PATH: a
 		// `file:…` URL selects the embedded on-disk database; a
 		// `libsql://…`/`https://…` URL selects a remote libSQL service. See
@@ -172,6 +189,9 @@ const schema = z
 		githubOauthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
 		persistencePath: env.PERSISTENCE_PATH,
 		storageBackend: env.STORAGE_BACKEND,
+		storageBunnyEndpoint: env.STORAGE_BUNNY_ENDPOINT,
+		storageBunnyStorageZone: env.STORAGE_BUNNY_STORAGE_ZONE,
+		storageBunnyAccessKey: env.STORAGE_BUNNY_ACCESS_KEY,
 		databaseUrl: env.DATABASE_URL,
 		databaseWal: env.DATABASE_WAL,
 		databaseAuthToken: env.DATABASE_AUTH_TOKEN,

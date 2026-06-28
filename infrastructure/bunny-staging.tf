@@ -51,6 +51,21 @@ resource "random_bytes" "staging_secrets_key" {
   length = 32
 }
 
+# Durable bundle storage for staging. The Magic Containers volume is accept-loss,
+# so workflow bundles (workflows/<owner>/<repo>.tar.gz) live here instead — only
+# events.db stays on the local /data volume. Prod (VPS) stays on the `fs` backend.
+# Frankfurt (DE) main region matches the staging app region and the Scaleway
+# fr-par footprint.
+#
+# The read-write access key is the resource's own `password` attribute (provider-
+# marked sensitive), wired straight into the app env below — no TF_VAR / GHA
+# secret is introduced for it, and it stays out of the plan-infra step summary.
+resource "bunnynet_storage_zone" "staging_bundles" {
+  name      = "wfe-staging-bundles"
+  region    = "DE"
+  zone_tier = "Standard"
+}
+
 resource "bunnynet_compute_container_app" "staging" {
   # Resource schema version (provider made a backwards-incompatible change in
   # v0.11.0 that turned container/endpoint/env into ordered lists). Required.
@@ -186,6 +201,27 @@ resource "bunnynet_compute_container_app" "staging" {
     env {
       name  = "SECRETS_PRIVATE_KEYS"
       value = "v1:${random_bytes.staging_secrets_key.base64}"
+    }
+    # Bundle storage on the durable Bunny Edge Storage zone above. STORAGE_BACKEND
+    # selects it; the runtime factory reads the zone name + origin host + access
+    # key. ACCESS_KEY references the zone's sensitive `password` attribute, so it
+    # is redacted in plan output. ENDPOINT is the DE main-region storage origin
+    # (never a CDN host — reads must be fresh).
+    env {
+      name  = "STORAGE_BACKEND"
+      value = "bunny"
+    }
+    env {
+      name  = "STORAGE_BUNNY_ACCESS_KEY"
+      value = bunnynet_storage_zone.staging_bundles.password
+    }
+    env {
+      name  = "STORAGE_BUNNY_ENDPOINT"
+      value = "storage.bunnycdn.com"
+    }
+    env {
+      name  = "STORAGE_BUNNY_STORAGE_ZONE"
+      value = bunnynet_storage_zone.staging_bundles.name
     }
   }
 
