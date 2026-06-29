@@ -47,8 +47,8 @@ sections must append (§7 and onward), not renumber.
                                 │
                                 ▼
                      ┌──────────────────────┐
-                     │     Caddy Ingress    │  TLS termination
-                     │      (HTTPS :443)    │  HTTP-01 ACME (LE)
+                     │    Bunny CDN edge    │  managed TLS
+                     │   (per-env HTTPS)    │  Let's Encrypt (bunny.net)
                      └──────────┬───────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
@@ -106,7 +106,7 @@ sections must append (§7 and onward), not renumber.
 | 1 | Sandbox | **UNTRUSTED** (user-authored trigger + action code) | `sandbox({source, plugins}).run(handlerName, payload)` | Isolation, not auth | §2 |
 | 2 | Webhook ingress | **PUBLIC** (intentionally unauthenticated) | `POST /webhooks/<owner>/<workflow>/<trigger>` | None — payload-schema validation only | §3 |
 | 3 | UI / API | **AUTHENTICATED** | `/dashboard`, `/trigger`, `/login`, `/auth/*`, `/api/*` | In-app OAuth (sealed session cookie) for UI; Bearer (GitHub) for API. Both gated by `AUTH_ALLOW`. `/login` is the provider-agnostic sign-in page; `/auth/github/*` is the GitHub-specific handshake. | §4 |
-| 4 | Infrastructure | **INTERNAL** | K8s pods, Secrets, S3, Caddy ingress | K8s RBAC, pod network | §5 |
+| 4 | Infrastructure | **INTERNAL** | Bunny Magic Containers app, per-env Bunny CDN edge, Bunny Database + Edge Storage | Platform isolation; all auth in-app (the edge authenticates nothing) | §5 |
 
 **Trust-level semantics** (applies across the whole document):
 
@@ -1245,8 +1245,9 @@ surfaced into the handler payload — the workflow sees only `{data}`.
 - **Payload scope reaches the sandbox only as the handler's `payload`
   argument** — a JSON snapshot. Any downstream code that consumes the
   payload runs in the sandbox with no host APIs (see §2).
-- **TLS termination at Caddy** (HTTPS only on `:443`; `:80` serves the
-  HTTP-01 ACME challenge and redirects all other paths to HTTPS).
+- **TLS termination at the Bunny CDN edge** (managed HTTPS via the
+  per-env Bunny CDN endpoint; the Let's Encrypt cert is issued and
+  renewed by bunny.net, `force_ssl = true`).
 - **Closed URL vocabulary.** The three URL segments
   (`<owner>/<workflow>/<trigger-name>`) are all regex-constrained identifiers
   set at workflow build time (the trigger name IS the export identifier,
@@ -1298,7 +1299,7 @@ surfaced into the handler payload — the workflow sees only `{data}`.
 |----|-----|--------|--------|
 | R-W1 | **No signature verification** on incoming payloads (HMAC, GitHub signature, Stripe signature, etc.) | W4 unmitigated | v1 limitation; add per-integration |
 | R-W2 | ~~No payload size limit~~ — Mitigated by a global 10 MiB Hono `bodyLimit` in `createApp` (`packages/runtime/src/services/server.ts`). A owner tarball is additionally bounded to 10 MiB decompressed inside `extractOwnerTarGz` (`packages/runtime/src/workflow-registry.ts`). | W2 mitigated | Resolved |
-| R-W3 | **No rate limiting** at the application or ingress (Caddy) level | W3, W7 unmitigated | v1 limitation |
+| R-W3 | **No rate limiting** at the application or edge (Bunny CDN) level | W3, W7 unmitigated | v1 limitation |
 | R-W4 | ~~All request headers are forwarded verbatim~~ — Mitigated by the typed-headers contract (2026-04-26): `payload.headers` exposes only header keys declared in the trigger's `request.headers` zod schema; undeclared keys are stripped silently before the handler runs and never reach the event store. Default when no schema is declared is the empty object `{}`. Authors who need a specific header opt in by declaring it in the schema (`request: { headers: z.object({ "x-hub-signature-256": z.string() }) }`); auth-bearing headers (`authorization`, `cookie`) are not forwarded unless explicitly declared, which tightens the `never log Authorization` invariant from logger-level redaction to schema-level filtering. | W5 mitigated by per-trigger schema | Resolved |
 | R-W5 | Trigger names are reflected in 404 vs 422 vs 200 response differences, enabling enumeration | W6 low | Accepted; triggers are not secret |
 
@@ -1368,7 +1369,7 @@ schema-violating payload still returns 422.
 - Webhook middleware + registry: `packages/runtime/src/triggers/http.ts`
 - Payload validation entry + body-shape normalization: `packages/runtime/src/workflow-registry.ts`
 - Executor (post-validation invocation path): `packages/runtime/src/executor/`
-- Caddy ingress (Caddyfile + Quadlet): `infrastructure/caddy.tf`, `infrastructure/files/Caddyfile.tmpl`, `infrastructure/files/caddy.container.tmpl`
+- Bunny CDN edge + per-env custom hostname (managed TLS): `infrastructure/bunny.tf`, `infrastructure/dns.tf`
 - OpenSpec spec: `openspec/specs/triggers/spec.md`
 - OpenSpec spec: `openspec/specs/http-trigger/spec.md`
 - OpenSpec spec: `openspec/specs/payload-validation/spec.md`
@@ -1602,9 +1603,9 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 - **POST-only logout.** `POST /auth/logout` clears the session cookie
   and 302s to `/`. Any other method returns 405 — prevents cross-site
   logout CSRF via `<img src>` / `<a>` / navigation.
-- **TLS termination at Caddy.** Session cookies, Bearer tokens, and
-  the GitHub access token stored inside the sealed cookie are not in
-  cleartext on the wire.
+- **TLS termination at the Bunny CDN edge.** Session cookies, Bearer
+  tokens, and the GitHub access token stored inside the sealed cookie
+  are not in cleartext on the wire.
 - **Scope-list query API (A14).** `EventStore.query(scopes)` accepts a
   caller-supplied allow-list of `{owner, repo}` pairs and compiles
   `WHERE (owner, repo) IN (…)` via Kysely. An empty scope list throws —
@@ -1804,127 +1805,120 @@ HTTP status and server-reported error message only.
 
 ### Trust level
 
-**INTERNAL** — components that run on the single Scaleway VPS, isolated from the public Internet by the host firewall and by binding only to loopback. "Internal" is **not** a substitute for authentication: a compromised container, a misconfigured firewall rule, or a host kernel exploit can reach everything else on the box.
+**INTERNAL** — the application container is fronted by a per-env Bunny CDN edge; bunny.net owns the host (OS patching, network, physical isolation) and there is no operator SSH into it. "Internal" is **not** a substitute for authentication: all auth runs in-app (§4) and the CDN edge authenticates nothing. There is no host firewall, no loopback boundary, and no `deploy`/tenant user accounts to manage — those VPS-era mitigations retired with the VPS.
 
-This section describes the production target: a single Scaleway VPS running rootless Podman + systemd Quadlet, with Caddy and two app instances (prod + staging) as long-running units. There is no Kubernetes; there is no shared cluster. See `openspec/specs/infrastructure/spec.md` and `openspec/specs/host-security-baseline/spec.md`.
+This section describes the production target: **both** `staging` and `prod` run as bunny.net Magic Containers apps (one always-on container each, `autoscaling_min = autoscaling_max = 1`, Frankfurt/`DE`), each fronted by its own per-env Bunny CDN endpoint for managed TLS, each backed by its own managed Bunny Database (libSQL) for the event store + per-workflow queues and its own Bunny Edge Storage zone for bundles. The container holds **no** local state. There is no VPS, no Caddy, no Kubernetes, no shared host. See `openspec/specs/bunny-deployment/spec.md` and `openspec/specs/infrastructure/spec.md`.
 
 ### Entry points
 
-| Component | Exposure | Port | User | Who can reach it |
+| Component | Exposure | Port | Platform | Who can reach it |
 |---|---|---|---|---|
-| Caddy (HTTPS) | Public | 443/tcp | `wfe-caddy` (rootless Podman, sysctl-permitted bind) | Internet |
-| Caddy (HTTP) | Public | 80/tcp | `wfe-caddy` | Internet — Caddy serves the LE HTTP-01 challenge and 301-redirects everything else to HTTPS |
-| sshd | Public | configurable (default 2222) | system | Internet — keys-only, `AllowUsers deploy`, fail2ban-protected |
-| App `wfe-prod` | Loopback only | `127.0.0.1:8081` → container `:8080` | `wfe-prod` (rootless Podman) | Caddy (loopback) |
-| App `wfe-staging` | Loopback only | `127.0.0.1:8082` → container `:8080` | `wfe-staging` (rootless Podman) | Caddy (loopback) |
-| libSQL | Process-local | — | — | One app process only (embedded on-disk database at `/srv/wfe/<env>/events.db`) |
+| Bunny CDN edge (per env) | Public | 443/tcp | bunny.net CDN endpoint + custom hostname (managed TLS, `force_ssl = true`) | Internet — terminates HTTPS and routes to that env's container |
+| App container (per env) | CDN-fronted | container `:8080` | `bunnynet_compute_container_app` (Frankfurt, `min = max = 1`) | The env's Bunny CDN edge only (bunny.net routes the endpoint to the container) |
+| Bunny Database (per env) | External egress | 443 | managed libSQL (`DATABASE_URL=libsql://…` + `DATABASE_AUTH_TOKEN`) | That env's app process only (event store + per-workflow queues) |
+| Bunny Edge Storage (per env) | External egress | 443 | `STORAGE_BACKEND=bunny` | That env's app — bundle read/write to the storage **origin** `storage.bunnycdn.com` (never a CDN pull zone, so reads are fresh) |
 | GitHub API | External egress | 443 | — | App containers (OAuth handshake + token validation) |
-| Bunny Edge Storage | External egress | 443 | — | Staging app (Magic Containers, `STORAGE_BACKEND=bunny`) — bundle read/write to the storage **origin** `storage.bunnycdn.com` (never a CDN pull zone, so reads are fresh) |
-| ghcr.io | External egress | 443 | — | `podman-auto-update.timer` (registry HEAD + image pull) |
-| Let's Encrypt ACME | External egress | 443 | — | Caddy (issuance + renewal) |
+| ghcr.io | External egress | 443 | — | bunny.net image pull on a deploy roll (per-env `:main` / `:release` digest) |
+| Let's Encrypt ACME | — | — | bunny.net-managed | Cert issuance + renewal handled by bunny.net for the custom hostname; the app never touches ACME |
 
 ### Threats
 
 | ID | Threat | Category |
 |----|--------|----------|
-| I1 | A secret env file is leaked via logs, host backups (none yet — see R-I7), or operator misclick | Information disclosure |
-| I2 | An attacker reaches the app loopback port `:8081` / `:8082` directly, bypassing Caddy (would require host-side compromise — public ports are firewalled; only Caddy binds 80/443) | EoP (note: no code path reads `X-Auth-Request-*`; forged-header injection is not a vector — see §4 A13) |
-| I3 | A compromised container or action (via SSRF, §2) reaches cloud metadata or internal admin APIs | Information disclosure / EoP |
+| I1 | A secret env value (OAuth secret, sealing key, DB token, storage access key) is leaked — it is plaintext in the app's `env` block at the Magic Containers platform and encrypted only at rest in tofu state | Information disclosure |
+| I3 | A compromised container or action (via SSRF, §2) reaches cloud metadata or internal admin APIs from the container's egress | Information disclosure / EoP |
 | I4 | App container runs with unnecessary capabilities, a writable root filesystem, or as the host root user | EoP |
-| I5 | No per-Quadlet resource limits → a runaway app crowds out the other env or Caddy | DoS |
-| I6 | OAuth2 client secret or SSH private key committed to `.tfvars` or rendered into tofu state | Information disclosure |
-| I7 | Caddy accepts weak TLS ciphers or outdated TLS versions | Tampering / eavesdropping |
-| I8 | Self-signed dev cert served in production by mistake | Spoofing |
-| I9 | The `deploy` SSH key (held by GitHub Actions) is leaked, granting shell-as-deploy + broad NOPASSWD sudo (effectively root) on the production VPS — see Privilege Isolation mitigation | EoP |
-| I10 | Events stored on local disk in plaintext, containing secrets that leaked via action env vars | Information disclosure |
-| I11 | Host kernel exploit escapes the rootless Podman boundary, granting host root and crossing the prod ↔ staging trust line (now enforced only by the kernel, not by namespace isolation) | EoP |
-| I12 | An attacker brute-forces `deploy` over SSH on the non-default port | EoP |
-| I13 | Bad Quadlet content (e.g. `Volume=/:/host`) committed to the repo lands on the box on the next `apply-infra` with no admission-time policy gate | EoP |
+| I6 | OAuth client secret, sealing key, DB token, or storage access key committed to `*.tfvars` or rendered in cleartext into the `plan-infra` step summary | Information disclosure |
+| I10 | Event rows / bundles at rest on the Bunny Database + Edge Storage zone contain secrets that leaked via action env vars; the preview-tier Bunny Database has no backups and no off-box copy | Information disclosure / data loss |
+| I14 | The Bunny CDN caches a dynamic (authenticated / owner-scoped) response, so one owner's response is served from cache to another caller | Information disclosure (cross-owner leak) |
+| I15 | A Bunny resource shared between staging and prod (database, token, storage zone, or sealing key) couples the two envs — a DB-wide token revoke or a shared sealing key crosses the env boundary | EoP / availability / cross-env leak |
+
+**Retired with the VPS.** The host-posture threats from the VPS era no
+longer have a surface: loopback-port bypass of Caddy (I2), weak/obsolete
+TLS at Caddy (I7), self-signed dev cert in prod (I8), `deploy` SSH-key
+leak (I9), host-kernel escape crossing the prod↔staging trust line on a
+shared box (I11), SSH brute-force (I12), and bad-Quadlet smuggling (I13)
+are all gone — bunny.net owns the host, and there is no operator SSH, no
+Caddy, no Quadlets, no shared host, and no host firewall. TLS termination
+and cert issuance are bunny.net-managed.
 
 ### Mitigations (current)
 
-The full posture is captured in `openspec/specs/host-security-baseline/spec.md`. Highlights:
+The full posture is captured in `openspec/specs/bunny-deployment/spec.md` and `openspec/specs/infrastructure/spec.md`. Highlights:
 
-- **Rootless Podman + per-tenant unprivileged users** — each container runs as its own dedicated unprivileged host user (`wfe-prod`, `wfe-staging`, `wfe-caddy`), each with its own non-overlapping subuid range in `/etc/subuid`. None of these users are in `wheel`, `sudo`, `docker`, `adm`, or `systemd-journal`; none have SSH access (not in `AllowUsers`, no key, `nologin` shell); none have any sudoers entries. The administrative `deploy` user runs no workload — see **Privilege isolation** below. Mitigates **I4**, partially **I11**, AND raises the cross-tenant isolation bar in **R-I18** from "kernel-only" to "kernel + UID-account ownership".
-- **Host firewall default-deny inbound** — `ufw` configured with `default deny incoming`; only `80/tcp`, `443/tcp`, and the configured non-default SSH port are reachable from the Internet. Mitigates **I2**, **I3**, **I12** (port 22 is closed).
-- **App ports bind only to loopback** — `wfe-prod.container` and `wfe-staging.container` use `PublishPort=127.0.0.1:<port>:8080`. The host firewall would already block external access on those ports, but loopback-only is defence in depth. Mitigates **I2**.
-- **Per-Quadlet memory ceilings** — each app unit caps at `350m` via `PodmanArgs=--memory=` on the container *payload* cgroup (visible inside the container as `/sys/fs/cgroup/memory.max`, so memory-auto-sizing software like V8 sizes against the real budget instead of host RAM); Caddy caps at `80M` via `[Service] MemoryMax=` (no auto-sizing software inside). A runaway workload is OOM-killed within its own unit's cgroup, not its neighbour's. Mitigates **I5**.
-- **Non-default SSH port** — `Port 2222` (configurable). Eliminates ~99 % of drive-by botnet noise; not a security boundary by itself. Mitigates noise component of **I12**.
-- **sshd hardening** — `PermitRootLogin no`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `AllowUsers deploy`, `MaxAuthTries 3`, `LoginGraceTime 20s`. Mitigates **I12**.
-- **`fail2ban` sshd jail** — 5 failed auths in 10 min → 1-hour ban at the firewall. Mitigates residual **I12** after the above.
-- **Privilege isolation: deploy administers, per-tenant `wfe-*` run unprivileged** — `deploy` is the SSH/admin/tofu-provisioner account with broad NOPASSWD sudoers (the converge primitives: `install`, `tee`, `rm`, `chmod`, `chown`, `systemctl`, `useradd`/`usermod`/`userdel`, `ufw`, `apt-get`, `sysctl`, `swapon`/`swapoff`, `fallocate`, `mkswap`). Effectively root via sudo — but unreachable from the realistic post-S1/I11 attacker landing pad: container escape lands the attacker as one of the `wfe-*` users, which have NO SSH key, NO sudoers, NO read access to deploy's `~/.ssh` (mode 0700), and NO Quadlet-smuggling escalation path (every Quadlet runs as `wfe-*`, not deploy). The trust boundary that protects deploy's broad privilege from a host-side attacker is the **SSH-key boundary**: deploy's private key is generated by tofu (`tls_private_key.deploy`, ED25519) and lives only in tofu state at rest, AES-GCM-encrypted via `TF_VAR_state_passphrase`. There is no off-host operator copy; emergency operator access requires `tofu output -raw deploy_ssh_private_key`, which itself requires the state passphrase. Mitigates lateral movement after **I9** / **I11**. See `openspec/specs/host-security-baseline/spec.md` §"Privilege isolation: deploy administers; per-tenant wfe-* run unprivileged".
-- **Secret env file modes** — `/etc/wfe/<env>.env` is `0600` `deploy:deploy`; the parent directory `/etc/wfe/` is `0700` `deploy:deploy`. Quadlet `EnvironmentFile=` reads them at unit-start time. Mitigates **I1** at rest.
-- **Secrets land only in encrypted tofu state** — per-env env-file content is rendered inline (`provisioner "file" { content = ... }`) from `TF_VAR_*` values sourced from GHA secrets. The bytes do enter tofu state, but state is AES-GCM-encrypted at rest via the `encryption {}` block in `main.tf` (passphrase from `var.state_passphrase`). The `null_resource`'s content trigger is `sha256(rendered)`, so secret rotation flips the hash → entry replaces → file is rewritten on the host → unit is restarted. Mitigates **I6** at rest in the state backend.
-- **Public ghcr image** — `workflow-engine` is a public package on ghcr.io; no PAT lives on the VPS. `podman-auto-update` performs anonymous registry HEADs and pulls.
-- **TLS at Caddy** — public traffic is HTTPS-only on `:443`. Port 80 serves only the LE HTTP-01 challenge and a 301 to HTTPS. Mitigates **I7**, **I8**.
-- **Caddy-managed Let's Encrypt** — ACME state persists on the host bind mount `/srv/caddy/data` so cert + account survive container restarts and image upgrades.
-- **Distroless non-root base image** — the application image runs as UID 65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal userspace. (`infrastructure/Dockerfile`)
-- **Image identity baked in at build time** — the Dockerfile takes `ARG GIT_SHA` and exports `ENV APP_GIT_SHA=$GIT_SHA`. `/readyz` returns this value as `version.gitSha`, which the deploy GHA polls until `=== ${{ github.sha }}` to confirm the auto-update timer has rotated to the new image before running `wfe upload`. Mutable `:release`/`:main` tags are made auditable by branch-protected git history (no force-push on `release`).
+- **Managed host, no operator shell** — bunny.net owns the Magic Containers host: OS patching, network, and host isolation are the platform's responsibility, and there is no operator SSH, no host firewall, and no loopback boundary to manage. The VPS-era host-hardening surface (sshd, fail2ban, `ufw`, subuid tenant users, Quadlet ceilings, swap) does not exist. Mitigates **I11** structurally (no shared host to cross).
+- **Per-env isolation: separate Bunny resources, never shared** — staging and prod are distinct Magic Containers apps, each with its OWN `bunnynet_database` + in-tofu-minted token, its OWN Bunny Edge Storage zone, and its OWN sealing key. Nothing is shared, so a database-wide Bunny token revoke, a storage-zone compromise, or a sealing-key rotation in one env cannot affect the other. Mitigates **I15**. (Replaces the VPS-era per-tenant-UID cross-tenant isolation in the old R-I18.)
+- **Managed TLS at the Bunny CDN edge** — each env's public hostname is a `bunnynet_pullzone_hostname` (`tls_enabled = true`, `force_ssl = true`); bunny.net issues and renews the Let's Encrypt cert. TLS version/cipher selection and cert lifecycle are the platform's, not the operator's — there is no Caddy config to weaken and no dev cert to serve by mistake. Mitigates **I7**, **I8** (now platform-owned).
+- **CDN does not cache dynamic routes** — the deployment relies on Bunny's CDN defaults with no pre-built edge rules; only `/static/*` (marked `Cache-Control: public, max-age=…, immutable` by the app) is cacheable. Authenticated / owner-scoped responses are never cached, so the CDN cannot serve one owner's response to another caller. Verified by observation on staging; identical image + headers on prod. Mitigates **I14**. See `bunny-deployment` § "CDN SHALL NOT cache dynamic routes".
+- **Distroless non-root base image** — the application image runs as UID 65532 on `gcr.io/distroless/nodejs24-debian13`. No shell, minimal userspace. Mitigates **I4**. (`infrastructure/Dockerfile`)
+- **Image identity baked in at build time** — the Dockerfile takes `ARG GIT_SHA` and exports `ENV APP_GIT_SHA=$GIT_SHA`. `/readyz` returns this value as `version.gitSha`, which the per-env deploy workflow polls until `=== ${{ github.sha }}` to confirm bunny.net has rolled the app to the new image digest. Mutable `:release`/`:main` tags are made auditable by branch-protected git history (no force-push on `release`).
+- **Secrets are plaintext at the platform, encrypted only at rest in state** — Magic Containers has no secret store, so each env's OAuth secret, sealing key, DB token, and storage access key are plaintext in the app's `env` block at the platform. They never enter committed `*.tfvars`; they live encrypted at rest in tofu state via the `encryption {}` block in `main.tf` (passphrase from `var.state_passphrase`). Mitigates **I1**, **I6** at rest in the state backend.
+- **Secrets stay out of the plan summary** — because the `bunnynet` provider does not mark `env.value` sensitive, every secret-bearing input is independently marked sensitive: secret `TF_VAR_*` inputs are `sensitive = true`, the storage-zone `password` is provider-marked sensitive, and the in-tofu DB-token mint's response feeding `DATABASE_AUTH_TOKEN` is marked sensitive. They render as `(sensitive value)` in the `plan-infra` step summary. Mitigates **I6** in CI output.
 - **`Secret` wrapper for env-sourced sensitive fields** — the runtime config schema wraps every secret field in a `Secret` value. `toJSON`, `toString`, and `util.inspect` all return `"[redacted]"`; `reveal()` is the single exit, called only at the boundary that hands cleartext to the receiving client. Mitigates **I1** in the running process. (`packages/runtime/src/config.ts` — `createSecret`)
-- **`tofu apply` is operator-driven, never CI-driven** — `apply-infra` is `workflow_dispatch`-only. No PR merge, push, or schedule can ship a Quadlet edit. A bad Quadlet committed to the repo cannot reach the box without a human running apply. Mitigates **I13**.
-- **Unattended security upgrades** — Debian's `unattended-upgrades` applies CVE patches automatically from the security suite. Reduces window for **I11** (kernel/runtime exploits).
-- **JSON-serializer `toJSON()` contract**: the `Secret` wrapper depends on the in-use JSON serializer honoring `toJSON()`. Verified for pino (current logger). Any future change to the log transport must re-verify redaction before merging.
+- **`tofu apply` is operator-driven, never CI-driven** — `apply-infra` is `workflow_dispatch`-only. No PR merge, push, or schedule can ship an infra edit, and the pre-merge `plan-infra` gate fails the merge unless the plan is empty. CI deploys roll the app image by digest and never run `tofu`. Mitigates the "bad config reaches the platform unreviewed" class.
+- **JSON-serializer `toJSON()` contract** — the `Secret` wrapper depends on the in-use JSON serializer honoring `toJSON()`. Verified for pino (current logger). Any future change to the log transport must re-verify redaction before merging.
 
 ### Residual risks
 
 | ID | Gap | Impact | Status |
 |----|-----|--------|--------|
-| R-I3 | Per-Quadlet memory ceilings (`--memory=350m` per app payload cgroup, `MemoryMax=80M` for Caddy) cap memory use; the host has 1 GB physical RAM + a 1 GiB swapfile. CPU is shared (no `CPUQuota=` set yet — could be added if a noisy-neighbour symptom appears). | I5 | **Resolved** for memory; CPU defence-in-depth deferred |
-| R-I7 | **No encryption at rest.** Event-store and bundle data live on the local Scaleway block volume in plaintext. A snapshot dump or VPS-loss-with-disk-recovery exposes everything. | I10 | Out of scope for v1; see §2 R-S6 |
-| R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Secrets are GitHub Actions secrets piped through tofu's `file` provisioner with `source =` so they never enter state, but they do live in GHA. | I6 | Acceptable; GHA's secret store is the standard pattern |
-| R-I12 | **AWS-SDK-shaped error messages** in unrelated code paths may contain credential identifiers verbatim. Low impact (key ID alone cannot authenticate). | I1 partial | Accepted |
-| R-I13 | **App is structurally single-process per env** because the session-sealing password lives in memory (`packages/runtime/src/auth/key.ts`). Each env has exactly one Quadlet unit; there is no orchestrator that could spawn a second concurrent process. The constraint is now enforced by the deployment shape itself, not by policy. Adding a second concurrent app process for the same env is a structural change requiring a session-key migration. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted (structural) |
-| R-I15 | **Silent invocation loss on sustained storage outage.** When libSQL commit retries are exhausted (default 5 attempts, ~30 s exponential backoff), the EventStore logs `event-store.commit-dropped` and evicts the invocation from RAM. The runtime continues serving (does not exit), trading durability for availability under transient backend pressure. Observable via the structured log stream. SIGKILL/OOM/kernel-panic during an in-flight invocation also loses everything in the in-memory accumulator (no per-event WAL); SIGTERM still drains gracefully. See `event-store/spec.md` § "Bounded retry then drop on commit failure". | I10 (loss of audit trail) | Accepted |
-| R-I16 | **No backups.** Local-disk persistence at `/srv/wfe/<env>` and Caddy's ACME state at `/srv/caddy/data` have no off-box copy. A VPS-loss event is total data loss for both envs until users re-upload bundles via `wfe upload`. | I-data-loss | **High priority follow-up** — track as a separate change adding restic snapshots to a small bucket |
-| R-I17 | **No rollback strategy.** Cutover is one-way; if `apply-infra` produces a broken state, the only recovery is fix-forward. Mitigated by the apply being operator-driven (no automatic mutation in CI) and by `apply-infra` supporting partial re-runs (Quadlet edit → restart without re-provisioning). | I-availability | Accepted |
-| R-I18 | **Cross-tenant isolation between prod, staging, and Caddy.** Prod, staging, and Caddy run as distinct host users (`wfe-prod`, `wfe-staging`, `wfe-caddy`), each owning its own `/srv/<thing>` data dir at mode `0700`. Container escape from one tenant cannot read another tenant's data without an additional kernel CVE crossing the UID boundary. The host kernel remains the only isolation boundary against a kernel privilege-escalation CVE that crosses UID boundaries. Mitigated primarily by `unattended-upgrades` keeping the kernel patched, secondarily by the per-tenant UID separation. | I11 | Accepted (residual: kernel CVE) |
-| R-I19 | **`deploy` SSH private key is a high-value secret in tofu state.** Leak yields shell-as-deploy + broad NOPASSWD sudo on production (effectively root, by design — see "Privilege isolation" mitigation above). Generated by `tls_private_key.deploy` and stored only in encrypted tofu state; recovery requires both the state object and `TF_VAR_state_passphrase`. Mitigated by key rotation on a 90-day cadence (operator runbook: `tofu taint tls_private_key.deploy && apply`) and by `fail2ban` + non-default port reducing online discovery. State-passphrase loss has no SSH-key fallback (intersects R-I16 — high-priority follow-up). GH OIDC → short-lived SSH cert is a v2 follow-up if the threat model warrants. | I9 | Accepted |
-| R-I20 | **No admission-time policy enforcement** for Quadlet content. A bad commit (e.g. `Volume=/:/host:rw`) cannot ship without a human running `apply-infra`, which is the gate. PR review is the only check between repo and box. | I13 | Accepted (operator gate is the control) |
+| R-I7 | **No encryption-at-rest guarantee for app data.** Event rows live on the managed Bunny Database (libSQL) and bundles on the Bunny Edge Storage zone; bunny.net does not document customer-managed encryption at rest for the preview-tier database. A platform-side dump exposes whatever the rows/bundles contain. | I10 | Accepted (preview posture); see §2 R-S6 |
+| R-I8 | **No secret-management integration** (Vault, SOPS, external-secrets). Config secrets are `TF_VAR_*` values from GHA secrets rendered into the `bunnynet` `env` block; the DB token and storage access key come from in-tofu resource attributes. Plaintext at the platform, encrypted only at rest in tofu state. | I1, I6 | Accepted; GHA + encrypted state is the standard pattern here |
+| R-I12 | **AWS-SDK-shaped error messages** in the Scaleway-Object-Storage state-backend path may contain credential identifiers verbatim. Low impact (key ID alone cannot authenticate). | I1 partial | Accepted |
+| R-I13 | **App is structurally single-process per env** because the session-sealing password lives in memory (`packages/runtime/src/auth/key.ts`). Each env is one always-on Magic Containers app with `autoscaling_min = autoscaling_max = 1`; there is no orchestrator that could spawn a second concurrent process. Raising the replica count is a structural change requiring a session-key migration. See §4 A15 and the `auth` spec's "Single-replica invariant" requirement. | I-auth | Accepted (structural) |
+| R-I14 | **CDN cache correctness is observation-backed, not rule-enforced.** Dynamic routes are uncached today on Bunny's defaults (verified on staging, same image/headers on prod), but no pre-built edge rule pins cache-time 0 — a future Bunny default change or a new route that advertises a cacheable `Cache-Control` could let a dynamic response be cached (cross-owner leak). Remediation if observed: an edge rule forcing cache-time 0 except `/static/*`, or an Anycast endpoint. | I14 | Accepted (observation-backed); `bunny-deployment` tracks the invariant |
+| R-I15 | **Silent invocation loss on sustained storage outage.** When libSQL commit retries are exhausted (default 5 attempts, ~30 s exponential backoff), the EventStore logs `event-store.commit-dropped` and evicts the invocation from RAM. The runtime continues serving (does not exit), trading durability for availability under transient backend pressure. With the event store now on a remote Bunny Database, a cold-start or backend hiccup can also surface as a failed read the user retries. SIGKILL/OOM during an in-flight invocation also loses everything in the in-memory accumulator (no per-event WAL); SIGTERM still drains gracefully. See `event-store/spec.md` § "Bounded retry then drop on commit failure". | I10 (loss of audit trail) | Accepted |
+| R-I16 | **No backups.** Each env's Bunny Database (single, preview-tier, 1 GB/DB, no replica) and its Bunny Edge Storage zone have no off-box copy. Loss of the Bunny Database is total event-history loss for that env; loss of the storage zone is total bundle loss until authors re-upload via `wfe upload`. No regression — the VPS block volume had no backups either. | I-data-loss | **High priority follow-up** — track as a separate change adding off-box snapshots |
+| R-I17 | **No rollback after the cutover.** Moving prod off the VPS onto Bunny is one-way; after the VPS is destroyed the only recovery is fix-forward. Mitigated by the operator-driven choreographed apply that verifies Bunny prod healthy (and the managed cert issued) before the VPS is destroyed. | I-availability | Accepted |
+| R-I18 | **Per-env isolation rests on separate Bunny resources, not a shared-host UID boundary.** staging and prod are distinct Magic Containers apps with their own database, token, storage zone, and sealing key; there is no shared host and no shared store, so there is no kernel-CVE cross-tenant path between them. Residual: both envs trust bunny.net's platform isolation between tenants on its infrastructure, which is outside this project's control. | I15 | Accepted (platform-trusted) |
+| R-I20 | **No admission-time policy enforcement** for infra config. A bad app/config commit cannot ship without a human running `apply-infra`, and the `plan-infra` empty-plan gate blocks the merge unless the plan is clean. PR review + the operator-driven apply are the controls. | I13-class | Accepted (operator gate is the control) |
+
+**Retired with the VPS.** R-I3 (per-Quadlet memory/CPU ceilings) and
+R-I19 (`deploy` SSH private key in tofu state) no longer apply — there
+are no Quadlets and no SSH key. bunny.net sizes and isolates the
+container, and there is no operator shell credential to leak.
 
 ### Production deployment notes
 
-The current production target is a single Scaleway VPS. Posture summary:
+The production target is bunny.net Magic Containers (both envs). Posture summary:
 
-1. **Host firewall** — DONE. `ufw` default-deny inbound; only 80/tcp, 443/tcp, and the configured non-default SSH port are open. Resolves the perimeter half of I2 / I3 / I12.
-2. **Rootless Podman + per-Quadlet subuids** — DONE. All workloads run as the `deploy` user mapped through container-private subuid ranges. Mitigates I4 / I11.
-3. **Per-Quadlet resource limits** — DONE for memory (`PodmanArgs=--memory=` on each app unit's payload cgroup; `MemoryMax=` for Caddy). CPU pinning is deferred — add `CPUQuota=` if a noisy-neighbour symptom appears. Resolves R-I3.
-4. **Real TLS** — DONE. Caddy obtains and renews Let's Encrypt certs via HTTP-01 ACME; state lives on the host bind mount `/srv/caddy/data`. Resolves I7 / I8.
+1. **Managed host** — DONE. bunny.net owns OS patching, network, and host isolation; there is no operator SSH, host firewall, or loopback boundary. Replaces the VPS host-hardening checklist wholesale.
+2. **Per-env isolation** — DONE. staging and prod are separate apps with their own database, token, storage zone, and sealing key. No shared host, no shared store.
+3. **Managed TLS** — DONE. Each env's custom hostname is a `bunnynet_pullzone_hostname` with bunny.net-issued/renewed Let's Encrypt certs. No Caddy, no operator-managed ACME state. Resolves I7 / I8 (now platform-owned).
+4. **CDN cache hygiene** — DONE (observation-backed). Only `/static/*` is cacheable; dynamic routes are uncached on Bunny's defaults (R-I14).
 5. **Sandbox egress** — `hardenedFetch` (§2 R-S4) blocks RFC1918 and metadata egress at the app layer. Internal SSRF (S5) is mitigated end-to-end. Public-URL allowlist for exfiltration (S8 / §2 R-S12) remains deferred.
-6. **Backups** — **NOT YET.** R-I16 is the highest-priority follow-up. Until added, treat the VPS as the sole copy of every event-store row and bundle.
-7. **Secret rotation procedure** — to rotate `GITHUB_OAUTH_CLIENT_SECRET`: update the GHA secret, re-run `apply-infra`. The corresponding `managed_files_apps["wfe_env_<env>"]` entry's content hash trigger flips → the env file is rewritten to `/etc/wfe/<env>.env` and the affected unit is restarted by the on-change hook. The in-memory session-sealing password rotates implicitly on every container restart (which happens on every secret rotation, and on every auto-update tick).
-8. **SSH key rotation** — rotate `TF_VAR_DEPLOY_SSH_PRIVATE_KEY` + `TF_VAR_DEPLOY_SSH_PUBLIC_KEY` together every 90 days (or on suspected compromise). The new key takes effect on the next `apply-infra` (cloud-init re-runs the deploy-user authorized_keys write). Old key is invalidated as soon as the new authorized_keys lands.
+6. **Backups** — **NOT YET.** R-I16 is the highest-priority follow-up. Until added, treat each env's Bunny Database + Edge Storage zone as the sole copy of its event-store rows and bundles.
+7. **Secret rotation procedure** — to rotate a secret (`GITHUB_OAUTH_CLIENT_SECRET`, the sealing key, etc.): update the `TF_VAR_*` value (or `tofu taint` the in-tofu resource) and re-run `apply-infra`. The new value lands in the env's `bunnynet` `env` block and bunny.net restarts the container. The in-memory session-sealing password rotates implicitly on every container restart (every secret rotation and every deploy roll).
 
 ### Rules for AI agents
 
-1. **NEVER commit a `.tfvars` file containing real secrets.** Use the GHA-secret → `apply-infra` workflow path. If a local `.tfvars` is needed for ad-hoc operator runs, it MUST be `.gitignore`d.
-2. **NEVER open a new inbound port** on the host firewall (`ufw`). The public surface is currently exactly `80`, `443`, and the configured SSH port. Adding a new public port requires §3 / §4 treatment.
-3. **NEVER add an app `PublishPort=` that binds anywhere other than `127.0.0.1`.** App units MUST publish on loopback only; Caddy is the sole `0.0.0.0` listener.
-4. **NEVER use `local_file` or `local_sensitive_file` for secrets.** Both persist secret bytes via additional state attributes and via on-disk artifacts. The canonical pattern is to render the env-file content inline in `local.env_files` (apps.tf), feed it into the `managed_files_apps` map as a `content = ...` entry; the bytes land only in tofu state, which is AES-GCM-encrypted at rest via the `encryption {}` block in `main.tf`.
-5. **NEVER use `local_sensitive_file` or `remote-exec` with `inline = ["echo '${secret}' > ..."]`** — both persist secret bytes in state.
-6. **NEVER hardcode a secret** in Terraform, Quadlet templates, or container images. Secret values come from GitHub Actions secrets, render to `/tmp/wfe-secrets/<env>.env` on the runner, copy via the file-provisioner pattern (Rule 4) to `/etc/wfe/<env>.env` (mode 0600), and arrive in the container via `EnvironmentFile=/etc/wfe/<env>.env`. Non-secret config (`AUTH_ALLOW`, `BASE_URL`, `AUTH_PROVIDER`, log levels) is rendered into the same env file but is also acceptable in plain Quadlet `Environment=` lines.
-7. **NEVER downgrade to HTTP** for any route. Cookies rely on `COOKIE_SECURE=true`; serving plain HTTP breaks session security.
-8. **NEVER add sudoers entries for any `wfe-*` user.** The `wfe-*` users are the post-S1/I11 attacker landing pad and MUST remain unprivileged. The `deploy` allowlist (in `infrastructure/files/sudoers_deploy` and the matching cloud-init bootstrap copy) is broad by design — it grants the converge primitives needed to apply host configuration in place. Broadening it requires a spec change to `host-security-baseline` §"Privilege isolation: deploy administers; per-tenant wfe-* run unprivileged" so the privilege envelope stays reviewable.
-9. **NEVER add a new environment variable that holds a secret without wrapping it in `Secret`.** The end-to-end chain is:
-   (a) add the secret to GHA secrets and reference it in `apply-infra.yml`'s heredoc that renders `/tmp/wfe-secrets/<env>.env`;
-   (b) the `managed_files_apps["wfe_env_<env>"]` content-hash trigger detects the change automatically (no edit needed there);
-   (c) in the runtime config schema, compose the field's Zod schema with `.transform(createSecret)` so the value self-redacts on `JSON.stringify`, `String()`, and `util.inspect` (canonical examples: `GITHUB_OAUTH_CLIENT_SECRET` and `STORAGE_BUNNY_ACCESS_KEY` in `packages/runtime/src/config.ts`);
-   (d) reveal only at the boundary that hands the cleartext to the receiving client; never log the cleartext.
+1. **NEVER commit a `*.tfvars` file containing real secrets.** Secret values reach each env via `TF_VAR_*` (or in-tofu resource attributes) and the GHA-secret → `apply-infra` path. If a local `*.tfvars` is needed for ad-hoc operator runs, it MUST be `.gitignore`d.
+2. **NEVER render a secret in cleartext into the `plan-infra` summary.** Because the `bunnynet` provider does not mark `env.value` sensitive, every secret-bearing `TF_VAR_*` MUST be `sensitive = true`, and resource-sourced secrets (the storage-zone `password`, the in-tofu DB-token mint) MUST be marked / kept sensitive so they render as `(sensitive value)`.
+3. **NEVER use `local_file` / `local_sensitive_file` for secrets, or `remote-exec` with `inline = ["echo '${secret}' > ..."]`.** Both persist secret bytes via extra state attributes and on-disk artifacts. Secret values belong only in the `bunnynet` app `env` block (from `TF_VAR_*` or in-tofu resource attributes), where they land solely in tofu state — AES-GCM-encrypted at rest via the `encryption {}` block in `main.tf`.
+4. **NEVER hardcode a secret** in Terraform, the `bunnynet` app `env` block, or container images. Secret values come from `TF_VAR_*` (GHA secrets) or in-tofu resource attributes and are rendered into the env block at apply time. Non-secret config (`AUTH_ALLOW`, `BASE_URL`, `AUTH_PROVIDER`, log levels) MAY be plain literals.
+5. **NEVER downgrade to HTTP** for any route. Cookies rely on `COOKIE_SECURE=true`, and the Bunny CDN custom hostname is `force_ssl = true`; serving plain HTTP breaks session security.
+6. **NEVER let the Bunny CDN cache a dynamic route.** Only `/static/*` is cacheable (the app marks it `immutable`); a cache hit on an authenticated / owner-scoped route is a cross-owner data leak (§4). Keep the deployment on Bunny's defaults with no caching edge rules, and ensure any new dynamic route never advertises a cacheable `Cache-Control`. See `bunny-deployment` § "CDN SHALL NOT cache dynamic routes".
+7. **NEVER share a Bunny resource across envs.** staging and prod MUST keep separate `bunnynet_database` + token, storage zone, and sealing key — a shared token (DB-wide revoke), zone, or key cross-wires the two envs.
+8. **NEVER add a new environment variable that holds a secret without wrapping it in `Secret`.** The end-to-end chain is:
+   (a) add the `TF_VAR_*` (sourced from a GHA secret) or wire it from an in-tofu resource attribute, mark it sensitive, and render it into the env's `bunnynet` `env` block;
+   (b) in the runtime config schema, compose the field's Zod schema with `.transform(createSecret)` so the value self-redacts on `JSON.stringify`, `String()`, and `util.inspect` (canonical examples: `GITHUB_OAUTH_CLIENT_SECRET` and `STORAGE_BUNNY_ACCESS_KEY` in `packages/runtime/src/config.ts`);
+   (c) reveal only at the boundary that hands the cleartext to the receiving client; never log the cleartext.
 
-   Exception to (a)/(b): the staging `STORAGE_BUNNY_ACCESS_KEY` does not flow through `/etc/wfe/<env>.env`. It is the `bunnynet_storage_zone` resource's `password` attribute (provider-marked sensitive) wired directly into the Magic Containers app env — no GHA secret, redacted in the `plan-infra` summary. It is still `Secret`-wrapped per (c) and revealed only at the Bunny HTTP `AccessKey` header per (d).
-10. **Assume "internal" is not a perimeter.** Any new component on the box must justify its own auth / isolation story, not rely on "it's only on the loopback".
-11. **When adding a new long-running workload**, add a Quadlet `.container` template under `infrastructure/files/`, render it via a `local.managed_files_*` map entry (consumed by the unified convergence mechanism in `main.tf`), set a memory ceiling (`PodmanArgs=--memory=` on the payload cgroup if the workload contains memory-auto-sizing software like V8; plain `[Service] MemoryMax=` is acceptable otherwise — see `host-security-baseline` §"Per-Quadlet resource ceilings") and bind to `127.0.0.1` (unless it's a public-facing ingress). Containers MUST run rootless under a dedicated tenant user — add a corresponding entry to `local.managed_users` with its own non-overlapping subuid range, and declare `User=<tenant>` in the Quadlet. Never set `User=root`, `User=deploy`, or use `--privileged`.
-12. **NEVER raise the per-env app process count above 1** without first migrating the auth sealing password out of in-memory state (see §4 A15, R-I13, and the `auth` capability's "Single-replica invariant" requirement). The constraint is structurally enforced by having one Quadlet unit per env — a change that adds a second concurrent process for the same env (HPA-equivalent, second `wfe-prod-2.container`, etc.) silently breaks auth.
-13. **NEVER read `X-Auth-Request-*`** on any code path (see §4 A13). The forward-auth mechanism that produced those headers does not exist; reading them reintroduces the forged-header class.
+   `STORAGE_BUNNY_ACCESS_KEY` is the canonical resource-sourced secret: it is the `bunnynet_storage_zone` `password` (provider-marked sensitive) wired directly into the Magic Containers app env — no GHA secret, redacted in the `plan-infra` summary, still `Secret`-wrapped per (b) and revealed only at the Bunny HTTP `AccessKey` header per (c). `DATABASE_AUTH_TOKEN` follows the same pattern from the in-tofu token mint.
+9. **Assume "internal" is not a perimeter.** The Bunny CDN edge performs no authentication; every route's auth / isolation story is in-app (§4). A new component must justify its own auth, not rely on "it's behind the CDN".
+10. **When adding a new env**, add an entry to `local.bunny_envs` in `infrastructure/bunny.tf` (its own app, CDN endpoint + custom hostname, `bunnynet_database` + token mint, storage zone, and sealing key) plus its DNS CNAME in `infrastructure/dns.tf`. Do NOT reintroduce VPS machinery (Quadlets, host users, loopback binds).
+11. **NEVER raise the per-env app process count above 1** (`autoscaling_min = autoscaling_max = 1`) without first migrating the auth sealing password out of in-memory state (see §4 A15, R-I13, and the `auth` capability's "Single-replica invariant" requirement). A second concurrent process for the same env silently breaks auth.
+12. **NEVER read `X-Auth-Request-*`** on any code path (see §4 A13). The forward-auth mechanism that produced those headers does not exist; the Bunny CDN edge injects no such headers, and reading them reintroduces the forged-header class.
 
 ### Workflow secret-key management
 
 Owner-authored workflows may declare sealed env bindings (`env({name, secret: true})` per the `workflow-secrets` change). The server holds an X25519 keypair list in the `SECRETS_PRIVATE_KEYS` env var; the public key is derivable from any secret key via `crypto_scalarmult_base` and is exposed by `GET /api/workflows/:owner/public-key` so the CLI can seal values before upload. Decryption happens twice: once at upload for fail-fast validation, and once per invocation inside the executor to hand plaintexts to the future consumer plugin. Plaintext bytes are `fill(0)`-wiped after use and never logged.
 
-**Key location.** The `SECRETS_PRIVATE_KEYS` value is generated by the operator (e.g. `openssl rand -base64`-style) and stored as a GHA secret per env (`SECRETS_PRIVATE_KEYS_PROD`, `SECRETS_PRIVATE_KEYS_STAGING`). `apply-infra.yml` writes it into the corresponding `/tmp/wfe-secrets/<env>.env` heredoc; tofu's file-provisioner copies it to `/etc/wfe/<env>.env` on the VPS. The bytes never enter tofu state. Rotating the key list rotates the GHA secret + re-runs `apply-infra`.
+**Key location.** Each env's `SECRETS_PRIVATE_KEYS` value is a per-env `random_bytes` resource (32 bytes, base64, runtime format `v1:<base64>`) generated once by tofu and preserved across applies in encrypted state. The prod key is carried across the VPS→Bunny refactor by a `moved {}` block so its value is unchanged — see `bunny-deployment` § "Per-env workflow-secrets sealing key". It is rendered into that env's `bunnynet` app `env` block (plaintext at the platform, no Magic Containers secret store; encrypted at rest in tofu state); the bytes never enter committed source. Rotating an env's key is `tofu taint` on that env's key resource + `apply`.
 
-**Rotation.** Prepend a new id to the env's `SECRETS_PRIVATE_KEYS` value (comma-separated keypair list), update the GHA secret, re-run `apply-infra`. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when an owner's bundle references a retired keyId.
+**Rotation.** Prepend a new id to the env's `SECRETS_PRIVATE_KEYS` value (comma-separated keypair list), update the env's secret source, re-run `apply-infra`. New uploads seal against the new primary; existing bundles still decrypt against retained keys. Retire an old id only once no uploaded bundle references it — the upload decrypt-verify fails fast with `unknown_secret_key_id` when an owner's bundle references a retired keyId.
 
-**Security property.** The app container is the only place the secret key material exists in plaintext. The on-disk persistence (`/srv/wfe/<env>/`) sees only ciphertexts. The `/etc/wfe/<env>.env` file holds the keys at mode 0600 owned by `deploy`. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
+**Security property.** The running app container is the only place the secret key material exists in plaintext at use time. The persisted data (event rows in the Bunny Database, bundles in the Edge Storage zone) holds only ciphertexts — sealed tenant secrets stay sealed at rest. At the platform the key sits in the app's `env` block (plaintext, no secret store) and is encrypted at rest in tofu state. The `Secret` wrapper (`createSecret()`) redacts `SECRETS_PRIVATE_KEYS` from any log or JSON serialization.
 
 ### Trigger-config secret references
 
@@ -1945,7 +1939,7 @@ The worker-side `secrets` plugin's outbound scrubber (§2) continues to redact p
 
 ### Rules for AI agents
 
-Additional main-thread secrets rules on top of the K8s-centric rules above:
+Additional main-thread secrets rules on top of the infrastructure rules above:
 
 10. **NEVER log, emit, serialise, or include decrypted secret plaintext on the main thread** in:
     - log lines (any level, any logger),
@@ -1968,16 +1962,15 @@ Additional main-thread secrets rules on top of the K8s-centric rules above:
 
 ### File references
 
-- Server + IP + firewall: `infrastructure/main.tf`
-- Cloud-init (deploy user, sshd, sudoers, ufw, fail2ban, sysctl, podman-auto-update timer override): `infrastructure/cloud-init.yaml`
-- App Quadlets + env-file delivery: `infrastructure/apps.tf`, `infrastructure/files/wfe.container.tmpl`
-- Caddy Quadlet + Caddyfile: `infrastructure/caddy.tf`, `infrastructure/files/caddy.container.tmpl`, `infrastructure/files/Caddyfile.tmpl`
-- Bunny DNS records (A prod, CNAME staging): `infrastructure/dns.tf`
+- Env-keyed Bunny config (per-env apps, CDN endpoints, custom hostnames, databases + in-tofu token mints, storage zones, sealing keys): `infrastructure/bunny.tf`
+- Providers, state backend (Scaleway Object Storage), `encryption {}`: `infrastructure/main.tf`
+- Bunny DNS records (per-env CNAME to the CDN endpoint): `infrastructure/dns.tf`
 - Apply workflow (operator): `.github/workflows/apply-infra.yml`
-- Plan gate: `.github/workflows/plan-infra.yml`
-- Build + push (no infra side effects): `.github/workflows/deploy-prod.yml`, `.github/workflows/deploy-staging.yml`
+- Plan gate (`plan (infra)`): `.github/workflows/plan-infra.yml`
+- Per-env deploy (build/push + roll the Bunny app by digest, poll `/readyz`): `.github/workflows/deploy-prod.yml`, `.github/workflows/deploy-staging.yml`
 - Dockerfile: `infrastructure/Dockerfile`
-- OpenSpec specs: `openspec/specs/infrastructure/spec.md`, `openspec/specs/host-security-baseline/spec.md`
+- OpenSpec specs: `openspec/specs/bunny-deployment/spec.md`, `openspec/specs/infrastructure/spec.md`
+- Worker→main host-call trust boundary (moved here from the retired `host-security-baseline`): `openspec/specs/sandbox-plugin/spec.md`
 
 ## §6 HTTP Response Headers
 
@@ -2134,5 +2127,5 @@ capabilities it does not need.
 - Static middleware (serves `/static/*` incl. vendored `alpine.js`,
   `htmx.js`, `jedison.js` from `@alpinejs/csp`):
   `packages/runtime/src/ui/static/middleware.ts`
-- Local-deployment toggle: `LOCAL_DEPLOYMENT=1` env var (set by `pnpm dev` only — never on the VPS deployment)
+- Local-deployment toggle: `LOCAL_DEPLOYMENT=1` env var (set by `pnpm dev` only — never in the deployed Bunny envs)
 - OpenSpec spec: `openspec/specs/http-security/spec.md`

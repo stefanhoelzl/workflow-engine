@@ -1,14 +1,20 @@
 name: Deploy image
-description: Log in to ghcr, build + push the runtime image, then poll the target URL's /readyz until version.gitSha matches.
+description: Log in to ghcr, build + push the runtime image, roll the named bunny.net Magic Containers app forward to the pushed digest, then poll the target URL's /readyz until version.gitSha matches.
 inputs:
   tag:
     description: Image tag to push (e.g. `release` or `main`).
     required: true
   url:
-    description: Target URL whose /readyz endpoint reports the running gitSha. The VPS's podman-auto-update.timer rotates within ~1 min of push.
+    description: Target URL whose /readyz endpoint reports the running gitSha after the rollout converges.
+    required: true
+  app_name:
+    description: bunny.net Magic Containers app name to roll forward (e.g. `wfe-prod` or `wfe-staging`). Resolved to its id by name so a recreation (new id) is tolerated.
     required: true
   github_token:
     description: "GITHUB_TOKEN with `packages: write` scope, for ghcr auth."
+    required: true
+  bunnynet_api_key:
+    description: bunny.net account API key, for resolving the app id and rolling the image digest.
     required: true
 runs:
   using: composite
@@ -19,15 +25,51 @@ runs:
         username: ${{ github.actor }}
         password: ${{ inputs.github_token }}
 
-    - uses: ./.github/actions/docker-build
+    # Build + push, capturing the pushed digest. bunny.net Magic Containers
+    # does NOT auto-pull (unlike the retired VPS's podman-auto-update); the
+    # digest is the value handed to the rolling update below.
+    - id: build
+      uses: ./.github/actions/docker-build
       with:
         push: "true"
         tags: ghcr.io/${{ github.repository }}:${{ inputs.tag }}
         git_sha: ${{ github.sha }}
 
-    # podman-auto-update.timer fires every 1 minute on the VPS; bridge the
-    # asynchronous gap by polling /readyz until the new image is actually
-    # serving. 60 attempts × 5 s = 5-minute upper bound.
+    # Resolve the Magic Containers app id by name (robust to an app
+    # recreation, which changes the id).
+    - name: Resolve Bunny app id
+      id: app
+      shell: bash
+      env:
+        BUNNYNET_API_KEY: ${{ inputs.bunnynet_api_key }}
+        APP_NAME: ${{ inputs.app_name }}
+      run: |
+        set -euo pipefail
+        id=$(curl -fsS https://api.bunny.net/mc/apps \
+          -H "AccessKey: $BUNNYNET_API_KEY" \
+          | jq -r --arg n "$APP_NAME" '[.. | objects | select(.name? == $n) | .id] | first')
+        test -n "$id" && test "$id" != "null" \
+          || { echo "::error::$APP_NAME app not found"; exit 1; }
+        echo "id=$id" >> "$GITHUB_OUTPUT"
+
+    # Trigger the rolling update by PATCHing the freshly-pushed digest —
+    # "updating the container image" is the only documented re-pull trigger
+    # (a /deploy or /restart call does NOT re-pull). Official bunny action,
+    # PINNED to a commit SHA (not @main): it receives BUNNYNET_API_KEY, so a
+    # moving ref would be a supply-chain risk. The changing digest is what
+    # triggers the rollout. TF ignores the image tag/digest
+    # (lifecycle.ignore_changes), so this never fights tofu.
+    - name: Roll the Bunny app forward
+      uses: BunnyWay/actions/container-update-image@671d620bdaac002d2aa7f3dd0dda03dd99c5b749 # container-update-image@0.2.2
+      with:
+        api_key: ${{ inputs.bunnynet_api_key }}
+        app_id: ${{ steps.app.outputs.id }}
+        container: wfe
+        image_tag: ${{ inputs.tag }}
+        image_digest: ${{ steps.build.outputs.digest }}
+
+    # No rollout-status API exists, so poll the public /readyz until the new
+    # sha is actually serving. 60 attempts × 5 s = 5-minute upper bound.
     - name: Wait for /readyz to report the just-built sha
       shell: bash
       env:

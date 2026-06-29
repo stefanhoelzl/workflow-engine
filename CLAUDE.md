@@ -24,11 +24,11 @@ The SDK ships a `wfe` binary (`packages/sdk/package.json` → `bin`). Invoke fro
 
 `--user`, `--token`, and `GITHUB_TOKEN` are mutually exclusive — see `SECURITY.md` §4 "CLI authentication".
 
-## Infrastructure (OpenTofu + Scaleway VPS)
+## Infrastructure (OpenTofu + bunny.net Magic Containers)
 
 Prerequisites: OpenTofu >= 1.11.
 
-Single flat tofu project at `infrastructure/`. Provisions one Scaleway VPS hosting Caddy + two app instances (prod + staging) as rootless Podman + Quadlet units. Local-disk persistence; no S3 in the running deployment. Tofu state lives on Scaleway Object Storage.
+Single flat tofu project at `infrastructure/`, env-keyed over `{ staging, prod }`. Both envs run on bunny.net Magic Containers (`bunny.tf`) — per-env app (`:main`/`:release`), Bunny CDN (managed TLS), managed Bunny Database (libSQL), and Bunny Edge Storage (bundles); fully stateless containers. There is no Scaleway VPS, no Caddy, no host convergence. Tofu state lives on Scaleway Object Storage (S3-compatible, client-side encrypted) — the only remaining Scaleway dependency.
 
 There is **no local cluster mode**. `pnpm dev` is the only local mode; agents verify against it. There is no kind, no podman-compose, no `pnpm local:up*`.
 

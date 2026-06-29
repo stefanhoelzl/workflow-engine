@@ -1,8 +1,0 @@
-[Unit]
-Description=workflow-engine swapfile
-
-[Swap]
-What=/swapfile
-
-[Install]
-WantedBy=swap.target

@@ -120,5 +120,5 @@ packages/
 ├── runtime/         # HTTP server + executor + workflow registry + sandbox store + action-dispatch plugin
 └── tests/           # End-to-end suite (real runtime spawn + CLI upload)
 workflows/           # User-defined workflows (canonical demo at `src/demo.ts`)
-infrastructure/      # OpenTofu IaC — single flat project: Scaleway VPS hosting Caddy + prod & staging app instances
+infrastructure/      # OpenTofu IaC — single flat project: prod & staging on bunny.net Magic Containers (state on Scaleway Object Storage)
 ```
