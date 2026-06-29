@@ -106,15 +106,15 @@ Per-workflow serialization guarantees one-at-a-time handler execution per workfl
 
 ## Infrastructure
 
-- **IaC**: OpenTofu (HCL), single flat project at `infrastructure/` (no subdirs, no modules, no per-env state)
-- **Production target**: one Scaleway VPS (Debian 12) running rootless Podman + systemd Quadlet. Three units: `caddy`, `wfe-prod`, `wfe-staging`
-- **State backend**: Scaleway Object Storage (S3-compatible), client-side encrypted with `state_passphrase`
+- **IaC**: OpenTofu (HCL), single flat project at `infrastructure/` (no subdirs, no modules, no per-env state); env-keyed over `{ staging, prod }`
+- **Production target**: both `staging` (image `:main`) and `prod` (image `:release`) run as single always-on (`autoscaling_min=max=1`) bunny.net Magic Containers apps in Frankfurt (DE), fronted by per-env Bunny CDN endpoints (managed TLS). No Scaleway VPS, no Caddy, no host convergence
+- **State backend**: Scaleway Object Storage (S3-compatible), client-side encrypted with `state_passphrase` — the only remaining Scaleway dependency (it is not the VPS)
 - **Local dev**: `pnpm dev` only — no kind, no podman-compose, no local cluster. The runtime boots and hot-reloads `workflows/src/demo*.ts` directly
-- **Reverse proxy**: Caddy as a Quadlet container with a tofu-rendered Caddyfile (one site block per env). Built-in HTTP-01 ACME against Let's Encrypt; ACME state on the host bind mount `/srv/caddy/data`. No K8s manifests, no Helm, no cert-manager
+- **TLS / edge**: per-env Bunny CDN endpoint provides managed HTTPS (Let's Encrypt via `bunnynet_pullzone_hostname`). The edge performs no auth (all auth is in-app). No Caddy, no K8s/Helm/cert-manager
 - **Auth**: in-app GitHub OAuth (`packages/runtime/src/auth/*`) — sealed session cookies on `/dashboard`/`/trigger`, Bearer tokens on `/api/*`, unified `AUTH_ALLOW` predicate
-- **Persistence**: local-disk filesystem under `/srv/wfe/<env>` — `PERSISTENCE_PATH` set by Quadlet `Environment=`. The `StorageBackend` S3 implementation still exists but is unused in this deployment
-- **Image build + delivery**: GitHub Actions builds + pushes `ghcr.io/stefanhoelzl/workflow-engine:{release,main}`; the VPS's `podman-auto-update.timer` (1-min interval, label-driven) pulls and restarts. No tofu in the deploy path
-- **Apply path**: operator-driven `apply-infra` workflow (`workflow_dispatch`) renders per-env env files locally on the runner and tofu's `null_resource` + `file` provisioner with `source =` ships them; secret bytes never enter tofu state
+- **Persistence**: fully stateless containers (no `/data` volume) — event-store + per-workflow queues on a per-env managed Bunny Database (libSQL, `DATABASE_URL`+`DATABASE_AUTH_TOKEN`); workflow bundles on a per-env Bunny Edge Storage zone (`STORAGE_BACKEND=bunny`). Staging and prod share neither (Bunny token revoke is database-wide)
+- **Image build + delivery**: GitHub Actions builds + pushes `ghcr.io/stefanhoelzl/workflow-engine:{release,main}`, then rolls that env's Bunny app forward by image DIGEST (resolve app id by name → SHA-pinned `BunnyWay/actions/container-update-image` → poll `/readyz`). No tofu in the deploy path; bunny.net does not auto-pull
+- **Apply path**: operator-driven `apply-infra` (`workflow_dispatch`); secrets flow as `sensitive` `TF_VAR_*` rendered into the per-env Bunny `env` block, encrypted at rest in tofu state. Agents do not run `tofu apply`
 
 ## Monorepo Structure
 

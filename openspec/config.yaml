@@ -1,12 +1,12 @@
 schema: spec-driven
 context: |
-  Tech stack: Node.js, TypeScript (strict), Vite + Rolldown, QuickJS WASM (quickjs-emscripten), Zod v4, pnpm monorepo, Hono (HTTP), DuckDB (event index)
+  Tech stack: Node.js, TypeScript (strict), Vite + Rolldown, QuickJS WASM (quickjs-emscripten), Zod v4, pnpm monorepo, Hono (HTTP), libSQL (event store + per-workflow queues, embedded on-disk or remote Bunny Database)
   Architecture: Event-driven, 4 primitives (Trigger → Event → Action → Event), EventBus fans out to consumers (Persistence, WorkQueue, EventStore, Logging)
   Security: Untrusted code runs in QuickJS WASM sandbox, ctx.event + ctx.env (read) and ctx.emit() + ctx.fetch() (write) cross the boundary
-  Persistence: StorageBackend interface (FS, S3) with append-only event files, DuckDB in-memory event store for queries
+  Persistence: StorageBackend interface (FS, Bunny Edge Storage) for the workflow bundle tree; libSQL store (Kysely) for invocation events + queues, selected by DATABASE_URL (file: embedded vs libsql:/https: remote)
   Build: Vite plugin compiles workflow.ts → per-workflow manifest.json + per-action .js files, TypeScript type-checked at build time
   Testing: Unit + integration, sandbox boundary tests critical
-  Infrastructure: OpenTofu (HCL), kind (local K8s), Traefik (Helm + IngressRoute CRDs), oauth2-proxy, S2 (local S3). Strategy pattern modules with consistent output contracts.
+  Infrastructure: OpenTofu (HCL) single flat project at infrastructure/; both envs (staging + prod) on bunny.net Magic Containers — Bunny CDN (managed TLS), managed Bunny Database (libSQL), Bunny Edge Storage (bundles); app-owned GitHub OAuth (no separate auth proxy). State on Scaleway Object Storage (S3-compatible, client-side encrypted). pnpm dev is the only local mode.
 rules:
   proposal:
     - Consider security implications for any feature touching the sandbox boundary

@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   plan-infra:
+    # Produces the `plan-infra` status check required by the `main` ruleset.
+    # (Already named for the infra project, not the retired VPS — no rename.)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -42,8 +44,6 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           TF_VAR_gh_oauth_client_id_prod: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_ID_PROD }}
           TF_VAR_gh_oauth_client_secret_prod: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_SECRET_PROD }}
           TF_VAR_gh_oauth_client_id_staging: ${{ secrets.TF_VAR_GH_OAUTH_CLIENT_ID_STAGING }}

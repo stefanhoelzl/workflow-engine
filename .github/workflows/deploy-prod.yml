@@ -23,7 +23,9 @@ jobs:
         with:
           tag: release
           url: https://workflow-engine.stho.net
+          app_name: wfe-prod
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          bunnynet_api_key: ${{ secrets.BUNNYNET_API_KEY }}
 
   # Publish @workflow-engine/core and @workflow-engine/sdk to npm via
   # trusted publishing (OIDC). Pinned via npmjs.com trusted-publisher
