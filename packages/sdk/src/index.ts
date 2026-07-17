@@ -117,6 +117,14 @@ interface EnvRef {
 	readonly secret: boolean;
 }
 
+/**
+ * Declares a reference to a workflow environment variable, for use inside
+ * `defineWorkflow({env})`. `env({default})` supplies a fallback; `env({secret:
+ * true})` marks a value the build seals against the server key (injected as
+ * plaintext only inside the sandbox, scrubbed from logs). Read the resolved
+ * value at handler time via `workflow.env.<NAME>`. See `example.ts`.
+ * @example env({ default: "Hello" })
+ */
 // Overloads: `secret: true` is exclusive with `default`. The combined
 // signature below is the implementation; callers only see the overloads.
 function env(opts: { name?: string; secret: true }): EnvRef;
@@ -201,6 +209,14 @@ interface DefineWorkflowConfig<
 	envSource?: Record<string, string | undefined>;
 }
 
+/**
+ * Declares the one workflow per file: its optional `name` (defaults to the file
+ * stem) and its `env` contract. Returns a `workflow` object whose frozen
+ * `workflow.env` record exposes each declared variable, resolved at load time.
+ * See `example.ts`.
+ * @example
+ * export const workflow = defineWorkflow({ env: { API_URL: env() } });
+ */
 function defineWorkflow<E extends Record<string, string | EnvRef>>(
 	config?: DefineWorkflowConfig<E>,
 ): Workflow<Readonly<{ [K in keyof E]: string }>> {
@@ -293,6 +309,19 @@ interface Action<I = unknown, O = unknown> {
 	readonly name: string;
 }
 
+/**
+ * Defines a typed callable action. `input`/`output` are Zod schemas validated
+ * at the sandbox bridge; the returned value is itself callable
+ * (`await myAction(input)`) from any trigger or other action. Use `z.unknown()`
+ * (not `z.void()`) for a no-return action. Action identity is the export name.
+ * See `example.ts`.
+ * @example
+ * export const greet = action({
+ *   input: z.object({ name: z.string() }),
+ *   output: z.string(),
+ *   handler: async ({ name }) => `Hello, ${name}!`,
+ * });
+ */
 function action<
 	Input extends z.ZodType = z.ZodAny,
 	Output extends z.ZodType = z.ZodAny,
@@ -380,6 +409,13 @@ interface Queue<T = unknown> {
 	get(): Promise<T | undefined>;
 }
 
+/**
+ * Defines a small durable FIFO queue scoped to this workflow (capped at 1000
+ * items × 1 KB). Returns `{ put, get }`; `get()` returns `undefined` when
+ * empty. Items are validated against `schema` on both `put` and `get`, and the
+ * queue is invisible to other workflows. See `example.ts`.
+ * @example const jobs = defineQueue({ schema: z.object({ url: z.string() }) });
+ */
 function defineQueue<Schema extends z.ZodType = z.ZodAny>(config: {
 	name?: string;
 	schema: Schema;
@@ -510,6 +546,19 @@ interface HttpTrigger<
 	readonly response: HttpTriggerResponse;
 }
 
+/**
+ * Defines an HTTP entry point. The handler's return value IS the response:
+ * `{status?, body?, headers?}`. `request: {body, headers}` validates ingress
+ * (failure → 422); `response: {body, headers}` validates egress — when
+ * `response.body` is set the handler MUST return a matching `body`. The public
+ * URL is `/webhooks/<owner>/<repo>/<workflow>/<export-name>`. See `example.ts`.
+ * @example
+ * export const order = httpTrigger({
+ *   method: "POST",
+ *   request: { body: z.object({ id: z.string() }) },
+ *   handler: async ({ body }) => ({ status: 202, body: { id: body.id } }),
+ * });
+ */
 function httpTrigger<
 	ReqB extends z.ZodType = z.ZodAny,
 	ReqH extends z.ZodType = z.ZodType<Record<string, never>>,
@@ -657,6 +706,16 @@ const DEFAULT_TIME_ZONE: string = (() => {
 	}
 })();
 
+/**
+ * Defines a scheduled entry point: a cron `schedule` plus an explicit IANA
+ * `tz`. The scheduler discards the handler's return value. The returned value
+ * is also a branded callable, so other workflow code (or a test) can fire it
+ * directly. See `example.ts`.
+ * @example
+ * export const nightly = cronTrigger({
+ *   schedule: "0 9 * * *", tz: "Europe/Berlin", handler: async () => {},
+ * });
+ */
 function cronTrigger<const S extends string>(config: {
 	schedule: CRON<S> extends never ? never : S;
 	tz?: string;
@@ -709,6 +768,13 @@ function cronTrigger<const S extends string>(config: {
 //   - At build-time discovery (Node-VM context): $secrets is absent;
 //     the call is a no-op and returns the input unchanged.
 
+/**
+ * Marks a computed sensitive string so the runtime log scrubber redacts it if
+ * it is ever logged. Returns the value unchanged; use it to wrap secrets you
+ * derive at handler time (env secrets declared via `env({secret: true})` are
+ * already protected). See `example.ts`.
+ * @example const sig = secret(computeHmac(payload));
+ */
 function secret(value: string): string {
 	const bridge = (globalThis as { $secrets?: { addSecret(v: string): void } })
 		.$secrets;
@@ -737,6 +803,17 @@ interface ManualTrigger<I extends z.ZodType = z.ZodType> {
 	readonly outputSchema: z.ZodType;
 }
 
+/**
+ * Defines a manually-invoked entry point (trigger UI / tests) with typed
+ * `input` and `output`. The caller receives the handler's return value. See
+ * `example.ts`.
+ * @example
+ * export const run = manualTrigger({
+ *   input: z.object({ name: z.string() }),
+ *   output: z.object({ ok: z.boolean() }),
+ *   handler: async ({ name }) => ({ ok: true }),
+ * });
+ */
 function manualTrigger<I extends z.ZodType = z.ZodAny>(config: {
 	input?: I;
 	output?: z.ZodType;
@@ -845,6 +922,20 @@ const imapTriggerResultSchema = z.object({
 	command: z.array(z.string()).optional(),
 });
 
+/**
+ * Defines an IMAP-polling entry point. Connection config (`host`, `port`,
+ * `tls`, `user`, `password`, `folder`, `search`) selects a mailbox; each
+ * matching message fires the handler with a parsed `msg`. The returned
+ * `{command}` is an IMAP command batch applied to the current UID (e.g. mark
+ * `\Seen` so a message never re-fires). See `example.ts`.
+ * @example
+ * export const inbound = imapTrigger({
+ *   host: "imap.example.com", port: 993, tls: "required",
+ *   user: workflow.env.IMAP_USER, password: workflow.env.IMAP_PASSWORD,
+ *   folder: "INBOX", search: "UNSEEN",
+ *   handler: async (msg) => ({ command: [`UID STORE ${msg.uid} +FLAGS (\\Seen)`] }),
+ * });
+ */
 function imapTrigger(config: {
 	host: string;
 	port: number;
@@ -931,6 +1022,18 @@ interface WsTrigger<
 	readonly outputSchema: Res;
 }
 
+/**
+ * Defines a bidirectional WebSocket entry point. Each inbound frame fires the
+ * handler once with `{data}` validated against `request`; the returned value is
+ * sent back to the originating client as one text frame (FIFO-correlated). See
+ * `example.ts`.
+ * @example
+ * export const wsRun = wsTrigger({
+ *   request: z.object({ name: z.string() }),
+ *   response: z.object({ greeting: z.string() }),
+ *   handler: async ({ data }) => ({ greeting: `Hi ${data.name}` }),
+ * });
+ */
 function wsTrigger<
 	Req extends z.ZodType = z.ZodAny,
 	Res extends z.ZodType = z.ZodAny,

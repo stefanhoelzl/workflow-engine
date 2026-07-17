@@ -127,6 +127,10 @@ function assertJsonParam(value: unknown, index: number): SqlParam {
  *
  * For multi-statement queries (`"BEGIN; ...; COMMIT;"`), only the last
  * statement's result set is returned.
+ *
+ * See `example.ts`.
+ * @example
+ * const res = await executeSql(dsn, "SELECT upi FROM rna WHERE len = $1", [100]);
  */
 async function executeSql(
 	connection: SqlConnection,

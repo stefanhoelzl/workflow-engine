@@ -12,8 +12,10 @@ import {
 	type Pages,
 } from "./content-negotiation.js";
 import type { Service } from "./index.js";
+import { LLMS_TXT_BODY, LLMS_TXT_CONTENT_TYPE } from "./llms-txt.js";
 
 const BODY_LIMIT_BYTES = 10_485_760;
+const HTTP_OK = constants.HTTP_STATUS_OK as ContentfulStatusCode;
 const HTTP_FOUND_STATUS = 302;
 const HTTP_PAYLOAD_TOO_LARGE =
 	constants.HTTP_STATUS_PAYLOAD_TOO_LARGE as ContentfulStatusCode;
@@ -49,6 +51,15 @@ function createApp(opts: AppOptions = {}, ...middlewares: Middleware[]): Hono {
 			app.use(match.slice(0, -2), handler);
 		}
 	}
+
+	// Public, static LLM docs index. Registered AFTER the middleware loop so the
+	// secure-headers middleware (an `app.use("*")` registered first in the loop)
+	// precedes and wraps it, and BEFORE the 404 catch-all so it stays reachable.
+	// It is neither `/` (the root redirect) nor under `/static/*`. The body is a
+	// fixed constant: no request input is read or reflected.
+	app.get("/llms.txt", (c) =>
+		c.body(LLMS_TXT_BODY, HTTP_OK, { "Content-Type": LLMS_TXT_CONTENT_TYPE }),
+	);
 
 	app.notFound(createNotFoundHandler(opts.pages));
 	app.onError(

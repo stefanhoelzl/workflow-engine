@@ -1453,7 +1453,7 @@ authenticated dispatch path is `/trigger/*`, and a UI form posting to
 | `/auth/*` (per-provider `mountAuthRoutes`, plus provider-agnostic `POST /auth/logout`) | None; these ARE the handshake surface | App `authMiddleware` | Providers mount their own routes under `/auth/<id>/`. GitHub handlers must validate the `auth_state` cookie on callback and must sanitize `returnTo` to same-origin; local handlers validate the submitted `name` against the provider's bucketed entries |
 | `/api/*` | `X-Auth-Provider` header + provider-specific credential | `apiAuthMiddleware` dispatches to registered provider's `resolveApiIdentity` | Empty registry / missing `X-Auth-Provider` / unknown id / provider returns `undefined` → 401 (identical body) |
 | `/webhooks/*` | **None (PUBLIC)** | Intentional | See §3 |
-| `/static/*`, `/livez`, `/` | None | Intentional | Must stay non-sensitive |
+| `/static/*`, `/livez`, `/`, `/llms.txt` | None | Intentional | Must stay non-sensitive. `/llms.txt` serves a fixed static constant (the LLM docs index) — it MUST NOT reflect request input, read owner/repo params, touch tenant data, or read auth headers. |
 
 ### Threats
 

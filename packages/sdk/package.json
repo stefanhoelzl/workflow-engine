@@ -36,7 +36,9 @@
 	"files": [
 		"dist",
 		"!dist/**/*.test.js",
-		"!dist/**/*.test.d.ts"
+		"!dist/**/*.test.d.ts",
+		"example.ts",
+		"README.md"
 	],
 	"dependencies": {
 		"@workflow-engine/core": "workspace:*",

@@ -97,6 +97,39 @@ describe("createApp — root redirect", () => {
 	});
 });
 
+describe("createApp — /llms.txt index", () => {
+	it("GET /llms.txt returns 200 markdown pointing at the SDK docs", async () => {
+		const app = createApp(fixturePages());
+		const res = await app.request("/llms.txt");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toMatch(/^text\/markdown/);
+		const body = await res.text();
+		expect(body).toContain("unpkg.com/@workflow-engine/sdk@latest");
+		expect(body).toContain("node_modules/@workflow-engine/sdk");
+	});
+
+	it("body is a static constant — differing headers/query do not change it", async () => {
+		const app = createApp(fixturePages());
+		const a = await (
+			await app.request("/llms.txt?owner=acme&q=<script>", {
+				headers: { "x-trace-id": "abc", cookie: "session=zzz" },
+			})
+		).text();
+		const b = await (await app.request("/llms.txt")).text();
+		expect(a).toBe(b);
+		// No request input is echoed into the body.
+		expect(a).not.toContain("acme");
+		expect(a).not.toContain("<script>");
+	});
+
+	it("is not shadowed by the root redirect and does not 404", async () => {
+		const app = createApp(fixturePages());
+		const res = await app.request("/llms.txt");
+		expect(res.status).not.toBe(302);
+		expect(res.status).not.toBe(404);
+	});
+});
+
 describe("createApp — global notFound", () => {
 	it("browser request to unknown path returns HTML 404", async () => {
 		const app = createApp(fixturePages());

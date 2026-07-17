@@ -1,3 +1,33 @@
+/**
+ * @workflow-engine/sdk — comprehensive example workflow.
+ *
+ * This file is the canonical, full-surface authoring reference for the SDK. It
+ * exercises every author-facing primitive so an agent (or a human) can copy any
+ * pattern here and adapt it. It is shipped in the npm tarball and validated in
+ * CI by a bundle-only build (`wfe build`, never uploaded) — because bundling
+ * typechecks + compiles without executing handlers, this file can demonstrate
+ * `imapTrigger` / `wsTrigger` (which need a mail server / live client to *run*)
+ * and still prove they compile against the real SDK types.
+ *
+ * How a workflow is structured:
+ *   - exactly one `defineWorkflow({env})` module export — the env contract,
+ *   - zero or more `action({input, output, handler})` — typed callables,
+ *   - one or more triggers (`httpTrigger` / `cronTrigger` / `manualTrigger` /
+ *     `imapTrigger` / `wsTrigger`) — entry points.
+ * Wiring is plain TypeScript: a trigger handler calls actions directly
+ * (`await greet({name})`), and actions call other actions. There is no event
+ * bus, no `emit()`, no subscriber model.
+ *
+ * Authoring gotchas enforced by `wfe build` (it uses its OWN strict compiler
+ * options and IGNORES your tsconfig, so a lax editor config can pass locally
+ * then fail the build):
+ *   - use `z.exactOptional(...)`, not `.optional()`, for optional object fields,
+ *   - use `z.unknown()` (not `z.void()`/`z.undefined()`) for no-return actions,
+ *   - all relative imports need explicit `.js` extensions.
+ *
+ * Everything is dispatched through the `runDemo` orchestrator so every trigger
+ * kind exercises the full surface.
+ */
 import {
 	action,
 	cronTrigger,
@@ -6,6 +36,7 @@ import {
 	env,
 	executeSql,
 	httpTrigger,
+	imapTrigger,
 	manualTrigger,
 	secret,
 	sendMail,
@@ -13,9 +44,11 @@ import {
 	z,
 } from "@workflow-engine/sdk";
 
-// Observable (WICG tentative) is not yet in TypeScript's lib.dom; declare the
-// minimal shape the demo needs. Polyfill source:
-// packages/sandbox-stdlib/src/web-platform/guest/observable.ts.
+// `Observable` (WICG tentative) is not yet in TypeScript's lib.dom, so declare
+// the minimal shape the example needs. The runtime installs the real global via
+// packages/sandbox-stdlib. Every other global used below (`fetch`, `crypto`,
+// `setTimeout`, `URL`, `performance`, `EventTarget`, `AbortController`,
+// `scheduler`, `console`) is standard-typed and provided by sandbox-stdlib.
 declare const Observable: {
 	new <T>(
 		subscribe: (sub: {
@@ -34,51 +67,66 @@ declare const Observable: {
 
 const MEASURE_DELAY_MS = 5;
 
-// Hoisted to module scope per `lint/performance/useTopLevelRegex`. Used by
-// `sendDemo` to extract ethereal.email's preview-message id from the raw SMTP
-// `250 Accepted` response string (matches nodemailer's own getTestMessageUrl).
+// Hoisted to module scope (lint/performance/useTopLevelRegex). Extracts
+// ethereal.email's preview-message id from the raw SMTP `250 Accepted` string.
 const ETHEREAL_MSGID_RE = /MSGID=([^\s\]]+)/;
 
-// Length filter for the parameterized sample query — picks a non-empty slice
-// of the `rna` table without relying on its exact contents.
+// Length filter for the parameterized sample query — a non-empty slice of the
+// `rna` table without relying on its exact contents.
 const SAMPLE_RNA_LEN = 100;
 
-// Per-item note caps. The queue's hard byte cap is 1 KB host-side; these
+// Per-item queue caps. The queue's hard byte cap is 1 KB host-side; these
 // schema-level caps shape author intent (notes are short labels).
 const JOB_NOTE_MAX = 64;
 const DRAIN_MAX_ITEMS = 100;
 const DRAIN_DEFAULT_ITEMS = 10;
 
+/**
+ * `defineWorkflow({env})` declares the workflow-level environment contract and
+ * returns a frozen `workflow.env` record read at handler time. Each field is an
+ * `env(...)` ref: `env({default})` supplies a fallback, `env({secret: true})`
+ * marks a value the build seals against the server's public key (it is injected
+ * as plaintext only inside the sandbox and scrubbed from logs).
+ */
 export const workflow = defineWorkflow({
 	env: {
 		GREETING_PREFIX: env({ default: "Hello" }),
 		WEBHOOK_TOKEN: env({ secret: true }),
 		// RNAcentral's public read-only Postgres. All five fields are plain
-		// config with defaults baked in; the "password" is a publicly
-		// published credential (https://rnacentral.org/help/public-database)
-		// and is not treated as a secret so the workflow can self-bootstrap
-		// without operator-side env exports.
+		// config with defaults; the "password" is a publicly published
+		// credential (https://rnacentral.org/help/public-database), not a
+		// secret, so the example self-bootstraps without operator env exports.
 		RNACENTRAL_HOST: env({ default: "hh-pgsql-public.ebi.ac.uk" }),
 		RNACENTRAL_PORT: env({ default: "5432" }),
 		RNACENTRAL_USER: env({ default: "reader" }),
 		RNACENTRAL_DB: env({ default: "pfmegrnargs" }),
 		// biome-ignore lint/security/noSecrets: RNAcentral publishes this credential publicly; see RNACENTRAL_HOST comment above
 		RNACENTRAL_PASSWORD: env({ default: "NWDMCE5xdipIjRrp" }),
+		IMAP_USER: env({ secret: true }),
+		IMAP_PASSWORD: env({ secret: true }),
 	},
 });
 
+/**
+ * `action({input, output, handler})` defines a typed callable. `input`/`output`
+ * are Zod schemas the runtime validates at the sandbox bridge; the returned
+ * value is itself callable — `await greet({name})` — from any other action or
+ * trigger handler. Action identity is the export name (`greet`).
+ */
 export const greet = action({
 	input: z.object({ name: z.string() }),
 	output: z.string(),
 	handler: async ({ name }) => `${workflow.env.GREETING_PREFIX}, ${name}!`,
 });
 
+/** Action-calls-action: composition is a plain awaited function call. */
 export const shout = action({
 	input: z.object({ name: z.string() }),
 	output: z.string(),
 	handler: async ({ name }) => (await greet({ name })).toUpperCase(),
 });
 
+/** sandbox-stdlib `crypto.subtle` — SHA-256 digest. */
 export const hash = action({
 	input: z.object({ text: z.string() }),
 	output: z.object({ sha256Hex: z.string() }),
@@ -94,12 +142,14 @@ export const hash = action({
 	},
 });
 
+/** sandbox-stdlib `crypto.randomUUID`. An empty input object is valid. */
 export const uuid = action({
 	input: z.object({}),
 	output: z.object({ uuid: z.string() }),
 	handler: async () => ({ uuid: crypto.randomUUID() }),
 });
 
+/** sandbox-stdlib `setTimeout` wrapped in a Promise. */
 export const delay = action({
 	input: z.object({ ms: z.number() }),
 	output: z.object({ delayedMs: z.number() }),
@@ -109,6 +159,7 @@ export const delay = action({
 	},
 });
 
+/** sandbox-stdlib `URL` / `URLSearchParams`. */
 export const parseUrl = action({
 	input: z.object({ url: z.string() }),
 	output: z.object({
@@ -122,6 +173,11 @@ export const parseUrl = action({
 	},
 });
 
+/**
+ * `secret(value)` wraps a computed sensitive value so the log scrubber redacts
+ * it if it is ever logged. Here we HMAC-sign a subject with the sealed
+ * `WEBHOOK_TOKEN` env secret and deliberately log both to show scrubbing.
+ */
 export const signedPing = action({
 	input: z.object({ subject: z.string() }),
 	output: z.object({ sig: z.string() }),
@@ -147,7 +203,7 @@ export const signedPing = action({
 				.map((b) => b.toString(hexRadix).padStart(hexPad, "0"))
 				.join(""),
 		);
-		// biome-ignore lint/suspicious/noConsole: intentional — demo.ts exercises the scrubber by logging known plaintexts
+		// biome-ignore lint/suspicious/noConsole: intentional — exercises the log scrubber by logging known plaintexts
 		console.log(
 			`signing ${subject} with ${workflow.env.WEBHOOK_TOKEN}; sig=${sig}`,
 		);
@@ -155,12 +211,13 @@ export const signedPing = action({
 	},
 });
 
+/** sandbox-stdlib `fetch` happy path — GET and POST JSON. */
 export const fetchEcho = action({
 	input: z.object({ payload: z.object({ hello: z.string() }) }),
 	output: z.object({ get: z.unknown(), post: z.unknown() }),
 	handler: async ({ payload }) => {
 		const getResponse = await fetch("https://httpbin.org/get");
-		// biome-ignore lint/suspicious/noConsole: intentional — demo.ts documents the sandbox-stdlib `console` surface for workflow authors
+		// biome-ignore lint/suspicious/noConsole: intentional — documents the sandbox-stdlib `console` surface
 		console.log(`GET httpbin.org/get -> ${getResponse.status}`);
 		const get = await getResponse.json();
 
@@ -169,7 +226,7 @@ export const fetchEcho = action({
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 		});
-		// biome-ignore lint/suspicious/noConsole: intentional — demo.ts documents the sandbox-stdlib `console` surface for workflow authors
+		// biome-ignore lint/suspicious/noConsole: intentional — documents the sandbox-stdlib `console` surface
 		console.log(`POST httpbin.org/post -> ${postResponse.status}`);
 		const post = await postResponse.json();
 
@@ -177,9 +234,11 @@ export const fetchEcho = action({
 	},
 });
 
-// Demonstrates error handling around fetch — a bad URL triggers a thrown
-// TypeError from the shim, which the handler surfaces as a structured result
-// instead of letting it become an uncaught action error.
+/**
+ * `fetch` error path — a bad URL throws a TypeError from the shim, which the
+ * handler catches and surfaces as a structured result instead of an action
+ * error. The idiomatic pattern for "call may fail, don't crash the invocation".
+ */
 export const fetchSafe = action({
 	input: z.object({ url: z.string() }),
 	output: z.object({ ok: z.boolean(), status: z.number(), error: z.string() }),
@@ -198,13 +257,11 @@ export const fetchSafe = action({
 });
 
 // -----------------------------------------------------------------------------
-// sandbox-stdlib Web Platform surface (see SECURITY.md §2 and
-// packages/sandbox-stdlib/src/web-platform/guest/entry.ts for install order).
-// Each action exercises at least one global per category so that regressions
-// in the polyfill install chain surface in this workflow's bundle.
+// sandbox-stdlib Web Platform surface. Each action exercises at least one global
+// per category so a regression in the polyfill install chain surfaces here.
 // -----------------------------------------------------------------------------
 
-// performance.mark / performance.measure (user-timing polyfill).
+/** `performance.mark` / `performance.measure` (user-timing). */
 export const measure = action({
 	input: z.object({ label: z.string() }),
 	output: z.object({ entries: z.number(), durationMs: z.number() }),
@@ -219,7 +276,7 @@ export const measure = action({
 	},
 });
 
-// EventTarget / Event / CustomEvent (event-target polyfill).
+/** `EventTarget` / `CustomEvent`. */
 export const eventBus = action({
 	input: z.object({ message: z.string() }),
 	output: z.object({ received: z.string() }),
@@ -234,9 +291,11 @@ export const eventBus = action({
 	},
 });
 
-// AbortController / AbortSignal (event-target polyfill). fetch.signal is not
-// plumbed across the host bridge (see fetch.ts header comment), so the demo
-// exercises the controller/signal object shape rather than live cancellation.
+/**
+ * `AbortController` / `AbortSignal`. `fetch.signal` is not plumbed across the
+ * host bridge, so this exercises the controller/signal object shape rather than
+ * live cancellation.
+ */
 export const cancellable = action({
 	input: z.object({}),
 	output: z.object({ aborted: z.boolean(), reason: z.string() }),
@@ -251,8 +310,7 @@ export const cancellable = action({
 	},
 });
 
-// scheduler.postTask (scheduler-polyfill). Uses user-blocking priority so the
-// task runs on the next macrotask boundary even under load.
+/** `scheduler.postTask` (scheduler polyfill), user-blocking priority. */
 export const scheduleTask = action({
 	input: z.object({ value: z.number() }),
 	output: z.object({ doubled: z.number() }),
@@ -264,7 +322,7 @@ export const scheduleTask = action({
 	},
 });
 
-// Observable.subscribe (observable-polyfill, WICG tentative).
+/** `Observable.subscribe` (WICG tentative observable polyfill). */
 export const observeTicks = action({
 	input: z.object({ count: z.number() }),
 	output: z.object({ values: z.array(z.number()) }),
@@ -281,11 +339,12 @@ export const observeTicks = action({
 	},
 });
 
-// executeSql against a public read-only Postgres (RNAcentral's public EBI
-// instance). Credentials are published by EMBL-EBI and exist for exactly this
-// kind of demo. The DSN is assembled from `workflow.env` at handler time
-// rather than stashed at module scope so each run re-reads the
-// (operator-overridable) values.
+/**
+ * `executeSql(dsn, sql, params?)` — parameterized queries against a Postgres
+ * DSN. Runs a healthcheck, a parameterized sample, and a deliberate syntax
+ * error to exercise the `sql.error` path. Targets RNAcentral's public read-only
+ * EBI instance; credentials are published by EMBL-EBI for exactly this use.
+ */
 export const querySql = action({
 	input: z.object({}),
 	output: z.object({
@@ -301,7 +360,6 @@ export const querySql = action({
 			"SELECT upi FROM rna WHERE len = $1 LIMIT 5",
 			[SAMPLE_RNA_LEN],
 		);
-		// Deliberate failure path to exercise sql.error events.
 		let syntaxErrorObserved = false;
 		try {
 			await executeSql(dsn, "SELECT bogus FROM nope");
@@ -316,6 +374,62 @@ export const querySql = action({
 	},
 });
 
+/**
+ * `sendMail(options)` — SMTP send via the mail plugin. Bootstraps throwaway
+ * ethereal.email credentials over the public nodemailer REST endpoint, sends a
+ * tiny message, and returns a clickable preview URL (nothing is delivered).
+ */
+export const sendDemo = action({
+	input: z.object({ to: z.string() }),
+	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
+	handler: async ({ to }) => {
+		const bootstrapRes = await fetch("https://api.nodemailer.com/user", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				requestor: "workflow-engine-example",
+				version: "1",
+			}),
+		});
+		if (!bootstrapRes.ok) {
+			throw new Error(
+				`ethereal bootstrap failed: ${bootstrapRes.status} ${bootstrapRes.statusText}`,
+			);
+		}
+		const creds = (await bootstrapRes.json()) as {
+			user: string;
+			pass: string;
+			smtp: { host: string; port: number; secure: boolean };
+			web: string;
+		};
+
+		const result = await sendMail({
+			smtp: {
+				host: creds.smtp.host,
+				port: creds.smtp.port,
+				tls: "starttls",
+				auth: { user: creds.user, pass: creds.pass },
+			},
+			from: `"Workflow Engine Example" <${creds.user}>`,
+			to,
+			subject: "Hello from workflow-engine",
+			text: "This example was sent via the sandbox-stdlib mail plugin.",
+		});
+
+		const msgIdMatch = (result.response ?? "").match(ETHEREAL_MSGID_RE);
+		const previewId = msgIdMatch?.[1];
+		const viewUrl = previewId
+			? `${creds.web}/message/${previewId}`
+			: `${creds.web}/messages`;
+		return { messageId: result.messageId, viewUrl };
+	},
+});
+
+/**
+ * The orchestrator every trigger dispatches, so each trigger kind exercises the
+ * full surface. A trigger handler is just TypeScript: call actions, compose
+ * their results, return a value.
+ */
 export const runDemo = action({
 	input: z.object({ name: z.string() }),
 	output: z.object({
@@ -359,7 +473,7 @@ export const runDemo = action({
 		const scheduled = await scheduleTask({ value: name.length });
 		const observed = await observeTicks({ count: 3 });
 		const sql = await querySql({});
-		const mail = await sendDemo({ to: `demo+${name}@example.com` });
+		const mail = await sendDemo({ to: `example+${name}@example.com` });
 		return {
 			greeting,
 			shouted,
@@ -380,6 +494,11 @@ export const runDemo = action({
 	},
 });
 
+/**
+ * `httpTrigger` — GET. For HTTP triggers the handler's return value IS the HTTP
+ * response: `{status?, body?, headers?}` (all optional; defaults 200/""/{}).
+ * The public URL is mechanical: `/webhooks/<owner>/<repo>/<workflow>/<export>`.
+ */
 export const ping = httpTrigger({
 	method: "GET",
 	handler: async () => {
@@ -388,12 +507,12 @@ export const ping = httpTrigger({
 	},
 });
 
-// httpTrigger with a strict enum body — calling it with anything other than
-// `{ kind: "A" | "B" }` produces a `trigger.rejection` event in the
-// dashboard. The persisted event's `input.issues[0]` carries `received`,
-// `expected`, and `code` so the dashboard's expanded JSON-tree view shows
-// the actual rejected value, not just the path. Use with:
-//   curl -X POST /webhooks/local-user/demo-repo/demo/rejectMe -d '{"kind":"a"}'
+/**
+ * `httpTrigger` — POST with a strict `request.body` (Zod enum). A body that
+ * fails validation produces a `422` + a `trigger.rejection` event before the
+ * sandbox is entered; the event's `input.issues[0]` carries `received` /
+ * `expected` / `code` for debugging.
+ */
 export const rejectMe = httpTrigger({
 	method: "POST",
 	request: {
@@ -405,10 +524,10 @@ export const rejectMe = httpTrigger({
 	},
 });
 
-// httpTrigger with typed request.headers — `x-trace-id` is optional, so a
-// caller may include it for tracing or omit it; the handler reads the value
-// from the validated payload.headers and echoes it back into the response
-// body. Demonstrates the request-side typed-headers contract.
+/**
+ * `httpTrigger` with typed `request.headers` — `x-trace-id` is optional; the
+ * handler reads it from the validated `payload.headers` and echoes it back.
+ */
 export const echo = httpTrigger({
 	request: {
 		body: z.object({ name: z.string().meta({ example: "world" }) }),
@@ -425,10 +544,12 @@ export const echo = httpTrigger({
 	},
 });
 
-// httpTrigger with `response.body` AND `response.headers` — the SDK makes
-// the response `body` field required and validates it against the schema
-// at handler return; declared `response.headers` are likewise validated.
-// Contrast with `ping` / `echo` above, where the response shape is loose.
+/**
+ * `httpTrigger` with `response.body` AND `response.headers` — when
+ * `response.body` is set the handler MUST return a `body` matching the schema,
+ * and declared `response.headers` are validated on egress. Contrast `ping` /
+ * `echo`, where the response shape is loose.
+ */
 export const greetJson = httpTrigger({
 	method: "POST",
 	request: {
@@ -448,6 +569,7 @@ export const greetJson = httpTrigger({
 	},
 });
 
+/** `cronTrigger` — schedule + explicit IANA tz. Return value is discarded. */
 export const everyFiveMinutes = cronTrigger({
 	schedule: "*/5 * * * *",
 	tz: "UTC",
@@ -456,6 +578,7 @@ export const everyFiveMinutes = cronTrigger({
 	},
 });
 
+/** A second cron with a different timezone. */
 export const dailyBerlin = cronTrigger({
 	schedule: "0 9 * * *",
 	tz: "Europe/Berlin",
@@ -464,10 +587,11 @@ export const dailyBerlin = cronTrigger({
 	},
 });
 
-// Callable-style cron invocation — cronTrigger returns a branded callable, so
-// tests (and other workflow code) can fire it directly without going through
-// the scheduler. The scheduler discards the return value; callable-style
-// usage preserves `Promise<unknown>` per cron-trigger/spec.md §1.
+/**
+ * Callable-style cron invocation — `cronTrigger` returns a branded callable, so
+ * other workflow code (or a test) can fire it directly without the scheduler.
+ * Here an HTTP trigger invokes `everyFiveMinutes()` on demand.
+ */
 export const fireCron = httpTrigger({
 	method: "POST",
 	handler: async () => {
@@ -476,10 +600,13 @@ export const fireCron = httpTrigger({
 	},
 });
 
-// wsTrigger — bidirectional connection. Each inbound frame fires the handler
-// once with `{data}`; the return value is sent back to the originating client
-// as a single text frame (FIFO-correlated with the request). Demo dispatches
-// the same `runDemo` orchestrator so the WS path exercises the full surface.
+/**
+ * `wsTrigger` — bidirectional WebSocket. Each inbound frame fires the handler
+ * once with `{data}` validated against `request`; the returned value is sent
+ * back to the originating client as one text frame (FIFO-correlated).
+ *
+ * Compile-validated here but needs a live WebSocket client to actually run.
+ */
 export const wsRun = wsTrigger({
 	request: z.object({ name: z.string().meta({ example: "ws-demo" }) }),
 	response: z.object({ greeting: z.string(), name: z.string() }),
@@ -489,6 +616,10 @@ export const wsRun = wsTrigger({
 	},
 });
 
+/**
+ * `manualTrigger` — invoked from the trigger UI / tests with a typed `input`
+ * and `output`. The manual caller receives the handler's return value.
+ */
 export const run = manualTrigger({
 	input: z.object({ name: z.string().meta({ example: "world" }) }),
 	output: z.object({ ok: z.boolean() }),
@@ -498,62 +629,7 @@ export const run = manualTrigger({
 	},
 });
 
-// `sendDemo` exercises the mail plugin end-to-end using ethereal.email: we
-// bootstrap throwaway SMTP credentials via the public nodemailer REST endpoint,
-// then send a tiny message through them. Ethereal captures the message and
-// returns a `viewUrl` the operator can click to see it — nothing is actually
-// delivered. Invoked from `runDemo` alongside `querySql` so every trigger
-// exercises the mail path.
-export const sendDemo = action({
-	input: z.object({ to: z.string() }),
-	output: z.object({ messageId: z.string(), viewUrl: z.string() }),
-	handler: async ({ to }) => {
-		const bootstrapRes = await fetch("https://api.nodemailer.com/user", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				requestor: "workflow-engine-demo",
-				version: "1",
-			}),
-		});
-		if (!bootstrapRes.ok) {
-			throw new Error(
-				`ethereal bootstrap failed: ${bootstrapRes.status} ${bootstrapRes.statusText}`,
-			);
-		}
-		const creds = (await bootstrapRes.json()) as {
-			user: string;
-			pass: string;
-			smtp: { host: string; port: number; secure: boolean };
-			web: string;
-		};
-
-		const result = await sendMail({
-			smtp: {
-				host: creds.smtp.host,
-				port: creds.smtp.port,
-				tls: "starttls",
-				auth: { user: creds.user, pass: creds.pass },
-			},
-			from: `"Workflow Engine Demo" <${creds.user}>`,
-			to,
-			subject: "Hello from workflow-engine",
-			text: "This demo was sent via the sandbox-stdlib mail plugin.",
-		});
-
-		// Ethereal encodes its preview-URL id as `MSGID=<id>` inside the raw
-		// SMTP `250 Accepted` response string (what nodemailer's own
-		// `getTestMessageUrl` parses). `creds.web` already includes the
-		// scheme.
-		const msgIdMatch = (result.response ?? "").match(ETHEREAL_MSGID_RE);
-		const previewId = msgIdMatch?.[1];
-		const viewUrl = previewId
-			? `${creds.web}/message/${previewId}`
-			: `${creds.web}/messages`;
-		return { messageId: result.messageId, viewUrl };
-	},
-});
-
+/** An action that throws — drives the `action.error` / `trigger.error` path. */
 export const boom = action({
 	input: z.object({ reason: z.string() }),
 	output: z.null(),
@@ -562,40 +638,65 @@ export const boom = action({
 	},
 });
 
+/** `manualTrigger` whose handler invokes the throwing action — failure demo. */
 export const fail = manualTrigger({
 	input: z.object({
-		reason: z.string().meta({ example: "intentional demo failure" }),
+		reason: z.string().meta({ example: "intentional example failure" }),
 	}),
 	output: z.null(),
 	handler: async ({ reason }) => boom({ reason }),
 });
 
-// Note: `imapTrigger` is intentionally NOT exercised here. `pnpm dev` does not
-// start an IMAP server (that is the separate `pnpm imap` hoodiecrow harness),
-// so an imap trigger cannot run in the default dev fixture. The full imap
-// surface — and every other trigger kind — lives in the SDK's `example.ts`
-// (packages/sdk/example.ts), which is bundle-validated in CI without infra.
-// ---------------------------------------------------------------------------
-// defineQueue — small durable FIFO scoped to this workflow. Items survive
-// across invocations, capped at 1000 entries × 1024 bytes each. Producer
-// and consumer are separate triggers under the same workflow; the
-// `(owner, repo, workflow, queueName)` identity makes the queue invisible
-// to any other workflow.
-// ---------------------------------------------------------------------------
+/**
+ * `imapTrigger` — polls an IMAP mailbox; each matching message fires the
+ * handler with a parsed `msg`. The returned `{command}` is an IMAP command
+ * batch applied to the current UID (here: mark `\Seen` so a message never
+ * re-fires). `host`/`port`/credentials come from workflow env; the secret env
+ * refs are sealed at build and resolved to plaintext by the runtime registry.
+ *
+ * Compile-validated here but needs a running IMAP server to actually run.
+ */
+export const inbound = imapTrigger({
+	host: "localhost",
+	port: 3993,
+	tls: "required",
+	insecureSkipVerify: true,
+	user: workflow.env.IMAP_USER,
+	password: workflow.env.IMAP_PASSWORD,
+	folder: "INBOX",
+	search: "UNSEEN",
+	handler: async (msg) => {
+		try {
+			await runDemo({ name: msg.subject || "email" });
+		} catch (err) {
+			// biome-ignore lint/suspicious/noConsole: intentional — shows handler-internal error capture; the disposition still applies so the message is not re-fired
+			console.log(
+				`inbound handler caught: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		return { command: [`UID STORE ${msg.uid} +FLAGS (\\Seen)`] };
+	},
+});
 
-// Author-facing schema. Build pipeline derives JSON Schema and seeds an
-// empty file at upload time; runtime validates on both put and get.
+// -----------------------------------------------------------------------------
+// `defineQueue` — a small durable FIFO scoped to this workflow. Items survive
+// across invocations, capped at 1000 entries × 1024 bytes each. The
+// `(owner, repo, workflow, queueName)` identity makes the queue invisible to
+// any other workflow. Producer and consumer are separate triggers.
+// -----------------------------------------------------------------------------
+
+/**
+ * `defineQueue({schema})` — the build derives JSON Schema and seeds an empty
+ * file at upload; the runtime validates on both `put` and `get`.
+ */
 export const jobs = defineQueue({
 	schema: z.object({
 		url: z.string().meta({ example: "https://example.com" }),
-		// Small, intentional payload — the 1 KB cap is per item.
 		note: z.exactOptional(z.string().max(JOB_NOTE_MAX)),
 	}),
 });
 
-// Producer: HTTP webhook puts the body straight onto the queue. Demonstrates
-// schema validation at the bridge (mismatch surfaces as a 5xx with a
-// `system.error name="queue.put"` event payload).
+/** Producer: an HTTP webhook puts the validated body straight onto the queue. */
 export const enqueueJob = httpTrigger({
 	method: "POST",
 	request: {
@@ -610,9 +711,11 @@ export const enqueueJob = httpTrigger({
 	},
 });
 
-// Consumer: drains up to N items per invocation; stops when the queue
-// empties (`get()` returns `undefined`). The drainOnce manual trigger
-// gives a single-shot drain for demos / tests.
+/**
+ * Consumer: drains up to N items; `get()` returns `undefined` when empty. Queue
+ * ops are serial by nature — each pop must observe the previous pop's result,
+ * so they cannot be fanned out with `Promise.all`.
+ */
 export const drainOnce = manualTrigger({
 	input: z.object({
 		max: z
@@ -633,7 +736,7 @@ export const drainOnce = manualTrigger({
 	handler: async ({ max }) => {
 		const drained: { url: string; note?: string }[] = [];
 		for (let i = 0; i < max; i++) {
-			// biome-ignore lint/performance/noAwaitInLoops: queue ops are intentionally serial — `get()` removes the head item; we cannot fan out to `Promise.all` because each pop must observe the previous pop's result
+			// biome-ignore lint/performance/noAwaitInLoops: queue ops are intentionally serial — `get()` removes the head item; each pop must observe the previous pop's result
 			const item = await jobs.get();
 			if (item === undefined) {
 				break;
