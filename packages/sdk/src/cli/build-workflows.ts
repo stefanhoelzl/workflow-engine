@@ -9,6 +9,11 @@ import {
 	workflowManifestSchema,
 } from "@workflow-engine/core";
 import MagicString from "magic-string";
+// Classic programmatic compiler API (`ts.createProgram`, `ts.ScriptTarget`,
+// etc.). TypeScript 7's native port removed this from the package root (it now
+// lives under the explicitly-unstable `typescript/unstable/*` with a different
+// shape), so the SDK's `typescript` peer is capped `<7` in package.json until a
+// deliberate TS7 migration reworks this module against the new API.
 import ts from "typescript";
 import { build, normalizePath, type Plugin } from "vite";
 import {
