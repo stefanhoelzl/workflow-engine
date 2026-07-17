@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { type Client, createClient } from "@libsql/client";
 import { LibsqlDialect } from "@libsql/kysely-libsql";
 import { Kysely } from "kysely";
+import { runMigrations } from "../migrate.js";
+import { createTestLogger } from "./logger.js";
 
 // Test helper: open a libSQL-backed Kysely on a `file:` database under `dir`.
 // `createClient` is synchronous. The caller owns the returned `client`'s
@@ -23,6 +25,28 @@ function openMemoryLibsqlDb<T>(): { db: Kysely<T>; client: Client } {
 	return { db, client };
 }
 
+// Migrated variants: open the db, then run the schema migrations to latest —
+// mirroring the production boot order (migrate before the stores open). Since
+// the store factories no longer create schema, tests that build a real store
+// against a fresh db MUST migrate first. Idempotent, so reopening a
+// previously-migrated `file:` db is a safe no-op.
+async function openMigratedLibsqlDb<T>(
+	dir: string,
+): Promise<{ db: Kysely<T>; client: Client }> {
+	const opened = openLibsqlDb<T>(dir);
+	await runMigrations(opened.db, createTestLogger());
+	return opened;
+}
+
+async function openMigratedMemoryLibsqlDb<T>(): Promise<{
+	db: Kysely<T>;
+	client: Client;
+}> {
+	const opened = openMemoryLibsqlDb<T>();
+	await runMigrations(opened.db, createTestLogger());
+	return opened;
+}
+
 interface TempLibsqlDb<T> {
 	db: Kysely<T>;
 	client: Client;
@@ -34,7 +58,7 @@ interface TempLibsqlDb<T> {
 // temp dir + client + db and a `dispose` that tears all three down.
 async function createTempLibsqlDb<T>(): Promise<TempLibsqlDb<T>> {
 	const dir = await mkdtemp(join(tmpdir(), "libsql-test-"));
-	const { db, client } = openLibsqlDb<T>(dir);
+	const { db, client } = await openMigratedLibsqlDb<T>(dir);
 	return {
 		db,
 		client,
@@ -48,4 +72,10 @@ async function createTempLibsqlDb<T>(): Promise<TempLibsqlDb<T>> {
 }
 
 export type { TempLibsqlDb };
-export { createTempLibsqlDb, openLibsqlDb, openMemoryLibsqlDb };
+export {
+	createTempLibsqlDb,
+	openLibsqlDb,
+	openMemoryLibsqlDb,
+	openMigratedLibsqlDb,
+	openMigratedMemoryLibsqlDb,
+};
