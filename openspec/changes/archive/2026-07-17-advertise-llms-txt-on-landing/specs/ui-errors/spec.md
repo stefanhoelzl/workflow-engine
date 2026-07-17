@@ -1,8 +1,5 @@
-# ui-errors Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change redesign-ui. Update Purpose after archive.
-## Requirements
 ### Requirement: 404 page outcome
 
 The runtime SHALL respond to requests for unknown paths whose `Accept` header includes `text/html` with a styled 404 HTML page. The page SHALL render the universal topbar (per `ui-foundation`), a heading "Page not found", a descriptive message ("The page you're looking for doesn't exist."), and a styled link to `/invocations/` labelled "Go to invocations". The page SHALL be served by the global not-found handler at the application level — no reverse-proxy error-interception SHALL be required to produce it.
@@ -92,4 +89,3 @@ The page SHALL also carry the `/llms.txt` discovery pointer per the `llm-docs` "
 - **WHEN** a 5xx response is rendered
 - **THEN** the response body SHALL be produced by the application
 - **AND** the application SHALL NOT depend on any reverse-proxy error-interception plugin to inject the body
-

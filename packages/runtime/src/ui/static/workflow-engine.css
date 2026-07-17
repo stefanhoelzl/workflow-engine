@@ -1057,6 +1057,23 @@ body {
 	border: 0;
 }
 
+/* General-purpose visually-hidden utility: off-screen for sighted users but
+   present in the DOM for assistive tech and text extractors. Uses the
+   clip-rect technique (NOT display:none / hidden / aria-hidden) so the
+   content survives HTML->markdown extraction — this is what makes the
+   /llms.txt agent-discovery anchor on the login and error pages reachable. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
 .trigger-result-close {
 	align-self: flex-end;
 	padding: var(--sp-2) var(--sp-4);

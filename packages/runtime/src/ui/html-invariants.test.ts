@@ -226,6 +226,52 @@ describe("HTML CSP invariants", () => {
 		expect(html).toContain("Workflow Engine");
 	});
 
+	// -----------------------------------------------------------------------
+	// /llms.txt agent-discovery pointer (llm-docs capability)
+	//
+	// The unauthenticated landing surfaces (login + 404 + 5xx) carry a
+	// visually-hidden anchor and a head alternate link to /llms.txt so an
+	// agent handed the bare domain can find the docs. The anchor MUST be
+	// hidden via the .sr-only clip technique — NOT display:none / hidden /
+	// aria-hidden — so it survives HTML->markdown extraction.
+	// -----------------------------------------------------------------------
+
+	const HEAD_LINK =
+		'<link rel="alternate" type="text/markdown" href="/llms.txt"';
+	const SR_ANCHOR = '<a class="sr-only" href="/llms.txt">';
+
+	function loginHtml(): string {
+		return String(LoginPage({ flash: undefined, returnTo: "/", sections: [] }));
+	}
+
+	it("LoginPage advertises the /llms.txt docs index", () => {
+		const html = loginHtml();
+		expect(html).toContain(HEAD_LINK);
+		expect(html).toContain(SR_ANCHOR);
+		// Hidden via class, not display:none / hidden / aria-hidden. The exact
+		// opening tag above proves the anchor carries none of those attrs.
+		expect(html).not.toMatch(/<a[^>]*href="\/llms\.txt"[^>]*aria-hidden/i);
+		expect(html).not.toMatch(/<a[^>]*href="\/llms\.txt"[^>]*\bhidden\b/i);
+	});
+
+	it("NotFoundPage advertises the /llms.txt docs index", () => {
+		expect(notFoundHtml).toContain(HEAD_LINK);
+		expect(notFoundHtml).toContain(SR_ANCHOR);
+	});
+
+	it("ErrorPage advertises the /llms.txt docs index", () => {
+		expect(errorHtml).toContain(HEAD_LINK);
+		expect(errorHtml).toContain(SR_ANCHOR);
+	});
+
+	it("the /llms.txt discovery pointer stays CSP-clean", () => {
+		for (const html of [loginHtml(), notFoundHtml, errorHtml]) {
+			expect(html).not.toMatch(INLINE_STYLE_RE);
+			expect(html).not.toMatch(EVENT_HANDLER_RE);
+			expect(html).not.toMatch(JAVASCRIPT_URL_RE);
+		}
+	});
+
 	it("renderInvocationsPage with user renders the user section", async () => {
 		const html = (
 			await renderInvocationsPage({
