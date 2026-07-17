@@ -18,6 +18,7 @@ import {
 import { createExecutor } from "./executor/index.js";
 import { healthMiddleware } from "./health.js";
 import { createHttpLogger, createLogger } from "./logger.js";
+import { runMigrations } from "./migrate.js";
 import {
 	createQueueStore,
 	type Database as QueueDatabase,
@@ -127,6 +128,16 @@ async function init() {
 			? { wal: config.databaseWal }
 			: { authToken: config.databaseAuthToken.reveal() },
 	);
+	// 2a. Migrate the schema to latest before either store opens. The migrator
+	//     owns all DDL (the stores no longer create tables); a failure here
+	//     aborts boot fail-closed, before any store or HTTP listener exists. A
+	//     dedicated Kysely instance keeps the runner uncoupled from either
+	//     store's typed schema (migrations use raw `sql`).
+	const migrationDb = new Kysely<unknown>({
+		dialect: new LibsqlDialect({ client: sqlClient }),
+	});
+	await runMigrations(migrationDb, runtimeLogger);
+
 	const eventDb = new Kysely<EventDatabase>({
 		dialect: new LibsqlDialect({ client: sqlClient }),
 	});

@@ -23,6 +23,15 @@ const ALLOWLIST = new Set<string>([
 	// reconcile) and references `queue_items` only in module-doc comments —
 	// no raw SQL or table-name strings in code. Allowed sibling.
 	"queue-store-lifecycle.ts",
+	// 0001-initial.ts is the schema-migration that CREATEs the table. This is
+	// schema DDL (owned by the database-migrations capability), not tenant-
+	// scoped data access — there is no (owner, repo, workflow, queue) tuple to
+	// enforce on a CREATE TABLE. Allowed as the one legitimate DDL site.
+	"0001-initial.ts",
+	// migrate.test.ts inspects the migrated schema (PRAGMA, counts) and seeds
+	// raw rows to simulate a pre-migration live database for the baselining
+	// test — deliberately outside the accessor, which is the code under test.
+	"migrate.test.ts",
 ]);
 
 // Patterns that would indicate raw SQL construction against the table from

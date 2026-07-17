@@ -134,26 +134,11 @@ interface QueueStoreOptions {
 // monotonic, never-reused FIFO ordering. This yields the same observable
 // property as DuckDB's former `nextval()` sequence: dense, monotonic seq in
 // commit order, never exposed to guests.
-const CREATE_TABLE_DDL = `
-CREATE TABLE IF NOT EXISTS queue_items (
-	seq            INTEGER PRIMARY KEY AUTOINCREMENT,
-	owner          TEXT NOT NULL,
-	repo           TEXT NOT NULL,
-	workflow       TEXT NOT NULL,
-	queue          TEXT NOT NULL,
-	enqueuedAt     TEXT NOT NULL,
-	invocationId   TEXT NOT NULL,
-	triggerKind    TEXT NOT NULL,
-	triggerName    TEXT NOT NULL,
-	item           TEXT NOT NULL
-)`;
-
-// Index supports both the tenant-tuple WHERE (used by every accessor method)
-// and the MIN(seq)/MAX(seq) lookups behind FIFO get and depth checks.
-const CREATE_INDEX_DDL = `
-CREATE INDEX IF NOT EXISTS queue_items_tuple_seq_idx
-	ON queue_items (owner, repo, workflow, queue, seq)
-`;
+// The `queue_items` table + its tenant-tuple index are created by the migration
+// runner (see migrations/0001-initial.ts), not this factory. The index over
+// (owner, repo, workflow, queue, seq) supports the tenant-tuple WHERE used by
+// every accessor method and the MIN(seq)/MAX(seq) lookups behind FIFO get and
+// depth checks.
 
 function tooLargeError(scope: QueueScope, bytes: number): QueueError {
 	return new QueueError(
@@ -216,13 +201,14 @@ function tupleKey(t: {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DB setup, helper queries, and the public accessor surface that all share the connection — splitting them would leak the connection as module state (mirrors event-store.ts's createEventStore)
+// biome-ignore lint/suspicious/useAwait: async is this factory's contract (returns Promise<QueueStore>, awaited at every call site); schema DDL moved to the migration runner so no await remains in the body
 async function createQueueStore(
 	options: QueueStoreOptions,
 ): Promise<QueueStore> {
 	const { db, logger } = options;
 	const maxWorkflowDepth = options.maxWorkflowDepth ?? MAX_WORKFLOW_QUEUE_DEPTH;
-	await sql.raw(CREATE_TABLE_DDL).execute(db);
-	await sql.raw(CREATE_INDEX_DDL).execute(db);
+	// Schema is ensured by the migration runner before this factory is called;
+	// the factory issues no DDL.
 
 	// Per-queue count — used by the /queue UI for card stats.
 	async function count(scope: QueueScope): Promise<number> {

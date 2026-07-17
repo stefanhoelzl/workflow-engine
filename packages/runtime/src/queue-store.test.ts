@@ -11,7 +11,10 @@ import {
 	type QueueScope,
 	type QueueStore,
 } from "./queue-store.js";
-import { openLibsqlDb, openMemoryLibsqlDb } from "./test-utils/libsql.js";
+import {
+	openMigratedLibsqlDb,
+	openMigratedMemoryLibsqlDb,
+} from "./test-utils/libsql.js";
 import { createTestLogger } from "./test-utils/logger.js";
 
 const SCOPE: QueueScope = {
@@ -38,7 +41,7 @@ describe("QueueStore", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "queue-store-test-"));
-		const opened = openLibsqlDb<Database>(dir);
+		const opened = await openMigratedLibsqlDb<Database>(dir);
 		client = opened.client;
 		store = await createQueueStore({
 			db: opened.db,
@@ -132,7 +135,7 @@ describe("QueueStore", () => {
 		async function withCappedStore(
 			body: (s: QueueStore) => Promise<void>,
 		): Promise<void> {
-			const cap = openMemoryLibsqlDb<Database>();
+			const cap = await openMigratedMemoryLibsqlDb<Database>();
 			const capStore = await createQueueStore({
 				db: cap.db,
 				logger: createTestLogger(),
@@ -381,7 +384,7 @@ describe("QueueStore", () => {
 			await store.close();
 			client.close();
 			// Reopen against the same file
-			const reopened = openLibsqlDb<Database>(dir);
+			const reopened = await openMigratedLibsqlDb<Database>(dir);
 			client = reopened.client;
 			store = await createQueueStore({
 				db: reopened.db,

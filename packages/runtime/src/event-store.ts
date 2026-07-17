@@ -85,31 +85,10 @@ interface EventStore {
 	drainAndClose(): Promise<void>;
 }
 
-const CREATE_TABLE_DDL = `
-CREATE TABLE IF NOT EXISTS events (
-	id TEXT NOT NULL,
-	seq INTEGER NOT NULL,
-	kind TEXT NOT NULL,
-	ref INTEGER,
-	"at" TEXT NOT NULL,
-	ts INTEGER NOT NULL,
-	owner TEXT NOT NULL,
-	repo TEXT NOT NULL,
-	workflow TEXT NOT NULL,
-	workflowSha TEXT NOT NULL,
-	name TEXT NOT NULL,
-	input TEXT,
-	output TEXT,
-	error TEXT,
-	meta TEXT,
-	PRIMARY KEY (id, seq)
-)`;
-
-// Composite index serving the scope + kind + time-ordered dashboard reads. On a
-// row store this narrower index (vs the former owner/repo-only one) is required
-// to keep hot-repo reads sub-millisecond rather than scanning the whole partition.
-const CREATE_DASH_INDEX_DDL =
-	'CREATE INDEX IF NOT EXISTS events_dash_idx ON events (owner, repo, kind, "at")';
+// The `events` table + its dashboard read index are created by the migration
+// runner (see migrations/0001-initial.ts), not this factory. The composite
+// index over (owner, repo, kind, "at") serves the scope + kind + time-ordered
+// dashboard reads.
 
 const MS_PER_DAY = 86_400_000;
 
@@ -189,13 +168,14 @@ interface PendingInvocation {
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: factory closure groups DB setup, accumulator, commit/retry loops, and the public surface that all share the connection — splitting would leak the connection as module state
+// biome-ignore lint/suspicious/useAwait: async is this factory's contract (returns Promise<EventStore>, awaited at every call site); schema DDL moved to the migration runner so no await remains in the body
 async function createEventStore(
 	options: EventStoreOptions,
 ): Promise<EventStore> {
 	const { db, logger, config } = options;
 
-	await sql.raw(CREATE_TABLE_DDL).execute(db);
-	await sql.raw(CREATE_DASH_INDEX_DDL).execute(db);
+	// Schema is ensured by the migration runner before this factory is called;
+	// the factory issues no DDL.
 
 	const accumulator = new Map<string, PendingInvocation>();
 	let stopped = false;

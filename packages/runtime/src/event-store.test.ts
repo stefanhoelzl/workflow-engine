@@ -12,7 +12,7 @@ import {
 	type EventStoreConfig,
 } from "./event-store.js";
 import type { Logger } from "./logger.js";
-import { openLibsqlDb } from "./test-utils/libsql.js";
+import { openMigratedLibsqlDb } from "./test-utils/libsql.js";
 import { createTestLogger } from "./test-utils/logger.js";
 
 function defaultConfig(
@@ -57,7 +57,7 @@ describe("EventStore", () => {
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "event-store-test-"));
 		logger = createTestLogger();
-		const opened = openLibsqlDb<Database>(dir);
+		const opened = await openMigratedLibsqlDb<Database>(dir);
 		db = opened.db;
 		clients = [opened.client];
 	});
@@ -354,7 +354,7 @@ describe("EventStore", () => {
 			// drainAndClose synthesises a trigger.error{shutdown} and commits.
 			await store.drainAndClose();
 			// Re-open against the same file to query the durable state.
-			const reopened = openLibsqlDb<Database>(dir);
+			const reopened = await openMigratedLibsqlDb<Database>(dir);
 			clients.push(reopened.client);
 			const reopen = await createEventStore({
 				db: reopened.db,
@@ -606,7 +606,7 @@ describe("EventStore", () => {
 			await commitInvocation(store, "evt_recent", "2026-06-01T00:00:00.000Z");
 			await store.prune({ olderThan: new Date("2026-03-01T00:00:00.000Z") });
 			await store.drainAndClose();
-			const reopened = openLibsqlDb<Database>(dir);
+			const reopened = await openMigratedLibsqlDb<Database>(dir);
 			clients.push(reopened.client);
 			const reopen = await createEventStore({
 				db: reopened.db,
