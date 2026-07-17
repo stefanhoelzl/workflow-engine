@@ -1,5 +1,6 @@
 import { raw } from "hono/html";
 import { TopBar } from "./icons.js";
+import { LlmsDocsHeadLink, LlmsDocsPointer } from "./shared/llms-discovery.js";
 
 // Error pages — rendered per-request via c.html(<NotFoundPage/>) /
 // c.html(<ErrorPage/>) by the global notFound / onError handlers.
@@ -51,8 +52,10 @@ function ErrorShell({
 					/>
 					<title>{title}</title>
 					<link rel="stylesheet" href="/static/workflow-engine.css" />
+					<LlmsDocsHeadLink />
 				</head>
 				<body class={bodyClass}>
+					<LlmsDocsPointer />
 					<TopBar {...topBarProps} />
 					<div class="error-content">
 						<div class="error-card">

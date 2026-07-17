@@ -2,6 +2,7 @@ import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
 import type { FlashPayload } from "../../auth/flash-cookie.js";
 import type { LoginSection } from "../../auth/providers/index.js";
+import { LlmsDocsHeadLink, LlmsDocsPointer } from "../shared/llms-discovery.js";
 
 interface BannerContent {
 	readonly title: string;
@@ -62,8 +63,10 @@ function LoginPage({ flash, sections }: LoginPageProps) {
 					/>
 					<title>{title}</title>
 					<link rel="stylesheet" href="/static/workflow-engine.css" />
+					<LlmsDocsHeadLink />
 				</head>
 				<body class="auth-page">
+					<LlmsDocsPointer />
 					<main class="auth-card">
 						<h1 class="auth-card__title">
 							Sign in to <span class="auth-card__brand">Workflow Engine</span>

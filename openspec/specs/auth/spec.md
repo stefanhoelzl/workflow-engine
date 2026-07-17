@@ -713,15 +713,16 @@ Behavior:
 4. Respond `200 OK` with an HTML page containing:
    - The universal topbar per the `ui-foundation` "Universal topbar" requirement, rendered without user identity (the visitor is by definition not logged in on this route).
    - The provider sections from step 3 (or no sections if the registry is empty).
+   - The `/llms.txt` discovery pointer per the `llm-docs` "Unauthenticated landing advertises the `/llms.txt` index" requirement: a `<link rel="alternate" type="text/markdown" href="/llms.txt">` in `<head>` and a visually-hidden (`sr-only`) in-DOM anchor to `/llms.txt` in the body. Both are fixed constants reflecting no request input and SHALL NOT alter the visible login card.
    - If the flash payload was `{ kind: "denied", login }`: a "Not authorized" banner identifying the rejected login and containing an inline prose link to `https://github.com/logout` framed as account-switching guidance (for example, "To try a different account, sign out of GitHub first"). The link SHALL be rendered as a plain anchor inside the banner body, SHALL include `target="_blank"` and `rel="noopener noreferrer"`, and SHALL NOT be rendered as a styled action button in the action area.
    - If the flash payload was `{ kind: "logged-out" }`: a "Signed out" banner with no GitHub-related body addendum and no GitHub signout link anywhere on the page.
    - No banner when no flash cookie is present.
 
 The HTML SHALL contain no inline script, no inline style, no `on*=` event-handler attributes, and no `style=` attributes, per the app's CSP. The page SHALL render the universal topbar (per `ui-foundation`) but SHALL NOT include other authenticated app chrome — the sidebar and tenant selector SHALL NOT appear, since the visitor is unauthenticated and has no scope-bearing context to display.
 
-The login card itself SHALL NOT embed a separate brand element — branding is delivered exclusively by the universal topbar above the card. The card body SHALL contain only the provider sections and any active flash banner.
+The login card itself SHALL NOT embed a separate brand element — branding is delivered exclusively by the universal topbar above the card. The card body SHALL contain only the provider sections and any active flash banner. (The `sr-only` discovery anchor is not a visible card element and does not count as visible card content.)
 
-When the registry is empty, the rendered card SHALL contain no provider sections and any active flash banner; the page SHALL still respond `200 OK`. It is not an error to have no providers configured. The universal topbar SHALL render its brand wordmark regardless of registry composition.
+When the registry is empty, the rendered card SHALL contain no provider sections and any active flash banner; the page SHALL still respond `200 OK`. It is not an error to have no providers configured. The universal topbar SHALL render its brand wordmark regardless of registry composition. The `/llms.txt` discovery pointer SHALL be present regardless of registry composition.
 
 The `GET /login` handler SHALL NOT consult any provider-specific hook to render flash-banner addenda. `AuthProvider` SHALL NOT expose `renderFlashBody` or `renderFlashAction` methods; banner content is decided entirely by the login-page renderer from the `FlashPayload.kind` discriminator.
 
@@ -765,6 +766,13 @@ The `GET /login` handler SHALL NOT consult any provider-specific hook to render 
 - **AND** the topbar SHALL display the brand wordmark
 - **AND** the topbar SHALL NOT display any user identity element (since the visitor is unauthenticated)
 - **AND** the body SHALL NOT contain a sidebar element
+
+#### Scenario: Login page advertises the `/llms.txt` docs index
+
+- **WHEN** `GET /login` is requested with any registry composition
+- **THEN** the response body SHALL contain a visually-hidden (`sr-only`) anchor with `href="/llms.txt"`
+- **AND** the response `<head>` SHALL contain `<link rel="alternate" type="text/markdown" href="/llms.txt">`
+- **AND** the discovery anchor SHALL NOT be hidden via `display:none`, the `hidden` attribute, or `aria-hidden="true"`
 
 #### Scenario: Denied flash renders inline account-switch link, not an action button
 

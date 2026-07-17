@@ -233,6 +233,13 @@ Branding is text-only ("Workflow Engine") in `--accent`. There is no SVG logo; i
 - Title in `--text` (16px, semibold), message in `--text-secondary`, link styled as `.btn--primary` (so it visually matches the dashboard's primary CTA).
 - Both pages render the universal topbar; user identity appears when the request resolved a session.
 
+### Visually-hidden utilities (`.sr-live`, `.sr-only`)
+
+Two clip-rect (`position:absolute; 1px; clip: rect(0,0,0,0)`) helpers keep content in the DOM but off-screen — do NOT use `display:none`/`hidden`/`aria-hidden` for these, as that removes the content from assistive tech and text extractors.
+
+- `.sr-live` — a screen-reader live region (`role="status" aria-live="polite"`), e.g. the JSON-tree "Copied" announcement.
+- `.sr-only` — general-purpose visually-hidden content. Used for the `/llms.txt` agent-discovery pointer on the login and error pages: an `<a class="sr-only" href="/llms.txt">` (plus a `<link rel="alternate" type="text/markdown" href="/llms.txt">` in `<head>`) so an agent handed the bare domain can find the docs index. The anchor is invisible to sighted users but survives WebFetch's HTML→markdown extraction. Rendered by `ui/shared/llms-discovery.tsx`; both are fixed constants (no request input) and CSP-clean.
+
 ## Migration phases (from `redesign-ui` proposal)
 
 1. **Token swap** — CSS variables only, no surface changes. Visual diff is the colour shift.
