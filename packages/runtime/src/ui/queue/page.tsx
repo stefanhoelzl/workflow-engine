@@ -143,6 +143,8 @@ function renderScopeQueuePage(options: ScopeQueuePageOptions): string {
 interface ItemRow {
 	readonly seq: number;
 	readonly item: unknown;
+	// Partition key; '' is the unkeyed partition (rendered without a badge).
+	readonly key: string;
 	readonly triggerKind: string;
 	readonly triggerName: string;
 	readonly enqueuedAt: Date;
@@ -218,6 +220,11 @@ function ItemRowEl({
 			<span class="entry-identity">
 				<span class="entry-trigger">{row.triggerName}</span>
 			</span>
+			{row.key === "" ? null : (
+				<span class="entry-scope" title={`partition key: ${row.key}`}>
+					key={row.key}
+				</span>
+			)}
 			<time
 				class="entry-age"
 				datetime={enqueuedIso}

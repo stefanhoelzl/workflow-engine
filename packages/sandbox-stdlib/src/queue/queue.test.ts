@@ -1,6 +1,7 @@
 import type { PluginContext } from "@workflow-engine/sandbox";
 import { describe, expect, it, vi } from "vitest";
 import type { QueueHostApi } from "./host-contract.js";
+import { guest, QUEUE_DISPATCHER_NAME } from "./index.js";
 import type { ActiveContext } from "./worker.js";
 import { dispatchGet, dispatchPut, mapHostError } from "./worker.js";
 
@@ -45,10 +46,11 @@ describe("dispatchPut", () => {
 				return null;
 			},
 		});
-		await dispatchPut(ctx, ACTIVE, "jobs", { url: "https://example.com" });
+		await dispatchPut(ctx, ACTIVE, "jobs", { url: "https://example.com" }, "");
 		expect(received).toEqual({
 			queue: "jobs",
 			item: { url: "https://example.com" },
+			key: "",
 			repo: "foo",
 			invocationId: "inv-a3f2",
 			triggerKind: "cron",
@@ -60,7 +62,7 @@ describe("dispatchPut", () => {
 
 	it("returns null result wire", async () => {
 		const ctx = stubCtx({ put: async () => null });
-		const r = await dispatchPut(ctx, ACTIVE, "jobs", {});
+		const r = await dispatchPut(ctx, ACTIVE, "jobs", {}, "");
 		expect(r).toBeNull();
 	});
 
@@ -73,7 +75,9 @@ describe("dispatchPut", () => {
 				throw e;
 			},
 		});
-		await expect(dispatchPut(ctx, ACTIVE, "jobs", {})).rejects.toMatchObject({
+		await expect(
+			dispatchPut(ctx, ACTIVE, "jobs", {}, ""),
+		).rejects.toMatchObject({
 			code: "queue.itemTooLarge",
 			message: "item too big",
 		});
@@ -85,7 +89,9 @@ describe("dispatchPut", () => {
 				throw new Error("worker port closed");
 			},
 		});
-		await expect(dispatchPut(ctx, ACTIVE, "jobs", {})).rejects.toMatchObject({
+		await expect(
+			dispatchPut(ctx, ACTIVE, "jobs", {}, ""),
+		).rejects.toMatchObject({
 			code: "queue.gone",
 		});
 	});
@@ -100,13 +106,13 @@ describe("dispatchGet", () => {
 				return { found: false };
 			},
 		});
-		await dispatchGet(ctx, ACTIVE, "jobs");
-		expect(received).toEqual({ queue: "jobs", repo: "foo" });
+		await dispatchGet(ctx, ACTIVE, "jobs", "");
+		expect(received).toEqual({ queue: "jobs", repo: "foo", key: "" });
 	});
 
 	it("returns {found: false} on empty queue", async () => {
 		const ctx = stubCtx({ get: async () => ({ found: false }) });
-		const r = await dispatchGet(ctx, ACTIVE, "jobs");
+		const r = await dispatchGet(ctx, ACTIVE, "jobs", "");
 		expect(r).toEqual({ found: false });
 	});
 
@@ -114,7 +120,7 @@ describe("dispatchGet", () => {
 		const ctx = stubCtx({
 			get: async () => ({ found: true, item: { url: "https://a" } }),
 		});
-		const r = await dispatchGet(ctx, ACTIVE, "jobs");
+		const r = await dispatchGet(ctx, ACTIVE, "jobs", "");
 		expect(r).toEqual({ found: true, item: { url: "https://a" } });
 	});
 
@@ -130,10 +136,47 @@ describe("dispatchGet", () => {
 				throw e;
 			},
 		});
-		await expect(dispatchGet(ctx, ACTIVE, "jobs")).rejects.toMatchObject({
+		await expect(dispatchGet(ctx, ACTIVE, "jobs", "")).rejects.toMatchObject({
 			code: "queue.schemaMismatch",
 			item: droppedItem,
 		});
+	});
+});
+
+describe("guest shim __queue", () => {
+	it("defaults an omitted key to '' and forwards explicit keys", async () => {
+		const calls: unknown[] = [];
+		const g = globalThis as Record<string, unknown>;
+		g[QUEUE_DISPATCHER_NAME] = async (input: unknown) => {
+			calls.push(input);
+			return { found: false };
+		};
+		// guest() installs a locked `__queue` global exactly once.
+		guest();
+		const q = g.__queue as {
+			put: (n: string, i: unknown, k?: string) => Promise<void>;
+			get: (n: string, k?: string) => Promise<unknown>;
+		};
+
+		await q.put("jobs", { x: 1 });
+		await q.get("jobs");
+		await q.put("jobs", { x: 2 }, "alice");
+		await q.get("jobs", "bob");
+
+		expect(calls[0]).toEqual({
+			op: "put",
+			name: "jobs",
+			item: { x: 1 },
+			key: "",
+		});
+		expect(calls[1]).toEqual({ op: "get", name: "jobs", key: "" });
+		expect(calls[2]).toEqual({
+			op: "put",
+			name: "jobs",
+			item: { x: 2 },
+			key: "alice",
+		});
+		expect(calls[3]).toEqual({ op: "get", name: "jobs", key: "bob" });
 	});
 });
 

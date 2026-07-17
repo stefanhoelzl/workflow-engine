@@ -28,6 +28,9 @@ const ALLOWLIST = new Set<string>([
 	// scoped data access — there is no (owner, repo, workflow, queue) tuple to
 	// enforce on a CREATE TABLE. Allowed as the one legitimate DDL site.
 	"0001-initial.ts",
+	// 0002-queue-key.ts ALTERs queue_items to add the `key` column + index —
+	// schema DDL, same rationale as 0001-initial.ts.
+	"0002-queue-key.ts",
 	// migrate.test.ts inspects the migrated schema (PRAGMA, counts) and seeds
 	// raw rows to simulate a pre-migration live database for the baselining
 	// test — deliberately outside the accessor, which is the code under test.

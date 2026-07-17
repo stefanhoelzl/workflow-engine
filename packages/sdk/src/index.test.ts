@@ -1334,7 +1334,28 @@ describe("defineQueue", () => {
 			schema: z.object({ url: z.string() }),
 		});
 		await q.put({ url: "https://example.com" });
-		expect(put).toHaveBeenCalledWith("jobs", { url: "https://example.com" });
+		// key is forwarded as undefined when omitted; the guest shim (not the
+		// SDK) materializes the '' default.
+		expect(put).toHaveBeenCalledWith(
+			"jobs",
+			{ url: "https://example.com" },
+			undefined,
+		);
+	});
+
+	it("put forwards an explicit partition key", async () => {
+		const put = vi.fn(async () => undefined);
+		(globalThis as Record<string, unknown>).__queue = { put, get: vi.fn() };
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({ url: z.string() }),
+		});
+		await q.put({ url: "https://example.com" }, "alice");
+		expect(put).toHaveBeenCalledWith(
+			"jobs",
+			{ url: "https://example.com" },
+			"alice",
+		);
 	});
 
 	it("get dispatches via globalThis.__queue.get with the handle name and forwards the result", async () => {
@@ -1345,8 +1366,19 @@ describe("defineQueue", () => {
 			schema: z.object({ url: z.string() }),
 		});
 		const result = await q.get();
-		expect(get).toHaveBeenCalledWith("jobs");
+		expect(get).toHaveBeenCalledWith("jobs", undefined);
 		expect(result).toEqual({ url: "https://example.com" });
+	});
+
+	it("get forwards an explicit partition key", async () => {
+		const get = vi.fn(async () => ({ url: "https://example.com" }));
+		(globalThis as Record<string, unknown>).__queue = { put: vi.fn(), get };
+		const q = defineQueue({
+			name: "jobs",
+			schema: z.object({ url: z.string() }),
+		});
+		await q.get("alice");
+		expect(get).toHaveBeenCalledWith("jobs", "alice");
 	});
 
 	it("throws when the queue dispatcher is missing", async () => {
@@ -1393,6 +1425,6 @@ describe("defineQueue", () => {
 		// Type-level: argument must satisfy {count: number}; runtime is the
 		// host's job, so we just verify the call passed through.
 		await q.put({ count: 42 });
-		expect(put).toHaveBeenCalledWith("typed", { count: 42 });
+		expect(put).toHaveBeenCalledWith("typed", { count: 42 }, undefined);
 	});
 });

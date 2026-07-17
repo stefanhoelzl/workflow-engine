@@ -380,6 +380,7 @@ describe("HTML CSP invariants", () => {
 				{
 					seq: 1,
 					item: { a: 1 },
+					key: "alice",
 					triggerKind: "cron",
 					triggerName: "tick",
 					enqueuedAt: new Date("2026-05-16T12:00:00Z"),
@@ -387,6 +388,7 @@ describe("HTML CSP invariants", () => {
 				{
 					seq: 2,
 					item: { b: 2 },
+					key: "",
 					triggerKind: "http",
 					triggerName: "submit",
 					enqueuedAt: new Date("2026-05-16T12:00:01Z"),

@@ -44,11 +44,15 @@ function dispatchViaSdk(
 // actions: cross the bridge via host-installed function, not directly.
 
 interface QueueGuestApi {
-	put?: (name: string, item: unknown) => Promise<void>;
-	get?: (name: string) => Promise<unknown>;
+	put?: (name: string, item: unknown, key?: string) => Promise<void>;
+	get?: (name: string, key?: string) => Promise<unknown>;
 }
 
-function dispatchQueuePut(name: string, item: unknown): Promise<void> {
+function dispatchQueuePut(
+	name: string,
+	item: unknown,
+	key?: string,
+): Promise<void> {
 	const api = (globalThis as Record<string, unknown>).__queue as
 		| QueueGuestApi
 		| undefined;
@@ -57,10 +61,10 @@ function dispatchQueuePut(name: string, item: unknown): Promise<void> {
 			"No queue dispatcher installed; queues can only be used inside the workflow sandbox",
 		);
 	}
-	return api.put(name, item);
+	return api.put(name, item, key);
 }
 
-function dispatchQueueGet(name: string): Promise<unknown> {
+function dispatchQueueGet(name: string, key?: string): Promise<unknown> {
 	const api = (globalThis as Record<string, unknown>).__queue as
 		| QueueGuestApi
 		| undefined;
@@ -69,7 +73,7 @@ function dispatchQueueGet(name: string): Promise<unknown> {
 			"No queue dispatcher installed; queues can only be used inside the workflow sandbox",
 		);
 	}
-	return api.get(name);
+	return api.get(name, key);
 }
 
 // ---------------------------------------------------------------------------
@@ -405,8 +409,10 @@ interface Queue<T = unknown> {
 	readonly [QUEUE_BRAND]: true;
 	readonly name: string;
 	readonly schema: z.ZodType<T>;
-	put(item: T): Promise<void>;
-	get(): Promise<T | undefined>;
+	// `key` names a partition within the queue; omit it for the unkeyed
+	// partition. `get(key)` pops FIFO within that key only; `get()` ≡ `get('')`.
+	put(item: T, key?: string): Promise<void>;
+	get(key?: string): Promise<T | undefined>;
 }
 
 /**
@@ -426,21 +432,21 @@ function defineQueue<Schema extends z.ZodType = z.ZodAny>(config: {
 		[QUEUE_BRAND]: true,
 		name: assignedName ?? "",
 		schema,
-		async put(item: unknown): Promise<void> {
+		async put(item: unknown, key?: string): Promise<void> {
 			if (assignedName === undefined || assignedName === "") {
 				throw new Error(
 					"Queue constructed without a name; build via the wfe CLI (which name-injects via AST transform)",
 				);
 			}
-			await dispatchQueuePut(assignedName, item);
+			await dispatchQueuePut(assignedName, item, key);
 		},
-		async get(): Promise<unknown> {
+		async get(key?: string): Promise<unknown> {
 			if (assignedName === undefined || assignedName === "") {
 				throw new Error(
 					"Queue constructed without a name; build via the wfe CLI (which name-injects via AST transform)",
 				);
 			}
-			return await dispatchQueueGet(assignedName);
+			return await dispatchQueueGet(assignedName, key);
 		},
 	};
 	return Object.freeze(handle) as unknown as Queue<z.infer<Schema>>;

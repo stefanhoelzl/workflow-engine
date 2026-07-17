@@ -22,6 +22,10 @@ const queuePutArgsSchema = z.tuple([
 	z.object({
 		queue: z.string(),
 		repo: z.string(),
+		// Partition key. Always an explicit string on the wire ('' = unkeyed);
+		// the guest shim materializes the default so the host never sees an
+		// omitted key. Length is bounded MAIN-side (queue.keyTooLarge).
+		key: z.string(),
 		invocationId: z.string(),
 		triggerKind: z.string(),
 		triggerName: z.string(),
@@ -38,6 +42,8 @@ const queueGetArgsSchema = z.tuple([
 	z.object({
 		queue: z.string(),
 		repo: z.string(),
+		// Partition key to pop from ('' = unkeyed). Always explicit on the wire.
+		key: z.string(),
 	}),
 ]);
 

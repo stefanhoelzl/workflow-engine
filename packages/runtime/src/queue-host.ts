@@ -5,7 +5,25 @@ import {
 	queuePutContract,
 } from "../../sandbox-stdlib/src/queue/host-contract.js";
 import { defineHostMethod } from "./host-call.js";
-import { QueueError, type QueueScope, type QueueStore } from "./queue-store.js";
+import {
+	MAX_KEY_BYTES,
+	QueueError,
+	type QueueScope,
+	type QueueStore,
+} from "./queue-store.js";
+
+// Reject an over-long partition key before any statement touches the store.
+// The key is a column value (never a path), so only the length bound applies;
+// it is independent of the per-item size cap. Enforced host-side so a tampered
+// guest cannot bypass it.
+function assertKeyWithinCap(queue: string, key: string): void {
+	if (Buffer.byteLength(key, "utf8") > MAX_KEY_BYTES) {
+		throw new QueueError(
+			"queue.keyTooLarge",
+			`queue "${queue}" key exceeds size cap: ${String(Buffer.byteLength(key, "utf8"))} > ${String(MAX_KEY_BYTES)} bytes`,
+		);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // queue-host — per-sandbox host handlers for `queue.put` and `queue.get`.
@@ -58,6 +76,7 @@ function buildQueueHostHandlers(
 		"queue.put",
 		queuePutContract,
 		async ([args]) => {
+			assertKeyWithinCap(args.queue, args.key);
 			// Schema validation for declared queues only. An undeclared name
 			// (tampered guest) has no validator; store the item as-is.
 			const validator = validators.get(args.queue);
@@ -82,7 +101,7 @@ function buildQueueHostHandlers(
 			// queueStore.put stamps enqueuedAt at INSERT and enforces the
 			// workflow-wide depth cap; it may throw QueueError (cap/size) —
 			// let it propagate, same class, same wire round-trip.
-			await queueStore.put(scope, data, {
+			await queueStore.put(scope, data, args.key, {
 				enqueuedAt: new Date(),
 				invocationId: args.invocationId,
 				triggerKind: args.triggerKind,
@@ -96,13 +115,14 @@ function buildQueueHostHandlers(
 		"queue.get",
 		queueGetContract,
 		async ([args]) => {
+			assertKeyWithinCap(args.queue, args.key);
 			const scope: QueueScope = {
 				owner,
 				repo: args.repo,
 				workflow,
 				queue: args.queue,
 			};
-			const popped = await queueStore.get(scope);
+			const popped = await queueStore.get(scope, args.key);
 			if (popped === undefined) {
 				return { found: false as const };
 			}

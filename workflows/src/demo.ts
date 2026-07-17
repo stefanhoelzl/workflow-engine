@@ -602,10 +602,15 @@ export const enqueueJob = httpTrigger({
 		body: z.object({
 			url: z.string(),
 			note: z.exactOptional(z.string().max(JOB_NOTE_MAX)),
+			// Optional partition key: routes the item to a mailbox within the
+			// queue. Omitted → the unkeyed partition. `key` is addressing, not
+			// part of the item, so it is kept out of the queue schema.
+			key: z.exactOptional(z.string()),
 		}),
 	},
 	handler: async ({ body }) => {
-		await jobs.put(body);
+		const { key, ...job } = body;
+		await jobs.put(job, key);
 		return { status: 202, body: { enqueued: true } };
 	},
 });
@@ -621,6 +626,9 @@ export const drainOnce = manualTrigger({
 			.min(1)
 			.max(DRAIN_MAX_ITEMS)
 			.default(DRAIN_DEFAULT_ITEMS),
+		// Which partition to drain. Omitted → the unkeyed partition; `get(key)`
+		// pops FIFO within that key only, never another key's items.
+		key: z.exactOptional(z.string()),
 	}),
 	output: z.object({
 		drained: z.array(
@@ -630,11 +638,11 @@ export const drainOnce = manualTrigger({
 			}),
 		),
 	}),
-	handler: async ({ max }) => {
+	handler: async ({ max, key }) => {
 		const drained: { url: string; note?: string }[] = [];
 		for (let i = 0; i < max; i++) {
 			// biome-ignore lint/performance/noAwaitInLoops: queue ops are intentionally serial — `get()` removes the head item; we cannot fan out to `Promise.all` because each pop must observe the previous pop's result
-			const item = await jobs.get();
+			const item = await jobs.get(key);
 			if (item === undefined) {
 				break;
 			}

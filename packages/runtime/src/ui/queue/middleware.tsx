@@ -326,6 +326,7 @@ function queueMiddleware(deps: QueueMiddlewareDeps): Middleware {
 		const items = rows.map((r) => ({
 			seq: r.seq,
 			item: r.item,
+			key: r.key,
 			triggerKind: r.triggerKind,
 			triggerName: r.triggerName,
 			enqueuedAt: r.enqueuedAt,
