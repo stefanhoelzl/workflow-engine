@@ -113,7 +113,7 @@ async function seed(
 ): Promise<void> {
 	for (const item of items) {
 		// biome-ignore lint/performance/noAwaitInLoops: FIFO insertion order is the test contract; parallel puts would race the global IDENTITY counter and assertions over item order would become non-deterministic
-		await queueStore.put(scope, item, meta());
+		await queueStore.put(scope, item, "", meta());
 	}
 }
 
@@ -218,6 +218,25 @@ describe("queue middleware — items fragment", () => {
 		expect(html).not.toMatch(/<html\b/i);
 		expect(html).not.toMatch(/<body\b/i);
 		expect(html).toMatch(/id="qi-/);
+	});
+
+	it("renders a key badge on keyed rows and none on unkeyed rows", async () => {
+		const registry = makeRegistry([
+			{ owner: "t0", repo: "r0", workflow: "w", queues: ["q"] },
+		]);
+		const scope = { owner: "t0", repo: "r0", workflow: "w", queue: "q" };
+		// One keyed item, one unkeyed — interleaved by insertion (seq) order.
+		await queueStore.put(scope, { a: 1 }, "alice", meta());
+		await queueStore.put(scope, { b: 2 }, "", meta());
+		const app = mount(registry, queueStore, memberSessionMw(["t0"]));
+		const res = await app.request("/queue/t0/r0/w/q/items");
+		const html = await res.text();
+		// Both rows render…
+		expect((html.match(/id="qi-/g) ?? []).length).toBe(2);
+		// …the keyed row shows its badge, and it appears exactly once (the
+		// unkeyed row renders no badge).
+		expect(html).toContain("key=alice");
+		expect((html.match(/key=/g) ?? []).length).toBe(1);
 	});
 
 	it("paginates with offset, including a load-more when more remain", async () => {

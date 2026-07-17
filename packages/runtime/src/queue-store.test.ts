@@ -57,8 +57,8 @@ describe("QueueStore", () => {
 
 	describe("put / get round-trip", () => {
 		it("get returns the item value with producer metadata", async () => {
-			await store.put(SCOPE, { url: "https://example.com" }, meta());
-			const popped = await store.get(SCOPE);
+			await store.put(SCOPE, { url: "https://example.com" }, "", meta());
+			const popped = await store.get(SCOPE, "");
 			expect(popped).toBeDefined();
 			expect(popped?.item).toEqual({ url: "https://example.com" });
 			expect(popped?.invocationId).toBe("inv-a3f2");
@@ -68,31 +68,31 @@ describe("QueueStore", () => {
 		});
 
 		it("get on empty queue returns undefined", async () => {
-			const popped = await store.get(SCOPE);
+			const popped = await store.get(SCOPE, "");
 			expect(popped).toBeUndefined();
 		});
 
 		it("preserves FIFO order", async () => {
-			await store.put(SCOPE, { i: 1 }, meta());
-			await store.put(SCOPE, { i: 2 }, meta());
-			await store.put(SCOPE, { i: 3 }, meta());
-			expect((await store.get(SCOPE))?.item).toEqual({ i: 1 });
-			expect((await store.get(SCOPE))?.item).toEqual({ i: 2 });
-			expect((await store.get(SCOPE))?.item).toEqual({ i: 3 });
-			expect(await store.get(SCOPE)).toBeUndefined();
+			await store.put(SCOPE, { i: 1 }, "", meta());
+			await store.put(SCOPE, { i: 2 }, "", meta());
+			await store.put(SCOPE, { i: 3 }, "", meta());
+			expect((await store.get(SCOPE, ""))?.item).toEqual({ i: 1 });
+			expect((await store.get(SCOPE, ""))?.item).toEqual({ i: 2 });
+			expect((await store.get(SCOPE, ""))?.item).toEqual({ i: 3 });
+			expect(await store.get(SCOPE, "")).toBeUndefined();
 		});
 
 		it("preserves FIFO independently across queues sharing IDENTITY", async () => {
 			const a: QueueScope = { ...SCOPE, queue: "a" };
 			const b: QueueScope = { ...SCOPE, queue: "b" };
-			await store.put(a, { q: "a", i: 1 }, meta());
-			await store.put(b, { q: "b", i: 1 }, meta());
-			await store.put(a, { q: "a", i: 2 }, meta());
-			await store.put(b, { q: "b", i: 2 }, meta());
-			expect((await store.get(a))?.item).toEqual({ q: "a", i: 1 });
-			expect((await store.get(b))?.item).toEqual({ q: "b", i: 1 });
-			expect((await store.get(a))?.item).toEqual({ q: "a", i: 2 });
-			expect((await store.get(b))?.item).toEqual({ q: "b", i: 2 });
+			await store.put(a, { q: "a", i: 1 }, "", meta());
+			await store.put(b, { q: "b", i: 1 }, "", meta());
+			await store.put(a, { q: "a", i: 2 }, "", meta());
+			await store.put(b, { q: "b", i: 2 }, "", meta());
+			expect((await store.get(a, ""))?.item).toEqual({ q: "a", i: 1 });
+			expect((await store.get(b, ""))?.item).toEqual({ q: "b", i: 1 });
+			expect((await store.get(a, ""))?.item).toEqual({ q: "a", i: 2 });
+			expect((await store.get(b, ""))?.item).toEqual({ q: "b", i: 2 });
 		});
 
 		it("preserves newlines and special characters in item bodies", async () => {
@@ -101,8 +101,8 @@ describe("QueueStore", () => {
 				quote: 'he said "hi"',
 				unicode: "café — 🎉",
 			};
-			await store.put(SCOPE, tricky, meta());
-			const popped = await store.get(SCOPE);
+			await store.put(SCOPE, tricky, "", meta());
+			const popped = await store.get(SCOPE, "");
 			expect(popped?.item).toEqual(tricky);
 		});
 	});
@@ -114,14 +114,14 @@ describe("QueueStore", () => {
 			const padding = "x".repeat(MAX_ITEM_BYTES - 8);
 			const item = { s: padding };
 			expect(JSON.stringify(item).length).toBe(MAX_ITEM_BYTES);
-			await expect(store.put(SCOPE, item, meta())).resolves.toBeUndefined();
+			await expect(store.put(SCOPE, item, "", meta())).resolves.toBeUndefined();
 		});
 
 		it("rejects an item one byte over the cap", async () => {
 			const padding = "x".repeat(MAX_ITEM_BYTES - 7);
 			const item = { s: padding };
 			expect(JSON.stringify(item).length).toBe(MAX_ITEM_BYTES + 1);
-			await expect(store.put(SCOPE, item, meta())).rejects.toMatchObject({
+			await expect(store.put(SCOPE, item, "", meta())).rejects.toMatchObject({
 				code: "queue.itemTooLarge",
 			});
 			expect(await store.count(SCOPE)).toBe(0);
@@ -153,11 +153,11 @@ describe("QueueStore", () => {
 			await withCappedStore(async (s) => {
 				for (let i = 0; i < SMALL_CAP; i++) {
 					// biome-ignore lint/performance/noAwaitInLoops: ordered fill to cap — FIFO state, not throughput
-					await s.put(SCOPE, { i }, meta());
+					await s.put(SCOPE, { i }, "", meta());
 				}
 				expect(await s.count(SCOPE)).toBe(SMALL_CAP);
 				await expect(
-					s.put(SCOPE, { i: SMALL_CAP }, meta()),
+					s.put(SCOPE, { i: SMALL_CAP }, "", meta()),
 				).rejects.toMatchObject({ code: "queue.full" });
 				expect(await s.count(SCOPE)).toBe(SMALL_CAP);
 			});
@@ -171,9 +171,9 @@ describe("QueueStore", () => {
 				// zero remaining budget.
 				for (let i = 0; i < SMALL_CAP; i++) {
 					// biome-ignore lint/performance/noAwaitInLoops: ordered fill to cap
-					await s.put(a, { i }, meta());
+					await s.put(a, { i }, "", meta());
 				}
-				await expect(s.put(b, { x: 1 }, meta())).rejects.toMatchObject({
+				await expect(s.put(b, { x: 1 }, "", meta())).rejects.toMatchObject({
 					code: "queue.full",
 				});
 				// A different workflow has its own independent budget.
@@ -184,7 +184,7 @@ describe("QueueStore", () => {
 					queue: "a",
 				};
 				await expect(
-					s.put(otherWorkflow, { x: 1 }, meta()),
+					s.put(otherWorkflow, { x: 1 }, "", meta()),
 				).resolves.toBeUndefined();
 			});
 		});
@@ -196,9 +196,9 @@ describe("QueueStore", () => {
 		});
 
 		it("list returns items in FIFO order with metadata", async () => {
-			await store.put(SCOPE, { i: 1 }, meta({ invocationId: "inv-1" }));
-			await store.put(SCOPE, { i: 2 }, meta({ invocationId: "inv-2" }));
-			await store.put(SCOPE, { i: 3 }, meta({ invocationId: "inv-3" }));
+			await store.put(SCOPE, { i: 1 }, "", meta({ invocationId: "inv-1" }));
+			await store.put(SCOPE, { i: 2 }, "", meta({ invocationId: "inv-2" }));
+			await store.put(SCOPE, { i: 3 }, "", meta({ invocationId: "inv-3" }));
 			const rows = await store.list(SCOPE, 0, 50);
 			expect(rows.map((r) => r.item)).toEqual([{ i: 1 }, { i: 2 }, { i: 3 }]);
 			expect(rows.map((r) => r.invocationId)).toEqual([
@@ -214,7 +214,7 @@ describe("QueueStore", () => {
 		it("list paginates with offset+limit", async () => {
 			for (let i = 0; i < 10; i++) {
 				// biome-ignore lint/performance/noAwaitInLoops: ordered seed inserts; FIFO order is what we're asserting
-				await store.put(SCOPE, { i }, meta());
+				await store.put(SCOPE, { i }, "", meta());
 			}
 			const page1 = await store.list(SCOPE, 0, 3);
 			const page2 = await store.list(SCOPE, 3, 3);
@@ -225,8 +225,8 @@ describe("QueueStore", () => {
 
 	describe("removeDeclaration", () => {
 		it("deletes all rows for a queue tuple", async () => {
-			await store.put(SCOPE, { i: 1 }, meta());
-			await store.put(SCOPE, { i: 2 }, meta());
+			await store.put(SCOPE, { i: 1 }, "", meta());
+			await store.put(SCOPE, { i: 2 }, "", meta());
 			const removed = await store.removeDeclaration(SCOPE);
 			expect(removed).toBe(2);
 			expect(await store.count(SCOPE)).toBe(0);
@@ -241,9 +241,9 @@ describe("QueueStore", () => {
 				workflow: "other-workflow",
 				queue: "jobs",
 			};
-			await store.put(q1, { i: 1 }, meta());
-			await store.put(q2, { i: 2 }, meta());
-			await store.put(other, { i: 3 }, meta());
+			await store.put(q1, { i: 1 }, "", meta());
+			await store.put(q2, { i: 2 }, "", meta());
+			await store.put(other, { i: 3 }, "", meta());
 			const removed = await store.removeDeclaration({
 				owner: "acme",
 				repo: "foo",
@@ -265,9 +265,9 @@ describe("QueueStore", () => {
 			const declared: QueueScope = { ...SCOPE, queue: "jobs" };
 			const orphan1: QueueScope = { ...SCOPE, queue: "removed-queue" };
 			const orphan2: QueueScope = { ...SCOPE, queue: "another-removed" };
-			await store.put(declared, { i: 1 }, meta());
-			await store.put(orphan1, { i: 2 }, meta());
-			await store.put(orphan2, { i: 3 }, meta());
+			await store.put(declared, { i: 1 }, "", meta());
+			await store.put(orphan1, { i: 2 }, "", meta());
+			await store.put(orphan2, { i: 3 }, "", meta());
 			const removed = await store.reconcile([declared]);
 			expect(removed).toBe(2);
 			expect(await store.count(declared)).toBe(1);
@@ -283,8 +283,8 @@ describe("QueueStore", () => {
 		});
 
 		it("removes everything when declared set is empty", async () => {
-			await store.put(SCOPE, { i: 1 }, meta());
-			await store.put({ ...SCOPE, queue: "other" }, { i: 2 }, meta());
+			await store.put(SCOPE, { i: 1 }, "", meta());
+			await store.put({ ...SCOPE, queue: "other" }, { i: 2 }, "", meta());
 			const removed = await store.reconcile([]);
 			expect(removed).toBe(2);
 		});
@@ -327,7 +327,7 @@ describe("QueueStore", () => {
 			// Insert one row per scope with a unique marker payload.
 			for (let i = 0; i < scopes.length; i++) {
 				// biome-ignore lint/performance/noAwaitInLoops: seed inserts must complete before observation phase
-				await store.put(scopes[i]!, { marker: i }, meta());
+				await store.put(scopes[i]!, { marker: i }, "", meta());
 			}
 
 			// For every (insertedScope, observerScope) pair where the two
@@ -351,9 +351,9 @@ describe("QueueStore", () => {
 			// And get on each scope pops exactly its own row.
 			for (let i = 0; i < scopes.length; i++) {
 				// biome-ignore lint/performance/noAwaitInLoops: ordered pops; per-scope assertion before next iteration
-				const popped = await store.get(scopes[i]!);
+				const popped = await store.get(scopes[i]!, "");
 				expect(popped?.item).toEqual({ marker: i });
-				expect(await store.get(scopes[i]!)).toBeUndefined();
+				expect(await store.get(scopes[i]!, "")).toBeUndefined();
 			}
 		});
 
@@ -366,9 +366,9 @@ describe("QueueStore", () => {
 				workflow: "w",
 				queue: "a",
 			};
-			await store.put(a, { x: "a" }, meta());
-			await store.put(b, { x: "b" }, meta());
-			await store.put(c, { x: "c" }, meta());
+			await store.put(a, { x: "a" }, "", meta());
+			await store.put(b, { x: "b" }, "", meta());
+			await store.put(c, { x: "c" }, "", meta());
 			await store.removeDeclaration(a);
 			expect(await store.count(a)).toBe(0);
 			expect(await store.count(b)).toBe(1);
@@ -380,7 +380,7 @@ describe("QueueStore", () => {
 		// Stand-in for the crash test: close cleanly, reopen, confirm rows
 		// survive. Full SIGKILL fault injection would need a child process.
 		it("rows persist across libSQL client close + reopen", async () => {
-			await store.put(SCOPE, { url: "survive-me" }, meta());
+			await store.put(SCOPE, { url: "survive-me" }, "", meta());
 			await store.close();
 			client.close();
 			// Reopen against the same file
@@ -390,8 +390,69 @@ describe("QueueStore", () => {
 				db: reopened.db,
 				logger: createTestLogger(),
 			});
-			const popped = await store.get(SCOPE);
+			const popped = await store.get(SCOPE, "");
 			expect(popped?.item).toEqual({ url: "survive-me" });
+		});
+	});
+
+	describe("keyed partitions", () => {
+		it("pops FIFO within a key, independent of other keys", async () => {
+			await store.put(SCOPE, { v: "A" }, "x", meta());
+			await store.put(SCOPE, { v: "B" }, "y", meta());
+			await store.put(SCOPE, { v: "C" }, "x", meta());
+			expect((await store.get(SCOPE, "x"))?.item).toEqual({ v: "A" });
+			expect((await store.get(SCOPE, "y"))?.item).toEqual({ v: "B" });
+			expect((await store.get(SCOPE, "x"))?.item).toEqual({ v: "C" });
+			expect(await store.get(SCOPE, "x")).toBeUndefined();
+		});
+
+		it("get on an empty partition returns undefined and leaves other keys intact", async () => {
+			await store.put(SCOPE, { v: "A" }, "alice", meta());
+			expect(await store.get(SCOPE, "bob")).toBeUndefined();
+			// alice's item is untouched.
+			expect((await store.get(SCOPE, "alice"))?.item).toEqual({ v: "A" });
+		});
+
+		it("get() with the empty key only pops the unkeyed partition", async () => {
+			await store.put(SCOPE, { v: "keyed" }, "alice", meta());
+			await store.put(SCOPE, { v: "unkeyed" }, "", meta());
+			// The unkeyed pop must not steal alice's keyed item.
+			expect((await store.get(SCOPE, ""))?.item).toEqual({ v: "unkeyed" });
+			expect(await store.get(SCOPE, "")).toBeUndefined();
+			expect((await store.get(SCOPE, "alice"))?.item).toEqual({ v: "keyed" });
+		});
+
+		it("the popped row carries its key", async () => {
+			await store.put(SCOPE, { v: "A" }, "alice", meta());
+			expect((await store.get(SCOPE, "alice"))?.key).toBe("alice");
+		});
+
+		it("GC is key-blind: removeDeclaration and reconcile drop every key", async () => {
+			await store.put(SCOPE, { v: 1 }, "a", meta());
+			await store.put(SCOPE, { v: 2 }, "b", meta());
+			await store.put(SCOPE, { v: 3 }, "", meta());
+			// count / workflowDepth include rows of every key.
+			expect(await store.count(SCOPE)).toBe(3);
+			const removed = await store.removeDeclaration(SCOPE);
+			expect(removed).toBe(3);
+			expect(await store.count(SCOPE)).toBe(0);
+		});
+
+		it("reconcile drops an undeclared queue regardless of its keys", async () => {
+			const orphan: QueueScope = { ...SCOPE, queue: "orphan" };
+			await store.put(orphan, { v: 1 }, "a", meta());
+			await store.put(orphan, { v: 2 }, "b", meta());
+			const removed = await store.reconcile([SCOPE]);
+			expect(removed).toBe(2);
+			expect(await store.count(orphan)).toBe(0);
+		});
+
+		it("list interleaves keys in seq order and reports each row's key", async () => {
+			await store.put(SCOPE, { v: 1 }, "a", meta());
+			await store.put(SCOPE, { v: 2 }, "", meta());
+			await store.put(SCOPE, { v: 3 }, "b", meta());
+			const rows = await store.list(SCOPE, 0, 10);
+			expect(rows.map((r) => r.key)).toEqual(["a", "", "b"]);
 		});
 	});
 
@@ -401,12 +462,12 @@ describe("QueueStore", () => {
 			// seq must exceed all prior seqs — never a recycled freed rowid.
 			for (const n of [0, 1, 2]) {
 				// biome-ignore lint/performance/noAwaitInLoops: enqueue sequentially so seq is assigned in order
-				await store.put(SCOPE, { n }, meta());
+				await store.put(SCOPE, { n }, "", meta());
 			}
 			const seqsBefore = (await store.list(SCOPE, 0, 10)).map((r) => r.seq);
-			await store.get(SCOPE);
-			await store.get(SCOPE);
-			await store.put(SCOPE, { n: "new" }, meta());
+			await store.get(SCOPE, "");
+			await store.get(SCOPE, "");
+			await store.put(SCOPE, { n: "new" }, "", meta());
 			const after = await store.list(SCOPE, 0, 10);
 			const maxBefore = Math.max(...seqsBefore);
 			const newRow = after.find(

@@ -28,11 +28,14 @@ function guest(): void {
 	const g = globalThis as unknown as Record<string, unknown>;
 	const raw = g[QUEUE_DISPATCHER_NAME] as DispatchFn;
 	const queueApi = Object.freeze({
-		put: async (queueName: string, item: unknown): Promise<void> => {
-			await raw({ op: "put", name: queueName, item });
+		// `key` is the partition selector. This shim is the SOLE place the
+		// optional key defaults to the unkeyed partition (''), so a concrete
+		// string always crosses the host bridge.
+		put: async (queueName: string, item: unknown, key = ""): Promise<void> => {
+			await raw({ op: "put", name: queueName, item, key });
 		},
-		get: async (queueName: string): Promise<unknown> => {
-			const result = (await raw({ op: "get", name: queueName })) as
+		get: async (queueName: string, key = ""): Promise<unknown> => {
+			const result = (await raw({ op: "get", name: queueName, key })) as
 				| { found: false }
 				| { found: true; item: unknown };
 			if (result.found === false) {

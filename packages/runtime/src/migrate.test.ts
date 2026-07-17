@@ -12,6 +12,7 @@ import {
 } from "./event-store.js";
 import { runMigrations } from "./migrate.js";
 import { migration0001Initial } from "./migrations/0001-initial.js";
+import { migration0002QueueKey } from "./migrations/0002-queue-key.js";
 import {
 	createQueueStore,
 	type Database as QueueDatabase,
@@ -180,6 +181,9 @@ describe("runMigrations", () => {
 				"repo",
 				"workflow",
 				"queue",
+				// key column added by 0002-queue-key (present on fresh DBs after
+				// the full migration chain runs).
+				"key",
 				"enqueuedAt",
 				"invocationId",
 				"triggerKind",
@@ -190,9 +194,11 @@ describe("runMigrations", () => {
 		const queueIdx = await sql<{ name: string }>`
 			PRAGMA index_list(queue_items)
 		`.execute(db);
-		expect(
-			queueIdx.rows.some((r) => r.name === "queue_items_tuple_seq_idx"),
-		).toBe(true);
+		const queueIdxNames = queueIdx.rows.map((r) => r.name);
+		// After 0002, the composite key index replaces the prior (…, queue, seq)
+		// index, so fresh and migrated DBs share one index set.
+		expect(queueIdxNames).toContain("queue_items_tuple_key_seq_idx");
+		expect(queueIdxNames).not.toContain("queue_items_tuple_seq_idx");
 	});
 
 	it("store factories issue no schema DDL against a migrated database", async () => {
@@ -262,5 +268,37 @@ describe("runMigrations", () => {
 			false,
 		);
 		expect(await count(second.db, "queue_items")).toBe(1);
+	});
+});
+
+describe("0002-queue-key migration", () => {
+	it("adds the key column losslessly to a pre-0002 database", async () => {
+		const { db } = memoryDb();
+		// A database migrated only through 0001: queue_items has no `key` column.
+		await migration0001Initial.up(db);
+		await seedQueueRow(db);
+
+		await migration0002QueueKey.up(db);
+
+		// The `key` column now exists…
+		const cols = await sql<{ name: string }>`
+			PRAGMA table_info(queue_items)
+		`.execute(db);
+		expect(cols.rows.some((c) => c.name === "key")).toBe(true);
+
+		// …the composite key index exists and the superseded index is gone…
+		const idx = await sql<{ name: string }>`
+			PRAGMA index_list(queue_items)
+		`.execute(db);
+		const idxNames = idx.rows.map((r) => r.name);
+		expect(idxNames).toContain("queue_items_tuple_key_seq_idx");
+		expect(idxNames).not.toContain("queue_items_tuple_seq_idx");
+
+		// …and the pre-existing row is retained, stamped as the unkeyed partition.
+		const rows = await sql<{ key: string }>`
+			SELECT key FROM queue_items
+		`.execute(db);
+		expect(rows.rows).toHaveLength(1);
+		expect(rows.rows[0]?.key).toBe("");
 	});
 });

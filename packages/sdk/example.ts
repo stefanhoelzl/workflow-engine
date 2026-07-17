@@ -696,25 +696,34 @@ export const jobs = defineQueue({
 	}),
 });
 
-/** Producer: an HTTP webhook puts the validated body straight onto the queue. */
+/**
+ * Producer: an HTTP webhook puts the validated body straight onto the queue.
+ * The optional `key` routes the item to a partition (mailbox) within the queue;
+ * omitted → the unkeyed partition. `key` is addressing, not part of the item,
+ * so it is kept out of the queue schema.
+ */
 export const enqueueJob = httpTrigger({
 	method: "POST",
 	request: {
 		body: z.object({
 			url: z.string(),
 			note: z.exactOptional(z.string().max(JOB_NOTE_MAX)),
+			key: z.exactOptional(z.string()),
 		}),
 	},
 	handler: async ({ body }) => {
-		await jobs.put(body);
+		const { key, ...job } = body;
+		await jobs.put(job, key);
 		return { status: 202, body: { enqueued: true } };
 	},
 });
 
 /**
- * Consumer: drains up to N items; `get()` returns `undefined` when empty. Queue
- * ops are serial by nature — each pop must observe the previous pop's result,
- * so they cannot be fanned out with `Promise.all`.
+ * Consumer: drains up to N items from a partition; `get(key)` pops FIFO within
+ * that key only (omitted → the unkeyed partition) and returns `undefined` when
+ * the partition is empty. Queue ops are serial by nature — each pop must
+ * observe the previous pop's result, so they cannot be fanned out with
+ * `Promise.all`.
  */
 export const drainOnce = manualTrigger({
 	input: z.object({
@@ -724,6 +733,7 @@ export const drainOnce = manualTrigger({
 			.min(1)
 			.max(DRAIN_MAX_ITEMS)
 			.default(DRAIN_DEFAULT_ITEMS),
+		key: z.exactOptional(z.string()),
 	}),
 	output: z.object({
 		drained: z.array(
@@ -733,11 +743,11 @@ export const drainOnce = manualTrigger({
 			}),
 		),
 	}),
-	handler: async ({ max }) => {
+	handler: async ({ max, key }) => {
 		const drained: { url: string; note?: string }[] = [];
 		for (let i = 0; i < max; i++) {
 			// biome-ignore lint/performance/noAwaitInLoops: queue ops are intentionally serial — `get()` removes the head item; each pop must observe the previous pop's result
-			const item = await jobs.get();
+			const item = await jobs.get(key);
 			if (item === undefined) {
 				break;
 			}

@@ -141,17 +141,20 @@ function requireContext(): ActiveContext {
 // beyond routing; the host is the sole policy authority.
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/complexity/useMaxParams: pure transport — forwards the guest call's (name, item, key) alongside the plugin ctx and per-invocation active context; bundling them into an object adds indirection without clarity
 async function dispatchPut(
 	ctx: PluginContext<QueueHostApi>,
 	active: ActiveContext,
 	name: string,
 	item: unknown,
+	key: string,
 ): Promise<QueuePutResultWire> {
 	try {
 		await ctx.callHost("queue.put", [
 			{
 				queue: name,
 				item,
+				key,
 				repo: active.repo,
 				invocationId: active.invocationId,
 				triggerKind: active.triggerKind,
@@ -168,11 +171,12 @@ async function dispatchGet(
 	ctx: PluginContext<QueueHostApi>,
 	active: ActiveContext,
 	name: string,
+	key: string,
 ): Promise<QueueGetResultWire> {
 	let reply: Awaited<ReturnType<QueueHostApi["queue.get"]>>;
 	try {
 		reply = await ctx.callHost("queue.get", [
-			{ queue: name, repo: active.repo },
+			{ queue: name, repo: active.repo, key },
 		]);
 	} catch (err) {
 		throw mapHostError(err);
@@ -187,6 +191,7 @@ async function dispatchGet(
 // Descriptor + plugin setup
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: the dispatcher descriptor groups the op-routing handler with its paired logName/logInput config — splitting them would separate the wire contract from the logging that mirrors it
 function queueDispatcherDescriptor(
 	ctx: PluginContext<QueueHostApi>,
 ): GuestFunctionDescription {
@@ -200,13 +205,22 @@ function queueDispatcherDescriptor(
 				op?: unknown;
 				name?: unknown;
 				item?: unknown;
+				key?: unknown;
 			};
 			const name = typeof input.name === "string" ? input.name : "";
+			// Guest shim always sends an explicit string; default defensively.
+			const key = typeof input.key === "string" ? input.key : "";
 			let result: QueueResultWire;
 			if (input.op === "get") {
-				result = await dispatchGet(ctx, requireContext(), name);
+				result = await dispatchGet(ctx, requireContext(), name, key);
 			} else if (input.op === "put") {
-				result = await dispatchPut(ctx, requireContext(), name, input.item);
+				result = await dispatchPut(
+					ctx,
+					requireContext(),
+					name,
+					input.item,
+					key,
+				);
 			} else {
 				// Tampered guest: our guest glue only ever sends put/get.
 				throw new QueueError({

@@ -654,7 +654,7 @@ The SDK's exported `Trigger` umbrella type SHALL include `WsTrigger` as a union 
 
 ### Requirement: defineQueue authoring primitive
 
-The SDK SHALL export a `defineQueue` factory that accepts `{name?, schema}` and returns a brand-tagged `Queue<T>` handle whose only members are `put(item: T) => Promise<void>` and `get() => Promise<T | undefined>`. The handle SHALL carry `Symbol.for("@workflow-engine/queue")` (`QUEUE_BRAND`) for build-time discovery. The SDK SHALL also export a matching `isQueue` type guard. `T` SHALL be inferred via `z.infer<typeof schema>`. The `name` argument SHALL be optional: when omitted, the workflow build pipeline derives the queue's name from the export identifier (matching the existing rule for `action` and `*Trigger`); when provided, the explicit value overrides the export name. The runtime identity used for the on-disk path is the resolved name (explicit or derived).
+The SDK SHALL export a `defineQueue` factory that accepts `{name?, schema}` and returns a brand-tagged `Queue<T>` handle whose members are `put(item: T, key?: string) => Promise<void>` and `get(key?: string) => Promise<T | undefined>`. The optional `key` names a partition **within** the queue: `put(item, key)` enqueues into that partition and `get(key)` pops FIFO from that partition only, never observing or removing items under another key. An omitted `key` SHALL resolve to the unkeyed partition (the empty string `''`); the SDK guest shim is the sole place that materializes this default, so a concrete `string` key crosses the host bridge on every call. `get()` SHALL be equivalent to `get('')`. The handle SHALL carry `Symbol.for("@workflow-engine/queue")` (`QUEUE_BRAND`) for build-time discovery. The SDK SHALL also export a matching `isQueue` type guard. `T` SHALL be inferred via `z.infer<typeof schema>`. The `name` argument SHALL be optional: when omitted, the workflow build pipeline derives the queue's name from the export identifier (matching the existing rule for `action` and `*Trigger`); when provided, the explicit value overrides the export name. The runtime identity used for storage is the resolved name (explicit or derived); the `key` is orthogonal to the queue's identity and is never part of the manifest.
 
 #### Scenario: Author declares and uses a queue with derived name
 
@@ -663,11 +663,18 @@ The SDK SHALL export a `defineQueue` factory that accepts `{name?, schema}` and 
 - **THEN** the manifest SHALL carry the queue under `name = "jobs"` (derived from the export identifier)
 - **AND** `await jobs.get()` SHALL resolve with `{url: "https://example.com"}` on the next call
 
+#### Scenario: Keyed put and get address one partition
+
+- **WHEN** an author calls `await jobs.put({url: "https://a"}, "alice")` and `await jobs.put({url: "https://b"}, "bob")`
+- **THEN** `await jobs.get("alice")` SHALL resolve with `{url: "https://a"}`
+- **AND** `await jobs.get("bob")` SHALL resolve with `{url: "https://b"}`
+- **AND** `await jobs.get()` (unkeyed) SHALL resolve with `undefined` (neither item is in the unkeyed partition)
+
 #### Scenario: Explicit name overrides export identifier
 
 - **WHEN** an author writes `export const jobs = defineQueue({name: "jobsV2", schema});`
 - **THEN** the manifest entry SHALL carry `name = "jobsV2"`
-- **AND** the on-disk file SHALL be `<root>/queues/<owner>/<repo>/<workflow>/jobsV2.ndjson`
+- **AND** the resolved name `jobsV2` SHALL be used as the `queue` column value in `queue_items`
 
 #### Scenario: Brand symbol enables build-time discovery
 

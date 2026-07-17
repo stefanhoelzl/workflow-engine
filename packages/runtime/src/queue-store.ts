@@ -12,6 +12,10 @@ import type { Logger } from "./logger.js";
 // ---------------------------------------------------------------------------
 
 const MAX_ITEM_BYTES = 1024;
+// Max UTF-8 byte length of a partition key. Independent of MAX_ITEM_BYTES so a
+// long key cannot reduce the item budget. Enforced host-side (queue-host.ts)
+// before any statement touches the store.
+const MAX_KEY_BYTES = 128;
 // Depth cap is WORKFLOW-wide, not per-queue: it bounds the total item count
 // across ALL of a workflow's queues (owner, repo, workflow). This is the
 // availability backstop on the shared events.db — because there is no
@@ -32,6 +36,9 @@ interface QueueItemsTable {
 	repo: string;
 	workflow: string;
 	queue: string;
+	// Partition selector within a queue; '' is the unkeyed partition. Added by
+	// migration 0002-queue-key. `get(scope, key)` pops FIFO within one key only.
+	key: string;
 	seq: Generated<number>;
 	enqueuedAt: string;
 	invocationId: string;
@@ -68,6 +75,7 @@ interface ProducerMeta {
 
 interface PoppedRow {
 	readonly item: unknown;
+	readonly key: string;
 	readonly enqueuedAt: Date;
 	readonly invocationId: string;
 	readonly triggerKind: string;
@@ -80,6 +88,7 @@ interface RowWithMeta extends PoppedRow {
 
 type QueueErrorCode =
 	| "queue.itemTooLarge"
+	| "queue.keyTooLarge"
 	| "queue.full"
 	| "queue.schemaMismatch"
 	| "queue.gone"
@@ -105,8 +114,13 @@ class QueueError extends Error {
 }
 
 interface QueueStore {
-	put(scope: QueueScope, item: unknown, producer: ProducerMeta): Promise<void>;
-	get(scope: QueueScope): Promise<PoppedRow | undefined>;
+	put(
+		scope: QueueScope,
+		item: unknown,
+		key: string,
+		producer: ProducerMeta,
+	): Promise<void>;
+	get(scope: QueueScope, key: string): Promise<PoppedRow | undefined>;
 	count(scope: QueueScope): Promise<number>;
 	list(
 		scope: QueueScope,
@@ -176,6 +190,7 @@ function toDate(value: unknown): Date {
 }
 
 function rowToMeta(row: {
+	key: unknown;
 	enqueuedAt: unknown;
 	invocationId: unknown;
 	triggerKind: unknown;
@@ -184,6 +199,7 @@ function rowToMeta(row: {
 }): PoppedRow {
 	return {
 		item: parseItem(row.item),
+		key: String(row.key),
 		enqueuedAt: toDate(row.enqueuedAt),
 		invocationId: String(row.invocationId),
 		triggerKind: String(row.triggerKind),
@@ -240,6 +256,7 @@ async function createQueueStore(
 	async function put(
 		scope: QueueScope,
 		item: unknown,
+		key: string,
 		producer: ProducerMeta,
 	): Promise<void> {
 		const json = JSON.stringify(item);
@@ -261,6 +278,7 @@ async function createQueueStore(
 				repo: scope.repo,
 				workflow: scope.workflow,
 				queue: scope.queue,
+				key,
 				enqueuedAt: producer.enqueuedAt.toISOString(),
 				invocationId: producer.invocationId,
 				triggerKind: producer.triggerKind,
@@ -270,12 +288,19 @@ async function createQueueStore(
 			.execute();
 	}
 
-	async function get(scope: QueueScope): Promise<PoppedRow | undefined> {
-		// DELETE … WHERE seq = (SELECT MIN(seq) WHERE tenant) RETURNING …
-		// Single autocommit statement; libSQL serializes writes. Validation
-		// of the popped item is the bridge's responsibility, AFTER commit.
+	async function get(
+		scope: QueueScope,
+		key: string,
+	): Promise<PoppedRow | undefined> {
+		// DELETE … WHERE seq = (SELECT MIN(seq) WHERE tenant AND key) RETURNING …
+		// The key partitions the FIFO: both the outer predicate and the MIN(seq)
+		// subselect are scoped to (tenant tuple, key), so a get on one key never
+		// pops another key's items. Single autocommit statement; libSQL
+		// serializes writes. Validation of the popped item is the bridge's
+		// responsibility, AFTER commit.
 		const result = await sql<{
 			item: unknown;
+			key: unknown;
 			enqueuedAt: unknown;
 			invocationId: unknown;
 			triggerKind: unknown;
@@ -286,14 +311,16 @@ async function createQueueStore(
 				AND repo = ${scope.repo}
 				AND workflow = ${scope.workflow}
 				AND queue = ${scope.queue}
+				AND key = ${key}
 				AND seq = (
 					SELECT MIN(seq) FROM queue_items
 					WHERE owner = ${scope.owner}
 						AND repo = ${scope.repo}
 						AND workflow = ${scope.workflow}
 						AND queue = ${scope.queue}
+						AND key = ${key}
 				)
-			RETURNING item, enqueuedAt, invocationId, triggerKind, triggerName
+			RETURNING item, key, enqueuedAt, invocationId, triggerKind, triggerName
 		`.execute(db);
 		const row = result.rows[0];
 		if (!row) {
@@ -315,6 +342,7 @@ async function createQueueStore(
 			.where("queue", "=", scope.queue)
 			.select([
 				"seq",
+				"key",
 				"enqueuedAt",
 				"invocationId",
 				"triggerKind",
@@ -426,6 +454,7 @@ export type {
 export {
 	createQueueStore,
 	MAX_ITEM_BYTES,
+	MAX_KEY_BYTES,
 	MAX_WORKFLOW_QUEUE_DEPTH,
 	QueueError,
 };
