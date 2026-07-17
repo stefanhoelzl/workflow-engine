@@ -42,6 +42,11 @@ The runtime SHALL attach the following response headers to every response emitte
 - **WHEN** a client requests `/livez`
 - **THEN** the response carries all eight headers
 
+#### Scenario: Public llms.txt index carries every header
+
+- **WHEN** an unauthenticated client requests `/llms.txt`
+- **THEN** the response carries all eight headers (CSP included; the text body loads no resources, so `default-src 'none'` is satisfied trivially)
+
 ### Requirement: Content-Security-Policy MUST start from default-src 'none'
 
 The `Content-Security-Policy` header SHALL have `default-src 'none'` as its baseline and grant only the following directives explicitly:
@@ -151,7 +156,7 @@ JSON data embedded in `<script type="application/json">` elements for later runt
 
 ### Requirement: Security-header configuration MUST be unit and integration tested
 
-The runtime SHALL include automated tests that exercise the secure-headers middleware. Unit tests SHALL assert each header's presence and value on a mocked request, and SHALL cover both the `LOCAL_DEPLOYMENT=1` and unset branches. Integration tests SHALL hit at least one route from each family (`/livez`, `/webhooks/*`, `/api/*`, `/invocations`, `/trigger`, `/static/*`) against a running server and assert the full header set.
+The runtime SHALL include automated tests that exercise the secure-headers middleware. Unit tests SHALL assert each header's presence and value on a mocked request, and SHALL cover both the `LOCAL_DEPLOYMENT=1` and unset branches. Integration tests SHALL hit at least one route from each family (`/livez`, `/webhooks/*`, `/api/*`, `/invocations`, `/trigger`, `/static/*`, `/llms.txt`) against a running server and assert the full header set.
 
 #### Scenario: Unit test asserts header presence and values
 
@@ -166,7 +171,7 @@ The runtime SHALL include automated tests that exercise the secure-headers middl
 #### Scenario: Integration test covers every route family
 
 - **WHEN** the integration test suite runs
-- **THEN** it hits at least one route matching `/livez`, `/webhooks/*`, `/api/*`, `/invocations`, `/trigger`, and `/static/*` and asserts the full baseline header set on each response
+- **THEN** it hits at least one route matching `/livez`, `/webhooks/*`, `/api/*`, `/invocations`, `/trigger`, `/static/*`, and `/llms.txt` and asserts the full baseline header set on each response
 
 ### Requirement: /webhooks/* responses MUST strip workflow-supplied platform-reserved headers
 

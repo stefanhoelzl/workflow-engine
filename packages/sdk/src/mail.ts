@@ -137,6 +137,17 @@ async function normalizeAttachments(
 	return out;
 }
 
+/**
+ * Sends an email over SMTP via the mail plugin. `opts` carries the `smtp`
+ * connection (`host`, `port`, `tls`, `auth`), `from`/`to`, `subject`, and
+ * `text`/`html` body (plus optional attachments). Returns `{messageId,
+ * response}`. See `example.ts`.
+ * @example
+ * const res = await sendMail({
+ *   smtp: { host, port, tls: "starttls", auth: { user, pass } },
+ *   from, to, subject: "Hi", text: "Hello",
+ * });
+ */
 async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
 	const mail = getMailDispatcher();
 	if (opts.attachments === undefined) {

@@ -67,13 +67,12 @@ See `docs/upgrades.md` for tenant rebuild/re-upload requirements per change.
 
 ## Example workflows
 
-`workflows/src/demo.ts` is the canonical authoring reference. Keep it in sync with any SDK surface or sandbox-stdlib change. It showcases:
+There are **two** example workflows with distinct jobs:
 
-- SDK factories: `defineWorkflow({env})`, `env()`, `action` composition (action calls action), `httpTrigger` (GET + POST, zod `body`, `responseBody` variant via `greetJson`, `.meta({example})`), `cronTrigger` (schedule + explicit IANA tz) + callable-style invocation (`fireCron` http trigger calls `everyFiveMinutes()` directly), `manualTrigger` (zod `input` + `output`), `z` re-export, `secret()`, `sendMail()`. SDK identity internals (brand symbols, type guards, `ManifestSchema`) are intentionally NOT imported by demo.ts — they are not author-facing; rename protection lives in `packages/sdk/src/index.test.ts`.
-- sandbox-stdlib: `fetch` (happy path + error path in `fetchSafe`), `crypto.subtle`, `crypto.randomUUID`, `setTimeout`, `URL` / `URLSearchParams`, `console`, `performance.mark/measure` (`measure`), `EventTarget` + `CustomEvent` (`eventBus`), `AbortController`/`AbortSignal` (`cancellable`), `scheduler.postTask` (`scheduleTask`), `Observable` (`observeTicks`).
-- Failure path: `fail` manualTrigger invokes the `boom` action which throws, so the dashboard renders a real `action.error` / `trigger.error` pair.
+- **`packages/sdk/example.ts` — the canonical full-surface authoring reference.** It exercises EVERY author-facing SDK surface (all trigger kinds including `imapTrigger`/`wsTrigger`, `action` composition, `defineWorkflow`/`env`, `secret`, `defineQueue`, `executeSql`, `sendMail`, and the sandbox-stdlib globals), each with explanatory doc-comments. It ships in the SDK npm tarball and is bundle-validated in CI by `packages/sdk/src/example.test.ts` (`wfe build`, never uploaded) — because bundling never executes handlers, it can carry infra-only triggers that cannot run in dev. **A change that touches SDK surface or workflow-authoring ergonomics without updating `example.ts` is incomplete.** SDK identity internals (brand symbols, type guards, `ManifestSchema`) are intentionally NOT imported — they are not author-facing; rename protection lives in `packages/sdk/src/index.test.ts`.
+- **`workflows/src/demo.ts` — the runnable `pnpm dev` fixture.** A subset that actually runs in local dev (no `imapTrigger`, since `pnpm dev` starts no IMAP server). It is auto-uploaded on every boot so the dashboard drill-down exercises real invocations, including the `fail`/`boom` `action.error` / `trigger.error` path. Keep it building; it need not be exhaustive — full-surface coverage is `example.ts`'s job.
 
-Every non-failure trigger dispatches the same `runDemo` orchestrator so any kind can exercise the full surface. A change that touches SDK surface or workflow-authoring ergonomics without updating `demo.ts` is incomplete.
+Every non-failure trigger in both files dispatches the same `runDemo` orchestrator so any kind exercises the full action surface.
 
 ## Code Conventions
 
@@ -82,7 +81,7 @@ Every non-failure trigger dispatches the same `runDemo` orchestrator so any kind
 - Factory functions over classes. Closures for private state.
 - Named exports only. Separate `export type {}` from value exports. Exception: data-only modules whose filename already conveys identity (e.g. `skip.ts`) may use `export default`.
 - `biome-ignore` comments must have a good reason suffix. Write code that doesn't need them. Remove any that lack justification.
-- SDK surface or sandbox-stdlib changes must land with a matching update to `workflows/src/demo.ts` — see `## Example workflows`.
+- SDK surface or sandbox-stdlib changes must land with a matching update to `packages/sdk/example.ts` (the full-surface reference); update `workflows/src/demo.ts` too if the change touches a surface the dev fixture exercises — see `## Example workflows`.
 - PRs that change `packages/runtime/src/ui/static/workflow-engine.css` (or `trigger.css`) should keep `docs/ui-guidelines.md` in sync — token values, the green allowlist, kind/prefix icon tables, and component recipes are documented there. Behaviour contracts (theme detection, motion respect, CSP cleanliness, universal topbar, asset delivery) live in the `ui-foundation` and `ui-errors` OpenSpec capabilities — touching those requires a proposal.
 - Biome defaults (`biome.jsonc`): tabs, 80-char width, LF, double quotes. `pnpm format` writes; `pnpm lint` fails on drift. Any rule disabled in `biome.jsonc` MUST carry an inline `//` reason — same convention as in-source `biome-ignore`.
 

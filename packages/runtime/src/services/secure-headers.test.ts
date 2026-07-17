@@ -139,6 +139,7 @@ describe("secureHeadersMiddleware: per-route integration", () => {
 		{ name: "dashboard", path: "/invocations" },
 		{ name: "trigger", path: "/trigger" },
 		{ name: "static", path: "/static/alpine.js" },
+		{ name: "llms", path: "/llms.txt" },
 	] as const;
 
 	function stubMiddleware(match: string, body: string) {

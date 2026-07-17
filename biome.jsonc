@@ -167,8 +167,10 @@
 		},
 		{
 			// User-authored workflows use `export default` and mirror external
-			// naming (webhook paths, cron IDs). The SDK DX requires both.
-			"includes": ["workflows/**/*.ts"],
+			// naming (webhook paths, cron IDs). The SDK DX requires both. The
+			// SDK's shipped example workflow (packages/sdk/example.ts) is the
+			// same kind of author-facing code and mirrors the same env naming.
+			"includes": ["workflows/**/*.ts", "packages/sdk/example.ts"],
 			"linter": {
 				"rules": {
 					"style": {
